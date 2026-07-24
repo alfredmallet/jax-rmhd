@@ -8,7 +8,7 @@ class Parameters():
     #Stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=0.0,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
-                 forcing_norm_per_step=False,lsrk_scan=True):
+                 forcing_norm_per_step=False,lsrk_scan=True,forcing_shell_noise=False):
         self.eqtype=eqtype
         self.nfields=eqtype_registry[self.eqtype]
         #perpendicular grid
@@ -69,6 +69,10 @@ class Parameters():
         # compute the forcing power-normalization scale once per full step (reused across
         # RK sub-stages, removing per-stage allreduces) instead of exactly per stage
         self.forcing_norm_per_step = forcing_norm_per_step
+        # draw OU noise only at the shell modes (scatter) instead of over the full k-grid:
+        # measured faster single-device but ~5% slower on Savio CPU at 32 ranks (jax
+        # scatter lowering), so default off; both paths give identical statistics.
+        self.forcing_shell_noise = forcing_shell_noise
         self.n_ou = 1 if self.forcing_mode == "momentum" else 2
         #timestepping (structure): lax.scan LSRK stage loop (default; ~20% faster than the
         #unrolled loop on CPU) vs statically unrolled (lsrk_scan=False; to benchmark on GPU)

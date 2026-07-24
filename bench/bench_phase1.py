@@ -43,6 +43,8 @@ else:
 # set as plain attributes so the old package (whose __init__ lacks them) just ignores them
 p.lsrk_scan = "unroll" not in sys.argv
 p.forcing_norm_per_step = "nps" in sys.argv
+# shell-restricted RNG is now opt-in (default full-grid after the Savio A/B result)
+p.forcing_shell_noise = "shellrng" in sys.argv
 kg = jr.setup_kgrids(p)
 # A/B isolation switches (new package only), to attribute any forced-path regression:
 if "sep" in sys.argv:
@@ -83,6 +85,7 @@ dt = time.perf_counter() - t0
 if p.rank == 0:
     n = nrep * nblock
     tags = ("scan" if p.lsrk_scan else "unroll") + ("+nps" if p.forcing_norm_per_step else "") \
-           + ("+sep" if "sep" in sys.argv else "") + ("+fullrng" if "fullrng" in sys.argv else "")
+           + ("+sep" if "sep" in sys.argv else "") + ("+fullrng" if "fullrng" in sys.argv else "") \
+           + ("+shellrng" if "shellrng" in sys.argv else "")
     print(f"{label:4s} {case:10s} nx={nx} nz={nz} ranks={p.size} [{tags}] "
           f"{n/dt:8.2f} steps/s  {dt/n*1e3:8.2f} ms/step  pkg={jr.__file__}", flush=True)

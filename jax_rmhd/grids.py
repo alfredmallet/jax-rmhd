@@ -92,8 +92,11 @@ def setup_kgrids(params):
         nmin, nmax = params.fshell
         kmag_over_dk = jnp.sqrt(ksq_pc) / kunit
         fmask = (kmag_over_dk >= nmin) & (kmag_over_dk < nmax)
-        # static shell index set (concrete here, outside jit) for shell-restricted noise
-        fidx_x, fidx_y = jnp.nonzero(fmask)
+        # static shell index set (concrete here, outside jit) for shell-restricted noise;
+        # only carried when opted in (params.forcing_shell_noise) — ou_update falls back
+        # to the full-grid draw when these are None
+        if params.forcing_shell_noise:
+            fidx_x, fidx_y = jnp.nonzero(fmask)
         if params.spatial_dimensions == 3:
             z_local = local_z_coords(params)
             z_envcos = jnp.cos(2*jnp.pi*z_local/params.Lz)[:, None, None]
