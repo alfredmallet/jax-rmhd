@@ -2,11 +2,25 @@
 # reports steps/sec (rank 0). Same script runs against the old (pre-Phase-1) or new
 # package depending on PYTHONPATH -- see slurms/bench_phase1.sh.
 # usage: bench_phase1.py <label> <case: 2d|2d_forced|3d|3d_forced> <donate|nodonate> [nx nz] [unroll] [nps]
-import sys, time
+import sys, os, time
+
+# Select the package version via RMHD_PKG=<dir>, robustly: a PEP-660 editable install
+# (pip install -e) registers a meta-path finder that silently beats PYTHONPATH, so we
+# drop any such finder for jax_rmhd and put the requested dir first, then verify.
+_pkgdir = os.environ.get("RMHD_PKG")
+if _pkgdir:
+    sys.meta_path = [f for f in sys.meta_path
+                     if "jax_rmhd" not in (getattr(f, "__module__", "") or "")]
+    sys.path.insert(0, _pkgdir)
+
 import numpy as np, jax, jax.numpy as jnp
 import jax_rmhd as jr
 from jax_rmhd import run as jrun
 from jax_rmhd.timestepping import get_scheme
+
+if _pkgdir:
+    assert jr.__file__.startswith(os.path.abspath(_pkgdir) + os.sep), \
+        f"wrong jax_rmhd imported: {jr.__file__} (wanted {_pkgdir})"
 
 jr.init_cluster()
 label, case, donate = sys.argv[1], sys.argv[2], sys.argv[3] == "donate"
@@ -30,6 +44,21 @@ else:
 p.lsrk_scan = "unroll" not in sys.argv
 p.forcing_norm_per_step = "nps" in sys.argv
 kg = jr.setup_kgrids(p)
+# A/B isolation switches (new package only), to attribute any forced-path regression:
+if "sep" in sys.argv:
+    # revert T4b: per-stage Pp/Pm as two separate scalar reductions/allreduces
+    from jax_rmhd.physics import rmhd, shared_physics
+    def _sep(fields, f_raw, kgrid, params):
+        phik, psik = fields[0], fields[1]
+        Pp = shared_physics.perp_inner_product(phik + psik, f_raw[0], kgrid, params)
+        Pm = shared_physics.perp_inner_product(phik - psik, f_raw[1], kgrid, params)
+        eps_p, eps_m = params.forcing_power_elsasser
+        return jnp.stack([shared_physics.safe_scale(eps_p, Pp, params.forcing_scale_max),
+                          shared_physics.safe_scale(eps_m, Pm, params.forcing_scale_max)])
+    rmhd._forcing_scale_from = _sep
+if "fullrng" in sys.argv and hasattr(kg, "fidx_x"):
+    # revert T4a: drop the shell index set so ou_update falls back to the full-grid draw
+    kg = kg._replace(fidx_x=None, fidx_y=None)
 state = jrun.initialize(ic, p)
 stepper, scheme = get_scheme("lsrk54")
 kwargs = dict(static_argnums=(2, 3, 4, 5))
@@ -53,6 +82,7 @@ barrier()
 dt = time.perf_counter() - t0
 if p.rank == 0:
     n = nrep * nblock
-    tags = ("scan" if p.lsrk_scan else "unroll") + ("+nps" if p.forcing_norm_per_step else "")
+    tags = ("scan" if p.lsrk_scan else "unroll") + ("+nps" if p.forcing_norm_per_step else "") \
+           + ("+sep" if "sep" in sys.argv else "") + ("+fullrng" if "fullrng" in sys.argv else "")
     print(f"{label:4s} {case:10s} nx={nx} nz={nz} ranks={p.size} [{tags}] "
-          f"{n/dt:8.2f} steps/s  {dt/n*1e3:8.2f} ms/step", flush=True)
+          f"{n/dt:8.2f} steps/s  {dt/n*1e3:8.2f} ms/step  pkg={jr.__file__}", flush=True)

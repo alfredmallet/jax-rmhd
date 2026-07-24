@@ -47,9 +47,11 @@ git -C "$REPO" ls-files jax_rmhd | while read -r f; do
 done
 
 BENCH=$REPO/bench/bench_phase1.py
-# PYTHONPATH precedes any pip-installed (-e) copy, so it selects the code version.
-run_old() { PYTHONPATH=$OLDDIR mpirun -n "$SLURM_NTASKS" "$PY" -u "$BENCH" "$@"; }
-run_new() { PYTHONPATH=$REPO   mpirun -n "$SLURM_NTASKS" "$PY" -u "$BENCH" "$@"; }
+# RMHD_PKG (not PYTHONPATH): a pip-install-e'd jax_rmhd registers an import finder that
+# beats PYTHONPATH; the bench purges it, imports from RMHD_PKG, and asserts + prints
+# which package file it actually imported (check pkg= in the output!).
+run_old() { RMHD_PKG=$OLDDIR mpirun -n "$SLURM_NTASKS" -x RMHD_PKG "$PY" -u "$BENCH" "$@"; }
+run_new() { RMHD_PKG=$REPO   mpirun -n "$SLURM_NTASKS" -x RMHD_PKG "$PY" -u "$BENCH" "$@"; }
 
 NX=128; NZ=256   # nz_local = NZ/32 = 8 per rank
 
