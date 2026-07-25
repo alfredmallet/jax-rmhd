@@ -29,6 +29,9 @@ module load anaconda3 gcc openmpi
 
 source activate jax_gpu
 
+# Block ~/.local user-site packages from shadowing the env (stray mpi4py bit us once).
+export PYTHONNOUSERSITE=1
+
 export RMHD_PRECISION=64
 
 # Do NOT set/override CUDA_VISIBLE_DEVICES -- Slurm's --gres=gpu already scopes this

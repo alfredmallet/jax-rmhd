@@ -42,6 +42,12 @@ module load anaconda3 gcc openmpi
 conda create -n jax_gpu python=3.11 -y
 source activate jax_gpu
 
+# Block ~/.local user-site packages: they take precedence over the env's site-packages and a
+# stray `pip install --user` mpi4py there silently satisfies pip and shadows the env's copy.
+# If `python -c "import mpi4py; print(mpi4py.__file__)"` ever prints ~/.local/..., run
+# `python -m pip uninstall mpi4py` (repeat for jax_cpu if it relied on that copy).
+export PYTHONNOUSERSITE=1
+
 # JAX's cuda12 wheel bundles its own CUDA/cuDNN runtime via nvidia-* packages, so no system
 # cuda module is needed for JAX itself.
 pip install -U "jax[cuda12]"
@@ -50,8 +56,18 @@ pip install -U "jax[cuda12]"
 # (config.py's init_cluster() always touches MPI.COMM_WORLD). Build mpi4py FROM SOURCE against
 # the loaded openmpi -- a prebuilt wheel may link a different MPI than the one `srun`/`mpirun`
 # on the compute node actually launches, which shows up as every rank reporting rank 0.
-MPICC=$(which mpicc) pip install --no-binary=mpi4py mpi4py
-pip install mpi4jax
+# --no-cache-dir: pip caches locally-built wheels; without it a rebuild after an MPI/toolchain
+# change silently reinstalls the stale cached wheel.
+MPICC=$(which mpicc) python -m pip install --no-cache-dir --no-binary=mpi4py mpi4py
+
+# mpi4jax: MUST come after jax[cuda12] and mpi4py are in the env, and needs a CUDA toolkit
+# visible AT BUILD TIME or setup.py silently skips the CUDA extension ("CUDA path not found
+# (GPU extensions will not be built)" in the -v output) and GPU buffers stage through host
+# memory forever. mpi4jax 0.9.x detects CUDA from (a) the nvidia-* pip packages jax[cuda12]
+# installed, else (b) nvcc on PATH -- loading the cuda module covers (b) as belt-and-braces.
+# The build compiles with mpicc (or set MPI4JAX_BUILD_MPICC), so keep gcc+openmpi loaded.
+module load cuda   # 12.x; build-time only, jobs do NOT need it (libcudart is rpath-linked)
+python -m pip install --no-cache-dir --no-binary=mpi4jax mpi4jax
 
 pip install orbax-checkpoint tensorstore numpy matplotlib
 
@@ -61,16 +77,27 @@ cd ~/jax_rmhd && pip install -e .
 Login-node sanity check (no GPU there — this only confirms imports and MPI wiring):
 
 ```bash
-python -c "import jax, mpi4py, mpi4jax, orbax.checkpoint, tensorstore; print(jax.__version__, mpi4jax.__version__)"
-python -c "from mpi4py import MPI; print(MPI.Get_library_version())"   # must name the module's openmpi
+# every path must be under ~/.conda/envs/jax_gpu, NEVER ~/.local (user-site shadowing)
+python -c "import mpi4py, mpi4jax; print(mpi4py.__file__); print(mpi4jax.__file__)"
+python -c "import jax, orbax.checkpoint, tensorstore; print(jax.__version__)"
+python -c "from mpi4py import MPI; print(MPI.Get_library_version().splitlines()[0])"   # must name the module's openmpi (e.g. 'Open MPI v4.1.6')
+# CUDA XLA bridge actually built? (module renamed from ..._gpu to ..._cuda in mpi4jax 0.9.x)
+python -c "import mpi4jax._src.xla_bridge.mpi_xla_bridge_cpu; print('CPU bridge OK')"
+python -c "import mpi4jax._src.xla_bridge.mpi_xla_bridge_cuda; print('CUDA bridge OK')"
 ```
+
+If the CUDA bridge import fails: rerun the mpi4jax install with `-v` and look for the
+`CUDA INFO: {...}` line (detection worked) vs the `CUDA path not found` warning (it didn't
+— check `module load cuda` was active, or export `CUDA_ROOT` to the toolkit prefix and
+rebuild). Verified working 2026-07-26 with mpi4jax 0.9.1 + jax 0.10.2 + cuda/12.6.0 +
+openmpi/4.1.6.
 
 Single-GPU device visibility (must run inside a GPU allocation, not on the login node):
 
 ```bash
 srun --pty -A fc_kawturb -p savio3_gpu --qos=v100_gpu3_normal --gres=gpu:V100:1 \
   --cpus-per-task=4 -t 00:10:00 \
-  bash -c "source activate jax_gpu && python -c \"import jax; print(jax.default_backend(), jax.devices())\""
+  bash -c "source activate jax_gpu && export PYTHONNOUSERSITE=1 && python -c \"import jax; print(jax.default_backend(), jax.devices())\""
 ```
 
 Expect `cuda [CudaDevice(id=0)]`. `cpu [CpuDevice(id=0)]` means either no GPU was allocated or

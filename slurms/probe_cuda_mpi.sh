@@ -23,6 +23,9 @@ module purge
 module load anaconda3 gcc openmpi
 source activate jax_gpu
 
+# Block ~/.local user-site packages from shadowing the env (stray mpi4py bit us once).
+export PYTHONNOUSERSITE=1
+
 PY=$HOME/.conda/envs/jax_gpu/bin/python
 REPO=$HOME/jax_rmhd
 PROBE=$REPO/bench/probe_cuda_mpi.py

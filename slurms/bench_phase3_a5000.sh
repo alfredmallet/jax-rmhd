@@ -25,6 +25,9 @@ module purge
 module load anaconda3 gcc openmpi
 source activate jax_gpu
 
+# Block ~/.local user-site packages from shadowing the env (stray mpi4py bit us once).
+export PYTHONNOUSERSITE=1
+
 export RMHD_PRECISION=32
 
 # Host-staged transport is the default assumption; set CUDA_MPI=1 only if slurms/probe_cuda_mpi.sh
