@@ -33,6 +33,11 @@ equation_registry = {
                            term_funcs = (rmhd.NonlinearTerm, rmhd.LinearTerm, rmhd.ForcingTerm),
                            grad_func = rmhd.grad,
                            forcing_scale_func = rmhd.forcing_scale,
-                           halo_start_func = rmhd.halo_start  # T7
+                           # T7 (early halo issue) measured NO fp64 win on the mpi4jax CPU
+                           # backend (-0.6% @32 ranks, +0.9% sub-noise @128) -> disabled per
+                           # the Phase 2 revert rule. The hook + threading stay: re-enable
+                           # with halo_start_func=rmhd.halo_start for backends with real
+                           # comm/compute overlap (Phase 3 NCCL).
+                           halo_start_func = None
                            ),
 }

@@ -153,6 +153,33 @@ touches physics/rmhd.py + shared_physics.py; both touch comms.py call sites — 
 parallel, A2 first is safer) → A4 (user submits, results interpreted) → A5 → merge
 gate. Each agent ends by updating this file's status line below.
 
+## Results — scale job (job 35844306, 128 ranks / 4 nodes, nz=512, fp64, forced+nps)
+
+Two-pass means, ms/step: base (cfl1+halo_late) 226.9 | t7 224.9 | cfl5 215.9 | cfl20
+208.3 | cfl5L 216.5 | cfl20L 210.1. Verdicts: **T6 confirmed at scale** — implied
+allreduce cost ~22 ms at 128 ranks (vs ~4 ms at 32), cfl5 = +5.1%, cfl20 = +8.9%,
+monotone and reproducible across passes. **T7 ≈ noise**: +1–2 ms/step mean, positive in
+5/6 pairs but below pass spread; decision deferred to the 32-rank job's t7U isolation
+row. Production guidance: cfl_every=5–10 from developed states (NOT from quiescence —
+see the NaN warning), expect ~5–8% at ≥128 ranks, ~1% at 32 ranks.
+
+## Results — 32-rank job (nz=256, fp64) and final Phase 2 verdicts
+
+Two-pass means, forced ms/step: base 355.0 | t7 357.0 (−0.6%) | cfl5 357.3 (wash: the
+per-block grad_func eval ≈ the 3 ms saved at this latency) | cfl20 350.3 (+1.3%) |
+cfl20L 349.0. Unforced: baseU 303.3 | cfl20U 289.9 (+4.4%) | t7U 303.8 (dead even).
+
+FINAL VERDICTS:
+- **T5 (comms.py): keep** — pure refactor, bitwise, enables Phase 3.
+- **T6 (cfl_every): keep, default 1.** Wins: +1.3% (N=20) at 32 ranks, +8.9% at 128;
+  N=5 only pays at ≥128 ranks (grad-eval overhead cancels it at 32). Recommended
+  production use: cfl_every=10–20 on ≥128-rank runs, from developed states only.
+- **T7 (early halo): REVERTED per the revert rule** — no fp64 win at any rank count
+  (−0.6% @32, sub-noise @128; mpi4jax token chain serializes comm with compute, as
+  predicted). The hook/threading infrastructure stays (halo_start_func=None in the
+  registry); re-enable with rmhd.halo_start for Phase 3 backends with real overlap.
+  Negative result recorded here per the plan.
+
 ## Status
 
 A5 review verdict: merge-safe with fixes; no CRITICAL. Fixes applied 2026-07-25:

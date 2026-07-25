@@ -99,7 +99,11 @@ halo)` — `construct_rhs` always passes `halo` (the result of `halo_start_func`
 so every term func must accept it (declare `halo=None` and ignore it if unused).
 `halo_start_func` issues the equation's z-halo exchange at the top of the RHS, before the
 perpendicular FFT work (T7); it returns whatever the consuming term expects
-(`(recv_left, recv_right)` for RMHD's `z_derivatives`) or None for dims=2.
+(`(recv_left, recv_right)` for RMHD's `z_derivatives`) or None for dims=2. It is
+currently `None` for RMHD (measured no fp64 win on the mpi4jax CPU backend — the token
+chain serializes comm with compute anyway); `rmhd.halo_start` exists ready to re-register
+for a Phase-3 backend with real overlap. With the hook None, `z_derivatives` issues its
+own exchange at the old call point.
 `physics/shared_physics.py` holds equation-agnostic helpers (`gradk`,
 `bracket`, z-derivative stencils, the O-U forcing mechanics); `physics/rmhd.py` holds the
 RMHD-specific term functions and maps generic building blocks onto the (phi,psi) fields.
