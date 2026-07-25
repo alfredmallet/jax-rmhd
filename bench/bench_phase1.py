@@ -3,7 +3,9 @@
 # package depending on PYTHONPATH -- see slurms/bench_phase1.sh.
 # usage: bench_phase1.py <label> <case: 2d|2d_forced|3d|3d_forced> <donate|nodonate> [nx nz] [unroll] [nps]
 #        Phase 2 extras: [cfl<N>] [halo_late] [nb<N> nr<N>]  -- see slurms/bench_phase2*.sh
-import sys, os, re, time
+#        Phase 3 extras: [nx<N> nz<N>] [backend=mpi4jax|jax] [halo_early] [--profile]
+#                        -- see slurms/bench_phase3_*.sh
+import sys, os, re, time, contextlib
 
 # Select the package version via RMHD_PKG=<dir>, robustly: a PEP-660 editable install
 # (pip install -e) registers a meta-path finder that silently beats PYTHONPATH, so we
@@ -27,12 +29,21 @@ jr.init_cluster()
 label, case, donate = sys.argv[1], sys.argv[2], sys.argv[3] == "donate"
 nx = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].isdigit() else 128
 nz = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].isdigit() else 256
+# Phase 3: nx<N>/nz<N> keyword forms of the positional grid args (GPU-scale grids)
+for a in sys.argv:
+    if (m := re.fullmatch(r"nx(\d+)", a)): nx = int(m.group(1))
+    if (m := re.fullmatch(r"nz(\d+)", a)): nz = int(m.group(1))
 forced = case.endswith("forced")
 L = 2 * np.pi
 # lsrk54 + elsasser + adaptive dt is the comm-heaviest configuration (plan F1)
 common = dict(Lx=L, Ly=L, diss=(1e-4, 1e-4), hyper=2, cfl_safety=0.5,
               forcing=forced, forcing_mode="elsasser", forcing_power_elsasser=(1.0, 1.0),
               forcing_tau=1.0, fshell=(1, 3), forcing_seed=1)
+# Phase 3: backend=<mpi4jax|jax> is a pass-through to Parameters(comm_backend=...); only added
+# when given, so the old package (whose __init__ lacks the arg) still runs the default case.
+_bk = [a.split("=", 1)[1] for a in sys.argv if a.startswith("backend=")]
+if _bk:
+    common["comm_backend"] = _bk[0]
 if case.startswith("3d"):
     p = jr.Parameters(nx=nx, ny=nx, dims=3, nz=nz, Lz=L, z_diss=0.25, **common)
     ic = lambda x, y, z: jnp.stack([jnp.cos(x + 1.4) + jnp.cos(y + 2.0) * jnp.cos(z),
@@ -60,6 +71,22 @@ if halo_late:
     _rec = equation_registry["RMHD"]
     assert hasattr(_rec, "halo_start_func"), "halo_late requires a package with T7"
     equation_registry["RMHD"] = _rec._replace(halo_start_func=None)
+    p.halo_start = False   # new package also gates on this (construct_rhs._halo_start_enabled)
+halo_early = "halo_early" in sys.argv
+if halo_early:
+    # force T7's early-halo hook on; the T7 on/off pair on GPU is halo_early vs halo_late.
+    # p.halo_start overrides the new package's per-backend gate, which otherwise makes this
+    # flag a silent no-op under comm_backend="mpi4jax" (measuring the baseline twice).
+    from jax_rmhd.physics import equation_registry, rmhd as _rmhd
+    _rec = equation_registry["RMHD"]
+    assert hasattr(_rec, "halo_start_func"), "halo_early requires a package with T7"
+    equation_registry["RMHD"] = _rec._replace(halo_start_func=_rmhd.halo_start)
+    p.halo_start = True    # plain attribute: ignored by the old package, honored by the new
+# Phase 3: per-rank device visibility -- each GPU rank must report exactly 1 distinct device
+_devstr = ",".join(f"{d.platform}:{d.id}" for d in jax.local_devices())
+if p.rank == 0 or jax.default_backend() != "cpu":  # per-rank on GPU, rank 0 only on 32-rank CPU jobs
+    print(f"[rank {p.rank}] platform={jax.default_backend()} local_devices=[{_devstr}] "
+          f"global_device_count={jax.device_count()}", flush=True)
 kg = jr.setup_kgrids(p)
 # A/B isolation switches (new package only), to attribute any forced-path regression:
 if "sep" in sys.argv:
@@ -81,32 +108,51 @@ stepper, scheme = get_scheme("lsrk54")
 kwargs = dict(static_argnums=(2, 3, 4, 5))
 if donate:
     kwargs["donate_argnums"] = (0,)  # new run.py's production jit config; nodonate = old's
-step_jit = jax.jit(jrun.block_of_steps, **kwargs)
 nblock, nrep = 25, 4
 # optional overrides: "nb<N>"/"nr<N>" (keep nblock a multiple of every cfl_every compared)
 for a in sys.argv:
     if (m := re.fullmatch(r"nb(\d+)", a)): nblock = int(m.group(1))
     if (m := re.fullmatch(r"nr(\d+)", a)): nrep = int(m.group(1))
+# Phase 3: the "jax" backend's ppermute/psum/pmax are only valid inside a shard_map, so the
+# stepper is wrapped in the z-mesh context here exactly as run.simulate_scan does; the
+# mpi4jax path keeps the historical static-argnums jit verbatim.
+if getattr(p, "comm_backend", "mpi4jax") == "jax":
+    from jax_rmhd import comms
+    _adv = jax.jit(comms.shard_call(
+        lambda s, kgr: jrun.block_of_steps(s, kgr, p, nblock, scheme, stepper)[0], p, kg),
+        **({"donate_argnums": (0,)} if donate else {}))
+    step = lambda s: _adv(s, kg)
+else:
+    step_jit = jax.jit(jrun.block_of_steps, **kwargs)
+    step = lambda s: step_jit(s, kg, p, nblock, scheme, stepper)[0]
 def barrier():
     # real mpi4py only; the local test stub's fake comm has no Barrier (single rank anyway)
     if p.size > 1:
         p.comm.Barrier()
 
-state, _ = step_jit(state, kg, p, nblock, scheme, stepper)  # compile + warm block
+state = step(state)  # compile + warm block
 jax.block_until_ready(state.fields)
 barrier()
-t0 = time.perf_counter()
-for _ in range(nrep):
-    state, _ = step_jit(state, kg, p, nblock, scheme, stepper)
-jax.block_until_ready(state.fields)
-barrier()
-dt = time.perf_counter() - t0
+# --profile: trace the timed loop (rank 0 only unless RMHD_PROFILE_ALL=1) into RMHD_PROFILE_DIR
+profile = "--profile" in sys.argv
+_prof_me = profile and (p.rank == 0 or os.environ.get("RMHD_PROFILE_ALL"))
+_profdir = os.path.join(os.environ.get("RMHD_PROFILE_DIR", f"prof_{label}"), f"rank{p.rank}")
+with (jax.profiler.trace(_profdir) if _prof_me else contextlib.nullcontext()):
+    t0 = time.perf_counter()
+    for _ in range(nrep):
+        state = step(state)
+    jax.block_until_ready(state.fields)
+    barrier()  # keep the straggler wait inside the timed region, as before
+    dt = time.perf_counter() - t0
 if p.rank == 0:
     # block_of_steps rounds nblock UP to whole cfl_every blocks -- count the steps actually run
     n = nrep * (-(-nblock // cfl_eff) * cfl_eff)
     tags = ("scan" if p.lsrk_scan else "unroll") + ("+nps" if p.forcing_norm_per_step else "") \
            + ("+sep" if "sep" in sys.argv else "") + ("+fullrng" if "fullrng" in sys.argv else "") \
            + ("+shellrng" if "shellrng" in sys.argv else "") \
-           + f"+cfl{cfl_eff}" + ("+halo_late" if halo_late else "")
+           + f"+cfl{cfl_eff}" + ("+halo_late" if halo_late else "") \
+           + ("+halo_early" if halo_early else "") + ("+prof" if profile else "")
     print(f"{label:6s} {case:10s} nx={nx} nz={nz} ranks={p.size} [{tags}] steps={n} "
-          f"{n/dt:8.2f} steps/s  {dt/n*1e3:8.2f} ms/step  pkg={jr.__file__}", flush=True)
+          f"{n/dt:8.2f} steps/s  {dt/n*1e3:8.2f} ms/step  "
+          f"backend={getattr(p, 'comm_backend', 'mpi4jax')} plat={jax.default_backend()} "
+          f"dev=[{_devstr}] pkg={jr.__file__}", flush=True)

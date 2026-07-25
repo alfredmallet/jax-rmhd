@@ -18,6 +18,10 @@ def _json_scalar(v):
     raise TypeError(f"Parameter value {v!r} (type {type(v).__name__}) can't be recorded "
                     f"in params.json — pass plain python types to Parameters")
 
+# ctor args excluded from params.json's "differing record" check (transport only, no
+# effect on the trajectory or the on-disk layout)
+_TRANSPORT_KEYS = ("comm_backend",)
+
 @register_pytree_node_class
 class Parameters():
     #Stores all static parameters for the problem
@@ -80,6 +84,8 @@ class Parameters():
         self.comm=MPI.COMM_WORLD
         self.rank=self.comm.Get_rank()
         self.size=self.comm.Get_size()
+        if self.comm_backend=="jax" and self.spatial_dimensions!=3:
+            raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
         if self.spatial_dimensions==3:
             self.cart_comm = self.comm.Create_cart(dims=[self.size],periods=[True],reorder=False)
             self.left_neighbor, self.right_neighbor = self.cart_comm.Shift(direction=0, disp=1)
@@ -89,6 +95,9 @@ class Parameters():
             self.right_neighbor = None
             if self.size > 1 and self.rank==0:
                 print("You probably should only run a 2D run on one device, since this isn't parallelized.")
+        # bring up the chosen transport (jax.distributed + z mesh for "jax"; no-op otherwise).
+        # Must happen before any jax device work, which is why it lives in the constructor.
+        comms.init_backend(self)
         #forcing
         self.forcing = forcing
         if forcing_mode not in ("momentum","elsasser"):
@@ -135,9 +144,11 @@ class Parameters():
                 backfilled = sorted(k for k in rec if k not in old and k in sig_defaults)
                 for k in backfilled:
                     old[k] = json.loads(json.dumps(sig_defaults[k], default=_json_scalar))
+                # comm_backend is a transport choice, not a physics/grid parameter: a run
+                # must be restartable across backends, so it's recorded but not compared
                 diffs = {k: (old.get(k, "<absent>"), rec.get(k, "<absent>"))
                          for k in sorted(set(old) | set(rec))
-                         if old.get(k, "<absent>") != rec.get(k, "<absent>")}
+                         if k not in _TRANSPORT_KEYS and old.get(k, "<absent>") != rec.get(k, "<absent>")}
                 if diffs:
                     err = (f"{path} already records different parameters "
                            f"(saved, current): {diffs}. If the change is intended, delete "

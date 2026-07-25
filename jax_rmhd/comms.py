@@ -2,14 +2,100 @@
 # a new transport (NCCL/shard_map, ...) only needs a new branch instead of edits to physics.
 # Backend is chosen by params.comm_backend (static, validated in Parameters.__init__), so
 # the dispatch below is plain-python branching, not lax.cond.
+#
+# "mpi4jax" (default): mpi4py communicators + mpi4jax device ops, arrays stay process-local.
+# "jax" (T9): the CONTROL plane is still mpi4py (rank/size, params.save, orbax, index
+# broadcasts) — only the three device ops become lax.ppermute/psum/pmax inside a shard_map
+# over a 1D z mesh. State/kgrid arrays are then GLOBAL jax.Arrays sharded along z, and each
+# device sees exactly the same local shapes the mpi4jax ranks see, so physics is untouched.
+import os
+import socket
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import mpi4jax
 from mpi4py import MPI
 
+from .types import SimulationState
+
 # Backends implemented here; Parameters.__init__ rejects anything else at construction.
-COMM_BACKENDS = ("mpi4jax",)
+COMM_BACKENDS = ("mpi4jax", "jax")
+# Mesh axis name of the z decomposition used by the "jax" backend.
+Z_AXIS = "z"
+
+_mesh = None
+_dist_initialized = False
 
 def _unknown_backend(params):
     raise ValueError(f"unknown comm_backend {params.comm_backend!r}, expected one of {COMM_BACKENDS}")
+
+def get_mesh():
+    # 1D device mesh over z, ordered by (process_index, device id) so mesh position i is
+    # MPI rank i's device (one device per process in production) — the same ordering
+    # local_z_coords / the per-rank orbax dirs assume.
+    global _mesh
+    if _mesh is None:
+        devs = sorted(jax.devices(), key=lambda d: (d.process_index, d.id))
+        _mesh = Mesh(np.array(devs).reshape(-1), (Z_AXIS,))
+    return _mesh
+
+def _local_device_ids(params):
+    # One process per device. If the launcher scoped SEVERAL GPUs to this process (mpirun
+    # under a whole-node --gres, where Slurm sets CUDA_VISIBLE_DEVICES once per job step),
+    # claim the one matching this node-local MPI rank. CUDA_VISIBLE_DEVICES is only READ,
+    # never set — with srun --gpu-bind (one GPU per task) this returns None and jax takes
+    # the single visible device. Override with RMHD_LOCAL_DEVICE_IDS="<i>[,<j>...]".
+    ids = os.environ.get("RMHD_LOCAL_DEVICE_IDS")
+    if ids not in (None, "", "auto"):
+        return [int(i) for i in ids.split(",")]
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    nvis = len(visible.split(",")) if visible else 1
+    if nvis <= 1:
+        return None
+    node_comm = params.comm.Split_type(MPI.COMM_TYPE_SHARED)
+    return [node_comm.Get_rank() % nvis]
+
+def init_backend(params):
+    # "jax" backend bring-up, called from Parameters.__init__: jax.distributed with the
+    # coordinator address broadcast over mpi4py (works under plain mpirun, not just Slurm),
+    # then mesh/divisibility validation. No-op for mpi4jax.
+    global _dist_initialized
+    if params.comm_backend != "jax":
+        return
+    # jax.distributed.is_initialized() also covers an init done elsewhere (config.init_cluster,
+    # a previous Parameters in the same process): re-initializing would raise.
+    if params.size > 1 and not (_dist_initialized or
+                                getattr(jax.distributed, "is_initialized", lambda: False)()):
+        addr = os.environ.get("RMHD_COORDINATOR_ADDRESS")
+        if addr is None:
+            # default port is job-specific: GPU partitions are per-CORE scheduled, so two
+            # jobs share a node and a fixed port would collide on bind
+            _job = os.environ.get("SLURM_JOB_ID", "0")
+            _dflt = str(20000 + (int(_job) if _job.isdigit() else 0) % 20000)
+            port = os.environ.get("RMHD_COORDINATOR_PORT", _dflt)
+            addr = f"{socket.gethostbyname(socket.gethostname())}:{port}" if params.rank == 0 else None
+            addr = params.comm.bcast(addr, root=0)
+        kw = {}
+        ids = _local_device_ids(params)
+        if ids is not None:
+            kw["local_device_ids"] = ids
+        try:
+            jax.distributed.initialize(coordinator_address=addr, num_processes=params.size,
+                                       process_id=params.rank, **kw)
+        except RuntimeError as e:  # jax refuses this once the local backend exists
+            raise RuntimeError(
+                "comm_backend='jax': jax.distributed.initialize() failed — construct the "
+                "first Parameters(comm_backend='jax') BEFORE any jax device work "
+                "(jax.devices(), any jit call, init_cluster()) in the process.") from e
+        _dist_initialized = True
+    ndev = get_mesh().size
+    if ndev % params.size:
+        raise ValueError(f"comm_backend='jax': global device count {ndev} must be a multiple "
+                         f"of the process count {params.size}")
+    if params.nz % ndev:
+        raise ValueError(f"comm_backend='jax': nz={params.nz} must be divisible by the "
+                         f"global device count {ndev}")
 
 def halo_exchange(f, params):
     # Two-wide halo exchange along the z axis (axis 1) -> (recv_left, recv_right) neighbor slabs.
@@ -21,6 +107,14 @@ def halo_exchange(f, params):
         recv_left = mpi4jax.sendrecv(send_right, send_right, dest=params.right_neighbor, source=params.left_neighbor,
                                         comm=params.cart_comm, sendtag=102, recvtag=102)
         return recv_left, recv_right
+    if params.comm_backend == "jax":
+        # ppermute perm entries are (source, destination): shifting each device's first two
+        # planes DOWN the mesh (i -> i-1) makes device j receive device j+1's planes, i.e.
+        # exactly the mpi4jax sendrecv(dest=left, source=right) that fills recv_right.
+        n = get_mesh().size
+        recv_right = jax.lax.ppermute(f[:,:2,:,:], Z_AXIS, [(i, (i-1) % n) for i in range(n)])
+        recv_left = jax.lax.ppermute(f[:,-2:,:,:], Z_AXIS, [(i, (i+1) % n) for i in range(n)])
+        return recv_left, recv_right
     _unknown_backend(params)
 
 def allreduce_sum(x, params):
@@ -29,6 +123,8 @@ def allreduce_sum(x, params):
         return x
     if params.comm_backend == "mpi4jax":
         return mpi4jax.allreduce(x, op=MPI.SUM, comm=params.cart_comm)
+    if params.comm_backend == "jax":
+        return jax.lax.psum(x, Z_AXIS)
     _unknown_backend(params)
 
 def allreduce_max(x, params):
@@ -37,4 +133,82 @@ def allreduce_max(x, params):
         return x
     if params.comm_backend == "mpi4jax":
         return mpi4jax.allreduce(x, op=MPI.MAX, comm=params.cart_comm)
+    if params.comm_backend == "jax":
+        return jax.lax.pmax(x, Z_AXIS)
     _unknown_backend(params)
+
+##########################################
+# "jax" backend: shard_map + array layout #
+##########################################
+
+def state_specs():
+    # shard_map specs for a SimulationState: z is fields axis 1, everything else is
+    # replicated (forcing_state/key/scale and t are identical on every rank by construction).
+    return SimulationState(t=P(), fields=P(None, Z_AXIS), forcing_state=P(),
+                           forcing_key=P(), forcing_scale=P())
+
+def _shard_map(f, in_specs, out_specs):
+    # shard_map compat shim: public jax.shard_map (>=0.6) with the experimental one as fallback.
+    if hasattr(jax, "shard_map"):
+        return jax.shard_map(f, mesh=get_mesh(), in_specs=in_specs, out_specs=out_specs, check_vma=False)
+    from jax.experimental.shard_map import shard_map
+    return shard_map(f, mesh=get_mesh(), in_specs=in_specs, out_specs=out_specs, check_rep=False)
+
+def shard_call(f, params, kgrid, nextra=0, out_specs=None):
+    # Wraps f(state, kgrid, *nextra replicated scalars) in the z-mesh shard_map context the
+    # ppermute/psum/pmax branches above require. Callers only use it for comm_backend=="jax".
+    from .grids import kgrid_specs  # local import: grids imports comms at module level
+    in_specs = (state_specs(), kgrid_specs(kgrid)) + (P(),)*nextra
+    return _shard_map(f, in_specs, state_specs() if out_specs is None else out_specs)
+
+def _z_spec(z_axis):
+    # PartitionSpec sharding a single array axis over the z mesh.
+    return P(*([None]*z_axis + [Z_AXIS]))
+
+def to_global(x, params, z_axis=None):
+    # Process-local array -> global jax.Array on the z mesh (z_axis=None: replicated).
+    # Both cases go through make_array_from_single_device_arrays: device_put onto a
+    # multi-process (non-fully-addressable) sharding rejects committed inputs outright
+    # (orbax-restored states are committed) and, for uncommitted ones, runs a
+    # multihost assert_equal that raises TypeError on the PRNG-key leaf.
+    mesh = get_mesh()
+    per_proc = mesh.size // params.size  # devices this process owns (1 in production)
+    devs = mesh.devices.reshape(-1)[params.rank*per_proc:(params.rank+1)*per_proc]
+    if z_axis is None:
+        # replicated: every device of this process holds the whole (identical) value
+        shards = [jax.device_put(x, d) for d in devs]
+        return jax.make_array_from_single_device_arrays(jnp.shape(x),
+                                                        NamedSharding(mesh, P()), shards)
+    pieces = jnp.split(x, per_proc, axis=z_axis)  # jnp: stays on device, no host round-trip
+    shards = [jax.device_put(pc, d) for pc, d in zip(pieces, devs)]
+    gshape = list(jnp.shape(x))
+    gshape[z_axis] *= params.size
+    return jax.make_array_from_single_device_arrays(tuple(gshape),
+                                                    NamedSharding(mesh, _z_spec(z_axis)), shards)
+
+def to_local(x, params, z_axis=None):
+    # Global jax.Array -> this process's addressable piece (host side: orbax, diagnostics).
+    if z_axis is None:
+        # replicated: take the local shard directly — device_put(global, Device) raises
+        # because a multi-process global array is not fully addressable
+        return x.addressable_shards[0].data
+    shards = sorted(x.addressable_shards, key=lambda s: s.index[z_axis].start or 0)
+    if len(shards) == 1:
+        return shards[0].data  # production (one device per process): no copy, no gather
+    # >1 device per process (e.g. the forced-host-device test): join on the host
+    return jnp.asarray(np.concatenate([np.asarray(s.data) for s in shards], axis=z_axis))
+
+def state_to_global(state, params):
+    # SimulationState of process-local arrays -> z-sharded global arrays (jax backend only).
+    return SimulationState(t=to_global(state.t, params), fields=to_global(state.fields, params, z_axis=1),
+                           forcing_state=to_global(state.forcing_state, params),
+                           forcing_key=to_global(state.forcing_key, params),
+                           forcing_scale=to_global(state.forcing_scale, params))
+
+def state_to_local(state, params):
+    # Inverse of state_to_global: what orbax writes, so the on-disk layout is byte-for-byte
+    # the same per-rank layout the mpi4jax backend produces (cross-backend restart works).
+    return SimulationState(t=to_local(state.t, params), fields=to_local(state.fields, params, z_axis=1),
+                           forcing_state=to_local(state.forcing_state, params),
+                           forcing_key=to_local(state.forcing_key, params),
+                           forcing_scale=to_local(state.forcing_scale, params))

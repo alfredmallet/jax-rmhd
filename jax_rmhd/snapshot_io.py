@@ -40,10 +40,27 @@ def snapshot_manager_setup(params,snap_path="data",nsnap=1000):
     options = ocp.CheckpointManagerOptions(max_to_keep=nsnap)
     return ocp.CheckpointManager(directory=checkpoint_path,options=options)
 
-def save_snapshot(isnap,state,mngr):
+def _is_global_array(x):
+    # True for a z-sharded / multi-process jax.Array (what the "jax" backend's states hold)
+    return (hasattr(x, "addressable_shards")
+            and (not x.is_fully_addressable or len(x.addressable_shards) > 1))
+
+def save_snapshot(isnap,state,mngr,params=None):
     # saves the full SimulationState; forcing_scale is always a concrete (n_ou,) array
     # (see run.initialize), so all new checkpoints share one tree structure. Snapshots
     # written before forcing_scale existed must be upgraded once with old_snapshot_repair.
+    # params is only needed for comm_backend="jax", whose states are global z-sharded
+    # arrays: they're reduced to this process's local shard so the on-disk per-rank layout
+    # is identical to the mpi4jax backend's (a run stays restartable across backends).
+    if params is not None and params.comm_backend == "jax":
+        from . import comms
+        state = comms.state_to_local(state, params)
+    elif params is None and _is_global_array(state.fields):
+        # guard the params=None default: a jax-backend state saved without params would
+        # hand orbax a z-sharded global array and fork the on-disk per-rank layout
+        raise ValueError("save_snapshot(...) needs `params` for comm_backend='jax': the "
+                         "state's fields are a sharded/multi-process global array and must "
+                         "be localized before orbax. Pass params as the 4th argument.")
     if state.forcing_scale is None:
         # orbax records None children in its metadata, so letting this through would fork
         # the on-disk tree structure between runs (hand-built states hit this; the
@@ -135,9 +152,13 @@ def load_snapshot(isnap,snap_path,params):
     path_0 = os.path.abspath(os.path.join(snap_path, "0")) if p_save > 1 else os.path.abspath(snap_path)
     mngr_0 = ocp.CheckpointManager(path_0, options=options)
     state_0 = _restore_or_advise(mngr_0, isnap, state_like_s)
-    return SimulationState(t=restored_t, fields=restored_fields,
-                            forcing_state=state_0.forcing_state, forcing_key=state_0.forcing_key,
-                            forcing_scale=state_0.forcing_scale)
+    restored = SimulationState(t=restored_t, fields=restored_fields,
+                               forcing_state=state_0.forcing_state, forcing_key=state_0.forcing_key,
+                               forcing_scale=state_0.forcing_scale)
+    if params.comm_backend == "jax":
+        from . import comms
+        restored = comms.state_to_global(restored, params)  # local shards -> global z-sharded arrays
+    return restored
 
 def _restore_or_advise(mngr, isnap, state_like):
     # restore, turning the cryptic orbax structure-mismatch error on old snapshots into a

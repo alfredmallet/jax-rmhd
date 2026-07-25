@@ -1,7 +1,9 @@
 import jax
 import jax.numpy as jnp
 import jax.numpy.fft as ft
+from jax.sharding import PartitionSpec as P
 from typing import NamedTuple, Optional
+from . import comms
 
 # nb the code is only spectral in the perpendciular plane, so fourier stuff is all 2D
 
@@ -102,9 +104,28 @@ def setup_kgrids(params):
             z_envcos = jnp.cos(2*jnp.pi*z_local/params.Lz)[:, None, None]
             z_envsin = jnp.sin(2*jnp.pi*z_local/params.Lz)[:, None, None]
 
-    return K_Grids(kx=kx_grid, ky=ky_grid, ksq_pc=ksq_pc, inv_ksq_pc=inv_ksq_pc,
-                   dealias_pc=dealias_pc, hdiss_pc=hdiss_pc, yfac=yfac, fmask=fmask,
-                   z_envcos=z_envcos, z_envsin=z_envsin, fidx_x=fidx_x, fidx_y=fidx_y)
+    kgrid = K_Grids(kx=kx_grid, ky=ky_grid, ksq_pc=ksq_pc, inv_ksq_pc=inv_ksq_pc,
+                    dealias_pc=dealias_pc, hdiss_pc=hdiss_pc, yfac=yfac, fmask=fmask,
+                    z_envcos=z_envcos, z_envsin=z_envsin, fidx_x=fidx_x, fidx_y=fidx_y)
+    if params.comm_backend == "jax":
+        kgrid = _kgrid_to_global(kgrid, params)  # global (z-sharded) arrays for shard_map
+    return kgrid
+
+# K_Grids entries carrying a z axis (axis 0); everything else is perpendicular-only.
+_Z_KGRID_FIELDS = ("z_envcos", "z_envsin")
+
+def kgrid_specs(kgrid):
+    # shard_map in_specs for a K_Grids: z-envelopes z-sharded, all other entries replicated
+    # (None entries stay None — JAX treats them as empty subtrees).
+    return K_Grids(**{name: (None if val is None else
+                             (P(comms.Z_AXIS) if name in _Z_KGRID_FIELDS else P()))
+                      for name, val in zip(K_Grids._fields, kgrid)})
+
+def _kgrid_to_global(kgrid, params):
+    # Process-local kgrid arrays -> global jax.Arrays matching kgrid_specs ("jax" backend).
+    return K_Grids(**{name: (None if val is None else
+                             comms.to_global(val, params, z_axis=0 if name in _Z_KGRID_FIELDS else None))
+                      for name, val in zip(K_Grids._fields, kgrid)})
 
 def fft(f):
     return ft.rfft2(f,axes=(-2,-1))
