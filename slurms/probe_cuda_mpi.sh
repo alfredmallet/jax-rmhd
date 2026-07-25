@@ -31,7 +31,7 @@ REPO=$HOME/jax_rmhd
 PROBE=$REPO/bench/probe_cuda_mpi.py
 # pmi2 is the usual Savio openmpi build; if MPI init fails or every rank reports rank 0/1
 # ranks, rerun with MPI_MODE=pmix (the `srun --mpi=list` output below lists what exists).
-MPI_MODE=${MPI_MODE:-pmi2}
+MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works
 
 echo "=== openmpi module ==="
 module list 2>&1

@@ -46,7 +46,7 @@ export RMHD_TEND=1.0
 #   mpirun -n $NRANK ...
 # which leaves all 4 GPUs visible to every rank; comms._local_device_ids then claims the
 # node-local rank's GPU automatically (read-only on CUDA_VISIBLE_DEVICES).
-MPI_MODE=${MPI_MODE:-pmi2}   # same knob as the bench scripts; see `srun --mpi=list`
+MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works   # same knob as the bench scripts; see `srun --mpi=list`
 LAUNCH="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK --gpu-bind=single:1"
 
 rm -rf "$OUT"

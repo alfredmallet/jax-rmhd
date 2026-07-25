@@ -41,7 +41,7 @@ BENCH=$REPO/bench/bench_phase1.py
 export RMHD_PKG=$REPO   # bench prints pkg= so the imported package is verifiable
 
 RUN_JAX=${RUN_JAX:-0}          # jax-backend rows are opt-in (script runs if T9 is reverted)
-MPI_MODE=${MPI_MODE:-pmi2}
+MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works
 
 NX=256; NZ=128          # fp64 doubles every buffer; 256^2x128 complex128 ~ 0.14 GB/state on 32 GB
 STEPS="nb20 nr4"

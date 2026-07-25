@@ -44,7 +44,7 @@ BENCH=$REPO/bench/bench_phase1.py
 export RMHD_PKG=$REPO   # bench prints pkg= so the imported package is verifiable
 
 RUN_JAX=${RUN_JAX:-0}          # jax-backend rows are opt-in (script runs if T9 is reverted)
-MPI_MODE=${MPI_MODE:-pmi2}
+MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works
 # derived from the allocation, so switching the header to --nodes=8 --ntasks-per-node=2
 # --gres=gpu:A40:2 (the lower-pend-risk 16-GPU shape) needs NO edits below this line
 GPUS_PER_NODE=${GPUS_PER_NODE:-$(( SLURM_NTASKS / SLURM_NNODES ))}

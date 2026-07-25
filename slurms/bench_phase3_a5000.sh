@@ -40,7 +40,7 @@ BENCH=$REPO/bench/bench_phase1.py
 export RMHD_PKG=$REPO   # bench prints pkg= so the imported package is verifiable
 
 RUN_JAX=${RUN_JAX:-0}   # jax-backend rows are opt-in: the script still runs if T9 is reverted
-MPI_MODE=${MPI_MODE:-pmi2}   # see slurms/probe_cuda_mpi.sh's `srun --mpi=list` output
+MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works   # see slurms/probe_cuda_mpi.sh's `srun --mpi=list` output
 
 NX=512; NZ=128          # 512^2 x 128 fp32 ~ 0.3 GB/state: fills an A5000 usefully, fits 24 GB
 STEPS="nb20 nr4"        # 20 warm + 80 timed steps per case

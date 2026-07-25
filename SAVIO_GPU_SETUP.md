@@ -166,6 +166,14 @@ Two possible outcomes — **record which one you got in the benchmark .out heade
   `CUDA_MPI=1 sbatch ...` and note it. F2(b) — the per-call stream sync — remains regardless;
   that is what the profile case measures.
 
+**AUDIT RESULT (job 35845619, 2026-07-26): NOT CUDA-aware.** `openmpi/4.1.6` is configured
+`--without-cuda` (the "MPI extensions: cuda" line is only the API stub; there are no cuda MCA
+parameters and no smcuda). All jobs run `MPI4JAX_USE_CUDA_MPI=0`; host staging is the honest
+mpi4jax baseline on Savio. Same job also showed this openmpi is `--without-pmi` + external
+PMIx: **`srun` needs `--mpi=pmix`** (pmi2 aborts in `ext3x_client.c` before `MPI_Init`) —
+now the default `MPI_MODE` in every GPU script. The µs/halo-pair numbers still need a rerun
+of the probe under pmix.
+
 ## 4. Running the Phase 3 benchmarks
 
 ```bash
