@@ -1,7 +1,9 @@
 from mpi4py import MPI
 import jax
+import numpy as np
 from jax.tree_util import register_pytree_node_class
 from .types import SimulationState
+from . import comms
 import os
 import json
 import time
@@ -21,7 +23,8 @@ class Parameters():
     #Stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=0.0,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
-                 forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False):
+                 forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend="mpi4jax",
+                 cfl_every=1):
         # capture the constructor arguments (before any normalization below) so
         # save()/from_snapshot() can reproduce this object exactly via __init__
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
@@ -44,6 +47,17 @@ class Parameters():
         self.cfl_safety=cfl_safety
         self.dt = dt # Only used if adaptive_timestep==False
         self.adaptive_timestep = adaptive_timestep #Usually we want this to be true
+        # Recompute the CFL timestep (one global allreduce) only every cfl_every steps; dt is
+        # then frozen for the whole block, so the CFL condition can be transiently violated
+        # while the flow accelerates — compensate with extra cfl_safety margin. Only
+        # meaningful with adaptive_timestep=True (fixed dt needs no reduction at all);
+        # cfl_every=1 (default) is exactly the historical per-step behavior.
+        # WARNING: from a quiescent start the CFL dt collapses ~10x within a few steps as
+        # forcing spins up; a frozen quiescent dt at cfl_every>~5 runs far over CFL and
+        # silently NaNs. Use cfl_every>1 only from developed states (e.g. after restart).
+        if isinstance(cfl_every,bool) or not isinstance(cfl_every,(int,np.integer)) or cfl_every < 1:
+            raise ValueError(f"cfl_every must be an int >= 1, got {cfl_every!r}")
+        self.cfl_every = int(cfl_every)  # int(): accept numpy ints, store a plain int
         #dimensions
         self.spatial_dimensions=dims
         if dims==3:
@@ -59,6 +73,10 @@ class Parameters():
         else:
             self.nz=1
         #MPI
+        # transport used by jax_rmhd.comms for halos/allreduces (static: dispatched in plain python)
+        if comm_backend not in comms.COMM_BACKENDS:
+            raise ValueError(f"comm_backend must be one of {comms.COMM_BACKENDS}, got {comm_backend!r}")
+        self.comm_backend = comm_backend
         self.comm=MPI.COMM_WORLD
         self.rank=self.comm.Get_rank()
         self.size=self.comm.Get_size()
@@ -109,13 +127,27 @@ class Parameters():
                 with open(path) as f:
                     old = json.load(f)
                 old.pop("_created", None)
+                # a record written by older code lacks newer ctor args: backfill them with
+                # the current signature defaults (JSON-normalized) so adding a Parameters
+                # argument never invalidates existing run directories
+                sig_defaults = {k: v.default for k, v in inspect.signature(type(self).__init__).parameters.items()
+                                if v.default is not inspect.Parameter.empty}
+                backfilled = sorted(k for k in rec if k not in old and k in sig_defaults)
+                for k in backfilled:
+                    old[k] = json.loads(json.dumps(sig_defaults[k], default=_json_scalar))
                 diffs = {k: (old.get(k, "<absent>"), rec.get(k, "<absent>"))
                          for k in sorted(set(old) | set(rec))
                          if old.get(k, "<absent>") != rec.get(k, "<absent>")}
                 if diffs:
                     err = (f"{path} already records different parameters "
-                           f"(saved, current): {diffs}. Load them with "
-                           f"Parameters.from_snapshot, or delete the file if this is intended.")
+                           f"(saved, current): {diffs}. If the change is intended, delete "
+                           f"{filename} and re-save; to reuse the recorded values, "
+                           f"Parameters.from_snapshot(...) and pass overrides explicitly.")
+                elif backfilled:
+                    # semantically identical: refresh the file so it records the new keys
+                    old["_created"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    with open(path, "w") as f:
+                        json.dump(old, f, indent=1)
                 # else: identical record already present, nothing to write
             else:
                 os.makedirs(str(snap_path), exist_ok=True)

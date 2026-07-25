@@ -2,8 +2,7 @@ import jax.numpy as jnp
 from .. import grids
 from . import shared_physics
 from .shared_physics import gradk,bracket,z_derivatives
-from mpi4py import MPI
-import mpi4jax
+from .. import comms
 
 def grad(state,kgrid,params):
     phik=state.fields[0]
@@ -27,11 +26,16 @@ def set_timestep(grads,params):
     if params.spatial_dimensions==3:
         max_all = jnp.maximum(max_all,1.0/params.dz)
         max_all = jnp.maximum(max_all,params.z_diss)
-    if params.cart_comm is not None:
-        max_all = mpi4jax.allreduce(max_all,op=MPI.MAX,comm=params.cart_comm)
+    max_all = comms.allreduce_max(max_all,params)  # no-op unless z-decomposed
     return params.cfl_safety / max_all
 
-def NonlinearTerm(state,grads,kgrid,params):
+def halo_start(state,kgrid,params):
+    # T7: pre-issues LinearTerm's z halo exchange at the top of the RHS; None in 2D (no halo).
+    if params.spatial_dimensions==2:
+        return None
+    return comms.halo_exchange(state.fields,params)
+
+def NonlinearTerm(state,grads,kgrid,params,halo=None):
     gphi,gpsi,gvort,gjpar = grads
     NLTerm_vort = bracket(gpsi,gjpar) - bracket(gphi,gvort)
     NLTerm_psi = - bracket(gphi,gpsi)
@@ -39,14 +43,14 @@ def NonlinearTerm(state,grads,kgrid,params):
     NLTerm_fields = jnp.stack([-kgrid.inv_ksq()*NLTerm_vort_k,NLTerm_psi_k])*kgrid.dealias_filter()
     return NLTerm_fields
 
-def LinearTerm(state,grads,kgrid,params):
+def LinearTerm(state,grads,kgrid,params,halo=None):
     #TODO: add a check on z_diff_order and z_diss_hyper here. For now use 4th order centered f.d. 
     # and d_z^4 hyperdissipation for stability
     if params.spatial_dimensions==2:
         return jnp.zeros_like(state.fields)
     dz=params.dz
     diss=params.z_diss * (dz/2)**4
-    df_dz,d4f_dz4 = z_derivatives(state.fields,params)
+    df_dz,d4f_dz4 = z_derivatives(state.fields,params,halo=halo)  # T7: reuse the pre-issued halo
     #RMHD only logic: the z-derivatives belong to the opposite equations
     df_dz_rmhd = jnp.stack([df_dz[1],df_dz[0]])
     return df_dz_rmhd - diss * d4f_dz4
@@ -70,7 +74,7 @@ def forcing_scale(state,kgrid,params):
     f_raw = shared_physics.reconstruct_envelope(state.forcing_state,kgrid,params)
     return _forcing_scale_from(state.fields,f_raw,kgrid,params)
 
-def ForcingTerm(state,grads,kgrid,params):
+def ForcingTerm(state,grads,kgrid,params,halo=None):
     # RMHD-specific forcing: either in the momentum equation or elsasser forcing
     if not params.forcing:
         return jnp.zeros_like(state.fields)

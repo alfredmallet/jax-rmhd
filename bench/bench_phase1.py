@@ -2,7 +2,8 @@
 # reports steps/sec (rank 0). Same script runs against the old (pre-Phase-1) or new
 # package depending on PYTHONPATH -- see slurms/bench_phase1.sh.
 # usage: bench_phase1.py <label> <case: 2d|2d_forced|3d|3d_forced> <donate|nodonate> [nx nz] [unroll] [nps]
-import sys, os, time
+#        Phase 2 extras: [cfl<N>] [halo_late] [nb<N> nr<N>]  -- see slurms/bench_phase2*.sh
+import sys, os, re, time
 
 # Select the package version via RMHD_PKG=<dir>, robustly: a PEP-660 editable install
 # (pip install -e) registers a meta-path finder that silently beats PYTHONPATH, so we
@@ -45,6 +46,20 @@ p.lsrk_scan = "unroll" not in sys.argv
 p.forcing_norm_per_step = "nps" in sys.argv
 # shell-restricted RNG is now opt-in (default full-grid after the Savio A/B result)
 p.forcing_shell_noise = "shellrng" in sys.argv
+# Phase 2: "cfl<N>" sets params.cfl_every (plain attribute, same old-package-tolerant style)
+_cfl_arg = [int(m.group(1)) for a in sys.argv if (m := re.fullmatch(r"cfl(\d+)", a))]
+if _cfl_arg:
+    p.cfl_every = _cfl_arg[0]
+# cfl blocking only engages with adaptive dt (run._use_cfl_blocks); the bench uses the default True
+cfl_eff = (getattr(p, "cfl_every", 1) if p.adaptive_timestep else 1)
+halo_late = "halo_late" in sys.argv
+if halo_late:
+    # revert T7 within the new package: rebuild the RMHD recipe without the early-halo hook
+    # (in-place registry assignment, before any construct_rhs/jit trace)
+    from jax_rmhd.physics import equation_registry
+    _rec = equation_registry["RMHD"]
+    assert hasattr(_rec, "halo_start_func"), "halo_late requires a package with T7"
+    equation_registry["RMHD"] = _rec._replace(halo_start_func=None)
 kg = jr.setup_kgrids(p)
 # A/B isolation switches (new package only), to attribute any forced-path regression:
 if "sep" in sys.argv:
@@ -68,6 +83,10 @@ if donate:
     kwargs["donate_argnums"] = (0,)  # new run.py's production jit config; nodonate = old's
 step_jit = jax.jit(jrun.block_of_steps, **kwargs)
 nblock, nrep = 25, 4
+# optional overrides: "nb<N>"/"nr<N>" (keep nblock a multiple of every cfl_every compared)
+for a in sys.argv:
+    if (m := re.fullmatch(r"nb(\d+)", a)): nblock = int(m.group(1))
+    if (m := re.fullmatch(r"nr(\d+)", a)): nrep = int(m.group(1))
 def barrier():
     # real mpi4py only; the local test stub's fake comm has no Barrier (single rank anyway)
     if p.size > 1:
@@ -83,9 +102,11 @@ jax.block_until_ready(state.fields)
 barrier()
 dt = time.perf_counter() - t0
 if p.rank == 0:
-    n = nrep * nblock
+    # block_of_steps rounds nblock UP to whole cfl_every blocks -- count the steps actually run
+    n = nrep * (-(-nblock // cfl_eff) * cfl_eff)
     tags = ("scan" if p.lsrk_scan else "unroll") + ("+nps" if p.forcing_norm_per_step else "") \
            + ("+sep" if "sep" in sys.argv else "") + ("+fullrng" if "fullrng" in sys.argv else "") \
-           + ("+shellrng" if "shellrng" in sys.argv else "")
-    print(f"{label:4s} {case:10s} nx={nx} nz={nz} ranks={p.size} [{tags}] "
+           + ("+shellrng" if "shellrng" in sys.argv else "") \
+           + f"+cfl{cfl_eff}" + ("+halo_late" if halo_late else "")
+    print(f"{label:6s} {case:10s} nx={nx} nz={nz} ranks={p.size} [{tags}] steps={n} "
           f"{n/dt:8.2f} steps/s  {dt/n*1e3:8.2f} ms/step  pkg={jr.__file__}", flush=True)

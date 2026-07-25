@@ -65,7 +65,37 @@ def estimate_good_nblock(state,kgrid,params,t_snap,t_end,t_last_snap=0,nblock_mi
     nblock_estimate = max((t_next_snap-state.t)/dt,nblock_min)
     return int(nblock_estimate)
 
+def _use_cfl_blocks(params):
+    # Block the CFL reduction only when it can pay: with fixed dt there's no reduction anyway.
+    return params.cfl_every > 1 and params.adaptive_timestep
+
+def _block_dt(state,kgrid,params):
+    # One global CFL allreduce for a whole block, from the block's starting state
+    # (same grad_func + set_timestep_func path as estimate_good_nblock; never rank-local).
+    recipe = equation_registry[params.eqtype]
+    return recipe.set_timestep_func(recipe.grad_func(state,kgrid,params),params)
+
+def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
+    # params.cfl_every full steps sharing one dt; forcing still advances every step.
+    dt = _block_dt(state,kgrid,params)
+    def stepping(state,_):
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt)
+        if params.forcing:
+            new_state = _advance_forcing(new_state, state.t, kgrid, params)
+        return new_state, None
+    final_state,_ = jax.lax.scan(stepping,state,None,params.cfl_every)
+    return final_state
+
 def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
+    if _use_cfl_blocks(params):
+        # nblock still counts STEPS, but is rounded UP to a whole number of cfl_every-step
+        # blocks (so nblock=10, cfl_every=4 runs 12 steps): dt is frozen per block.
+        set_timestep = equation_registry[params.eqtype].set_timestep_func
+        rhs = construct_rhs(equation_registry[params.eqtype])
+        def block(state,_):
+            return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper), None
+        final_state,_ = jax.lax.scan(block,state,None,-(-nblock//params.cfl_every))
+        return final_state,None
     def stepping(state,_):
         set_timestep = equation_registry[params.eqtype].set_timestep_func
         rhs = construct_rhs(equation_registry[params.eqtype])
@@ -135,10 +165,15 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
         return new_state
+    def block_wrapped(state):
+        return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper)
+    # cfl_every>1: the while_loop iterates over whole blocks, so it can overshoot the
+    # snapshot target by up to cfl_every-1 extra steps (on top of the usual one-step overshoot)
+    loop_body = block_wrapped if _use_cfl_blocks(params) else stepper_wrapped
     def sim_to_next_snap(state,target_t):
         def snap_cond(state):
             return state.t<target_t
-        return jax.lax.while_loop(snap_cond,stepper_wrapped,state)
+        return jax.lax.while_loop(snap_cond,loop_body,state)
     # donate_argnums=(0,): caller's input `state` buffer is consumed/reused for the output, since we always reassign `state` from the return value below.
     sim_to_next_snap_jit = jax.jit(sim_to_next_snap,donate_argnums=(0,))
     # print_every: simulate has no non-snapshot prints currently, kept for API parity with simulate_scan; snapshot prints below stay unconditional.

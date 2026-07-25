@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
-import mpi4jax
-from mpi4py import MPI
+from .. import comms
 
 #Takes gradient in fourier space
 #Expects the kx,ky axes to be the last two (-2,-1)
@@ -13,15 +12,11 @@ def bracket(a,b):
     return a[0]*b[1] - a[1]*b[0]
 
 # Gets the necessary z derivatives.
-def z_derivatives(f,params):
+def z_derivatives(f,params,halo=None):
     #n.b. z axis is assumed to be axis 1
     dz=params.dz
-    send_left = f[:,:2,:,:]
-    send_right = f[:,-2:,:,:]
-    recv_right = mpi4jax.sendrecv(send_left, send_left, dest=params.left_neighbor, source=params.right_neighbor,
-                                     comm=params.cart_comm, sendtag=101, recvtag=101)
-    recv_left = mpi4jax.sendrecv(send_right, send_right, dest=params.right_neighbor, source=params.left_neighbor,
-                                    comm=params.cart_comm, sendtag=102, recvtag=102)
+    # T7: halo may be pre-issued by the recipe's halo_start hook; exchange here when it isn't
+    recv_left, recv_right = comms.halo_exchange(f,params) if halo is None else halo
     f_padded = jnp.concatenate([recv_left,f,recv_right],axis=1)
     p2 = f_padded[:,4:,:,:]
     p1 = f_padded[:,3:-1,:,:]
@@ -126,8 +121,7 @@ def _perp_reduce(integrand, params):
     # sum over all axes (z-local, kx, ky, ...), allreduce over z-ranks if applicable
     # normalize: divide by nz*(nx*ny)^2.
     P = jnp.sum(integrand)
-    if params.cart_comm is not None:
-        P = mpi4jax.allreduce(P, op=MPI.SUM, comm=params.cart_comm)
+    P = comms.allreduce_sum(P,params)  # no-op unless z-decomposed
     norm = float(params.nz) * float(params.nx * params.ny)**2
     return P / norm
 
@@ -149,8 +143,7 @@ def _perp_reduce_batch(integrand, params):
     # like _perp_reduce but keeps the leading batch axis: one stacked allreduce
     # for all batch entries instead of one allreduce each. Same normalization.
     P = jnp.sum(integrand, axis=tuple(range(1, integrand.ndim)))
-    if params.cart_comm is not None:
-        P = mpi4jax.allreduce(P, op=MPI.SUM, comm=params.cart_comm)
+    P = comms.allreduce_sum(P,params)  # one stacked (nbatch,) allreduce; no-op unless z-decomposed
     norm = float(params.nz) * float(params.nx * params.ny)**2
     return P / norm
 

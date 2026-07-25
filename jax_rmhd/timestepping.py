@@ -8,11 +8,15 @@ from typing import NamedTuple,Tuple
 # Problem is it uses a lot of memory on k1-k4.
 # I think it is always better to use the LSRK schemes
 
-def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None):
+def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None):
     #print("---COMPILING rk_advance---") #add this back in to check that jit is working properly
     #RK4 substep 1
     k1, grads = rhs(state,kgrid,params)
-    if params.adaptive_timestep==True:
+    # dt_override: dt already computed for a whole cfl_every block by run.py (skips the
+    # per-step CFL allreduce); None means the historical per-step behavior below.
+    if dt_override is not None:
+        dt = dt_override
+    elif params.adaptive_timestep==True:
         dt = set_timestep(grads,params)
     else:
         dt = params.dt
@@ -45,9 +49,12 @@ class LSRK_Scheme(NamedTuple):
 # ~20% faster on CPU) or statically unrolled (lsrk_scan=False; candidate for GPU, where
 # constant folding / freeing init_rhs after stage 0 / no cond should help — benchmark in
 # Phase 3). Both give bitwise-identical trajectories at fp64.
-def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme):
+def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
     init_rhs,grads = rhs(state,kgrid,params)
-    if params.adaptive_timestep==True:
+    # dt_override: block-frozen dt from run.py (params.cfl_every>1); None = per-step CFL as before.
+    if dt_override is not None:
+        dt = dt_override
+    elif params.adaptive_timestep==True:
         dt = set_timestep(grads,params)
     else:
         dt = params.dt

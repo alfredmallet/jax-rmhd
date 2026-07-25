@@ -2,8 +2,7 @@ import jax
 import jax.numpy as jnp
 from . import grids
 import jax.numpy.fft as ft
-import mpi4jax
-from mpi4py import MPI
+from . import comms
 
 def perpspec(state,kgrid,params,bin_factor=2.0):
     # Perpendicular energy spectrum, z-averaged. Matches the normalization convention
@@ -21,9 +20,8 @@ def perpspec(state,kgrid,params,bin_factor=2.0):
     # and dividing by the global nz silently undercounts under domain decomposition).
     energy_u = jnp.sum(energy_u,axis=0)
     energy_b = jnp.sum(energy_b,axis=0)
-    if params.cart_comm is not None:
-        energy_u = mpi4jax.allreduce(energy_u, op=MPI.SUM, comm=params.cart_comm)
-        energy_b = mpi4jax.allreduce(energy_b, op=MPI.SUM, comm=params.cart_comm)
+    energy_u = comms.allreduce_sum(energy_u, params)  # no-ops unless z-decomposed
+    energy_b = comms.allreduce_sum(energy_b, params)
     energy_u = energy_u/params.nz
     energy_b = energy_b/params.nz
     kunit = min(2 * jnp.pi / params.Lx, 2 * jnp.pi / params.Ly)
@@ -38,10 +36,7 @@ def perpspec(state,kgrid,params,bin_factor=2.0):
     return bin_centers,spec_u,spec_b
 
 def parspec(state,kgrid,params,bin_factor=2.0):
-    # Parallel (z) energy spectrum. Requires the *whole* z-domain on this rank -- the FFT
-    # along z below is local-only and does not gather across z-ranks, so (unlike perpspec)
-    # this is only correct for a single-rank z-domain (params.size==1); assert loudly
-    # rather than silently return a spectrum computed from one rank's z-slab.
+    # Parallel (z) energy spectrum. Requires the *whole* z-domain on this rank
     assert params.size == 1, "parspec requires the full z-domain on one rank (params.size==1)"
     phik = state.fields[0]
     psik = state.fields[1]

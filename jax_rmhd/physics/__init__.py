@@ -7,19 +7,24 @@ class EquationRecipe(NamedTuple):
     grad_func: Callable
     # per-equation once-per-step forcing scale (params.forcing_norm_per_step); optional
     forcing_scale_func: Optional[Callable] = None
+    # T7: optional hook issuing the equation's halo exchange first; its result is threaded
+    # to every term func as a 5th argument (None when absent, e.g. dims=2)
+    halo_start_func: Optional[Callable] = None
 
 
 # Constructs the ideal RHS of the equations using the relevant EquationRecipe.
 # NB: The dissipative terms are handled via integrating factor in timestepping.py
 def construct_rhs(recipe):
     def rhs(state,kgrid,params):
+        # T7: issue the halo exchange before the perpendicular FFT/bracket work
+        halo = recipe.halo_start_func(state,kgrid,params) if recipe.halo_start_func is not None else None
         grads=recipe.grad_func(state,kgrid,params)
         fields_rhs = None
         for term in recipe.term_funcs:
             if fields_rhs is None:
-                fields_rhs = term(state,grads,kgrid,params)
+                fields_rhs = term(state,grads,kgrid,params,halo)  # T7: halo threaded to the terms
             else:
-                fields_rhs = fields_rhs + term(state,grads,kgrid,params)
+                fields_rhs = fields_rhs + term(state,grads,kgrid,params,halo)  # T7
         return fields_rhs, grads
     return rhs
 
@@ -27,6 +32,7 @@ equation_registry = {
     "RMHD": EquationRecipe(set_timestep_func = rmhd.set_timestep,
                            term_funcs = (rmhd.NonlinearTerm, rmhd.LinearTerm, rmhd.ForcingTerm),
                            grad_func = rmhd.grad,
-                           forcing_scale_func = rmhd.forcing_scale
+                           forcing_scale_func = rmhd.forcing_scale,
+                           halo_start_func = rmhd.halo_start  # T7
                            ),
 }

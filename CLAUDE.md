@@ -90,12 +90,25 @@ order and z-hyperdissipation to the `z_diss_hyper=2` form regardless of what's p
 (see the `#TODO` in `LinearTerm`); passing a non-default value silently does nothing.
 
 New equation sets register via `physics/__init__.py`'s `equation_registry`: an
-`EquationRecipe(set_timestep_func, term_funcs, grad_func)` per `eqtype`. `term_funcs` are
+`EquationRecipe(set_timestep_func, term_funcs, grad_func, forcing_scale_func=None,
+halo_start_func=None)` per `eqtype`. `term_funcs` are
 summed to build the RHS (`construct_rhs`); dissipation is *not* one of them — it's applied
 separately as an integrating factor in `timestepping.py` (`K_Grids.hdiss_exponents`), not
-as an RHS term. `physics/shared_physics.py` holds equation-agnostic helpers (`gradk`,
+as an RHS term. **Term funcs take 5 positional args**: `(state, grads, kgrid, params,
+halo)` — `construct_rhs` always passes `halo` (the result of `halo_start_func`, or None),
+so every term func must accept it (declare `halo=None` and ignore it if unused).
+`halo_start_func` issues the equation's z-halo exchange at the top of the RHS, before the
+perpendicular FFT work (T7); it returns whatever the consuming term expects
+(`(recv_left, recv_right)` for RMHD's `z_derivatives`) or None for dims=2.
+`physics/shared_physics.py` holds equation-agnostic helpers (`gradk`,
 `bracket`, z-derivative stencils, the O-U forcing mechanics); `physics/rmhd.py` holds the
 RMHD-specific term functions and maps generic building blocks onto the (phi,psi) fields.
+
+All MPI transport goes through `jax_rmhd/comms.py`: `halo_exchange(f, params)`,
+`allreduce_sum(x, params)` (array x allowed), `allreduce_max(x, params)`, dispatched in
+plain Python on the static `params.comm_backend` (only `"mpi4jax"` exists; validated at
+`Parameters` construction). Nothing outside comms.py imports mpi4jax — keep it that way;
+new backends (Phase 3's shard_map/NCCL) slot in behind the same three functions.
 
 ### Timestepping
 
@@ -109,6 +122,26 @@ since they're only updated once per full step, not per sub-stage).
 `lsrk_advance` has two stage-loop structures selected by `params.lsrk_scan`: `lax.scan`
 (default — measured ~20% faster on CPU) and statically unrolled (`lsrk_scan=False`, the
 GPU candidate). Bitwise-identical trajectories at fp64.
+
+`params.cfl_every` (int >= 1, default 1) recomputes the adaptive dt — and thus the CFL
+`allreduce(MAX)` — only once per block of `cfl_every` steps. dt is *hoisted out of the
+stepper*: `run._cfl_block` computes it from the block's starting state (`grad_func` +
+`set_timestep_func`, exactly `estimate_good_nblock`'s pattern) and passes it into
+`rk_advance`/`lsrk_advance` as `dt_override`, which then skips its own `set_timestep`
+(`dt_override=None` = historical per-step behavior). Never put the collective under a
+`lax.cond` and never reuse a rank-local dt — one collective, one dt, all ranks. `cfl_every=1`
+takes a literally unchanged legacy code path (bitwise-identical trajectories), as does
+`adaptive_timestep=False` (fixed dt has no reduction to skip, so `cfl_every` is ignored
+there). With dt frozen for N steps the CFL condition can be transiently violated while the
+flow accelerates — compensate with `cfl_safety`. **From a quiescent start this is not a
+small effect: the CFL dt collapses ~10x within a few steps of forced spin-up, so a frozen
+quiescent dt at N>~5 runs far over CFL and silently NaNs (measured: N=20 NaNs by t~2,
+N=5 survives). Use N>1 only from developed states**; also note snapshot/t_end overshoot
+grows to up to N steps of the (possibly large) frozen dt. Costs one extra standalone `grad_func`
+evaluation per block (the stepper's stage-0 rhs no longer doubles as the dt source), so
+N>1 only pays off when the allreduce is expensive (high rank counts). The forcing update
+(`_advance_forcing`) still runs every step in both paths; `nblock` in `block_of_steps`
+still counts *steps*, rounded **up** to a whole number of `cfl_every`-step blocks.
 
 **Buffer donation consumes input states.** `simulate`/`simulate_scan` jit their steppers
 with `donate_argnums=(0,)`: any state passed in is invalidated — touching it afterwards
@@ -224,8 +257,9 @@ agreement from the newest "oldest index" upward, plus identical `t` per common i
 Snapshot cadence caveat: `simulate`'s inner while-loop steps until `t >= target`, so with
 large dt (e.g. near-zero fields early in a forced run from quiescence) it can overshoot a
 `t_snap` target or `t_end` by a whole step — snapshots are "at least `t_snap` apart" and
-the final time is ">= t_end", not exact. Don't write tests (or diagnostics postprocessing)
-that assume an exact snapshot count or exact end time. The snapshot target
+the final time is ">= t_end", not exact. With `cfl_every>1` the while-loop iterates over
+whole blocks, so the overshoot grows to up to `cfl_every` steps. Don't write tests (or
+diagnostics postprocessing) that assume an exact snapshot count or exact end time. The snapshot target
 (`t_last_snapshot`) advances every outer iteration regardless of `save` — it used to be
 updated only when saving, which made `simulate(..., save=False)` with `t_snap < t_end`
 spin forever once `state.t` passed the first frozen target (the inner while_loop returned
