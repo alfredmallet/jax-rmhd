@@ -68,6 +68,17 @@ any synthetic k-space process whose amplitude is meant to be grid-resolution-ind
 
 ### Parameters / physics registry
 
+`params.save(snap_path)` records the *constructor arguments* (not derived attrs) plus
+precision to `snap_path/params.json` (identical re-save is a no-op, a differing
+existing record is a hard error — the guard against continuing a directory with wrong
+parameters). `save` is **collective under MPI**: rank 0 alone checks/writes and
+broadcasts the outcome so every rank raises or returns together — never call it from a
+subset of ranks. numpy/jax 0-d scalar ctor args are unwrapped to python scalars for the
+JSON record (`_json_scalar`); anything else unserializable is a clear `TypeError`. `Parameters.from_snapshot(snap_path, **overrides)` reconstructs via
+`__init__` (all validation/derivation reruns), explicit overrides win, unknown keys from
+other code versions are ignored with a warning, precision mismatch warns (it's env-set at
+import). Both are explicit calls — nothing writes params.json automatically.
+
 `Parameters` (`config.py`) is a JAX pytree with **all fields as static aux_data**
 (`tree_flatten` returns empty `children`) — every attribute is a compile-time constant
 under `jax.jit`, so plain Python `if params.foo:` branching in physics code is correct and
@@ -95,6 +106,23 @@ fields beyond the first two now that the tuple has grown (this bit us adding for
 `forcing_state`/`forcing_key` must survive unchanged across sub-stages within a timestep,
 since they're only updated once per full step, not per sub-stage).
 
+`lsrk_advance` has two stage-loop structures selected by `params.lsrk_scan`: `lax.scan`
+(default — measured ~20% faster on CPU) and statically unrolled (`lsrk_scan=False`, the
+GPU candidate). Bitwise-identical trajectories at fp64.
+
+**Buffer donation consumes input states.** `simulate`/`simulate_scan` jit their steppers
+with `donate_argnums=(0,)`: any state passed in is invalidated — touching it afterwards
+raises "Array has been deleted". Always continue from the *returned* state; read anything
+you need (energies, fields) from a state *before* passing it to simulate. This also means
+Phase 4's async-checkpointing task (T10) must not remove the `wait_until_finished()`
+barrier without first decoupling orbax's buffer from the next donating call.
+
+`kgrid` is bound to the `params` it was built from: `setup_kgrids` bakes `diss`, `hyper`,
+`fshell`, `Lz`, rank layout etc. into precomputed arrays, and e.g. `hdiss_exponents(params)`
+returns the cached array ignoring its argument. Never reuse a `kgrid` with a different or
+mutated `Parameters` — rebuild it (and note mutating `params` attributes after a jit trace
+silently reuses the stale compile, since `Parameters` hashes by identity).
+
 ### Stochastic forcing (`params.forcing`)
 
 Ornstein-Uhlenbeck process injecting power into a shell of perpendicular wavenumbers,
@@ -119,6 +147,19 @@ sustaining turbulence instead of letting it freely decay. `forcing_state` shape
   convention (note: `diagnostics.py`'s `energy`/`parspec` functions are marked broken in
   the file itself). Keep any new energy-like diagnostic on this same convention or its
   numbers won't be comparable to `forcing_power`.
+- `forcing_norm_per_step` (**default True**, the production config: ~+8% at fp64/32 ranks)
+  computes the power-normalization scale once per full step — stored in
+  `SimulationState.forcing_scale`, shape `(n_ou,)`, updated in `run.py::_advance_forcing`
+  right after `ou_update`, `None` whenever the flag or forcing is off — and reuses it
+  across RK sub-stages, replacing ~8 per-stage allreduces with 1 per step. The scale lags
+  by one step (error O(dt/tau); larger bounded overshoot during quiescent spin-up — user
+  signed off). `forcing_scale` is **never serialized** (see Checkpointing) and is
+  recomputed by `_refresh_forcing_scale` at `simulate`/`simulate_scan` start; states built
+  by hand without it fail with a clear trace-time error in `ForcingTerm`.
+- `forcing_shell_noise` (default False) draws OU noise only at precomputed shell indices
+  (`kgrid.fidx_x/fidx_y`) instead of the full k-grid: statistically identical but a
+  *different RNG stream* (no bitwise reproduction of full-grid runs), faster single-device
+  but measured ~5% slower on Savio CPU at 32 ranks — hence opt-in, revisit on GPU.
 - 2D MHD (RMHD's `dims=2` limit) is *not* 2D hydro: with `forcing_mode="momentum"` and a
   quiescent start, `psi` stays exactly zero forever (its only 2D source term,
   `-bracket(gphi,gpsi)`, vanishes identically when `psi=0`) — that's pure hydro, use
@@ -133,7 +174,23 @@ sustaining turbulence instead of letting it freely decay. `forcing_state` shape
 ### Checkpointing
 
 `snapshot_io.py` save/restore is orbax-based, one `CheckpointManager` per MPI rank
-(`snapshot_manager_setup`). `snapshot_manager_setup`'s `nsnap` arg is passed straight
+(`snapshot_manager_setup`). The serialized tree is the full `SimulationState`, and
+`forcing_scale` is **always a concrete `(n_ou,)` array, never None**, in any state that
+reaches `save_snapshot` (`initialize`/`load_snapshot` guarantee this) — orbax records
+`None` children in its metadata, so a None-bearing save would fork the on-disk structure
+between configs. `save_snapshot` hard-errors on a
+None `forcing_scale` (hand-built states) rather than letting orbax fork the on-disk
+structure. Snapshots written before `forcing_scale` existed (pre-Phase-1) fail to
+restore with a structure mismatch; upgrade the snapshot directory once, in place, with
+`snapshot_io.old_snapshot_repair(snap_path, params)` (handles single- and per-rank
+layouts, plus the even older pre-forcing t/fields-only layout, for which it synthesizes
+zero `forcing_state` and a key from `forcing_seed`; `load_snapshot` catches the mismatch
+and points at it). The repair is interruption-safe: each step is staged fully before the
+original is swapped aside via same-filesystem renames, and a rerun first auto-recovers
+`.repair_old_*`/`.repair_tmp_*` leftovers of an interrupted swap. Note the repair makes
+directories unreadable by pre-Phase-1 code. Any direct `StandardRestore` template must
+include `forcing_scale` as a `(n_ou,)` ShapeDtypeStruct (see
+`tests/test_restart_resharding.py`). `snapshot_manager_setup`'s `nsnap` arg is passed straight
 through as orbax's `max_to_keep` — it used to be silently unwired (every run kept every
 snapshot forever regardless of `nsnap`); it's now honored, so old runs' checkpoint
 directories may hold more snapshots than a run made after this fix would produce.
@@ -168,4 +225,8 @@ Snapshot cadence caveat: `simulate`'s inner while-loop steps until `t >= target`
 large dt (e.g. near-zero fields early in a forced run from quiescence) it can overshoot a
 `t_snap` target or `t_end` by a whole step — snapshots are "at least `t_snap` apart" and
 the final time is ">= t_end", not exact. Don't write tests (or diagnostics postprocessing)
-that assume an exact snapshot count or exact end time.
+that assume an exact snapshot count or exact end time. The snapshot target
+(`t_last_snapshot`) advances every outer iteration regardless of `save` — it used to be
+updated only when saving, which made `simulate(..., save=False)` with `t_snap < t_end`
+spin forever once `state.t` passed the first frozen target (the inner while_loop returned
+immediately, the outer python loop never advanced).

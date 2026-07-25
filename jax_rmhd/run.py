@@ -24,9 +24,10 @@ def initialize(func,params):
         nkx, nky = params.nx, params.ny//2 + 1
         forcing_state = jnp.zeros((params.n_ou, 2, nkx, nky), dtype=fields.dtype)
         forcing_key = jax.random.key(params.forcing_seed)
-        # forcing_scale only carried when forcing_norm_per_step; zeros is safe (forcing_state
-        # is zero at t=0 anyway) and it's recomputed every step / on simulate start.
-        forcing_scale = jnp.zeros((params.n_ou,)) if (params.forcing and params.forcing_norm_per_step) else None
+        # forcing_scale is ALWAYS a concrete (n_ou,) array (zeros when unused) so every
+        # SimulationState — and therefore every checkpoint — has one uniform pytree
+        # structure regardless of forcing/forcing_norm_per_step settings.
+        forcing_scale = jnp.zeros((params.n_ou,))
         return SimulationState(t=0.0,fields=fields,forcing_state=forcing_state,forcing_key=forcing_key,
                                forcing_scale=forcing_scale)
     return _init(func)
@@ -45,8 +46,9 @@ def _advance_forcing(new_state, prev_t, kgrid, params):
     return new_state
 
 def _refresh_forcing_scale(state, kgrid, params):
-    # Recompute the per-step scale for the initial (possibly checkpoint-restored) state,
-    # since forcing_scale is not checkpointed.
+    # Recompute the per-step scale for the initial state. Checkpoints do store
+    # forcing_scale (recomputing is then a no-op), but repaired legacy snapshots carry
+    # zeros and hand-built states may be stale — one cheap recompute covers all cases.
     if params.forcing and params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
         state = state._replace(forcing_scale=scale_func(state, kgrid, params))
@@ -101,7 +103,8 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
     while state.t<t_end:
         state, _ = block_of_steps_jit(state,kgrid,params,nblock,scheme,stepper)
         block_count+=1
-        # only print every print_every-th block to cut down on host syncs from reading state.t
+        # NB the while/snapshot conditions above already sync state.t to host every block;
+        # print_every only saves the print itself, not a device sync
         if params.rank==0 and block_count%print_every==0:
             print(state.t)
         if state.t - t_last_snapshot > t_snap and save:
@@ -159,7 +162,10 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
                 print ("Saving snapshot "+str(snap)+ " at t = "+str(state.t))
             save_snapshot(snap,state,mngr)
             mngr.wait_until_finished()
-            t_last_snapshot=float(state.t)
+        # advance the snapshot target unconditionally: leaving this inside `if save:`
+        # froze t_next_snapshot with save=False, so once state.t passed the first target
+        # the inner while_loop returned immediately and this loop spun forever
+        t_last_snapshot=float(state.t)
     mngr.wait_until_finished()
     t_sim = perf_counter()-t_start
     if params.rank==0:

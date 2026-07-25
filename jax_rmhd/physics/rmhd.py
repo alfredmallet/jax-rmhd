@@ -80,6 +80,10 @@ def ForcingTerm(state,grads,kgrid,params):
     if params.forcing_norm_per_step:
         # approximation: reuse the scale computed once per step (start-of-step fields and
         # this step's OU state), skipping the per-sub-stage allreduce entirely.
+        if state.forcing_scale is None:
+            # trace-time check: catches hand-built states; go through run.initialize/simulate
+            raise ValueError("forcing_norm_per_step=True requires state.forcing_scale "
+                             "(build states via run.initialize / restore via load_snapshot)")
         scale = state.forcing_scale
     else:
         scale = _forcing_scale_from(state.fields,f_raw,kgrid,params)

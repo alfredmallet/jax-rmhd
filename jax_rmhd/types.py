@@ -13,4 +13,9 @@ class SimulationState(NamedTuple):
     forcing_scale: Optional[jnp.ndarray] = None
                                 # shape (n_ou,), real: per-step power-normalization scale,
                                 # updated once per full step in run.py when
-                                # params.forcing_norm_per_step; None (empty pytree) otherwise
+                                # params.forcing_norm_per_step. ALWAYS a concrete array
+                                # (zeros when unused) in states built by initialize /
+                                # load_snapshot, so every checkpoint shares one pytree
+                                # structure; the None default only exists so stale code
+                                # constructing 4-field states fails loudly in ForcingTerm
+                                # rather than silently misaligning.

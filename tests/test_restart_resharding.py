@@ -112,7 +112,8 @@ state_like = SimulationState(
     t=jax.ShapeDtypeStruct((), ftype),
     fields=jax.ShapeDtypeStruct((params.nfields, nz_local, params.nx, params.ny // 2 + 1), ctype),
     forcing_state=jax.ShapeDtypeStruct((params.n_ou, 2, params.nx, params.ny // 2 + 1), ctype),
-    forcing_key=jax.ShapeDtypeStruct((), sn.get_key_dtype()))
+    forcing_key=jax.ShapeDtypeStruct((), sn.get_key_dtype()),
+    forcing_scale=jax.ShapeDtypeStruct((params.n_ou,), ftype))
 t_match = True
 for step in common_steps:
     own = mngr.restore(step, args=ocp.args.StandardRestore(state_like))

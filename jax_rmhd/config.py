@@ -2,6 +2,19 @@ from mpi4py import MPI
 import jax
 from jax.tree_util import register_pytree_node_class
 from .types import SimulationState
+import os
+import json
+import time
+import inspect
+
+def _json_scalar(v):
+    # json.dump fallback for Parameters.save: numpy/jax 0-d scalars (e.g. a dt pulled out
+    # of an array) aren't natively JSON-serializable; unwrap them to python scalars.
+    item = getattr(v, "item", None)
+    if item is not None and getattr(v, "ndim", 0) == 0:
+        return item()
+    raise TypeError(f"Parameter value {v!r} (type {type(v).__name__}) can't be recorded "
+                    f"in params.json — pass plain python types to Parameters")
 
 @register_pytree_node_class
 class Parameters():
@@ -9,6 +22,9 @@ class Parameters():
     def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=0.0,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False):
+        # capture the constructor arguments (before any normalization below) so
+        # save()/from_snapshot() can reproduce this object exactly via __init__
+        self._init_args = {k: v for k, v in locals().items() if k != "self"}
         self.eqtype=eqtype
         self.nfields=eqtype_registry[self.eqtype]
         #perpendicular grid
@@ -66,17 +82,74 @@ class Parameters():
         self.fshell = fshell
         self.forcing_seed = forcing_seed
         self.forcing_scale_max = forcing_scale_max
-        # compute the forcing power-normalization scale once per full step (reused across
-        # RK sub-stages, removing per-stage allreduces) instead of exactly per stage
         self.forcing_norm_per_step = forcing_norm_per_step
-        # draw OU noise only at the shell modes (scatter) instead of over the full k-grid:
-        # measured faster single-device but ~5% slower on Savio CPU at 32 ranks (jax
-        # scatter lowering), so default off; both paths give identical statistics.
         self.forcing_shell_noise = forcing_shell_noise
         self.n_ou = 1 if self.forcing_mode == "momentum" else 2
         #timestepping (structure): lax.scan LSRK stage loop (default; ~20% faster than the
         #unrolled loop on CPU) vs statically unrolled (lsrk_scan=False; to benchmark on GPU)
         self.lsrk_scan = lsrk_scan
+    def save(self, snap_path, filename="params.json"):
+        # Record the constructor arguments (not derived attrs) to snap_path/filename, so a
+        # run directory documents how it was made and from_snapshot can reproduce it.
+        # An existing file with DIFFERENT contents is a hard error — that's the guard
+        # against continuing a directory with the wrong parameters.
+        # Collective under MPI: rank 0 alone checks/writes and broadcasts the outcome, so
+        # every rank raises or returns together — a per-rank exists check can desync ranks
+        # on a lazy shared filesystem (some see the file, some don't, and whichever subset
+        # skips/raises leaves the rest stuck in the collective).
+        path = os.path.join(str(snap_path), filename)
+        err = None
+        if self.rank == 0:
+            # round-trip through JSON up front (tuples->lists, numpy/jax scalars->python
+            # via _json_scalar) so the comparison below sees exactly what a reload sees,
+            # and so unserializable values fail here with a clear message, not mid-write
+            rec = json.loads(json.dumps(self._init_args, default=_json_scalar))
+            rec["_precision"] = "64" if jax.config.read("jax_enable_x64") else "32"
+            if os.path.exists(path):
+                with open(path) as f:
+                    old = json.load(f)
+                old.pop("_created", None)
+                diffs = {k: (old.get(k, "<absent>"), rec.get(k, "<absent>"))
+                         for k in sorted(set(old) | set(rec))
+                         if old.get(k, "<absent>") != rec.get(k, "<absent>")}
+                if diffs:
+                    err = (f"{path} already records different parameters "
+                           f"(saved, current): {diffs}. Load them with "
+                           f"Parameters.from_snapshot, or delete the file if this is intended.")
+                # else: identical record already present, nothing to write
+            else:
+                os.makedirs(str(snap_path), exist_ok=True)
+                rec["_created"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                with open(path, "w") as f:
+                    json.dump(rec, f, indent=1)
+        if self.size > 1:
+            err = self.comm.bcast(err, root=0)  # also orders every rank after the write
+        if err is not None:
+            raise ValueError(err)
+
+    @classmethod
+    def from_snapshot(cls, snap_path, filename="params.json", **overrides):
+        # Reconstruct Parameters from a run directory's record (written by save());
+        # explicitly passed overrides win, e.g. from_snapshot(path, dt=0.05).
+        # Runs __init__, so all validation/derived attributes stay in one place.
+        path = os.path.join(str(snap_path), filename)
+        rec = json.load(open(path))
+        rec.pop("_created", None)
+        prec = rec.pop("_precision", None)
+        current_prec = "64" if jax.config.read("jax_enable_x64") else "32"
+        rank0 = MPI.COMM_WORLD.Get_rank() == 0
+        if prec is not None and prec != current_prec and rank0:
+            print(f"Warning: {path} was written at precision {prec}, but RMHD_PRECISION is "
+                  f"currently {current_prec} (precision is set by env var at import time).")
+        # tolerate records from newer/older code versions: ignore unknown keys with a warning
+        known = set(inspect.signature(cls.__init__).parameters) - {"self"}
+        unknown = sorted(set(rec) - known)
+        if unknown and rank0:
+            print(f"Warning: ignoring unknown parameters in {path}: {unknown}")
+        args = {k: (tuple(v) if isinstance(v, list) else v) for k, v in rec.items() if k in known}
+        args.update(overrides)
+        return cls(**args)
+
     def tree_flatten(self):
         children = ()
         param_data = {k: v for k, v in self.__dict__.items()}

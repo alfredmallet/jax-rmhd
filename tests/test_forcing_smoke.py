@@ -23,7 +23,8 @@ Lx = Ly = Lz = 2.0*jnp.pi
 params = jr.Parameters(nx=nx, ny=ny, nz=nz, Lx=Lx, Ly=Ly, Lz=Lz, diss=(0.0, 0.0),
                         hyper=1, cfl_safety=0.5, dt=0.01, adaptive_timestep=False, dims=3,
                         forcing=True, forcing_mode="momentum", forcing_power=1.0,
-                        forcing_tau=0.5, fshell=(1, 5), forcing_seed=1)
+                        forcing_tau=0.5, fshell=(1, 5), forcing_seed=1,
+                        forcing_norm_per_step=False)  # this test checks exact per-stage normalization
 kgrid = jr.setup_kgrids(params)
 
 nkx, nky = nx, ny//2 + 1
@@ -93,7 +94,8 @@ all_ok &= check("Kinetic energy injection rate is within 3x of forcing_power (lo
 params_2d = jr.Parameters(nx=nx, ny=ny, Lx=Lx, Ly=Ly, diss=(0.0, 0.0),
                            hyper=1, cfl_safety=0.5, dt=0.01, adaptive_timestep=False, dims=2,
                            forcing=True, forcing_mode="momentum", forcing_power=1.0,
-                           forcing_tau=0.5, fshell=(1, 5), forcing_seed=1)
+                           forcing_tau=0.5, fshell=(1, 5), forcing_seed=1,
+                           forcing_norm_per_step=False)  # this test checks exact per-stage normalization
 kgrid_2d = jr.setup_kgrids(params_2d)
 
 def init_zero_2d(x, y):

@@ -134,9 +134,9 @@ def _perp_reduce(integrand, params):
 def perp_inner_product(field_a_k, field_b_k, kgrid, params):
     # Re( sum_k grad(field_a_k)^* . grad(field_b_k) )
     # useful for e.g. energies and power inputs
-    grad_a = gradk(field_a_k, kgrid)  # (nz_local, 2, nkx, nky)
-    grad_b = gradk(field_b_k, kgrid)
-    integrand = jnp.real(jnp.conj(grad_a) * grad_b) * _perp_yfac(kgrid)
+    # computed via the identity sum_k |grad|-inner = ksq * Re(conj(a) b): identical result
+    # (to roundoff), ~2x cheaper, and avoids materializing four gradient arrays
+    integrand = kgrid.ksq() * jnp.real(jnp.conj(field_a_k) * field_b_k) * _perp_yfac(kgrid)
     return _perp_reduce(integrand, params)
 
 def perp_mean_square(field_a_k, field_b_k, kgrid, params):
@@ -156,10 +156,8 @@ def _perp_reduce_batch(integrand, params):
 
 def perp_inner_product_batch(fields_a_k, fields_b_k, kgrid, params):
     # perp_inner_product over a leading batch axis (e.g. stacked z+/z-), returning a
-    # (nbatch,) vector via a single stacked allreduce.
-    grad_a = gradk(fields_a_k, kgrid)  # (nbatch, 2, nz_local, nkx, nky)
-    grad_b = gradk(fields_b_k, kgrid)
-    integrand = jnp.real(jnp.conj(grad_a) * grad_b) * _perp_yfac(kgrid)
+    # (nbatch,) vector via a single stacked allreduce. Same ksq identity as above.
+    integrand = kgrid.ksq() * jnp.real(jnp.conj(fields_a_k) * fields_b_k) * _perp_yfac(kgrid)
     return _perp_reduce_batch(integrand, params)
 
 def safe_scale(target, P, scale_max=1.0):
