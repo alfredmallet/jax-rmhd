@@ -180,6 +180,13 @@ FINAL VERDICTS:
   registry); re-enable with rmhd.halo_start for Phase 3 backends with real overlap.
   Negative result recorded here per the plan.
 
+## Merge gate
+
+PASSED (job 35844522, 2026-07-25): test_advection 4 ranks — clean 4th-order z-convergence
+(L1 ratios 16.0/16.0/15.7/10.7 over nz=64→1024, floor-limited at the end);
+test_restart_resharding 2→4 ranks — ALL PASS, bit-exact roundtrip. Phase 2 is complete
+and the performance branch is ready to merge to main.
+
 ## Status
 
 A5 review verdict: merge-safe with fixes; no CRITICAL. Fixes applied 2026-07-25:

@@ -3,15 +3,17 @@
 #SBATCH --account=fc_kawturb
 #SBATCH --partition=savio3
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=32
 #SBATCH --cpus-per-task=1
-#SBATCH --time=01:30:00
+#SBATCH --time=00:45:00
 #SBATCH --output=merge_gate_p2_%j.out
 #SBATCH --error=merge_gate_p2_%j.err
 #SBATCH --mem=0
 
-# Phase 2 merge gate: the full Savio battery on the final tree, one submission.
-# All runs are 4 MPI ranks max on ONE node ("-n 4" = ranks, not nodes).
+# Phase 2 merge gate: the full Savio battery on the final tree, one submission, one node.
+# savio3 charges per NODE, so request all 32 cores and run advection wide (-n 32; its nz
+# list 64..1024 is divisible by 32). test_restart_resharding stays at 2->4 ranks: its
+# nz=16 caps ranks at 8 (nz_local >= 2), and 2->4 is the verified configuration.
 
 module purge
 module load anaconda3 gcc openmpi
@@ -32,8 +34,8 @@ PY=$HOME/.conda/envs/jax_cpu/bin/python
 REPO=$HOME/jax_rmhd
 cd "$REPO"
 
-echo "=== 1/3: test_advection, 4 ranks (z-convergence scan; longest part) ==="
-time mpirun -n 4 "$PY" -u tests/test_advection.py
+echo "=== 1/3: test_advection, 32 ranks (z-convergence scan; longest part) ==="
+time mpirun -n 32 "$PY" -u tests/test_advection.py
 
 echo "=== 2/3: test_restart_resharding phase A: fresh run on 2 ranks ==="
 rm -rf data/test_restart_resharding
