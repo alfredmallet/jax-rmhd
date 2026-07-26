@@ -32,6 +32,12 @@ source activate jax_gpu
 # Block ~/.local user-site packages from shadowing the env (stray mpi4py bit us once).
 export PYTHONNOUSERSITE=1
 
+# jax's CUDA plugin can fail to dlopen the pip-bundled nvidia libs by bare soname inside
+# jobs ("cuSPARSE library was not found") even when the env is complete -- put every
+# nvidia/*/lib dir on LD_LIBRARY_PATH so plain-name dlopen always resolves.
+NVLIBS=$(python -c "import nvidia,os;print(':'.join(os.path.join(p,d,'lib') for p in nvidia.__path__ for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p,d,'lib'))))" 2>/dev/null || true)
+[ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 export RMHD_PRECISION=32   # A40 fp64 is ~1/32 of fp32; the fp64 anchor is the V100 job
 
 # Set CUDA_MPI=1 only if slurms/probe_cuda_mpi.sh showed the openmpi module is CUDA-aware.

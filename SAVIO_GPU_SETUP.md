@@ -86,6 +86,13 @@ python -c "import mpi4jax._src.xla_bridge.mpi_xla_bridge_cpu; print('CPU bridge 
 python -c "import mpi4jax._src.xla_bridge.mpi_xla_bridge_cuda; print('CUDA bridge OK')"
 ```
 
+Runtime note (hit in job 35861001): even with every `nvidia-*` package correctly in the env
+(verified by absolute-path `ctypes.CDLL` of libcusparse.so.12), jax's CUDA plugin can still
+fail inside a job with "The cuSPARSE library was not found" — its version check dlopens by
+bare soname. All GPU sbatch scripts therefore export `LD_LIBRARY_PATH` over every
+`nvidia/*/lib` dir (the `NVLIBS` block) after activating the env; keep that block in any new
+GPU job script.
+
 If the CUDA bridge import fails: rerun the mpi4jax install with `-v` and look for the
 `CUDA INFO: {...}` line (detection worked) vs the `CUDA path not found` warning (it didn't
 — check `module load cuda` was active, or export `CUDA_ROOT` to the toolkit prefix and
