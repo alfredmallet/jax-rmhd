@@ -74,7 +74,8 @@ if restart_from is None:
     state = jr.initialize(lambda x, y, z: jnp.zeros((2,) + jnp.broadcast_shapes(x.shape, y.shape, z.shape)),
                           params)
 else:
-    last = max(sn.get_saved_steps(restart_from))
+    # params: scopes the reader's CheckpointManager to this process under comm_backend="jax"
+    last = max(sn.get_saved_steps(restart_from, params))
     if params.rank == 0:
         print(f"restarting from {restart_from} snapshot {last}", flush=True)
     state = sn.load_snapshot(last, restart_from, params)

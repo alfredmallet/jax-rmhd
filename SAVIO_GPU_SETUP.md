@@ -171,8 +171,11 @@ Two possible outcomes — **record which one you got in the benchmark .out heade
 parameters and no smcuda). All jobs run `MPI4JAX_USE_CUDA_MPI=0`; host staging is the honest
 mpi4jax baseline on Savio. Same job also showed this openmpi is `--without-pmi` + external
 PMIx: **`srun` needs `--mpi=pmix`** (pmi2 aborts in `ext3x_client.c` before `MPI_Init`) —
-now the default `MPI_MODE` in every GPU script. The µs/halo-pair numbers still need a rerun
-of the probe under pmix.
+now the default `MPI_MODE` in every GPU script. Rerun under pmix (job 35845686): binding
+verified (1 distinct GPU per rank); `=0` host staging `correct=True` at ~2,900–7,500
+µs/halo-pair for a 4.2 MB payload (1.1–2.9 GB/s — ≈30 ms/step of comm at 10 halo
+exchanges/step, the number NCCL has to beat); `=1` segfaults in UCX `ucp_dt_pack` as
+expected for a non-CUDA-aware build handed device pointers.
 
 ## 4. Running the Phase 3 benchmarks
 

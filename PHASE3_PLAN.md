@@ -186,6 +186,13 @@ Each agent updates ONLY its own status line below.
   comm_backend exempted from params.json's differing-record check (cross-backend restart),
   comms._local_device_ids GPU binding (reads CUDA_VISIBLE_DEVICES, never sets it), and
   tests/test_backend_jax_mpi.py as the driver for slurms/test_backend_jax_gpu.sh.
+  Multi-host checkpoint fix (after job 35845687, the first real 4-process run): orbax refuses
+  host-local jax.Arrays once process_count>1 (save) and follows the checkpoint's recorded
+  device when a restore template carries no sharding (restore). Under comm_backend="jax" only,
+  save_snapshot now hands orbax host numpy leaves, restore templates pin this process's device,
+  and every CheckpointManager gets MultiprocessingOptions(primary_host=idx, active_processes={idx})
+  so barriers/pruning stay per-rank. On-disk leaf set + data unchanged (value_type/sharding
+  sidecars differ, both cross-restores verified exact); mpi4jax path bit-identical.
 - A3 (review): DONE, 3 CRITICAL + 4 MAJOR found and FIXED. Criticals: (1)+(2) the jax backend
   could not run on >1 process at all — `comms.to_global`/`to_local` used `jax.device_put` onto /
   off a non-fully-addressable sharding (rejects orbax-restored committed arrays, and its
