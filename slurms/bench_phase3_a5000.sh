@@ -41,6 +41,13 @@ NVLIBS=$("$HOME/.conda/envs/jax_gpu/bin/python" -c "import nvidia,os;print(':'.j
 [ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
+# NCCL: PCIe P2P between GPUs is BROKEN on savio4_gpu nodes (repro 2026-07-26: rings
+# connect, first collective hangs under both CUMEM and legacy-IPC P2P; bench/nccl_repro.py
+# passes only with P2P off -> SHM transport). Likely PCIe ACS config -- reported to Savio
+# support; revisit if they fix it (SHM adds host-memory hops, so NCCL numbers here
+# UNDERSTATE a P2P/NVLink-capable cluster).
+export NCCL_P2P_DISABLE=1
+
 export RMHD_PRECISION=32
 
 # Host-staged transport is the default assumption; set CUDA_MPI=1 only if slurms/probe_cuda_mpi.sh

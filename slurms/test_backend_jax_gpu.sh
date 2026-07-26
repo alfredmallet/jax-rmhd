@@ -73,11 +73,12 @@ LAUNCH_JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER
 export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=INIT,ENV
 TMO="timeout 900"
-# Job 35861515: rings connected via P2P/CUMEM, then the FIRST collective hung — the
-# signature of NCCL's cuMem-handle P2P path misbehaving on some driver combos. Disable it
-# (falls back to classic P2P/IPC; perf difference negligible at these sizes). If the hang
-# vanishes, this line is the culprit and stays; revisit on driver/NCCL upgrades.
-export NCCL_CUMEM_ENABLE=0
+# NCCL: PCIe P2P between GPUs is BROKEN on savio4_gpu nodes (repro 2026-07-26: rings
+# connect, first collective hangs under both CUMEM and legacy-IPC P2P; bench/nccl_repro.py
+# passes only with P2P off -> SHM transport). Likely PCIe ACS config -- reported to Savio
+# support; revisit if they fix it (SHM adds host-memory hops, so NCCL numbers here
+# UNDERSTATE a P2P/NVLink-capable cluster).
+export NCCL_P2P_DISABLE=1
 # Per-rank python stack dumps every 120 s while hung (see test_backend_jax_mpi.py).
 export RMHD_DEBUG_HANG=1
 

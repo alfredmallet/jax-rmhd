@@ -97,6 +97,18 @@ its value into the .out as proof it ran — if the echoed paths ever show
 `.../anaconda3/<version>/lib/...` instead of `~/.conda/envs/jax_gpu/...`, PYTHONPATH is
 leaking again). Keep both blocks in any new GPU job script.
 
+NCCL note (root-caused 2026-07-26 via `bench/nccl_repro.py`, interactive): **PCIe P2P
+between GPUs is broken on savio4_gpu nodes** — NCCL rings connect, then the first
+collective hangs forever, under both CUMEM and legacy-IPC P2P (signature of PCIe ACS
+misconfiguration; the GPUs report peer-capable but transfers stall). All GPU job scripts
+export `NCCL_P2P_DISABLE=1` (SHM transport, works). Consequences: (a) never remove that
+export until the cluster config changes — verify with the repro first; (b) same-node NCCL
+bandwidth is host-memory-limited, so jax-backend numbers understate what a P2P/NVLink
+cluster would achieve; (c) worth a Savio support ticket with `bench/nccl_repro.py`
+attached. Also required for the jax backend: launch WITHOUT `--gpu-bind` (all job GPUs
+visible; `comms._local_device_ids` pins per-process ordinals) — mpi4jax launches keep
+`--gpu-bind=single:1`.
+
 If the CUDA bridge import fails: rerun the mpi4jax install with `-v` and look for the
 `CUDA INFO: {...}` line (detection worked) vs the `CUDA path not found` warning (it didn't
 — check `module load cuda` was active, or export `CUDA_ROOT` to the toolkit prefix and
