@@ -70,7 +70,13 @@ print(f"pkg={_pkgdir or 'default'} backend={backend} rank={params.rank}/{params.
       f"global_devices={jax.device_count()} precision={os.environ.get('RMHD_PRECISION','32')}",
       flush=True)
 
+# [bc] breadcrumbs: locate multi-process hangs (job 35861466 stalled between the pkg=
+# print and the first snapshot save with no diagnostics). Cheap; keep.
+def _bc(msg):
+    print(f"[bc r{params.rank}] {msg}", flush=True)
+
 kgrid = jr.setup_kgrids(params)
+_bc("kgrid ok")
 if restart_from is None:
     state = jr.initialize(lambda x, y, z: jnp.zeros((2,) + jnp.broadcast_shapes(x.shape, y.shape, z.shape)),
                           params)
@@ -90,10 +96,13 @@ if params.rank == 0:
     if not _same:  # never wipe the directory we just restarted from
         shutil.rmtree(outdir, ignore_errors=True)
     os.makedirs(outdir, exist_ok=True)
+_bc("state ok")
 if params.size > 1:
     params.comm.Barrier()
 mngr = jr.snapshot_manager_setup(params, outdir, nsnap=2)
+_bc("mngr ok")
 end = jr.simulate(state, kgrid, params, t_snap=10.0, t_end=t_end, mngr=mngr, save=True)
+_bc("simulate ok")
 if params.rank == 0:
     print(f"[{backend}] on-disk layout of {outdir}: {sn.snapshot_layout(outdir)!r} "
           f"steps={sn.get_saved_steps(outdir)}", flush=True)

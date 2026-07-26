@@ -67,22 +67,29 @@ MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi 
 LAUNCH_MPI4JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK --gpu-bind=single:1"
 LAUNCH_JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK"
 
+# Hang forensics (job 35861466: phase 2 stalled silently at the first NCCL collective):
+# NCCL_DEBUG=INFO logs communicator bring-up per rank to stderr; `timeout` turns a hang
+# into exit 124 after 15 min so later phases still emit their markers.
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,ENV
+TMO="timeout 900"
+
 rm -rf "$OUT"
 
 echo "=== phase 1: fresh run, backend=mpi4jax (${NRANK} ranks) ==="
-time $LAUNCH_MPI4JAX "$PY" -u "$DRIVER" mpi4jax "$OUT/mpi4jax"
+time $TMO $LAUNCH_MPI4JAX "$PY" -u "$DRIVER" mpi4jax "$OUT/mpi4jax"
 
 echo "=== phase 2: fresh run, backend=jax, same seed ==="
-time $LAUNCH_JAX "$PY" -u "$DRIVER" jax "$OUT/jax"
+time $TMO $LAUNCH_JAX "$PY" -u "$DRIVER" jax "$OUT/jax"
 
 echo "=== phase 3: compare mpi4jax vs jax (expect rel < 1e-12) ==="
 "$PY" -u "$DRIVER" --compare "$OUT/mpi4jax" "$OUT/jax"
 
 echo "=== phase 4a: jax backend restarting from the mpi4jax-written snapshot ==="
-time $LAUNCH_JAX "$PY" -u "$DRIVER" jax "$OUT/xr_jax" "$OUT/mpi4jax"
+time $TMO $LAUNCH_JAX "$PY" -u "$DRIVER" jax "$OUT/xr_jax" "$OUT/mpi4jax"
 
 echo "=== phase 4b: mpi4jax restarting from the jax-written snapshot ==="
-time $LAUNCH_MPI4JAX "$PY" -u "$DRIVER" mpi4jax "$OUT/xr_mpi4jax" "$OUT/jax"
+time $TMO $LAUNCH_MPI4JAX "$PY" -u "$DRIVER" mpi4jax "$OUT/xr_mpi4jax" "$OUT/jax"
 
 echo "=== phase 5: compare the two cross-backend restarts ==="
 # looser tolerance: the two restarts start from snapshots that already differ at roundoff
