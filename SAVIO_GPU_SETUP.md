@@ -86,12 +86,16 @@ python -c "import mpi4jax._src.xla_bridge.mpi_xla_bridge_cpu; print('CPU bridge 
 python -c "import mpi4jax._src.xla_bridge.mpi_xla_bridge_cuda; print('CUDA bridge OK')"
 ```
 
-Runtime note (hit in job 35861001): even with every `nvidia-*` package correctly in the env
-(verified by absolute-path `ctypes.CDLL` of libcusparse.so.12), jax's CUDA plugin can still
-fail inside a job with "The cuSPARSE library was not found" — its version check dlopens by
-bare soname. All GPU sbatch scripts therefore export `LD_LIBRARY_PATH` over every
-`nvidia/*/lib` dir (the `NVLIBS` block) after activating the env; keep that block in any new
-GPU job script.
+Runtime note — ROOT CAUSE of "The cuSPARSE library was not found" (jobs 35861001/35861191):
+the `anaconda3` module sets `PYTHONPATH` to the BASE anaconda's site-packages, which contains
+its own (incompatible) `nvidia-*` packages; `PYTHONPATH` precedes the env's site-packages in
+`sys.path`, so jax's CUDA plugin imported the base `nvidia` tree instead of the env's. Every
+GPU sbatch script therefore does `unset PYTHONPATH` right after `source activate jax_gpu`
+(GPU jobs never need PYTHONPATH — code selection uses `RMHD_PKG`) and additionally exports
+`LD_LIBRARY_PATH` over every env `nvidia/*/lib` dir (the `NVLIBS` block, which also echoes
+its value into the .out as proof it ran — if the echoed paths ever show
+`.../anaconda3/<version>/lib/...` instead of `~/.conda/envs/jax_gpu/...`, PYTHONPATH is
+leaking again). Keep both blocks in any new GPU job script.
 
 If the CUDA bridge import fails: rerun the mpi4jax install with `-v` and look for the
 `CUDA INFO: {...}` line (detection worked) vs the `CUDA path not found` warning (it didn't

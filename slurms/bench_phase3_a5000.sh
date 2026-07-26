@@ -25,13 +25,19 @@ module purge
 module load anaconda3 gcc openmpi
 source activate jax_gpu
 
+# The anaconda3 module sets PYTHONPATH to the BASE anaconda site-packages, whose own
+# nvidia-* packages shadow the env's (root cause of "cuSPARSE library was not found").
+# GPU jobs never need PYTHONPATH (code selection uses RMHD_PKG) -- drop it.
+unset PYTHONPATH
+echo "python=$(which python)"
+
 # Block ~/.local user-site packages from shadowing the env (stray mpi4py bit us once).
 export PYTHONNOUSERSITE=1
 
 # jax's CUDA plugin can fail to dlopen the pip-bundled nvidia libs by bare soname inside
 # jobs ("cuSPARSE library was not found") even when the env is complete -- put every
 # nvidia/*/lib dir on LD_LIBRARY_PATH so plain-name dlopen always resolves.
-NVLIBS=$(python -c "import nvidia,os;print(':'.join(os.path.join(p,d,'lib') for p in nvidia.__path__ for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p,d,'lib'))))" 2>/dev/null || true)
+NVLIBS=$("$HOME/.conda/envs/jax_gpu/bin/python" -c "import nvidia,os;print(':'.join(os.path.join(p,d,'lib') for p in nvidia.__path__ for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p,d,'lib'))))" 2>/dev/null || true)
 [ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
