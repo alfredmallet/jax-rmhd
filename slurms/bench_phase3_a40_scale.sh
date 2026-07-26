@@ -68,9 +68,10 @@ STEPS="nb20 nr4"
 # One rank per GPU across nodes; --gres is per node, so ask for ceil(n/GPUS_PER_NODE) nodes
 # (ceil + the gpn clamp keep n < GPUS_PER_NODE from asking for --nodes=0).
 run() { local n=$1; shift; local gpn=$(( n < GPUS_PER_NODE ? n : GPUS_PER_NODE )); \
+        local bind="--gpu-bind=single:1"; case "$*" in *backend=jax*) bind="";; esac; \
         local nn=$(( (n + gpn - 1) / gpn )); \
         srun --mpi=$MPI_MODE --nodes="$nn" --ntasks="$n" --ntasks-per-node="$gpn" \
-        --cpus-per-task=8 --gres=gpu:A40:"$gpn" --gpu-bind=single:1 \
+        --cpus-per-task=8 --gres=gpu:A40:"$gpn" $bind \
         "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
 echo "=== config: precision=$RMHD_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="

@@ -59,8 +59,9 @@ MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi 
 NX=256; NZ=128          # fp64 doubles every buffer; 256^2x128 complex128 ~ 0.14 GB/state on 32 GB
 STEPS="nb20 nr4"
 
-run() { local n=$1; shift; srun --mpi=$MPI_MODE --ntasks="$n" --cpus-per-task=4 \
-        --gres=gpu:V100:"$n" --gpu-bind=single:1 "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
+run() { local n=$1; shift; local bind="--gpu-bind=single:1"; case "$*" in *backend=jax*) bind="";; esac; \
+        srun --mpi=$MPI_MODE --ntasks="$n" --cpus-per-task=4 \
+        --gres=gpu:V100:"$n" $bind "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
 echo "=== config: precision=$RMHD_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="
 

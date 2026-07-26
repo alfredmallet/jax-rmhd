@@ -61,8 +61,9 @@ STEPS="nb20 nr4"        # 20 warm + 80 timed steps per case
 # srun (not mpirun) so SLURM gives each rank exactly one GPU; srun forwards the environment
 # by default, so no mpirun-style -x list is needed. If the site's Slurm rejects the step-level
 # --gres, drop it and use --gpus-per-task=1 -- either way SLURM, not us, sets CUDA_VISIBLE_DEVICES.
-run() { local n=$1; shift; srun --mpi=$MPI_MODE --ntasks="$n" --cpus-per-task=4 \
-        --gres=gpu:A5000:"$n" --gpu-bind=single:1 "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
+run() { local n=$1; shift; local bind="--gpu-bind=single:1"; case "$*" in *backend=jax*) bind="";; esac; \
+        srun --mpi=$MPI_MODE --ntasks="$n" --cpus-per-task=4 \
+        --gres=gpu:A5000:"$n" $bind "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
 echo "=== config: precision=$RMHD_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="
 

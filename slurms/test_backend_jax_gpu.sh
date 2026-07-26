@@ -56,31 +56,33 @@ export RMHD_NX=64
 export RMHD_NZ=32
 export RMHD_TEND=1.0
 
-# Do NOT set/override CUDA_VISIBLE_DEVICES -- srun --gpu-bind=single:1 gives each task
-# exactly one GPU, which each rank prints below (local_devices=... must show 1 distinct
-# GPU per rank). If this srun launch cannot start mpi4py in your env, fall back to
-#   mpirun -n $NRANK ...
-# which leaves all 4 GPUs visible to every rank; comms._local_device_ids then claims the
-# node-local rank's GPU automatically (read-only on CUDA_VISIBLE_DEVICES).
+# Do NOT set/override CUDA_VISIBLE_DEVICES. TWO launch modes, one per backend (job 35861380):
+# - mpi4jax NEEDS --gpu-bind=single:1 (one visible GPU per task) or every rank piles onto
+#   GPU 0 -- it never calls jax.distributed, so nothing else assigns devices.
+# - the jax/NCCL backend must NOT use it: with only its own GPU visible per process, NCCL's
+#   first collective dies (ncclGroupEnd, cuda error 101 'invalid device ordinal') because
+#   same-node P2P/SHM transport needs peer GPUs visible. Leave all job GPUs visible and
+#   comms._local_device_ids pins each process to its node-local rank's ordinal.
 MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works   # same knob as the bench scripts; see `srun --mpi=list`
-LAUNCH="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK --gpu-bind=single:1"
+LAUNCH_MPI4JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK --gpu-bind=single:1"
+LAUNCH_JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK"
 
 rm -rf "$OUT"
 
 echo "=== phase 1: fresh run, backend=mpi4jax (${NRANK} ranks) ==="
-time $LAUNCH "$PY" -u "$DRIVER" mpi4jax "$OUT/mpi4jax"
+time $LAUNCH_MPI4JAX "$PY" -u "$DRIVER" mpi4jax "$OUT/mpi4jax"
 
 echo "=== phase 2: fresh run, backend=jax, same seed ==="
-time $LAUNCH "$PY" -u "$DRIVER" jax "$OUT/jax"
+time $LAUNCH_JAX "$PY" -u "$DRIVER" jax "$OUT/jax"
 
 echo "=== phase 3: compare mpi4jax vs jax (expect rel < 1e-12) ==="
 "$PY" -u "$DRIVER" --compare "$OUT/mpi4jax" "$OUT/jax"
 
 echo "=== phase 4a: jax backend restarting from the mpi4jax-written snapshot ==="
-time $LAUNCH "$PY" -u "$DRIVER" jax "$OUT/xr_jax" "$OUT/mpi4jax"
+time $LAUNCH_JAX "$PY" -u "$DRIVER" jax "$OUT/xr_jax" "$OUT/mpi4jax"
 
 echo "=== phase 4b: mpi4jax restarting from the jax-written snapshot ==="
-time $LAUNCH "$PY" -u "$DRIVER" mpi4jax "$OUT/xr_mpi4jax" "$OUT/jax"
+time $LAUNCH_MPI4JAX "$PY" -u "$DRIVER" mpi4jax "$OUT/xr_mpi4jax" "$OUT/jax"
 
 echo "=== phase 5: compare the two cross-backend restarts ==="
 # looser tolerance: the two restarts start from snapshots that already differ at roundoff
