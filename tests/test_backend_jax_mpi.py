@@ -1,12 +1,13 @@
 # Real-MPI (multi-GPU) correctness driver for comm_backend="jax" (T9): runs the SAME
 # same-seed forced 3D problem under either backend, dumps each rank's LOCAL fields, and
-# diffs two phases. Also does cross-backend restarts (the on-disk layout is backend
-# independent by construction — snapshot_io localizes the jax backend's global arrays).
+# diffs two phases. Also does cross-backend restarts. The two backends write DIFFERENT
+# on-disk layouts (mpi4jax: snap_path/<rank>/<step>; jax: one shared snap_path/<step> of
+# global z-sharded arrays) — what these phases prove is that each reads the other's.
 #
 # Usage (see slurms/test_backend_jax_gpu.sh):
 #   mpirun -n P python tests/test_backend_jax_mpi.py <mpi4jax|jax> <outdir> [restart_from]
 #   python tests/test_backend_jax_mpi.py --compare <dirA> <dirB>      # single process
-import sys, os
+import sys, os, shutil
 
 # Select the package version via RMHD_PKG=<dir> (same mechanism as bench/bench_phase1.py):
 # an editable install's meta-path finder otherwise silently beats PYTHONPATH.
@@ -81,9 +82,21 @@ else:
     state = sn.load_snapshot(last, restart_from, params)
     t_end = float(state.t) + t_end
 
-os.makedirs(outdir, exist_ok=True)
+# Start from a clean output dir: a previous aborted run can leave stranded
+# "<step>.orbax-checkpoint-tmp" dirs (and snapshots in an older on-disk format) that would
+# make this phase's save collide. Rank 0 wipes, then everyone waits.
+_same = restart_from is not None and os.path.realpath(outdir) == os.path.realpath(restart_from)
+if params.rank == 0:
+    if not _same:  # never wipe the directory we just restarted from
+        shutil.rmtree(outdir, ignore_errors=True)
+    os.makedirs(outdir, exist_ok=True)
+if params.size > 1:
+    params.comm.Barrier()
 mngr = jr.snapshot_manager_setup(params, outdir, nsnap=2)
 end = jr.simulate(state, kgrid, params, t_snap=10.0, t_end=t_end, mngr=mngr, save=True)
+if params.rank == 0:
+    print(f"[{backend}] on-disk layout of {outdir}: {sn.snapshot_layout(outdir)!r} "
+          f"steps={sn.get_saved_steps(outdir)}", flush=True)
 
 # per-rank LOCAL fields, identical layout under both backends
 local_fields = np.asarray(comms.to_local(end.fields, params, z_axis=1) if backend == "jax" else end.fields)

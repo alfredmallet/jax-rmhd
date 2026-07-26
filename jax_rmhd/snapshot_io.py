@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 import tensorstore as ts
 import orbax.checkpoint as ocp
+from etils import epath
 import os
 import shutil
 import tempfile
@@ -31,72 +31,78 @@ def get_precision_types():
 
 def get_key_dtype():
     return jax.eval_shape(lambda: jax.random.key(0)).dtype
-    
-def _mp_options(params):
-    # One manager per MPI rank with its own directory is an independent world, but under
-    # comm_backend="jax" jax.distributed is up and orbax then assumes every process drives the
-    # SAME manager: it barriers across all processes and prunes only on process 0
-    # (_src/path/deleter.py "Not primary host(...), skipping deletion" — max_to_keep would
-    # silently stop working on ranks>0). Declaring this process its own primary/active set
-    # restores per-rank semantics. None -> unchanged (default) options for mpi4jax.
-    if params is None or params.comm_backend != "jax":
-        return None
-    idx = jax.process_index()
-    return ocp.options.MultiprocessingOptions(primary_host=idx, active_processes={idx},
-                                              barrier_sync_key_prefix=f"rmhd_p{idx}")
 
-def _new_manager(path, params=None, **kw):
-    # single construction point so every CheckpointManager gets _mp_options; orbax rejects
-    # create=True together with active_processes, hence the explicit makedirs
-    path = os.path.abspath(str(path))
-    mp = _mp_options(params)
-    if mp is None:
-        return ocp.CheckpointManager(directory=path, options=ocp.CheckpointManagerOptions(**kw))
-    os.makedirs(path, exist_ok=True)
-    return ocp.CheckpointManager(directory=path,
-                                 options=ocp.CheckpointManagerOptions(create=False,
-                                                                      multiprocessing_options=mp, **kw))
+# orbax's default item subdirectory inside a step dir (snap_path/<step>/default/...)
+_ITEM = "default"
+
+_array_handler_pinned = False
+
+def _pin_array_handler():
+    # comm_backend="jax" only, idempotent: turn OFF orbax's replica-parallel writing.
+    # Replica-parallel splits a REPLICATED array's write across the hosts holding copies;
+    # ours (t/forcing_*) are a few kB, so it buys nothing, while orbax 0.12.1 implements the
+    # split with `with jax.sharding.set_mesh(...)`
+    # (_src/serialization/replica_slices.py::ReplicaSlice.data) — a context manager only on
+    # newer jax, AttributeError: __enter__ on jax 0.6.x. Flipping the flag on the REGISTERED
+    # handler (rather than registering a fresh one) keeps every other orbax default,
+    # including the array_metadatas sidecar and write_shape metadata. A no-op if orbax
+    # renames the attribute: its default path is correct on a matching jax.
+    global _array_handler_pinned
+    if _array_handler_pinned:
+        return
+    _array_handler_pinned = True
+    from orbax.checkpoint import type_handlers as _th
+    handler = _th.get_type_handler(jax.Array)
+    if hasattr(handler, "_use_replica_parallel"):
+        handler._use_replica_parallel = False
 
 # Setting up Orbax stuff
 def snapshot_manager_setup(params,snap_path="data",nsnap=1000):
-    if params.size>1:
+    # comm_backend="jax": ONE shared manager over ONE shared directory driven by every
+    # process — orbax's native multihost mode (each process writes its own addressable
+    # shards, atomicity/pruning coordinated upstream). create=True is race-free here: only
+    # the primary host mkdirs and everyone barriers (checkpoint_manager.py::
+    # _create_root_directory, orbax 0.12.1). mpi4jax keeps the per-rank layout unchanged.
+    # Refuse to WRITE a layout into a directory already holding the other one: the manager
+    # enumerates numbered subdirs as steps, so a shared jax manager over a per-rank tree
+    # would read rank dirs as steps and let max_to_keep delete them. Reading across layouts
+    # (load_snapshot) is fine and stays supported — only mixing writers is blocked.
+    _layout = snapshot_layout(snap_path)
+    if params.comm_backend=="jax" and _layout=="per_rank":
+        raise ValueError(
+            f"{snap_path} holds a per-rank (mpi4jax) snapshot tree; comm_backend='jax' "
+            f"writes ONE shared directory and would mistake the rank dirs for steps. Point "
+            f"the run at a new snap_path (load_snapshot can still restart from this one).")
+    if params.comm_backend!="jax" and params.size>1 and _layout=="flat":
+        raise ValueError(
+            f"{snap_path} holds a flat snapshot directory (jax-backend or single-process "
+            f"layout); mpi4jax with size={params.size} writes per-rank subdirs and the two "
+            f"would interleave. Point the run at a new snap_path (load_snapshot can still "
+            f"restart from this one).")
+    if params.comm_backend=="jax":
+        _pin_array_handler()
+        checkpoint_path = os.path.abspath(snap_path)
+    elif params.size>1:
         checkpoint_path = os.path.abspath(snap_path+f'/{params.rank}')
     else:
         checkpoint_path = os.path.abspath(snap_path)
-    return _new_manager(checkpoint_path, params, max_to_keep=nsnap)
-
-def _to_host(tree):
-    # comm_backend="jax": hand orbax plain host numpy leaves. Once jax.distributed is up
-    # (process_count>1) orbax refuses EVERY host-local jax.Array
-    # (_src/serialization/jax_array_handlers.py: "Cannot serialize host local jax.Array ... in
-    # multi-host setting"), which is exactly what per-rank checkpointing produces. numpy leaves
-    # take the numpy handler instead. The bytes written are unchanged — a PRNG key is stored as
-    # its uint32 key_data either way — only orbax's value_type metadata differs; _wrap_key on
-    # restore absorbs that, so the tree structure on disk stays identical across backends.
-    def leaf(x):
-        dt = getattr(x, "dtype", None)
-        if dt is not None and jax.dtypes.issubdtype(dt, jax.dtypes.prng_key):
-            return np.asarray(jax.random.key_data(x))
-        return np.asarray(x)
-    return jax.tree_util.tree_map(leaf, tree)
+    return ocp.CheckpointManager(directory=checkpoint_path,
+                                 options=ocp.CheckpointManagerOptions(max_to_keep=nsnap))
 
 def _wrap_key(k):
-    # inverse of _to_host's key handling: a key saved as raw uint32 key_data comes back as
-    # uint32 (numpy leaves carry no PRNG-impl metadata), a key saved as a jax.Array comes back
-    # as a key array and passes through. Used by BOTH backends, so either can read either.
+    # Keys are stored as real key arrays in both layouts (orbax unwraps a typed PRNG key to
+    # its uint32 key_data and records the impl, then rewraps on restore), so this is a no-op
+    # for anything current; it only rescues a leaf that came back as raw key_data.
     if jax.dtypes.issubdtype(k.dtype, jax.dtypes.prng_key):
         return k
     return jax.random.wrap_key_data(jnp.asarray(k))
 
-def _restore_sharding(params):
-    # comm_backend="jax": with jax.distributed up each process has its own device ids
-    # (cpu:0/2048/4096/...), so a template leaf WITHOUT a sharding makes orbax fall back to the
-    # sharding recorded in the checkpoint — "Device cpu:0 was not found in jax.local_devices()"
-    # / "Topology mismatch" for anything written by another process (or by mpi4jax). Pinning
-    # this process's own device skips that metadata lookup entirely
-    # (_src/handlers/standard_checkpoint_handler.py::_get_sharding_for_target_leaf).
-    if params.comm_backend != "jax":
-        return None
+def _local_sharding():
+    # Pin process-local restores to THIS process's device. Without an explicit sharding
+    # orbax follows the sharding recorded in the checkpoint
+    # (_src/handlers/standard_checkpoint_handler.py::_get_sharding_for_target_leaf), which
+    # names devices this process may not own once jax.distributed is up ("Device cpu:0 was
+    # not found in jax.local_devices()" / "Topology mismatch").
     return jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
 
 def _is_global_array(x):
@@ -104,22 +110,56 @@ def _is_global_array(x):
     return (hasattr(x, "addressable_shards")
             and (not x.is_fully_addressable or len(x.addressable_shards) > 1))
 
+############################
+# on-disk layout detection #
+############################
+
+def _numbered_subdirs(path):
+    # Numeric subdirectory names only: this is what makes the probes below immune to
+    # stranded "<step>.orbax-checkpoint-tmp" leftovers (".isdigit()" rejects them).
+    if not os.path.isdir(path):
+        return []
+    return sorted(int(n) for n in os.listdir(path)
+                  if n.isdigit() and os.path.isdir(os.path.join(path, n)))
+
+def _is_step_dir(path):
+    # An orbax STEP dir carries _CHECKPOINT_METADATA / the item subdir directly; a per-rank
+    # dir holds numbered STEP dirs instead. snap_path/0 exists in both layouts, so this
+    # marker (not the mere existence of "0") is what tells them apart.
+    return (os.path.exists(os.path.join(path, "_CHECKPOINT_METADATA"))
+            or os.path.isdir(os.path.join(path, _ITEM)))
+
+def _step_dirs(path):
+    # finalized step indices directly under `path`
+    return [n for n in _numbered_subdirs(path) if _is_step_dir(os.path.join(path, str(n)))]
+
+def snapshot_layout(snap_path):
+    # "flat"     snap_path/<step>/...        — the jax backend's shared global dir, and also
+    #                                          a single-process mpi4jax run (both hold the
+    #                                          FULL global z range, so readers treat them alike)
+    # "per_rank" snap_path/<rank>/<step>/... — mpi4jax with size>1
+    # "empty"    nothing saved yet
+    snap_path = str(snap_path)
+    subs = _numbered_subdirs(snap_path)
+    if not subs:
+        return "empty"
+    if any(_is_step_dir(os.path.join(snap_path, str(n))) for n in subs):
+        return "flat"
+    return "per_rank"
+
 def save_snapshot(isnap,state,mngr,params=None):
     # saves the full SimulationState; forcing_scale is always a concrete (n_ou,) array
     # (see run.initialize), so all new checkpoints share one tree structure. Snapshots
     # written before forcing_scale existed must be upgraded once with old_snapshot_repair.
-    # params is only needed for comm_backend="jax", whose states are global z-sharded
-    # arrays: they're reduced to this process's local shard so the on-disk per-rank layout
-    # is identical to the mpi4jax backend's (a run stays restartable across backends).
-    if params is not None and params.comm_backend == "jax":
-        from . import comms
-        state = comms.state_to_local(state, params)
-    elif params is None and _is_global_array(state.fields):
-        # guard the params=None default: a jax-backend state saved without params would
-        # hand orbax a z-sharded global array and fork the on-disk per-rank layout
-        raise ValueError("save_snapshot(...) needs `params` for comm_backend='jax': the "
-                         "state's fields are a sharded/multi-process global array and must "
-                         "be localized before orbax. Pass params as the 4th argument.")
+    # comm_backend="jax" states are GLOBAL z-sharded jax.Arrays and are handed to orbax as
+    # they are — that is orbax's supported multihost path (the host-local guard in
+    # _src/serialization/jax_array_handlers.py only rejects fully-addressable arrays).
+    if _is_global_array(state.fields) and (params is None or params.comm_backend != "jax"):
+        # a global array only belongs in the jax backend's single shared directory; through
+        # an mpi4jax per-rank manager it would write global data into a per-rank tree
+        raise ValueError("save_snapshot(...) got a sharded/multi-process global state but "
+                         "no comm_backend='jax' params. Pass the jax-backend params (4th "
+                         "argument) and a manager built by snapshot_manager_setup.")
     if state.forcing_scale is None:
         # orbax records None children in its metadata, so letting this through would fork
         # the on-disk tree structure between runs (hand-built states hit this; the
@@ -128,28 +168,73 @@ def save_snapshot(isnap,state,mngr,params=None):
                          "concrete (n_ou,) array so all snapshots share one tree structure. "
                          "Build states via run.initialize / load_snapshot, or use "
                          "state._replace(forcing_scale=jnp.zeros((params.n_ou,))).")
-    if params is not None and params.comm_backend == "jax":
-        state = _to_host(state)  # numpy leaves: orbax rejects host-local jax.Arrays multi-host
     return mngr.save(isnap,args=ocp.args.StandardSave(state))
 
 def get_saved_steps(snap_path, params=None):
-    # params (optional) only selects the per-process manager options for comm_backend="jax"
+    # Plain directory scan (params accepted for API compatibility, unused): handles the
+    # per-rank, flat/global and legacy layouts alike, needs no CheckpointManager — and so
+    # no multihost barriers — and ignores stranded *.orbax-checkpoint-tmp dirs.
     snap_path = str(snap_path)
-    rank0_dir = os.path.join(snap_path, "0")
-    if os.path.isdir(rank0_dir) and not os.path.exists(os.path.join(rank0_dir, "default")):
-        return _new_manager(rank0_dir, params).all_steps()
-    return _new_manager(snap_path, params).all_steps()
+    if snapshot_layout(snap_path) == "per_rank":
+        return _step_dirs(os.path.join(snap_path, "0"))
+    return _step_dirs(snap_path)
+
+def _restore_step(snap_path, isnap, state_like):
+    # PROCESS-LOCAL read: a bare StandardCheckpointHandler, never a CheckpointManager.
+    # CheckpointManager construction and Checkpointer.restore both call
+    # multihost.sync_global_processes (checkpoint_manager.py::_create_root_directory,
+    # _src/checkpointers/checkpointer.py::restore), which deadlocks the moment different
+    # ranks read different directories (the mpi4jax per-rank tree) or a different number of
+    # them (resharding). The handler itself is barrier-free.
+    d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), _ITEM)
+    if not os.path.isdir(d):
+        raise FileNotFoundError(f"no snapshot {isnap} under {snap_path} (expected {d})")
+    handler = ocp.StandardCheckpointHandler()
+    try:
+        return handler.restore(epath.Path(d), args=ocp.args.StandardRestore(state_like))
+    finally:
+        getattr(handler, "close", lambda: None)()
+
+def _state_template(params, nz, sharding=None, fields_sharding=None):
+    # SimulationState of ShapeDtypeStructs with `nz` z-planes; sharding=None lets orbax
+    # follow the checkpoint's own recorded sharding.
+    ftype, ctype = get_precision_types()
+    nkx, nky = params.nx, params.ny // 2 + 1
+    fs = sharding if fields_sharding is None else fields_sharding
+    return SimulationState(
+        t=jax.ShapeDtypeStruct((), ftype, sharding=sharding),
+        fields=jax.ShapeDtypeStruct((params.nfields, nz, nkx, nky), ctype, sharding=fs),
+        # forcing_state/key/scale have no z-axis and are identical on every rank
+        forcing_state=jax.ShapeDtypeStruct((params.n_ou, 2, nkx, nky), ctype, sharding=sharding),
+        forcing_key=jax.ShapeDtypeStruct((), get_key_dtype(), sharding=sharding),
+        forcing_scale=jax.ShapeDtypeStruct((params.n_ou,), ftype, sharding=sharding))
+
+def _load_flat_global(isnap, snap_path, params):
+    # comm_backend="jax" reading a flat dir: restore straight into the z-sharded GLOBAL
+    # arrays, so each process only reads its own shards and the rank count at save time is
+    # irrelevant (the file holds the whole z range).
+    from . import comms
+    from jax.sharding import NamedSharding, PartitionSpec as P
+    _pin_array_handler()
+    mesh = comms.get_mesh()
+    tmpl = _state_template(params, params.nz, sharding=NamedSharding(mesh, P()),
+                           fields_sharding=NamedSharding(mesh, P(None, comms.Z_AXIS)))
+    st = _restore_or_advise(snap_path, isnap, tmpl)
+    return st._replace(forcing_key=_wrap_key(st.forcing_key))
 
 def load_snapshot(isnap,snap_path,params):
     snap_path = str(snap_path)
+    layout = snapshot_layout(snap_path)
+    if params.comm_backend == "jax" and layout != "per_rank":
+        return _load_flat_global(isnap, snap_path, params)
 
     p_save = 1
-    if os.path.exists(os.path.join(snap_path, "0", str(isnap))):
+    if layout == "per_rank":
         while os.path.exists(os.path.join(snap_path, str(p_save), str(isnap))):
             p_save += 1
 
-    ftype, ctype = get_precision_types()
-    
+    ctype = get_precision_types()[1]
+
     #grid sizes for the current load and the original save
     nz_load = params.nz // params.size if params.spatial_dimensions == 3 else 1
     nz_save = params.nz // p_save if params.spatial_dimensions == 3 else 1
@@ -164,23 +249,9 @@ def load_snapshot(isnap,snap_path,params):
     z_start_l = params.rank * nz_load
     z_end_l = (params.rank + 1) * nz_load
 
-    # Setup the expected ShapeDtypeStruct for loading from the saved ranks.
-    if params.spatial_dimensions == 3:
-        shape_complex_s = (params.nfields, nz_save, params.nx, params.ny // 2 + 1)
-    else:
-        shape_complex_s = (params.nfields, 1, params.nx, params.ny // 2 + 1)
-
-    nkx, nky = params.nx, params.ny // 2 + 1
-    shd = _restore_sharding(params)  # None for mpi4jax (unchanged behaviour)
-    # forcing_state/forcing_key have no z-axis and are identical on every saved rank
-    forcing_state_like_s = jax.ShapeDtypeStruct((params.n_ou, 2, nkx, nky), ctype, sharding=shd)
-    forcing_key_like_s = jax.ShapeDtypeStruct((), get_key_dtype(), sharding=shd)
-
-    fields_like_s = jax.ShapeDtypeStruct(shape_complex_s, ctype, sharding=shd)
-    forcing_scale_like_s = jax.ShapeDtypeStruct((params.n_ou,), ftype, sharding=shd)
-    state_like_s = SimulationState(t=jax.ShapeDtypeStruct((), ftype, sharding=shd), fields=fields_like_s,
-                                    forcing_state=forcing_state_like_s, forcing_key=forcing_key_like_s,
-                                    forcing_scale=forcing_scale_like_s)
+    # Expected tree for one saved rank's file, pinned to this process's own device.
+    state_like_s = _state_template(params, nz_save if params.spatial_dimensions == 3 else 1,
+                                   sharding=_local_sharding())
 
     #iterate over saved ranks and extract overlapping z-slices (fields/t only)
     for rank_s in range(p_save):
@@ -192,10 +263,11 @@ def load_snapshot(isnap,snap_path,params):
         g_end = min(z_end_l, z_end_s)
 
         if g_start < g_end:
-            #overlap exists. Setup a checkpoint manager to read from rank_s
-            path_s = os.path.join(snap_path, str(rank_s)) if p_save > 1 else snap_path
-            mngr_s = _new_manager(path_s, params)
-            state_s = _restore_or_advise(mngr_s, isnap, state_like_s)
+            #overlap exists: read that rank's file (its own dir in a per-rank tree). The
+            #subdir choice follows the LAYOUT, not p_save>1: a per-rank tree pruned down to
+            #a single rank dir is still snap_path/0/<step>.
+            path_s = os.path.join(snap_path, str(rank_s)) if layout == "per_rank" else snap_path
+            state_s = _restore_or_advise(path_s, isnap, state_like_s)
 
             #slice coordinates
             s_start = g_start - z_start_s
@@ -208,11 +280,8 @@ def load_snapshot(isnap,snap_path,params):
 
     # forcing_state/forcing_key/forcing_scale: no z-axis, identical on all saved ranks by
     # construction -> restore once from rank 0
-    path_0 = os.path.join(snap_path, "0") if p_save > 1 else snap_path
-    mngr_0 = _new_manager(path_0, params)
-    state_0 = _restore_or_advise(mngr_0, isnap, state_like_s)
-    # jnp.asarray/_wrap_key: leaves come back as numpy (and the key as raw key_data) from a
-    # snapshot written with numpy leaves; both are no-ops on jax.Array/key-array leaves
+    path_0 = os.path.join(snap_path, "0") if layout == "per_rank" else snap_path
+    state_0 = _restore_or_advise(path_0, isnap, state_like_s)
     restored = SimulationState(t=jnp.asarray(restored_t), fields=restored_fields,
                                forcing_state=jnp.asarray(state_0.forcing_state),
                                forcing_key=_wrap_key(state_0.forcing_key),
@@ -222,7 +291,7 @@ def load_snapshot(isnap,snap_path,params):
         restored = comms.state_to_global(restored, params)  # local shards -> global z-sharded arrays
     return restored
 
-def _restore_or_advise(mngr, isnap, state_like):
+def _restore_or_advise(snap_path, isnap, state_like):
     # restore, turning the cryptic orbax structure-mismatch error on old snapshots into a
     # pointer at old_snapshot_repair. Orbax names only the FIRST mismatched key, so match
     # any of the forcing fields: pre-forcing_scale snapshots trip on "forcing_scale",
@@ -230,7 +299,7 @@ def _restore_or_advise(mngr, isnap, state_like):
     # NB the match is on orbax's error text; if an orbax upgrade rewords it, the raw
     # error still propagates unchanged — we just lose this friendlier pointer.
     try:
-        return mngr.restore(isnap, args=ocp.args.StandardRestore(state_like))
+        return _restore_step(snap_path, isnap, state_like)
     except ValueError as e:
         if any(k in str(e) for k in ("forcing_scale", "forcing_state", "forcing_key")):
             raise ValueError(
@@ -277,11 +346,10 @@ def old_snapshot_repair(snap_path, params, ranks=None):
     ftype, ctype = get_precision_types()
     nkx, nky = params.nx, params.ny // 2 + 1
 
-    # same layout heuristic as get_saved_steps (load_snapshot instead probes for its
-    # specific step under snap_path/0; both agree on these two layouts)
+    # one shared layout detector with get_saved_steps/load_snapshot
+    per_rank = snapshot_layout(snap_path) == "per_rank"
     p_save = 1
-    if os.path.isdir(os.path.join(snap_path, "0")) and not os.path.exists(os.path.join(snap_path, "0", "default")):
-        # top-level numbered dirs that are themselves manager dirs -> per-rank layout
+    if per_rank:
         while os.path.isdir(os.path.join(snap_path, str(p_save))):
             p_save += 1
     nz_save = params.nz // p_save if params.spatial_dimensions == 3 else 1
@@ -299,7 +367,7 @@ def old_snapshot_repair(snap_path, params, ranks=None):
     options = ocp.CheckpointManagerOptions()
 
     for rank_s in (ranks if ranks is not None else range(p_save)):
-        path_r = os.path.abspath(os.path.join(snap_path, str(rank_s))) if p_save > 1 else os.path.abspath(snap_path)
+        path_r = os.path.abspath(os.path.join(snap_path, str(rank_s))) if per_rank else os.path.abspath(snap_path)
         _recover_interrupted_repair(path_r)
         mngr = ocp.CheckpointManager(path_r, options=options)
         for step in mngr.all_steps():

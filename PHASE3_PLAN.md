@@ -132,6 +132,21 @@ Design constraints (pinned; deviations need a written reason in the status line)
   `params.comm_backend`, keeping the on-disk layout IDENTICAL between backends
   (a run must be restartable across backends; add that to the correctness test).
 
+**AMENDMENT (2026-07-26, user-approved).** Two Savio runs showed that per-rank orbax
+managers cannot be made to work under `comm_backend="jax"`: at `process_count>1` orbax
+rejects host-local `jax.Array`s outright, and scoping each rank's manager with
+`MultiprocessingOptions(primary_host=rank, active_processes={rank})` — which verified
+against orbax 0.11.39 — fails on Savio's orbax 0.12.1 (only rank 0 finalized its step;
+ranks 1–3 stranded `*.orbax-checkpoint-tmp` dirs, then a `FileExistsError`, a ~5 min
+barrier hang and an abort). The design is therefore replaced by orbax-native GLOBAL
+checkpointing: ONE shared `CheckpointManager` over ONE shared directory, handed the
+GLOBAL z-sharded `jax.Array`s directly. Consequently the "identical on-disk layout"
+constraint above is **withdrawn** — layouts may differ per backend. The binding
+requirements are now: (i) cross-backend restartability in BOTH directions, (ii)
+pre-Phase-3 snapshot dirs still restorable via the existing path/repair, (iii) the
+mpi4jax writer path BIT-IDENTICAL to HEAD (its per-rank layout is the canonical
+production format and stays untouched).
+
 Verification (local, no GPU): (a) battery passes with default backend — zero
 regression; (b) `XLA_FLAGS=--xla_force_host_platform_device_count=4` single-process
 test — new `tests/test_backend_jax.py`: same global 3D grid run (i) serial mpi4jax
@@ -186,13 +201,20 @@ Each agent updates ONLY its own status line below.
   comm_backend exempted from params.json's differing-record check (cross-backend restart),
   comms._local_device_ids GPU binding (reads CUDA_VISIBLE_DEVICES, never sets it), and
   tests/test_backend_jax_mpi.py as the driver for slurms/test_backend_jax_gpu.sh.
-  Multi-host checkpoint fix (after job 35845687, the first real 4-process run): orbax refuses
-  host-local jax.Arrays once process_count>1 (save) and follows the checkpoint's recorded
-  device when a restore template carries no sharding (restore). Under comm_backend="jax" only,
-  save_snapshot now hands orbax host numpy leaves, restore templates pin this process's device,
-  and every CheckpointManager gets MultiprocessingOptions(primary_host=idx, active_processes={idx})
-  so barriers/pruning stay per-rank. On-disk leaf set + data unchanged (value_type/sharding
-  sidecars differ, both cross-restores verified exact); mpi4jax path bit-identical.
+  Multi-host checkpointing, FINAL design (see the A2 AMENDMENT above; supersedes the per-rank
+  manager attempts that failed in jobs 35845687 and 35852476): under comm_backend="jax"
+  snapshot_manager_setup builds ONE shared CheckpointManager over ONE shared directory and
+  save_snapshot hands orbax the GLOBAL z-sharded arrays unchanged — orbax's supported multihost
+  path (its host-local guard only rejects fully-addressable arrays; typed PRNG keys are unwrapped
+  to key_data and rewrapped on restore, so forcing_key needs no special handling). All the
+  attempt-2 machinery is deleted (_mp_options, _new_manager, _to_host, localize-before-save).
+  Layouts now differ by backend — jax: snap_path/<step>, mpi4jax: snap_path/<rank>/<step> — and
+  snapshot_layout()/get_saved_steps()/load_snapshot detect which is which by the
+  _CHECKPOINT_METADATA marker inside snap_path/<n> (immune to stranded *.orbax-checkpoint-tmp
+  dirs). Reads never build a CheckpointManager: a bare StandardCheckpointHandler is barrier-free,
+  which is what lets ranks read different directories (or different numbers of them) without
+  deadlocking. Verified locally on 4 forced host devices at orbax 0.12.1: test_backend_jax.py
+  40/40 PASS, mpi4jax writer byte-for-byte unchanged vs HEAD.
 - A3 (review): DONE, 3 CRITICAL + 4 MAJOR found and FIXED. Criticals: (1)+(2) the jax backend
   could not run on >1 process at all — `comms.to_global`/`to_local` used `jax.device_put` onto /
   off a non-fully-addressable sharding (rejects orbax-restored committed arrays, and its

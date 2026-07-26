@@ -211,7 +211,15 @@ sustaining turbulence instead of letting it freely decay. `forcing_state` shape
 ### Checkpointing
 
 `snapshot_io.py` save/restore is orbax-based, one `CheckpointManager` per MPI rank
-(`snapshot_manager_setup`). The serialized tree is the full `SimulationState`, and
+(`snapshot_manager_setup`) writing `snap_path/<rank>/<step>/` — except under
+`comm_backend="jax"`, where all processes share ONE manager over ONE directory
+(`snap_path/<step>/`) and hand orbax the global z-sharded arrays (orbax's native multihost
+path). The two layouts are distinguished by `snapshot_layout()` (a `_CHECKPOINT_METADATA`
+marker directly inside `snap_path/<n>` means `<n>` is a step, so the dir is "flat"), and
+each backend can restart from either. **Reads never construct a `CheckpointManager`** — a
+bare `StandardCheckpointHandler` is barrier-free, whereas manager/checkpointer restores
+call `multihost.sync_global_processes` and deadlock as soon as ranks read different
+directories. The serialized tree is the full `SimulationState`, and
 `forcing_scale` is **always a concrete `(n_ou,)` array, never None**, in any state that
 reaches `save_snapshot` (`initialize`/`load_snapshot` guarantee this) — orbax records
 `None` children in its metadata, so a None-bearing save would fork the on-disk structure

@@ -104,28 +104,48 @@ check(f"z_derivatives across the ppermute halo match the serial stencil (rel {dz
       dz_err < 1e-14)
 
 # --- D. checkpoint roundtrip + cross-backend restart ------------------------------------
+# The jax backend writes ONE shared global directory (snap_path/<step>/...) and hands orbax
+# the z-sharded global jax.Arrays; layouts may differ per backend, cross-restartability
+# both ways is what must hold.
 snap_path = tempfile.mkdtemp()
 p_ref.save(snap_path)
 p_jax.save(snap_path)  # comm_backend must not count as a differing parameter
 check("params.save accepts both backends in one run directory", True)
 
 mngr = jr.snapshot_manager_setup(p_jax, snap_path, nsnap=2)
+check("jax backend's manager is ONE shared directory (no per-rank subdir)",
+      os.path.abspath(str(mngr.directory)) == os.path.abspath(snap_path))
 sn.save_snapshot(0, end_jax, mngr, p_jax)
 mngr.wait_until_finished()
+check(f"jax-backend save produced the flat layout (got {sn.snapshot_layout(snap_path)!r})",
+      sn.snapshot_layout(snap_path) == "flat")
 
 back_jax = sn.load_snapshot(0, snap_path, p_jax)
 rt = float(np.max(np.abs(np.asarray(back_jax.fields) - f_jax)))
 check(f"jax-backend snapshot roundtrip exact (max|diff| {rt:g})", rt == 0.0)
-check(f"restored fields re-sharded over {NDEV} devices",
-      len(back_jax.fields.addressable_shards) == NDEV)
+check(f"restored fields re-sharded over {NDEV} devices along z",
+      len(back_jax.fields.addressable_shards) == NDEV
+      and back_jax.fields.addressable_shards[0].data.shape[1] == nz // NDEV)
+check("restored global fields have the full global shape", back_jax.fields.shape == f_ref.shape)
 
-# the whole point of localizing before orbax: an mpi4jax process reads the same directory
+# an mpi4jax process reads the jax backend's global directory
 back_ref = sn.load_snapshot(0, snap_path, p_ref)
 cross = float(np.max(np.abs(np.asarray(back_ref.fields) - f_jax)))
-check(f"cross-backend restart (jax-written snapshot read by mpi4jax) exact (max|diff| {cross:g})",
+check(f"cross-backend restart (jax-written global dir read by mpi4jax) exact (max|diff| {cross:g})",
       cross == 0.0 and float(back_ref.t) == float(end_jax.t))
 
-# the key is stored as raw uint32 key_data by the numpy-leaf save: it must come back wrapped.
+# ... and with z-slicing: an mpi4jax rank that owns only part of z. There is no MPI here, so
+# rank/size are set directly on a throwaway Parameters — load_snapshot reads only those two.
+p_half = jr.Parameters(comm_backend="mpi4jax", **kw)
+p_half.size, p_half.rank = 2, 1
+half = sn.load_snapshot(0, snap_path, p_half)
+hz = nz // 2
+h_err = float(np.max(np.abs(np.asarray(half.fields) - f_jax[:, hz:])))
+check(f"mpi4jax rank 1/2 reads only its z-slice of the jax global dir (shape "
+      f"{tuple(half.fields.shape)}, max|diff| {h_err:g})",
+      half.fields.shape == (p_ref.nfields, hz, nx, ny//2+1) and h_err == 0.0)
+
+# keys are stored as real key arrays in both layouts (orbax unwraps/rewraps typed PRNG keys).
 # NB checked here, before section E donates back_jax's buffers.
 kd = lambda k: np.asarray(jax.random.key_data(k))
 is_key = lambda k: jax.dtypes.issubdtype(k.dtype, jax.dtypes.prng_key)
@@ -164,10 +184,9 @@ s_rel = np.max(np.abs(np.asarray(s_jax.fields) - np.asarray(s_ref.fields))) \
 check(f"simulate_scan + cfl_every=2 + lsrk_scan=False + per-stage norm agree (rel {s_rel:.2e} < 1e-14)",
       s_rel < 1e-14 and float(s_jax.t) == float(s_ref.t))
 
-# --- G. save-style compatibility: the on-disk tree must not fork between backends ---------
-# The jax backend must hand orbax numpy leaves (orbax refuses host-local jax.Arrays once
-# jax.distributed is up), so _METADATA's value_type differs; the leaf STRUCTURE and the data
-# must not, and both styles must be readable by both backends.
+# --- G. on-disk shape of the two layouts + pruning ----------------------------------------
+# AMENDED (2026-07-26): the layouts may DIFFER between backends. What must hold is the leaf
+# SET (one pytree structure), both cross-restores, and an untouched mpi4jax writer path.
 import json
 def leaf_meta(path, isnap=0):
     m = json.load(open(os.path.join(path, str(isnap), "default", "_METADATA")))["tree_metadata"]
@@ -180,23 +199,10 @@ mngr_r.wait_until_finished()
 keys_ref, types_ref = leaf_meta(snap_ref)
 keys_jax, types_jax = leaf_meta(snap_path)
 check(f"on-disk leaf set identical across backends ({len(keys_ref)} leaves)", keys_ref == keys_jax)
-check(f"leaf value types as designed (mpi4jax {types_ref} / jax {types_jax})",
-      types_ref == {"jax.Array"} and types_jax == {"np.ndarray"})
+check(f"both backends store jax.Array leaves (mpi4jax {types_ref} / jax {types_jax})",
+      types_ref == {"jax.Array"} and types_jax == {"jax.Array"})
 
-# the value_type difference also drops orbax's jax.Array-only sidecars. Pinned here so the
-# difference stays a KNOWN one; the cross-restores below are what proves it's benign.
-def sidecars(path, isnap=0):
-    d = os.path.join(path, str(isnap), "default")
-    fs = (os.path.relpath(os.path.join(r, f), d) for r, _, g in os.walk(d) for f in g)
-    return sorted(f for f in fs if not f.startswith("d/") and not f.startswith("ocdbt."))
-sc_ref, sc_jax = sidecars(snap_ref), sidecars(snap_path)
-check(f"jax.Array leaves add _sharding/array_metadatas sidecars, numpy leaves don't "
-      f"(mpi4jax {sc_ref} / jax {sc_jax})",
-      sc_ref == ["_METADATA", "_sharding", "array_metadatas/process_0", "manifest.ocdbt"]
-      and sc_jax == ["_METADATA", "manifest.ocdbt"])
-
-# per-process manager options: orbax prunes only on its primary host, so each rank must be
-# its own primary or nsnap silently stops working on every rank but 0
+# one shared manager -> max_to_keep prunes once, globally
 prune_dir = tempfile.mkdtemp()
 mngr_p = jr.snapshot_manager_setup(p_jax, prune_dir, nsnap=2)
 for i in range(4):
@@ -210,29 +216,84 @@ xr = float(np.max(np.abs(np.asarray(back_x.fields) - f_ref)))
 check(f"cross-backend restart (mpi4jax-written snapshot read by the jax backend) exact (max|diff| {xr:g})",
       xr == 0.0 and float(back_x.t) == float(end_ref.t) and is_key(back_x.forcing_key))
 
-# --- H. regression for the multi-controller restore bug -----------------------------------
-# With jax.distributed up, each process's local device ids differ, so a template leaf without
-# a sharding makes orbax follow the DEVICE RECORDED IN THE CHECKPOINT ("Device cpu:0 was not
-# found in jax.local_devices()"). Hiding cpu:0 reproduces that here.
+# --- G2. the jax backend reading a real mpi4jax PER-RANK tree (the Savio phase-4a case) ----
+# Built with the genuine mpi4jax writer path by faking rank/size (no MPI here): two rank
+# dirs each holding half of z, exactly what `mpirun -n 2` would write.
+pr_dir = tempfile.mkdtemp()
+p_w = jr.Parameters(comm_backend="mpi4jax", **kw)
+p_w.size = 2
+for r in range(2):
+    p_w.rank = r
+    m_w = jr.snapshot_manager_setup(p_w, pr_dir, nsnap=2)
+    sn.save_snapshot(0, end_ref._replace(fields=jnp.asarray(f_ref[:, r*hz:(r+1)*hz])), m_w, p_w)
+    m_w.wait_until_finished()
+check(f"2-rank mpi4jax writer produced the per-rank layout (got {sn.snapshot_layout(pr_dir)!r})",
+      sn.snapshot_layout(pr_dir) == "per_rank" and sorted(os.listdir(pr_dir)) == ["0", "1"])
+pr_jax = sn.load_snapshot(0, pr_dir, p_jax)
+pr_err = float(np.max(np.abs(np.asarray(pr_jax.fields) - f_ref)))
+check(f"jax backend unions a 2-rank mpi4jax tree into global z-sharded arrays "
+      f"(max|diff| {pr_err:g})",
+      pr_err == 0.0 and len(pr_jax.fields.addressable_shards) == NDEV
+      and float(pr_jax.t) == float(end_ref.t) and is_key(pr_jax.forcing_key))
+pr_ref = sn.load_snapshot(0, pr_dir, p_ref)
+check("... and the mpi4jax backend reads the same tree identically",
+      float(np.max(np.abs(np.asarray(pr_ref.fields) - f_ref))) == 0.0)
+
+# --- G3. layout detection on every layout, with a decoy stranded tmp dir -------------------
+# snap_path/0 exists in BOTH layouts; the marker is _CHECKPOINT_METADATA / the item subdir
+# directly inside it. Stranded "<step>.orbax-checkpoint-tmp" dirs (real Savio leftovers)
+# must not confuse either the detector or get_saved_steps.
+for decoy_root, decoy in ((snap_path, "0.orbax-checkpoint-tmp"), (pr_dir, "3.orbax-checkpoint-tmp"),
+                          (os.path.join(pr_dir, "0"), "7.orbax-checkpoint-tmp")):
+    os.makedirs(os.path.join(decoy_root, decoy), exist_ok=True)
+    open(os.path.join(decoy_root, decoy, "_CHECKPOINT_METADATA"), "w").close()
+empty_dir = tempfile.mkdtemp()
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(sn.__file__)))
+legacy_tree = os.path.join(REPO, "tests", "data", "forced_turbulence_64cubed")  # read-only
+cases = [(snap_path, "flat", [0]), (pr_dir, "per_rank", [0]), (empty_dir, "empty", [])]
+if os.path.isdir(legacy_tree):
+    cases.append((legacy_tree, "per_rank", [0, 1, 2, 3, 4]))
+for path, want, want_steps in cases:
+    got, got_steps = sn.snapshot_layout(path), sorted(sn.get_saved_steps(path))
+    check(f"layout of {os.path.basename(path) or path} is {want!r} with steps {want_steps} "
+          f"(got {got!r}, {got_steps})", got == want and got_steps == want_steps)
+
+# --- G4. mixing WRITERS of the two layouts in one directory is refused ---------------------
+# (reading across layouts stays supported — that is what G2/D check)
+def raises_valueerror(fn):
+    try:
+        fn()
+        return False
+    except ValueError:
+        return True
+p_w2 = jr.Parameters(comm_backend="mpi4jax", **kw)
+p_w2.size, p_w2.rank = 2, 0
+check("jax backend refuses to write into an existing mpi4jax per-rank tree",
+      raises_valueerror(lambda: jr.snapshot_manager_setup(p_jax, pr_dir, nsnap=2)))
+check("multi-rank mpi4jax refuses to write into an existing flat dir",
+      raises_valueerror(lambda: jr.snapshot_manager_setup(p_w2, snap_path, nsnap=2)))
+check("single-process mpi4jax may still continue a flat dir",
+      not raises_valueerror(lambda: jr.snapshot_manager_setup(p_ref, snap_path, nsnap=2)))
+
+# --- H. restores never follow the device recorded in the checkpoint ------------------------
+# With jax.distributed up each process owns different device ids, so a template leaf WITHOUT
+# a sharding makes orbax follow the checkpoint's recorded device ("Device cpu:0 was not found
+# in jax.local_devices()"). Every process-local restore now pins this process's own device;
+# hiding cpu:0 is the stand-in for "this process doesn't own the writer's device".
 _real_local = jax.local_devices
 try:
     jax.local_devices = lambda *a, **k: _real_local(*a, **k)[1:]
-    try:
-        sn.load_snapshot(0, snap_ref, p_ref)  # mpi4jax template: no sharding -> metadata device
-        old_fails = False
-    except ValueError as e:
-        old_fails = ("local_devices" in str(e)) or ("Topology mismatch" in str(e))
-    try:
-        again = sn.load_snapshot(0, snap_ref, p_jax)  # jax template pins a local device
-        new_ok = float(again.t) == float(end_ref.t)
-    except Exception as e:  # noqa: BLE001 - reported as a failed check
-        new_ok = False
-        print(f"    jax-backend restore raised {type(e).__name__}: {str(e)[:160]}")
+    pinned_ok = True
+    for name, p_ in (("mpi4jax", p_ref), ("jax", p_jax)):
+        try:
+            again = sn.load_snapshot(0, pr_dir, p_)  # per-rank tree: process-local templates
+            pinned_ok &= float(again.t) == float(end_ref.t)
+        except Exception as e:  # noqa: BLE001 - reported as a failed check
+            pinned_ok = False
+            print(f"    {name} restore raised {type(e).__name__}: {str(e)[:160]}")
 finally:
     jax.local_devices = _real_local
-check("restore follows the checkpoint's device without an explicit target sharding (the Savio bug)",
-      old_fails)
-check("... and the jax backend's device-pinned template restores it anyway", new_ok)
+check("process-local restores are pinned to this process's device (cpu:0 hidden)", pinned_ok)
 
 # --- I. a real PRE-Phase-3 (pre-forcing_scale) snapshot dir is still readable -------------
 # tests/data/forced_turbulence_64cubed is the reference legacy layout, written long before
