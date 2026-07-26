@@ -73,6 +73,13 @@ LAUNCH_JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER
 export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=INIT,ENV
 TMO="timeout 900"
+# Job 35861515: rings connected via P2P/CUMEM, then the FIRST collective hung — the
+# signature of NCCL's cuMem-handle P2P path misbehaving on some driver combos. Disable it
+# (falls back to classic P2P/IPC; perf difference negligible at these sizes). If the hang
+# vanishes, this line is the culprit and stays; revisit on driver/NCCL upgrades.
+export NCCL_CUMEM_ENABLE=0
+# Per-rank python stack dumps every 120 s while hung (see test_backend_jax_mpi.py).
+export RMHD_DEBUG_HANG=1
 
 rm -rf "$OUT"
 

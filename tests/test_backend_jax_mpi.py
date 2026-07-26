@@ -70,6 +70,12 @@ print(f"pkg={_pkgdir or 'default'} backend={backend} rank={params.rank}/{params.
       f"global_devices={jax.device_count()} precision={os.environ.get('RMHD_PRECISION','32')}",
       flush=True)
 
+# RMHD_DEBUG_HANG=1: dump every thread's python stack to stderr every 120 s — turns a
+# silent multi-process hang into a per-rank backtrace of the stuck call (job 35861515).
+if os.environ.get("RMHD_DEBUG_HANG"):
+    import faulthandler
+    faulthandler.dump_traceback_later(120, repeat=True)
+
 # [bc] breadcrumbs: locate multi-process hangs (job 35861466 stalled between the pkg=
 # print and the first snapshot save with no diagnostics). Cheap; keep.
 def _bc(msg):
