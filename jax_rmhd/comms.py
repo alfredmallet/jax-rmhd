@@ -50,9 +50,15 @@ def _local_device_ids(params):
     if ids not in (None, "", "auto"):
         return [int(i) for i in ids.split(",")]
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    nvis = len(visible.split(",")) if visible else 1
-    if nvis <= 1:
+    if visible is None or visible == "":
         return None
+    nvis = len(visible.split(","))
+    if nvis == 1:
+        # CVD pins one physical GPU; the driver renumbers it to ordinal 0. MUST pass [0]
+        # explicitly: left as None, jax.distributed.initialize parses CVD itself and feeds
+        # the PHYSICAL id as the ordinal -> CUDA_ERROR_INVALID_DEVICE on every rank whose
+        # GPU isn't physical 0 (job 35861244).
+        return [0]
     node_comm = params.comm.Split_type(MPI.COMM_TYPE_SHARED)
     return [node_comm.Get_rank() % nvis]
 
