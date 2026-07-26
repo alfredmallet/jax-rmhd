@@ -33,6 +33,7 @@ export PYTHONNOUSERSITE=1
 # nvidia/*/lib dir on LD_LIBRARY_PATH so plain-name dlopen always resolves.
 NVLIBS=$(python -c "import nvidia,os;print(':'.join(os.path.join(p,d,'lib') for p in nvidia.__path__ for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p,d,'lib'))))" 2>/dev/null || true)
 [ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
 export RMHD_PRECISION=32
 
