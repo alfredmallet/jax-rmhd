@@ -184,6 +184,31 @@ A2 = jax_rmhd/*, tests/test_backend_jax.py, slurms/test_backend_jax_gpu.sh) → 
 + fixes → user creates env, runs probes + correctness job → benchmark round → gate.
 Each agent updates ONLY its own status line below.
 
+## GPU bring-up log (2026-07-26, orchestrator)
+
+T9 correctness gate PASSED on hardware: job 35861902, 4×A5000, all 5 phases ALL PASS
+(jax/NCCL vs mpi4jax rel ~3e-16 fp64; cross-backend restarts both ways rel ~1e-15).
+Environment/infra fixes required to get there, all baked into the GPU sbatch scripts and
+SAVIO_GPU_SETUP.md: unset PYTHONPATH (anaconda3 module leaks base site-packages into batch
+shells → shadowed nvidia libs, "cuSPARSE not found"); NVLIBS LD_LIBRARY_PATH block via
+absolute env python; jax.distributed CVD-ordinal fix in comms._local_device_ids (single-CVD
+→ [0]); per-backend launch modes (mpi4jax WITH --gpu-bind=single:1, jax backend WITHOUT);
+NCCL_P2P_DISABLE=1 (PCIe P2P broken on savio4_gpu — likely ACS; bench/nccl_repro.py is the
+60-second reproducer, ticket-worthy; SHM transport works, understates P2P-capable clusters).
+
+## Results — A5000 bench (jobs 35861931 RUN_JAX=0 / 35861934 RUN_JAX=1, fp32, 512²×128, forced+nps, 2-pass values agree ≤2%)
+
+ms/step: mpi4jax g1 294 | g2 176 | g4 126 | g4unr 104 | g4he 128 (=g4, neutral) | unforced g1U 256, g4U 105.
+jax/NCCL j1 310 | j2 158 | j4 77.0 | j4hl 77.0 (halo hook neutral) | j4unr 68.5.
+Reading: **jax backend +63% over mpi4jax at 4 GPUs (scan), +52% unroll-vs-unroll — with
+NCCL P2P DISABLED (SHM), i.e. a handicapped win.** Scaling 1→4: jax ~4.0x (essentially
+ideal; per-GPU working set shrinks), mpi4jax ~2.3x (host-staging halos+allreduces bite).
+j1 is 5% slower than g1 — small constant shard_map/global-array overhead, irrelevant
+beyond 1 GPU. **Unroll (lsrk_scan=False) wins on GPU for BOTH backends** (+22% mpi4jax,
++12% jax) — opposite of CPU; production GPU config should set lsrk_scan=False.
+halo_start overlap: no measurable effect either backend at this size/transport.
+Pending before final gate verdicts: V100×2 fp64 anchor, A40 multi-node scaling.
+
 ## Status
 
 - A1 (T8 prep): DONE — `SAVIO_GPU_SETUP.md` rewritten (env build, per-rank GPU binding via
