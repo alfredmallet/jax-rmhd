@@ -87,6 +87,11 @@ _devstr = ",".join(f"{d.platform}:{d.id}" for d in jax.local_devices())
 if p.rank == 0 or jax.default_backend() != "cpu":  # per-rank on GPU, rank 0 only on 32-rank CPU jobs
     print(f"[rank {p.rank}] platform={jax.default_backend()} local_devices=[{_devstr}] "
           f"global_device_count={jax.device_count()}", flush=True)
+# RMHD_REQUIRE_GPU=1: die loudly instead of timing a silently CPU-fallback rank (2080 job
+# 35894622: transient cuInit NO_DEVICE put 2 of 28 ranks on CPU -> 4097 ms/step garbage).
+if os.environ.get("RMHD_REQUIRE_GPU") and jax.default_backend() == "cpu":
+    raise SystemExit(f"[rank {p.rank}] RMHD_REQUIRE_GPU=1 but jax fell back to CPU "
+                     f"(transient cuInit failure? node issue?) -- aborting this case.")
 kg = jr.setup_kgrids(p)
 # A/B isolation switches (new package only), to attribute any forced-path regression:
 if "sep" in sys.argv:

@@ -47,6 +47,7 @@ echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 # support; revisit if they fix it (SHM adds host-memory hops, so NCCL numbers here
 # UNDERSTATE a P2P/NVLink-capable cluster).
 export NCCL_P2P_DISABLE=1
+export RMHD_REQUIRE_GPU=1  # abort any case where a rank silently falls back to CPU (job 35894622)
 
 export RMHD_PRECISION=32
 
