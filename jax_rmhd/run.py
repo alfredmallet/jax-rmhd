@@ -51,9 +51,9 @@ def _advance_forcing(new_state, prev_t, kgrid, params):
     return new_state
 
 def _refresh_forcing_scale(state, kgrid, params):
-    # Recompute the per-step scale for the initial state. Checkpoints do store
+    # recompute the per-step scale for the initial state. Checkpoints do store
     # forcing_scale (recomputing is then a no-op), but repaired legacy snapshots carry
-    # zeros and hand-built states may be stale — one cheap recompute covers all cases.
+    # zeros and hand-built states may be stale — so recomputes.
     if params.forcing and params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
         if params.comm_backend == "jax":
@@ -64,7 +64,7 @@ def _refresh_forcing_scale(state, kgrid, params):
             state = state._replace(forcing_scale=scale_func(state, kgrid, params))
     return state
 
-#This can be used to estimate a good nblock. You can set the minimum higher.
+#this can be used to estimate a good nblock. You can set the minimum higher.
 def estimate_good_nblock(state,kgrid,params,t_snap,t_end,t_last_snap=0,nblock_min=10):
     # attribute access (not tuple unpack) so EquationRecipe can grow fields
     recipe = equation_registry[params.eqtype]
@@ -81,11 +81,11 @@ def estimate_good_nblock(state,kgrid,params,t_snap,t_end,t_last_snap=0,nblock_mi
     return int(nblock_estimate)
 
 def _use_cfl_blocks(params):
-    # Block the CFL reduction only when it can pay: with fixed dt there's no reduction anyway.
+    # block the CFL reduction only when it can pay: with fixed dt there's no reduction anyway.
     return params.cfl_every > 1 and params.adaptive_timestep
 
 def _block_dt(state,kgrid,params):
-    # One global CFL allreduce for a whole block, from the block's starting state
+    # one global CFL allreduce for a whole block, from the block's starting state
     # (same grad_func + set_timestep_func path as estimate_good_nblock; never rank-local).
     recipe = equation_registry[params.eqtype]
     return recipe.set_timestep_func(recipe.grad_func(state,kgrid,params),params)
@@ -103,8 +103,7 @@ def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
 
 def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
     if _use_cfl_blocks(params):
-        # nblock still counts STEPS, but is rounded UP to a whole number of cfl_every-step
-        # blocks (so nblock=10, cfl_every=4 runs 12 steps): dt is frozen per block.
+        # nblock rounded up to a whole multiple of cfl_every: dt frozen per block.
         set_timestep = equation_registry[params.eqtype].set_timestep_func
         rhs = construct_rhs(equation_registry[params.eqtype])
         def block(state,_):
@@ -115,7 +114,7 @@ def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
         set_timestep = equation_registry[params.eqtype].set_timestep_func
         rhs = construct_rhs(equation_registry[params.eqtype])
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
-        # Advance the O-U forcing state (and per-step norm scale) exactly once per full timestep
+        # advance the O-U forcing state (and per-step norm scale) once per full timestep
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
         return new_state, None
@@ -156,10 +155,8 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
     while state.t<t_end:
         state = advance(state)
         block_count+=1
-        # NB the while/snapshot conditions above already sync state.t to host every block;
-        # print_every only saves the print itself, not a device sync
         if params.rank==0 and block_count%print_every==0:
-            print(state.t)
+            print(state.t) #this doesnt affect performance; state.t already on host from while
         if state.t - t_last_snapshot > t_snap and save:
             snap=snap+1
             if params.rank==0:
@@ -206,7 +203,6 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     else:
         sim_to_next_snap_jit = jax.jit(lambda state,target_t: sim_to_next_snap(state,kgrid,target_t),
                                        donate_argnums=(0,))
-    # print_every: simulate has no non-snapshot prints currently, kept for API parity with simulate_scan; snapshot prints below stay unconditional.
     state=_refresh_forcing_scale(initial_state, kgrid, params)
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
@@ -227,9 +223,6 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
                 print ("Saving snapshot "+str(snap)+ " at t = "+str(state.t))
             save_snapshot(snap,state,mngr,params)
             mngr.wait_until_finished()
-        # advance the snapshot target unconditionally: leaving this inside `if save:`
-        # froze t_next_snapshot with save=False, so once state.t passed the first target
-        # the inner while_loop returned immediately and this loop spun forever
         t_last_snapshot=float(state.t)
     mngr.wait_until_finished()
     t_sim = perf_counter()-t_start

@@ -97,28 +97,33 @@ def init_backend(params):
         raise ValueError(f"comm_backend='jax': nz={params.nz} must be divisible by the "
                          f"global device count {ndev}")
 
-def halo_exchange(f, params):
-    # two-wide halo exchange along the z axis (axis 1) -> (recv_left, recv_right) neighbor slabs.
+def halo_exchange(f, params, width=2):
+    # parameterized-width halo exchange along the z axis (axis 1) -> (recv_left, recv_right)
+    # neighbor slabs, each `width` planes deep. width is a static Python int
+    nz_local = f.shape[1]
+    if width < 1 or width > nz_local:
+        raise ValueError(f"halo_exchange: width={width} must be >= 1 and <= nz_local={nz_local} "
+                         "(width > nz_local would need multi-hop neighbor comms, unsupported)")
     if params.comm_backend == "mpi4jax":
-        send_left = f[:,:2,:,:]
-        send_right = f[:,-2:,:,:]
+        send_left = f[:,:width,:,:]
+        send_right = f[:,-width:,:,:]
         recv_right = mpi4jax.sendrecv(send_left, send_left, dest=params.left_neighbor, source=params.right_neighbor,
                                          comm=params.cart_comm, sendtag=101, recvtag=101)
         recv_left = mpi4jax.sendrecv(send_right, send_right, dest=params.right_neighbor, source=params.left_neighbor,
                                         comm=params.cart_comm, sendtag=102, recvtag=102)
         return recv_left, recv_right
     if params.comm_backend == "jax":
-        # ppermute perm entries are (source, destination): shifting each device's first two
+        # ppermute perm entries are (source, destination): shifting each device's first `width`
         # planes DOWN the mesh (i -> i-1) makes device j receive device j+1's planes, i.e.
         # exactly the mpi4jax sendrecv(dest=left, source=right) that fills recv_right.
         n = get_mesh().size
-        recv_right = jax.lax.ppermute(f[:,:2,:,:], Z_AXIS, [(i, (i-1) % n) for i in range(n)])
-        recv_left = jax.lax.ppermute(f[:,-2:,:,:], Z_AXIS, [(i, (i+1) % n) for i in range(n)])
+        recv_right = jax.lax.ppermute(f[:,:width,:,:], Z_AXIS, [(i, (i-1) % n) for i in range(n)])
+        recv_left = jax.lax.ppermute(f[:,-width:,:,:], Z_AXIS, [(i, (i+1) % n) for i in range(n)])
         return recv_left, recv_right
     _unknown_backend(params)
 
 def allreduce_sum(x, params):
-    # Global SUM over the z-decomposition (scalar or array x); identity when not decomposed.
+    # global SUM over the z-decomposition (scalar or array x); identity when not decomposed.
     if params.cart_comm is None:
         return x
     if params.comm_backend == "mpi4jax":
@@ -128,7 +133,7 @@ def allreduce_sum(x, params):
     _unknown_backend(params)
 
 def allreduce_max(x, params):
-    # Global MAX over the z-decomposition (scalar or array x); identity when not decomposed.
+    # global MAX over the z-decomposition (scalar or array x); identity when not decomposed.
     if params.cart_comm is None:
         return x
     if params.comm_backend == "mpi4jax":
@@ -166,11 +171,7 @@ def _z_spec(z_axis):
     return P(*([None]*z_axis + [Z_AXIS]))
 
 def to_global(x, params, z_axis=None):
-    # Process-local array -> global jax.Array on the z mesh (z_axis=None: replicated).
-    # Both cases go through make_array_from_single_device_arrays: device_put onto a
-    # multi-process (non-fully-addressable) sharding rejects committed inputs outright
-    # (orbax-restored states are committed) and, for uncommitted ones, runs a
-    # multihost assert_equal that raises TypeError on the PRNG-key leaf.
+    # process-local array -> global jax.Array on the z mesh (z_axis=None: replicated).
     mesh = get_mesh()
     per_proc = mesh.size // params.size  # devices this process owns (1 in production)
     devs = mesh.devices.reshape(-1)[params.rank*per_proc:(params.rank+1)*per_proc]
@@ -187,10 +188,9 @@ def to_global(x, params, z_axis=None):
                                                     NamedSharding(mesh, _z_spec(z_axis)), shards)
 
 def to_local(x, params, z_axis=None):
-    # Global jax.Array -> this process's addressable piece (host side: orbax, diagnostics).
+    # global jax.Array -> this process's addressable piece (host side: orbax, diagnostics).
     if z_axis is None:
-        # replicated: take the local shard directly — device_put(global, Device) raises
-        # because a multi-process global array is not fully addressable
+        # replicated: take the local shard directly
         return x.addressable_shards[0].data
     shards = sorted(x.addressable_shards, key=lambda s: s.index[z_axis].start or 0)
     if len(shards) == 1:
@@ -206,7 +206,7 @@ def state_to_global(state, params):
                            forcing_scale=to_global(state.forcing_scale, params))
 
 def state_to_local(state, params):
-    # Inverse of state_to_global, for host-side consumers (diagnostics, tests). NOT on the
+    # inverse of state_to_global, for host-side consumers (diagnostics, tests). NOT on the
     # checkpoint path: orbax is handed the global arrays directly under comm_backend="jax".
     return SimulationState(t=to_local(state.t, params), fields=to_local(state.fields, params, z_axis=1),
                            forcing_state=to_local(state.forcing_state, params),

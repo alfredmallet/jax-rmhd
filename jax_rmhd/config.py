@@ -51,14 +51,8 @@ class Parameters():
         self.cfl_safety=cfl_safety
         self.dt = dt # Only used if adaptive_timestep==False
         self.adaptive_timestep = adaptive_timestep #Usually we want this to be true
-        # Recompute the CFL timestep (one global allreduce) only every cfl_every steps; dt is
-        # then frozen for the whole block, so the CFL condition can be transiently violated
-        # while the flow accelerates — compensate with extra cfl_safety margin. Only
-        # meaningful with adaptive_timestep=True (fixed dt needs no reduction at all);
-        # cfl_every=1 (default) is exactly the historical per-step behavior.
-        # WARNING: from a quiescent start the CFL dt collapses ~10x within a few steps as
-        # forcing spins up; a frozen quiescent dt at cfl_every>~5 runs far over CFL and
-        # silently NaNs. Use cfl_every>1 only from developed states (e.g. after restart).
+        # recompute the CFL timestep (one global allreduce) only every cfl_every steps
+        # this is dangerous: use with caution.
         if isinstance(cfl_every,bool) or not isinstance(cfl_every,(int,np.integer)) or cfl_every < 1:
             raise ValueError(f"cfl_every must be an int >= 1, got {cfl_every!r}")
         self.cfl_every = int(cfl_every)  # int(): accept numpy ints, store a plain int
@@ -96,7 +90,7 @@ class Parameters():
             if self.size > 1 and self.rank==0:
                 print("You probably should only run a 2D run on one device, since this isn't parallelized.")
         # bring up the chosen transport (jax.distributed + z mesh for "jax"; no-op otherwise).
-        # Must happen before any jax device work, which is why it lives in the constructor.
+        # must happen before any jax device work
         comms.init_backend(self)
         #forcing
         self.forcing = forcing
@@ -112,24 +106,19 @@ class Parameters():
         self.forcing_norm_per_step = forcing_norm_per_step
         self.forcing_shell_noise = forcing_shell_noise
         self.n_ou = 1 if self.forcing_mode == "momentum" else 2
-        #timestepping (structure): lax.scan LSRK stage loop (default; ~20% faster than the
-        #unrolled loop on CPU) vs statically unrolled (lsrk_scan=False; to benchmark on GPU)
+        # timestepping (structure): lax.scan LSRK stage loop (default
+        # vs statically unrolled (lsrk_scan=False; in principle could
+        # be faster on some GPU systems)
         self.lsrk_scan = lsrk_scan
     def save(self, snap_path, filename="params.json"):
-        # Record the constructor arguments (not derived attrs) to snap_path/filename, so a
+        # record the constructor arguments (not derived attrs) to snap_path/filename, so a
         # run directory documents how it was made and from_snapshot can reproduce it.
-        # An existing file with DIFFERENT contents is a hard error — that's the guard
-        # against continuing a directory with the wrong parameters.
-        # Collective under MPI: rank 0 alone checks/writes and broadcasts the outcome, so
-        # every rank raises or returns together — a per-rank exists check can desync ranks
-        # on a lazy shared filesystem (some see the file, some don't, and whichever subset
-        # skips/raises leaves the rest stuck in the collective).
+        # saving over an existing file with DIFFERENT contents is a hard error
+        # collective under MPI: rank 0 alone checks/writes and broadcasts the outcome
         path = os.path.join(str(snap_path), filename)
         err = None
         if self.rank == 0:
-            # round-trip through JSON up front (tuples->lists, numpy/jax scalars->python
-            # via _json_scalar) so the comparison below sees exactly what a reload sees,
-            # and so unserializable values fail here with a clear message, not mid-write
+            # round-trip through JSON up front
             rec = json.loads(json.dumps(self._init_args, default=_json_scalar))
             rec["_precision"] = "64" if jax.config.read("jax_enable_x64") else "32"
             if os.path.exists(path):
@@ -145,7 +134,7 @@ class Parameters():
                 for k in backfilled:
                     old[k] = json.loads(json.dumps(sig_defaults[k], default=_json_scalar))
                 # comm_backend is a transport choice, not a physics/grid parameter: a run
-                # must be restartable across backends, so it's recorded but not compared
+                # must be restartable across backends: recorded but not compared
                 diffs = {k: (old.get(k, "<absent>"), rec.get(k, "<absent>"))
                          for k in sorted(set(old) | set(rec))
                          if k not in _TRANSPORT_KEYS and old.get(k, "<absent>") != rec.get(k, "<absent>")}
@@ -172,9 +161,9 @@ class Parameters():
 
     @classmethod
     def from_snapshot(cls, snap_path, filename="params.json", **overrides):
-        # Reconstruct Parameters from a run directory's record (written by save());
-        # explicitly passed overrides win, e.g. from_snapshot(path, dt=0.05).
-        # Runs __init__, so all validation/derived attributes stay in one place.
+        # reconstruct Parameters from a run directory's record (written by save());
+        # explicitly passed overrides win
+        # runs __init__ to get derived params
         path = os.path.join(str(snap_path), filename)
         rec = json.load(open(path))
         rec.pop("_created", None)

@@ -8,7 +8,7 @@ from . import comms
 # nb the code is only spectral in the perpendciular plane, so fourier stuff is all 2D
 
 class K_Grids(NamedTuple):
-    # Dumb pytree container for the wavenumber grids and every derived concrete array.
+    # pytree container for the wavenumber grids and every derived concrete array.
     # setup_kgrids() is the ONLY sanctioned constructor (it precomputes everything);
     # computation cannot live here because jax rebuilds this NamedTuple constantly with
     # tracers / PartitionSpecs (kgrid_specs) / global arrays (_kgrid_to_global) as values.
@@ -19,8 +19,7 @@ class K_Grids(NamedTuple):
     dealias: jnp.ndarray      # 2/3-rule elliptical mask
     hdiss: jnp.ndarray        # per-field hyperdissipation exponents (-diss * ksq**hyper)
     yfac: jnp.ndarray         # rfft2 y-doubling factor (1 at ky=0 and Nyquist, else 2)
-    # Forcing-only entries: genuinely absent (None) when params.forcing is off — the
-    # specs/globalization machinery relies on None = empty pytree subtree.
+    # forcing-only entries: None when params.forcing is off
     fmask: Optional[jnp.ndarray] = None
     z_envcos: Optional[jnp.ndarray] = None
     z_envsin: Optional[jnp.ndarray] = None
@@ -30,10 +29,10 @@ class K_Grids(NamedTuple):
     fidx_y: Optional[jnp.ndarray] = None
 
 def setup_kgrids(params):
-    # Gets the wavenumber grid object from parameters, precomputing all the static
+    # gets the wavenumber grid object from parameters, precomputing all the static
     # concrete arrays (ksq, inv_ksq, dealias, hdiss, y-doubling factor, forcing shell
-    # mask/z-envelopes) once here rather than recomputing them every RHS eval.
-    # The scaling here respects jax.numpy's fourier transform conventions
+    # mask/z-envelopes)
+    # the scaling here respects jax.numpy's fourier transform conventions
     # so that e.g. we can calculate derivatives correctly.
     kx = ft.fftfreq(params.nx) * params.nx * 2 * jnp.pi / params.Lx
     ky = ft.rfftfreq(params.ny) * params.ny * 2 * jnp.pi / params.Ly
@@ -64,8 +63,7 @@ def setup_kgrids(params):
         kmag_over_dk = jnp.sqrt(ksq) / kunit
         fmask = (kmag_over_dk >= nmin) & (kmag_over_dk < nmax)
         # static shell index set (concrete here, outside jit) for shell-restricted noise;
-        # only carried when opted in (params.forcing_shell_noise) — ou_update falls back
-        # to the full-grid draw when these are None
+        # only carried when opted in (params.forcing_shell_noise)
         if params.forcing_shell_noise:
             fidx_x, fidx_y = jnp.nonzero(fmask)
         if params.spatial_dimensions == 3:

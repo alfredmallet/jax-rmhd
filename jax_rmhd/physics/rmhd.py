@@ -31,9 +31,12 @@ def set_timestep(grads,params):
 
 def halo_start(state,kgrid,params):
     # T7: pre-issues LinearTerm's z halo exchange at the top of the RHS; None in 2D (no halo).
+    # width must match what shared_physics.z_derivatives' stencil expects (RMHD: 4th-order
+    # centered + 5-point d4 => 2); the pre-issued halo here and the fallback exchange inside
+    # z_derivatives MUST use the same width -- the one coupling in this design.
     if params.spatial_dimensions==2:
         return None
-    return comms.halo_exchange(state.fields,params)
+    return comms.halo_exchange(state.fields,params,width=2)
 
 def NonlinearTerm(state,grads,kgrid,params,halo=None):
     gphi,gpsi,gvort,gjpar = grads

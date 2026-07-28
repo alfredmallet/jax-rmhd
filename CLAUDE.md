@@ -107,6 +107,11 @@ serializes comm with compute anyway), on by default under `comm_backend="jax"` (
 neutral on Savio at bench sizes; kept for NVLink/IB hardware), overridable either way with
 `params.halo_start=True/False` (how the benchmark measures the on/off pair). When
 disabled, `z_derivatives` issues its own exchange at the old call point.
+`comms.halo_exchange(f, params, width=2)` takes an explicit halo width (default 2, today's
+behavior); RMHD's `halo_start` and `z_derivatives`' internal fallback both pass `width=2`
+explicitly and must agree — `z_derivatives` derives its stencil offsets from the received
+slab's width rather than hardcoding them, so a pre-issued halo narrower than the stencil
+needs is a clear assertion failure, not silently wrong output.
 `physics/shared_physics.py` holds equation-agnostic helpers (`gradk`,
 `bracket`, z-derivative stencils, the O-U forcing mechanics); `physics/rmhd.py` holds the
 RMHD-specific term functions and maps generic building blocks onto the (phi,psi) fields.
@@ -206,8 +211,11 @@ sustaining turbulence instead of letting it freely decay. `forcing_state` shape
 - All `perp_*` energy-like reductions share one normalization convention (rfft2 `ky`
   y-doubling factor, divide by `nz*(nx*ny)^2`) to give a volume-averaged,
   grid-resolution-independent physical quantity — matches `diagnostics.perpspec`'s
-  convention (note: `diagnostics.py`'s `energy`/`parspec` functions are marked broken in
-  the file itself). Keep any new energy-like diagnostic on this same convention or its
+  convention (`diagnostics.energy` now wraps `perp_inner_product_batch` — MPI-correct,
+  returns `(E_kin, E_mag) = 0.5*<|grad|^2>` per field, same values the old local-slab
+  real-space version gave at size==1; its former independent real-space Parseval check
+  moved to `tests/test_energy_parseval.py`. `parspec` remains size==1-only per its
+  assert). Keep any new energy-like diagnostic on this same convention or its
   numbers won't be comparable to `forcing_power`.
 - `forcing_norm_per_step` (**default True**, the production config: ~+8% at fp64/32 ranks)
   computes the power-normalization scale once per full step — stored in

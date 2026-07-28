@@ -5,9 +5,7 @@ import jax.numpy.fft as ft
 from . import comms
 
 def perpspec(state,kgrid,params,bin_factor=2.0):
-    # Perpendicular energy spectrum, z-averaged. Matches the normalization convention
-    # of shared_physics.perp_inner_product (see CLAUDE.md): rfft2 ky-doubling factor,
-    # divide by nz*(nx*ny)^2 -- here the (nx*ny)^2 part is folded into `norm` below.
+    # perpendicular energy spectrum, z-averaged.
     phik=state.fields[0]
     psik=state.fields[1]
     rfft2_y_factor = jnp.full(phik.shape[-1],2.0)
@@ -15,9 +13,7 @@ def perpspec(state,kgrid,params,bin_factor=2.0):
     rfft2_y_factor = rfft2_y_factor.at[-1].set(1.0)
     energy_u = 0.5 * kgrid.ksq * jnp.abs(phik)**2.0 * rfft2_y_factor
     energy_b = 0.5 * kgrid.ksq * jnp.abs(psik)**2.0 * rfft2_y_factor
-    # sum over the local z-slab first, then allreduce across z-ranks (params.nz is the
-    # *global* z-count, but each rank only holds nz_local=nz/size of it -- summing local-only
-    # and dividing by the global nz silently undercounts under domain decomposition).
+    # sum over the local z-slab first, then allreduce across z-ranks
     energy_u = jnp.sum(energy_u,axis=0)
     energy_b = jnp.sum(energy_b,axis=0)
     energy_u = comms.allreduce_sum(energy_u, params)  # no-ops unless z-decomposed
@@ -36,7 +32,7 @@ def perpspec(state,kgrid,params,bin_factor=2.0):
     return bin_centers,spec_u,spec_b
 
 def parspec(state,kgrid,params,bin_factor=2.0):
-    # Parallel (z) energy spectrum. Requires the *whole* z-domain on this rank
+    # parallel (z) energy spectrum. Requires the *whole* z-domain on this rank
     assert params.size == 1, "parspec requires the full z-domain on one rank (params.size==1)"
     phik = state.fields[0]
     psik = state.fields[1]
@@ -62,15 +58,10 @@ def parspec(state,kgrid,params,bin_factor=2.0):
     return bin_centers,spec_u,spec_b
 
 def energy(state,kgrid,params):
-    # Real-space check on perp_inner_product: <|grad_perp phi|^2> == 2*E_kin (Parseval),
-    # same for psi/E_mag. Local-z-slab average only (see perpspec/_perp_reduce for the
-    # MPI-allreduce-aware version used by shared_physics.perp_inner_product) -- fine for
-    # params.size==1, otherwise this only averages over the local z-slab.
-    from .physics.shared_physics import gradk
-    phik = state.fields[0]
-    psik = state.fields[1]
-    #These aren't really v and b but the squares are the same..
-    vsq = jnp.mean(grids.ifft(gradk(phik,kgrid), params)**2.0)
-    bsq = jnp.mean(grids.ifft(gradk(psik,kgrid), params)**2.0)
-    return (vsq,bsq)
+    # (E_kin, E_mag) = 0.5*(<|grad_perp phi|^2>, <|grad_perp psi|^2>), volume-averaged,
+    # via perp_inner_product_batch: one stacked allreduce
+    from .physics.shared_physics import perp_inner_product_batch
+    fk = state.fields[:2]  # (phi, psi)
+    E2 = perp_inner_product_batch(fk, fk, kgrid, params)  # (<|grad phi|^2>, <|grad psi|^2>)
+    return (0.5*E2[0], 0.5*E2[1])
 

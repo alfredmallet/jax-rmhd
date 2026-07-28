@@ -13,15 +13,32 @@ def bracket(a,b):
 
 # gets the necessary z derivatives.
 def z_derivatives(f,params,halo=None):
-    # z axis is assumed to be axis 1
+    # z axis is assumed to be axis 1. Stencil is a fixed 4th-order centered first derivative
+    # + 5-point d4/dz4 hyperdissipation (stencil half-width 2) -- see the #TODO in rmhd.LinearTerm;
+    # z_diff_order/z_diss_hyper are not read here. width must agree with rmhd.halo_start's
+    # pre-issued halo width -- the one coupling in this design (see comment there).
     dz=params.dz
-    recv_left, recv_right = comms.halo_exchange(f,params) if halo is None else halo
+    recv_left, recv_right = comms.halo_exchange(f,params,width=2) if halo is None else halo
+    # pad width w is derived from the received slab (static under jit: shapes are static),
+    # not hardcoded, so a caller may pre-issue a wider-than-needed halo (extra planes sliced
+    # away below); the stencil itself stays fixed at half-width k=2.
+    w = recv_left.shape[1]
+    assert w >= 2, f"z_derivatives: pre-issued halo width={w} is narrower than the stencil " \
+                    "half-width (2); need width >= 2"
+    assert recv_right.shape[1] == w, \
+        f"z_derivatives: recv_left width={w} != recv_right width={recv_right.shape[1]}"
+    nz = f.shape[1]
     f_padded = jnp.concatenate([recv_left,f,recv_right],axis=1)
-    p2 = f_padded[:,4:,:,:]
-    p1 = f_padded[:,3:-1,:,:]
-    c = f_padded[:,2:-2,:,:]
-    m1 = f_padded[:,1:-3,:,:]
-    m2 = f_padded[:,:-4,:,:]
+    # offsets below are w±k (k=2 the fixed stencil half-width) expressed as [start:start+nz]
+    # rather than negative-index [start:-k'] to sidestep the k'=0 "-0 means empty slice" trap;
+    # at w=2 (today's default) these reduce exactly to the original literals 4:, 3:-1, 2:-2,
+    # 1:-3, :-4 (total padded length is nz+4, so e.g. w+2:w+2+nz == 4:4+nz == 4: since 4+nz
+    # IS the padded length).
+    p2 = f_padded[:,w+2:w+2+nz,:,:]
+    p1 = f_padded[:,w+1:w+1+nz,:,:]
+    c = f_padded[:,w:w+nz,:,:]
+    m1 = f_padded[:,w-1:w-1+nz,:,:]
+    m2 = f_padded[:,w-2:w-2+nz,:,:]
     df_dz = (- p2 + 8*p1 - 8*m1 + m2) / (12 * dz)
     d4f_dz4 = (p2 -4*p1 +6*c -4*m1 + m2) / (dz**4)
     return df_dz, d4f_dz4

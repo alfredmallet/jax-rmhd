@@ -12,8 +12,7 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None)
     #print("---COMPILING rk_advance---") #add this back in to check that jit is working properly
     #RK4 substep 1
     k1, grads = rhs(state,kgrid,params)
-    # dt_override: dt already computed for a whole cfl_every block by run.py (skips the
-    # per-step CFL allreduce); None means the historical per-step behavior below.
+    # dt_override: dt already computed for a whole cfl_every block by run.py
     if dt_override is not None:
         dt = dt_override
     elif params.adaptive_timestep==True:
@@ -45,13 +44,9 @@ class LSRK_Scheme(NamedTuple):
     nstages: int
 
 # LSRK timestepper: includes an integrating factor for the dissipative terms.
-# Two stage-loop structures selected by params.lsrk_scan: lax.scan (default — measured
-# ~20% faster on CPU) or statically unrolled (lsrk_scan=False; candidate for GPU, where
-# constant folding / freeing init_rhs after stage 0 / no cond should help — benchmark in
-# Phase 3). Both give bitwise-identical trajectories at fp64.
+# params.lsrk_scan=True: lax.scan (default); =False or (unrolled, could help on some GPU)
 def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
     init_rhs,grads = rhs(state,kgrid,params)
-    # dt_override: block-frozen dt from run.py (params.cfl_every>1); None = per-step CFL as before.
     if dt_override is not None:
         dt = dt_override
     elif params.adaptive_timestep==True:
@@ -77,7 +72,7 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
                                                fields=diss_factors*current_state.fields + beta*delta)
     return current_state
 
-# Original lax.scan-over-stages variant of the LSRK stage loop (params.lsrk_scan=True).
+# used if params.lsrk_scan=True
 def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_exponents):
     alphas_arr = jnp.array(scheme.alphas)
     betas_arr = jnp.array(scheme.betas)
@@ -100,7 +95,7 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_expo
         next_delta = diss_factors * (alpha * delta + dt * stage_rhs)
         next_fields = diss_factors * current_state.fields + beta*next_delta
         next_t = current_state.t + gamma*dt
-        # forcing_state/forcing_key threaded through unchanged (see rk_advance comment above).
+        # forcing_state/forcing_key threaded through unchanged
         return (current_state._replace(t=next_t,fields=next_fields),next_delta), None
 
     (final_state, _), _ = jax.lax.scan(scan_stage_func,init_carry,stage_pars)
