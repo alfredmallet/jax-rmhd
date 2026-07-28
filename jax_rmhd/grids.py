@@ -8,16 +8,19 @@ from . import comms
 # nb the code is only spectral in the perpendciular plane, so fourier stuff is all 2D
 
 class K_Grids(NamedTuple):
-    # Stores the wavenumber grids and precomputed concrete arrays derived from them.
+    # Dumb pytree container for the wavenumber grids and every derived concrete array.
+    # setup_kgrids() is the ONLY sanctioned constructor (it precomputes everything);
+    # computation cannot live here because jax rebuilds this NamedTuple constantly with
+    # tracers / PartitionSpecs (kgrid_specs) / global arrays (_kgrid_to_global) as values.
     kx: jnp.ndarray
     ky: jnp.ndarray
-    # Precomputed (in setup_kgrids) so these aren't recomputed as extra kernels every RHS
-    # eval; None defaults keep K_Grids(kx=...,ky=...) constructible for standalone/tests.
-    ksq_pc: Optional[jnp.ndarray] = None
-    inv_ksq_pc: Optional[jnp.ndarray] = None
-    dealias_pc: Optional[jnp.ndarray] = None
-    hdiss_pc: Optional[jnp.ndarray] = None
-    yfac: Optional[jnp.ndarray] = None
+    ksq: jnp.ndarray          # kx^2 + ky^2
+    inv_ksq: jnp.ndarray      # 1/ksq, 0 at the zero mode
+    dealias: jnp.ndarray      # 2/3-rule elliptical mask
+    hdiss: jnp.ndarray        # per-field hyperdissipation exponents (-diss * ksq**hyper)
+    yfac: jnp.ndarray         # rfft2 y-doubling factor (1 at ky=0 and Nyquist, else 2)
+    # Forcing-only entries: genuinely absent (None) when params.forcing is off — the
+    # specs/globalization machinery relies on None = empty pytree subtree.
     fmask: Optional[jnp.ndarray] = None
     z_envcos: Optional[jnp.ndarray] = None
     z_envsin: Optional[jnp.ndarray] = None
@@ -25,44 +28,6 @@ class K_Grids(NamedTuple):
     # is only drawn at shell modes rather than over the whole k-grid (ou_update).
     fidx_x: Optional[jnp.ndarray] = None
     fidx_y: Optional[jnp.ndarray] = None
-
-    def ksq(self):
-        # kx^2+ky^2; returns the precomputed array if available, else computes it.
-        if self.ksq_pc is not None:
-            return self.ksq_pc
-        return self.kx**2 + self.ky**2
-
-    def inv_ksq(self):
-        # 1/ksq (0 at the zero mode); returns the precomputed array if available.
-        if self.inv_ksq_pc is not None:
-            return self.inv_ksq_pc
-        return jnp.where(self.kx**2 + self.ky**2 > 0, 1.0/(self.kx**2 + self.ky**2), 0.0)
-
-    def dealias_filter(self):
-        # 2/3-rule elliptical dealiasing mask; returns the precomputed array if available.
-        if self.dealias_pc is not None:
-            return self.dealias_pc
-        nx = jnp.shape(self.kx)[0]
-        ny = 2 * (jnp.shape(self.ky)[1] - 1)
-        kx_norm = self.kx / self.kx[1,0]
-        ky_norm = self.ky / self.ky[0,1]
-        return (kx_norm**2 / (nx / 3.0)**2 + ky_norm**2 / (ny / 3.0)**2) < 1.0
-
-    def hdiss_exponents(self,params):
-        # Hyperdissipation exponents per field; returns the precomputed array if available.
-        if self.hdiss_pc is not None:
-            return self.hdiss_pc
-        diss=jnp.array(params.diss)
-        diss_grid = diss.reshape(-1,1,1,1)
-        return -diss_grid*self.ksq()**params.hyper
-
-def _compute_dealias(kx_grid,ky_grid):
-    # Standalone helper for the dealias filter formula (used by both the method fallback and setup_kgrids).
-    nx = jnp.shape(kx_grid)[0]
-    ny = 2 * (jnp.shape(ky_grid)[1] - 1)
-    kx_norm = kx_grid / kx_grid[1,0]
-    ky_norm = ky_grid / ky_grid[0,1]
-    return (kx_norm**2 / (nx / 3.0)**2 + ky_norm**2 / (ny / 3.0)**2) < 1.0
 
 def setup_kgrids(params):
     # Gets the wavenumber grid object from parameters, precomputing all the static
@@ -75,11 +40,15 @@ def setup_kgrids(params):
     kx_grid = kx.reshape(-1, 1)
     ky_grid = ky.reshape(1, -1)
 
-    ksq_pc = kx_grid**2 + ky_grid**2
-    inv_ksq_pc = jnp.where(ksq_pc > 0, 1.0/ksq_pc, 0.0)
-    dealias_pc = _compute_dealias(kx_grid,ky_grid)
+    ksq = kx_grid**2 + ky_grid**2
+    inv_ksq = jnp.where(ksq > 0, 1.0/ksq, 0.0)
+    # 2/3-rule elliptical dealiasing mask
+    nx = jnp.shape(kx_grid)[0]
+    ny = 2 * (jnp.shape(ky_grid)[1] - 1)
+    dealias = ((kx_grid/kx_grid[1,0])**2 / (nx/3.0)**2 +
+               (ky_grid/ky_grid[0,1])**2 / (ny/3.0)**2) < 1.0
     diss = jnp.array(params.diss).reshape(-1,1,1,1)
-    hdiss_pc = -diss*ksq_pc**params.hyper
+    hdiss = -diss*ksq**params.hyper
 
     nky = ky_grid.shape[-1]
     yfac = jnp.full((nky,), 2.0).at[0].set(1.0).at[-1].set(1.0)
@@ -92,7 +61,7 @@ def setup_kgrids(params):
     if params.forcing:
         kunit = min(2*jnp.pi/params.Lx, 2*jnp.pi/params.Ly)
         nmin, nmax = params.fshell
-        kmag_over_dk = jnp.sqrt(ksq_pc) / kunit
+        kmag_over_dk = jnp.sqrt(ksq) / kunit
         fmask = (kmag_over_dk >= nmin) & (kmag_over_dk < nmax)
         # static shell index set (concrete here, outside jit) for shell-restricted noise;
         # only carried when opted in (params.forcing_shell_noise) — ou_update falls back
@@ -104,8 +73,8 @@ def setup_kgrids(params):
             z_envcos = jnp.cos(2*jnp.pi*z_local/params.Lz)[:, None, None]
             z_envsin = jnp.sin(2*jnp.pi*z_local/params.Lz)[:, None, None]
 
-    kgrid = K_Grids(kx=kx_grid, ky=ky_grid, ksq_pc=ksq_pc, inv_ksq_pc=inv_ksq_pc,
-                    dealias_pc=dealias_pc, hdiss_pc=hdiss_pc, yfac=yfac, fmask=fmask,
+    kgrid = K_Grids(kx=kx_grid, ky=ky_grid, ksq=ksq, inv_ksq=inv_ksq,
+                    dealias=dealias, hdiss=hdiss, yfac=yfac, fmask=fmask,
                     z_envcos=z_envcos, z_envsin=z_envsin, fidx_x=fidx_x, fidx_y=fidx_y)
     if params.comm_backend == "jax":
         kgrid = _kgrid_to_global(kgrid, params)  # global (z-sharded) arrays for shard_map

@@ -7,8 +7,8 @@ from .. import comms
 def grad(state,kgrid,params):
     phik=state.fields[0]
     psik=state.fields[1]
-    vortk = -kgrid.ksq()*phik
-    jpark = -kgrid.ksq()*psik
+    vortk = -kgrid.ksq*phik
+    jpark = -kgrid.ksq*psik
     fk = jnp.stack([phik,psik,vortk,jpark])
     gradients = grids.ifft(gradk(fk,kgrid),params)
     return gradients
@@ -40,7 +40,7 @@ def NonlinearTerm(state,grads,kgrid,params,halo=None):
     NLTerm_vort = bracket(gpsi,gjpar) - bracket(gphi,gvort)
     NLTerm_psi = - bracket(gphi,gpsi)
     (NLTerm_vort_k , NLTerm_psi_k) = grids.fft(jnp.stack([NLTerm_vort,NLTerm_psi]))
-    NLTerm_fields = jnp.stack([-kgrid.inv_ksq()*NLTerm_vort_k,NLTerm_psi_k])*kgrid.dealias_filter()
+    NLTerm_fields = jnp.stack([-kgrid.inv_ksq*NLTerm_vort_k,NLTerm_psi_k])*kgrid.dealias
     return NLTerm_fields
 
 def LinearTerm(state,grads,kgrid,params,halo=None):
@@ -82,10 +82,8 @@ def ForcingTerm(state,grads,kgrid,params,halo=None):
     # to recompute local_z_coords here every call.
     f_raw = shared_physics.reconstruct_envelope(state.forcing_state,kgrid,params)
     if params.forcing_norm_per_step:
-        # approximation: reuse the scale computed once per step (start-of-step fields and
-        # this step's OU state), skipping the per-sub-stage allreduce entirely.
+        # reuse the scale computed once per step: approximation
         if state.forcing_scale is None:
-            # trace-time check: catches hand-built states; go through run.initialize/simulate
             raise ValueError("forcing_norm_per_step=True requires state.forcing_scale "
                              "(build states via run.initialize / restore via load_snapshot)")
         scale = state.forcing_scale

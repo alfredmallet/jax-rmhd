@@ -10,7 +10,7 @@ else:
     jax.config.update("jax_enable_x64", False)
     print("jax is using 32bit precision.")
 
-# Opt-in persistent JIT compilation cache, keyed off RMHD_COMPILATION_CACHE dir path.
+# persistent JIT compilation cache, keyed off RMHD_COMPILATION_CACHE dir path.
 cache_dir = os.environ.get("RMHD_COMPILATION_CACHE")
 if cache_dir:
     try:
@@ -21,6 +21,6 @@ if cache_dir:
 
 from .types import SimulationState
 from .grids import K_Grids, setup_kgrids
-from .config import Parameters,init_cluster
+from .config import Parameters
 from .snapshot_io import snapshot_manager_setup
 from .run import simulate,simulate_scan,estimate_good_nblock,initialize

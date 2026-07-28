@@ -51,7 +51,8 @@ API (`jr.Fields`, positional `SimulationState(...)` construction) and will error
 
 ### Field representation
 
-`SimulationState` (NamedTuple, `types.py`) is `(t, fields, forcing_state, forcing_key)`.
+`SimulationState` (NamedTuple, `types.py`) is `(t, fields, forcing_state, forcing_key,
+forcing_scale)` — see the forcing section for `forcing_scale`'s lifecycle.
 `fields` has shape `(nfields, nz_local, nkx, nky)`: real-space grid in z, rfft2 spectral in
 (x,y). **This axis is never dropped, even in 2D** — `dims=2` still produces
 `(nfields, 1, nx, ny//2+1)`, not a 3D-rank array; `run.py::initialize` reshapes the x,y
@@ -93,26 +94,45 @@ New equation sets register via `physics/__init__.py`'s `equation_registry`: an
 `EquationRecipe(set_timestep_func, term_funcs, grad_func, forcing_scale_func=None,
 halo_start_func=None)` per `eqtype`. `term_funcs` are
 summed to build the RHS (`construct_rhs`); dissipation is *not* one of them — it's applied
-separately as an integrating factor in `timestepping.py` (`K_Grids.hdiss_exponents`), not
+separately as an integrating factor in `timestepping.py` (the precomputed `kgrid.hdiss`), not
 as an RHS term. **Term funcs take 5 positional args**: `(state, grads, kgrid, params,
 halo)` — `construct_rhs` always passes `halo` (the result of `halo_start_func`, or None),
 so every term func must accept it (declare `halo=None` and ignore it if unused).
 `halo_start_func` issues the equation's z-halo exchange at the top of the RHS, before the
 perpendicular FFT work (T7); it returns whatever the consuming term expects
-(`(recv_left, recv_right)` for RMHD's `z_derivatives`) or None for dims=2. It is
-currently `None` for RMHD (measured no fp64 win on the mpi4jax CPU backend — the token
-chain serializes comm with compute anyway); `rmhd.halo_start` exists ready to re-register
-for a Phase-3 backend with real overlap. With the hook None, `z_derivatives` issues its
-own exchange at the old call point.
+(`(recv_left, recv_right)` for RMHD's `z_derivatives`) or None for dims=2. RMHD registers
+`rmhd.halo_start`, but `construct_rhs` only USES the hook per backend
+(`_halo_start_enabled`): off under mpi4jax (measured no fp64 win — the token chain
+serializes comm with compute anyway), on by default under `comm_backend="jax"` (measured
+neutral on Savio at bench sizes; kept for NVLink/IB hardware), overridable either way with
+`params.halo_start=True/False` (how the benchmark measures the on/off pair). When
+disabled, `z_derivatives` issues its own exchange at the old call point.
 `physics/shared_physics.py` holds equation-agnostic helpers (`gradk`,
 `bracket`, z-derivative stencils, the O-U forcing mechanics); `physics/rmhd.py` holds the
 RMHD-specific term functions and maps generic building blocks onto the (phi,psi) fields.
 
-All MPI transport goes through `jax_rmhd/comms.py`: `halo_exchange(f, params)`,
+All distributed transport goes through `jax_rmhd/comms.py`: `halo_exchange(f, params)`,
 `allreduce_sum(x, params)` (array x allowed), `allreduce_max(x, params)`, dispatched in
-plain Python on the static `params.comm_backend` (only `"mpi4jax"` exists; validated at
-`Parameters` construction). Nothing outside comms.py imports mpi4jax — keep it that way;
-new backends (Phase 3's shard_map/NCCL) slot in behind the same three functions.
+plain Python on the static `params.comm_backend` (validated at `Parameters` construction).
+Two backends exist (Phase 3, see PHASE3_RESULTS.md for verdicts/benchmarks):
+
+- `"mpi4jax"` (default, the CPU-cluster production backend): mpi4py communicators +
+  mpi4jax device ops; arrays stay process-local; verified bit-identical to pre-Phase-3.
+  Nothing outside comms.py imports mpi4jax — keep it that way.
+- `"jax"` (the GPU backend, shard_map/NCCL): the CONTROL plane is still mpi4py (rank/size,
+  params.save, snapshot-index broadcast) — only the three device ops become
+  `lax.ppermute`/`psum`/`pmax`, valid ONLY inside the shard_map context that
+  `comms.shard_call` wraps around the jitted steppers (run.py's four call sites). State
+  and kgrid become GLOBAL z-sharded jax.Arrays (`comms.to_global`); inside shard_map every
+  device sees the same local `(nfields, nz_local, nkx, nky)` shapes the mpi4jax ranks see,
+  so physics code is backend-agnostic. `Parameters(comm_backend="jax")` brings up
+  `jax.distributed` (coordinator broadcast over mpi4py; must be the FIRST jax device work
+  in the process); `"jax"`+`dims==2` is rejected. `forcing_state`/`forcing_key` are
+  replicated, never sharded. Launch: one process per GPU, jax backend WITHOUT
+  `--gpu-bind` (NCCL needs peer GPUs visible; `comms._local_device_ids` pins ordinals),
+  mpi4jax WITH `--gpu-bind=single:1`; on Savio also `NCCL_P2P_DISABLE=1` and the env
+  blocks in SAVIO_GPU_SETUP.md. GPU production config: `lsrk_scan=True` (unroll hurts
+  multi-node jax; helps mpi4jax-GPU — per-machine knob).
 
 ### Timestepping
 
@@ -155,8 +175,13 @@ Phase 4's async-checkpointing task (T10) must not remove the `wait_until_finishe
 barrier without first decoupling orbax's buffer from the next donating call.
 
 `kgrid` is bound to the `params` it was built from: `setup_kgrids` bakes `diss`, `hyper`,
-`fshell`, `Lz`, rank layout etc. into precomputed arrays, and e.g. `hdiss_exponents(params)`
-returns the cached array ignoring its argument. Never reuse a `kgrid` with a different or
+`fshell`, `Lz`, rank layout etc. into precomputed arrays. `K_Grids` is a **dumb pytree
+container** — plain fields (`kgrid.ksq`, `.inv_ksq`, `.dealias`, `.hdiss`, `.yfac`, plus
+forcing-only `fmask`/`fidx_*`/`z_env*` which are None when forcing is off), no methods, no
+lazy fallbacks (removed 2026-07-27), and **`setup_kgrids` is the only sanctioned
+constructor**. Computation must never move into the type itself: jax rebuilds the
+NamedTuple constantly with tracers, PartitionSpecs (`kgrid_specs`) and global arrays
+(`_kgrid_to_global`) as field values. Never reuse a `kgrid` with a different or
 mutated `Parameters` — rebuild it (and note mutating `params` attributes after a jit trace
 silently reuses the stale compile, since `Parameters` hashes by identity).
 
@@ -187,12 +212,15 @@ sustaining turbulence instead of letting it freely decay. `forcing_state` shape
 - `forcing_norm_per_step` (**default True**, the production config: ~+8% at fp64/32 ranks)
   computes the power-normalization scale once per full step — stored in
   `SimulationState.forcing_scale`, shape `(n_ou,)`, updated in `run.py::_advance_forcing`
-  right after `ou_update`, `None` whenever the flag or forcing is off — and reuses it
-  across RK sub-stages, replacing ~8 per-stage allreduces with 1 per step. The scale lags
-  by one step (error O(dt/tau); larger bounded overshoot during quiescent spin-up — user
-  signed off). `forcing_scale` is **never serialized** (see Checkpointing) and is
-  recomputed by `_refresh_forcing_scale` at `simulate`/`simulate_scan` start; states built
-  by hand without it fail with a clear trace-time error in `ForcingTerm`.
+  right after `ou_update` — and reuses it across RK sub-stages, replacing ~8 per-stage
+  allreduces with 1 per step. The scale lags by one step (error O(dt/tau); larger bounded
+  overshoot during quiescent spin-up — user signed off). Lifecycle (post-C1 design, see
+  Checkpointing): in any state from `initialize`/`load_snapshot` it is ALWAYS a concrete
+  `(n_ou,)` array (zeros when the flag or forcing is off — never None, or the on-disk
+  orbax structure would fork), it IS serialized with the rest of the state, and it is
+  recomputed by `_refresh_forcing_scale` at `simulate`/`simulate_scan` start regardless;
+  hand-built states with `forcing_scale=None` fail with a clear trace-time error in
+  `ForcingTerm` and are rejected by `save_snapshot`.
 - `forcing_shell_noise` (default False) draws OU noise only at precomputed shell indices
   (`kgrid.fidx_x/fidx_y`) instead of the full k-grid: statistically identical but a
   *different RNG stream* (no bitwise reproduction of full-grid runs), faster single-device

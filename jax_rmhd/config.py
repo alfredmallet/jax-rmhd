@@ -209,12 +209,4 @@ eqtype_registry = {
     "RMHD": 2
 }
 
-def init_cluster():
-    comm = MPI.COMM_WORLD
-    if comm.Get_size() == 1:
-        try:
-            jax.distributed.initialize()
-            print("Distributed system initialized. Total devices: ",jax.device_count())
-        except (ValueError, RuntimeError):
-            jax.distributed.initialize(coordinator_address="localhost:8888", num_processes=1, process_id=0, local_device_ids=0)
 

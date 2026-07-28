@@ -1,13 +1,9 @@
-# Communication abstraction layer: every distributed op used by the solver lives here, so
-# a new transport (NCCL/shard_map, ...) only needs a new branch instead of edits to physics.
-# Backend is chosen by params.comm_backend (static, validated in Parameters.__init__), so
-# the dispatch below is plain-python branching, not lax.cond.
-#
+# two comms backends:
 # "mpi4jax" (default): mpi4py communicators + mpi4jax device ops, arrays stay process-local.
-# "jax" (T9): the CONTROL plane is still mpi4py (rank/size, params.save, orbax, index
-# broadcasts) — only the three device ops become lax.ppermute/psum/pmax inside a shard_map
-# over a 1D z mesh. State/kgrid arrays are then GLOBAL jax.Arrays sharded along z, and each
-# device sees exactly the same local shapes the mpi4jax ranks see, so physics is untouched.
+# "jax": the CONTROL plane is still mpi4py (rank/size, params.save, orbax, index broadcasts)
+# only the three device ops become lax.ppermute/psum/pmax inside a shard_map over a 1D z mesh
+# state/kgrid arrays are then GLOBAL jax.Arrays sharded along z, and each device sees exactly
+# the same local shapes the mpi4jax ranks see.
 import os
 import socket
 import jax
@@ -21,7 +17,7 @@ from .types import SimulationState
 
 # Backends implemented here; Parameters.__init__ rejects anything else at construction.
 COMM_BACKENDS = ("mpi4jax", "jax")
-# Mesh axis name of the z decomposition used by the "jax" backend.
+# Mesh axis name for "jax" backend
 Z_AXIS = "z"
 
 _mesh = None
@@ -41,11 +37,10 @@ def get_mesh():
     return _mesh
 
 def _local_device_ids(params):
-    # One process per device. If the launcher scoped SEVERAL GPUs to this process (mpirun
-    # under a whole-node --gres, where Slurm sets CUDA_VISIBLE_DEVICES once per job step),
-    # claim the one matching this node-local MPI rank. CUDA_VISIBLE_DEVICES is only READ,
-    # never set — with srun --gpu-bind (one GPU per task) this returns None and jax takes
-    # the single visible device. Override with RMHD_LOCAL_DEVICE_IDS="<i>[,<j>...]".
+    # one process per device
+    # with many CUDA_VISIBLE_DEVICES it splits by node-local mpi rank
+    # with only 1, returns [0]
+    # on cpu runs or non-slurm cases returns None
     ids = os.environ.get("RMHD_LOCAL_DEVICE_IDS")
     if ids not in (None, "", "auto"):
         return [int(i) for i in ids.split(",")]
@@ -54,32 +49,31 @@ def _local_device_ids(params):
         return None
     nvis = len(visible.split(","))
     if nvis == 1:
-        # CVD pins one physical GPU; the driver renumbers it to ordinal 0. MUST pass [0]
-        # explicitly: left as None, jax.distributed.initialize parses CVD itself and feeds
-        # the PHYSICAL id as the ordinal -> CUDA_ERROR_INVALID_DEVICE on every rank whose
-        # GPU isn't physical 0 (job 35861244).
+        # left as None, jax.distributed.initialize would parse CVD itself and feeds
+        # the PHYSICAL id as the ordinal -> CUDA_ERROR_INVALID_DEVICE. so do this.
         return [0]
     node_comm = params.comm.Split_type(MPI.COMM_TYPE_SHARED)
     return [node_comm.Get_rank() % nvis]
 
 def init_backend(params):
-    # "jax" backend bring-up, called from Parameters.__init__: jax.distributed with the
-    # coordinator address broadcast over mpi4py (works under plain mpirun, not just Slurm),
-    # then mesh/divisibility validation. No-op for mpi4jax.
+    #called from Parameters.__init__
     global _dist_initialized
     if params.comm_backend != "jax":
         return
-    # jax.distributed.is_initialized() also covers an init done elsewhere (config.init_cluster,
-    # a previous Parameters in the same process): re-initializing would raise.
     if params.size > 1 and not (_dist_initialized or
                                 getattr(jax.distributed, "is_initialized", lambda: False)()):
         addr = os.environ.get("RMHD_COORDINATOR_ADDRESS")
         if addr is None:
-            # default port is job-specific: GPU partitions are per-CORE scheduled, so two
-            # jobs share a node and a fixed port would collide on bind
-            _job = os.environ.get("SLURM_JOB_ID", "0")
-            _dflt = str(20000 + (int(_job) if _job.isdigit() else 0) % 20000)
-            port = os.environ.get("RMHD_COORDINATOR_PORT", _dflt)
+            # default port is job-specific
+            port = os.environ.get("RMHD_COORDINATOR_PORT")
+            _job = os.environ.get("SLURM_JOB_ID", "")
+            if port is None and _job.isdigit():
+                port = str(20000 + int(_job) % 20000)
+            elif port is None and params.rank == 0:
+                # plain mpirun (no Slurm)
+                with socket.socket() as _s:
+                    _s.bind(("", 0))
+                    port = str(_s.getsockname()[1])
             addr = f"{socket.gethostbyname(socket.gethostname())}:{port}" if params.rank == 0 else None
             addr = params.comm.bcast(addr, root=0)
         kw = {}
@@ -93,7 +87,7 @@ def init_backend(params):
             raise RuntimeError(
                 "comm_backend='jax': jax.distributed.initialize() failed — construct the "
                 "first Parameters(comm_backend='jax') BEFORE any jax device work "
-                "(jax.devices(), any jit call, init_cluster()) in the process.") from e
+                "(jax.devices(), any jit call) in the process.") from e
         _dist_initialized = True
     ndev = get_mesh().size
     if ndev % params.size:
@@ -104,7 +98,7 @@ def init_backend(params):
                          f"global device count {ndev}")
 
 def halo_exchange(f, params):
-    # Two-wide halo exchange along the z axis (axis 1) -> (recv_left, recv_right) neighbor slabs.
+    # two-wide halo exchange along the z axis (axis 1) -> (recv_left, recv_right) neighbor slabs.
     if params.comm_backend == "mpi4jax":
         send_left = f[:,:2,:,:]
         send_right = f[:,-2:,:,:]
@@ -212,8 +206,8 @@ def state_to_global(state, params):
                            forcing_scale=to_global(state.forcing_scale, params))
 
 def state_to_local(state, params):
-    # Inverse of state_to_global: what orbax writes, so the on-disk layout is byte-for-byte
-    # the same per-rank layout the mpi4jax backend produces (cross-backend restart works).
+    # Inverse of state_to_global, for host-side consumers (diagnostics, tests). NOT on the
+    # checkpoint path: orbax is handed the global arrays directly under comm_backend="jax".
     return SimulationState(t=to_local(state.t, params), fields=to_local(state.fields, params, z_axis=1),
                            forcing_state=to_local(state.forcing_state, params),
                            forcing_key=to_local(state.forcing_key, params),

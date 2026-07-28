@@ -2,8 +2,8 @@ import jax
 import jax.numpy as jnp
 from .. import comms
 
-#Takes gradient in fourier space
-#Expects the kx,ky axes to be the last two (-2,-1)
+# takes gradient in fourier space
+# expects the kx,ky axes to be the last two (-2,-1)
 def gradk(fk,kgrid):
     return jnp.stack([1j*kgrid.kx*fk,1j*kgrid.ky*fk],axis=1)
 
@@ -11,11 +11,10 @@ def gradk(fk,kgrid):
 def bracket(a,b):
     return a[0]*b[1] - a[1]*b[0]
 
-# Gets the necessary z derivatives.
+# gets the necessary z derivatives.
 def z_derivatives(f,params,halo=None):
-    #n.b. z axis is assumed to be axis 1
+    # z axis is assumed to be axis 1
     dz=params.dz
-    # T7: halo may be pre-issued by the recipe's halo_start hook; exchange here when it isn't
     recv_left, recv_right = comms.halo_exchange(f,params) if halo is None else halo
     f_padded = jnp.concatenate([recv_left,f,recv_right],axis=1)
     p2 = f_padded[:,4:,:,:]
@@ -32,7 +31,7 @@ def z_derivatives(f,params,halo=None):
 ############
 
 def _symmetrize_real_line(col):
-    # Enforces hermitian symmetry of the forcing: needed at ky=0 and kymax
+    # enforces hermitian symmetry of the forcing: needed at ky=0 and kymax
     nkx = col.shape[-1]
     mirror_idx = (-jnp.arange(nkx)) % nkx
     return 0.5 * (col + jnp.conj(col[..., mirror_idx]))
@@ -47,10 +46,8 @@ def _draw_symmetrized_noise(key, shape, dtype, grid_norm):
     return noise
 
 def _draw_shell_noise(key, shape, dtype, grid_norm, fidx_x, fidx_y):
-    # Same statistics as _draw_symmetrized_noise restricted to the shell, but only draws
-    # RNG at the shell modes and scatters into the k-grid (different RNG stream, so
-    # trajectories differ bitwise from the full-grid draw). Symmetrizing the scattered
-    # ky=0/Nyquist rows is valid because the shell is |k|-symmetric under kx -> -kx.
+    # only draws RNG at the shell modes and scatters into the k-grid 
+    # different RNG stream, so runs differ bitwise from the full-grid draw)
     key_real, key_imag = jax.random.split(key)
     shell_shape = shape[:-2] + (fidx_x.shape[0],)
     raw = (jax.random.normal(key_real, shell_shape) + 1j * jax.random.normal(key_imag, shell_shape)) / jnp.sqrt(2.0)
@@ -60,20 +57,9 @@ def _draw_shell_noise(key, shape, dtype, grid_norm, fidx_x, fidx_y):
     noise = noise.at[..., -1].set(_symmetrize_real_line(noise[..., -1]))
     return noise
 
-def _shell_mask(kgrid, params):
-    # Radially symmetric mask selecting nmin <= |k_perp|/dk < nmax.
-    # Uses kgrid.fmask precomputed in setup_kgrids; falls back to computing it so
-    # standalone/test construction of K_Grids without fmask still works.
-    if kgrid.fmask is not None:
-        return kgrid.fmask
-    kunit = min(2*jnp.pi/params.Lx, 2*jnp.pi/params.Ly)
-    nmin, nmax = params.fshell
-    kmag_over_dk = jnp.sqrt(kgrid.ksq()) / kunit
-    return (kmag_over_dk >= nmin) & (kmag_over_dk < nmax)
-
 def ou_update(forcing_state, forcing_key, dt, params, kgrid):
     # Ornstein-Uhlenbeck step on the forcing-shell modes.
-    # Noise is now drawn only at the precomputed shell indices (kgrid.fidx_*) when
+    # noise is now drawn only at the precomputed shell indices (kgrid.fidx_*) when
     # available, instead of over the full (kx,ky) grid and masking down.
     key, new_key = jax.random.split(forcing_key)
     grid_norm = float(params.nx * params.ny)
@@ -88,34 +74,20 @@ def ou_update(forcing_state, forcing_key, dt, params, kgrid):
     decay = jnp.exp(-dt / params.forcing_tau)
     diffusion = jnp.sqrt(1.0 - decay**2)
     new_forcing_state = forcing_state * decay + diffusion * noise
-    mask = _shell_mask(kgrid, params)
+    mask = kgrid.fmask
     new_forcing_state = new_forcing_state * mask[None, None, :, :]
     return new_forcing_state, new_key
 
-def reconstruct_envelope(forcing_state, kgrid, params, z_local=None):
-    # Rebuilds the real-space-projected forcing from its (A,B) cos/sin envelope coefficients.
-    # Now takes kgrid and uses its precomputed z_envcos/z_envsin when available (dims==3),
-    # falling back to computing from z_local (still accepted, kept for standalone/test use).
+def reconstruct_envelope(forcing_state, kgrid, params):
+    # Rebuilds the real-space-projected forcing from its (A,B) cos/sin envelope coefficients,
+    # using the z-envelopes precomputed in setup_kgrids (dims==3).
     if params.spatial_dimensions == 3:
-        if kgrid.z_envcos is not None:
-            cos_env, sin_env = kgrid.z_envcos, kgrid.z_envsin
-        else:
-            cos_env = jnp.cos(2*jnp.pi*z_local/params.Lz)[:, None, None]
-            sin_env = jnp.sin(2*jnp.pi*z_local/params.Lz)[:, None, None]
         A = forcing_state[:, 0]  # (n_ou, nkx, nky)
         B = forcing_state[:, 1]
-        return A[:, None, :, :] * cos_env + B[:, None, :, :] * sin_env
+        return A[:, None, :, :] * kgrid.z_envcos + B[:, None, :, :] * kgrid.z_envsin
     else:
         #in 2D just use the A coefficient
         return forcing_state[:, 0][:, None, :, :]  # (n_ou, 1, nkx, nky)
-
-def _perp_yfac(kgrid):
-    # rfft2 y-doubling factor; uses kgrid.yfac precomputed in setup_kgrids, falling back
-    # to computing it so standalone/test construction of K_Grids without yfac still works.
-    if kgrid.yfac is not None:
-        return kgrid.yfac
-    nky = kgrid.ky.shape[-1]
-    return jnp.full((nky,), 2.0).at[0].set(1.0).at[-1].set(1.0)
 
 def _perp_reduce(integrand, params):
     # sum over all axes (z-local, kx, ky, ...), allreduce over z-ranks if applicable
@@ -128,29 +100,26 @@ def _perp_reduce(integrand, params):
 def perp_inner_product(field_a_k, field_b_k, kgrid, params):
     # Re( sum_k grad(field_a_k)^* . grad(field_b_k) )
     # useful for e.g. energies and power inputs
-    # computed via the identity sum_k |grad|-inner = ksq * Re(conj(a) b): identical result
-    # (to roundoff), ~2x cheaper, and avoids materializing four gradient arrays
-    integrand = kgrid.ksq() * jnp.real(jnp.conj(field_a_k) * field_b_k) * _perp_yfac(kgrid)
+    integrand = kgrid.ksq * jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
     return _perp_reduce(integrand, params)
 
 def perp_mean_square(field_a_k, field_b_k, kgrid, params):
     # Re( sum_k field_a_k^* . field_b_k )
     # useful for anastrophy etc.
-    integrand = jnp.real(jnp.conj(field_a_k) * field_b_k) * _perp_yfac(kgrid)
+    integrand = jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
     return _perp_reduce(integrand, params)
 
 def _perp_reduce_batch(integrand, params):
-    # like _perp_reduce but keeps the leading batch axis: one stacked allreduce
-    # for all batch entries instead of one allreduce each. Same normalization.
+    # like _perp_reduce but keeps the leading batch axis
     P = jnp.sum(integrand, axis=tuple(range(1, integrand.ndim)))
-    P = comms.allreduce_sum(P,params)  # one stacked (nbatch,) allreduce; no-op unless z-decomposed
+    P = comms.allreduce_sum(P,params)
     norm = float(params.nz) * float(params.nx * params.ny)**2
     return P / norm
 
 def perp_inner_product_batch(fields_a_k, fields_b_k, kgrid, params):
     # perp_inner_product over a leading batch axis (e.g. stacked z+/z-), returning a
-    # (nbatch,) vector via a single stacked allreduce. Same ksq identity as above.
-    integrand = kgrid.ksq() * jnp.real(jnp.conj(fields_a_k) * fields_b_k) * _perp_yfac(kgrid)
+    # (nbatch,) vector via a single stacked allreduce.
+    integrand = kgrid.ksq * jnp.real(jnp.conj(fields_a_k) * fields_b_k) * kgrid.yfac
     return _perp_reduce_batch(integrand, params)
 
 def safe_scale(target, P, scale_max=1.0):

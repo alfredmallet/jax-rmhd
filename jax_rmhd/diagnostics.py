@@ -13,8 +13,8 @@ def perpspec(state,kgrid,params,bin_factor=2.0):
     rfft2_y_factor = jnp.full(phik.shape[-1],2.0)
     rfft2_y_factor = rfft2_y_factor.at[0].set(1.0)
     rfft2_y_factor = rfft2_y_factor.at[-1].set(1.0)
-    energy_u = 0.5 * kgrid.ksq() * jnp.abs(phik)**2.0 * rfft2_y_factor
-    energy_b = 0.5 * kgrid.ksq() * jnp.abs(psik)**2.0 * rfft2_y_factor
+    energy_u = 0.5 * kgrid.ksq * jnp.abs(phik)**2.0 * rfft2_y_factor
+    energy_b = 0.5 * kgrid.ksq * jnp.abs(psik)**2.0 * rfft2_y_factor
     # sum over the local z-slab first, then allreduce across z-ranks (params.nz is the
     # *global* z-count, but each rank only holds nz_local=nz/size of it -- summing local-only
     # and dividing by the global nz silently undercounts under domain decomposition).
@@ -29,8 +29,8 @@ def perpspec(state,kgrid,params,bin_factor=2.0):
     dk=kunit*bin_factor
     bin_edges = jnp.arange(0,kmax+dk,dk)
     norm = 1 / float(params.nx*params.ny)**2
-    spec_u, _ = jnp.histogram(jnp.sqrt(kgrid.ksq()),bins=bin_edges,weights=energy_u*norm/dk)
-    spec_b, _ = jnp.histogram(jnp.sqrt(kgrid.ksq()),bins=bin_edges,weights=energy_b*norm/dk)
+    spec_u, _ = jnp.histogram(jnp.sqrt(kgrid.ksq),bins=bin_edges,weights=energy_u*norm/dk)
+    spec_b, _ = jnp.histogram(jnp.sqrt(kgrid.ksq),bins=bin_edges,weights=energy_b*norm/dk)
 
     bin_centers=(bin_edges[1:] + bin_edges[:-1]) / 2
     return bin_centers,spec_u,spec_b
@@ -46,8 +46,8 @@ def parspec(state,kgrid,params,bin_factor=2.0):
     phikkz = ft.fft(phik,axis=0)
     psikkz = ft.fft(psik,axis=0)
     kz = ft.rfftfreq(params.nz) * params.nz * 2 * jnp.pi / params.Lz
-    en_u_full = jnp.sum(0.5 * kgrid.ksq() * jnp.abs(phikkz)**2.0 * rfft2_y_factor, axis=(1,2))
-    en_b_full = jnp.sum(0.5 * kgrid.ksq() * jnp.abs(psikkz)**2.0 * rfft2_y_factor, axis=(1,2))
+    en_u_full = jnp.sum(0.5 * kgrid.ksq * jnp.abs(phikkz)**2.0 * rfft2_y_factor, axis=(1,2))
+    en_b_full = jnp.sum(0.5 * kgrid.ksq * jnp.abs(psikkz)**2.0 * rfft2_y_factor, axis=(1,2))
     half = params.nz // 2
     energy_u = en_u_full[:half+1].at[1:half].add(en_u_full[half+1:][::-1])
     energy_b = en_b_full[:half+1].at[1:half].add(en_b_full[half+1:][::-1])

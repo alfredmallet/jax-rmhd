@@ -41,6 +41,10 @@ NVLIBS=$("$HOME/.conda/envs/jax_gpu/bin/python" -c "import nvidia,os;print(':'.j
 [ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
+# MPI_MODE must be set BEFORE its first use (the probe below); previously it was defined
+# after it, so the probe ran `srun --mpi=` (empty) and was rescued only by `|| true`.
+MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works
+
 # One-task compute-node probe: prints what the actual job python sees BEFORE any phase runs.
 srun --mpi=$MPI_MODE --ntasks=1 --cpus-per-task=4 "$HOME/.conda/envs/jax_gpu/bin/python" -c "import os,sys,nvidia,jax; print('probe PYTHONPATH=',os.environ.get('PYTHONPATH')); print('probe nvidia=',nvidia.__path__); print('probe devices=',jax.devices())" || true
 
@@ -63,7 +67,6 @@ export RMHD_TEND=1.0
 #   first collective dies (ncclGroupEnd, cuda error 101 'invalid device ordinal') because
 #   same-node P2P/SHM transport needs peer GPUs visible. Leave all job GPUs visible and
 #   comms._local_device_ids pins each process to its node-local rank's ordinal.
-MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi + external PMIx; pmi2 fails, pmix works   # same knob as the bench scripts; see `srun --mpi=list`
 LAUNCH_MPI4JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK --gpu-bind=single:1"
 LAUNCH_JAX="srun --mpi=$MPI_MODE --ntasks=$NRANK --cpus-per-task=$SLURM_CPUS_PER_TASK"
 

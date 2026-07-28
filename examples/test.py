@@ -4,7 +4,6 @@ import jax
 import jax_rmhd as jr
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-jr.init_cluster()
 
 #parameters
 nx = 128

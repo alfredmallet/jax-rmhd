@@ -24,7 +24,7 @@ export PYTHONNOUSERSITE=1
 
 pip install -U jax   # CPU jax; jaxlib comes with it
 
-# mpi4py/mpi4jax are hard requirements even for single-rank runs (config.py's init_cluster()
+# mpi4py/mpi4jax are hard requirements even for single-rank runs (Parameters construction
 # always touches MPI.COMM_WORLD). Build BOTH from source against the loaded openmpi module —
 # a prebuilt wheel may link a different MPI than the one `mpirun` on the compute node
 # launches, which shows up as every rank reporting rank 0.

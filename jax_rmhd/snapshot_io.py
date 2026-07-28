@@ -68,11 +68,15 @@ def snapshot_manager_setup(params,snap_path="data",nsnap=1000):
     # would read rank dirs as steps and let max_to_keep delete them. Reading across layouts
     # (load_snapshot) is fine and stays supported — only mixing writers is blocked.
     _layout = snapshot_layout(snap_path)
-    if params.comm_backend=="jax" and _layout=="per_rank":
+    # ANY flat-layout writer (jax backend, or a size==1 run of either backend) is refused
+    # here: its manager sits directly over snap_path, so orbax reads the rank dirs as steps
+    # and max_to_keep PRUNES them (verified on orbax 0.12.1 — silent loss of saved data).
+    if _layout=="per_rank" and (params.comm_backend=="jax" or params.size==1):
         raise ValueError(
-            f"{snap_path} holds a per-rank (mpi4jax) snapshot tree; comm_backend='jax' "
-            f"writes ONE shared directory and would mistake the rank dirs for steps. Point "
-            f"the run at a new snap_path (load_snapshot can still restart from this one).")
+            f"{snap_path} holds a per-rank (mpi4jax size>1) snapshot tree; this run writes "
+            f"a single flat directory and its manager would mistake the rank dirs for steps "
+            f"(max_to_keep would prune/DELETE them). Point the run at a new snap_path "
+            f"(load_snapshot can still restart from this one).")
     if params.comm_backend!="jax" and params.size>1 and _layout=="flat":
         raise ValueError(
             f"{snap_path} holds a flat snapshot directory (jax-backend or single-process "

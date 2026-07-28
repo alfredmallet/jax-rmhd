@@ -21,8 +21,8 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None)
     else:
         dt = params.dt
     #dissipation factors 
-    diss_full = jnp.exp(kgrid.hdiss_exponents(params)*dt)
-    diss_half = jnp.exp(kgrid.hdiss_exponents(params)*dt/2)
+    diss_full = jnp.exp(kgrid.hdiss*dt)
+    diss_half = jnp.exp(kgrid.hdiss*dt/2)
     f1 = diss_half * (state.fields + 0.5 * dt * k1)
     #RK4 substep 2
     # NB: forcing_state/forcing_key are threaded through unchanged at every sub-stage via
@@ -59,7 +59,7 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
     else:
         dt = params.dt
 
-    diss_exponents = kgrid.hdiss_exponents(params) * dt
+    diss_exponents = kgrid.hdiss * dt
 
     if params.lsrk_scan:
         return _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_exponents)

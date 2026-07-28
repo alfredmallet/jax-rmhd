@@ -7,7 +7,6 @@ import jax.numpy.fft as ft
 import matplotlib.pyplot as plt
 from mpi4py import MPI
 import mpi4jax
-jr.init_cluster()
 
 #parameters
 nx = 32

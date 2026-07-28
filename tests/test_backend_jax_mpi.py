@@ -119,8 +119,8 @@ np.save(os.path.join(outdir, f"fields_rank{params.rank}.npy"), local_fields)
 
 # energy on the host (same normalization as diagnostics.perpspec / forcing_power), so the
 # number is computed identically for both backends without needing a shard_map context
-ksq = np.asarray(kgrid.ksq())
-yfac = np.asarray(shared_physics._perp_yfac(kgrid))
+ksq = np.asarray(kgrid.ksq)
+yfac = np.asarray(kgrid.yfac)
 E_local = float(np.sum(ksq * np.abs(local_fields)**2 * yfac))
 E_total = params.comm.allreduce(E_local) if params.size > 1 else E_local
 E = 0.5 * E_total / (params.nz * float(params.nx*params.ny)**2)

@@ -6,7 +6,6 @@ import jax_rmhd as jr
 import jax_rmhd.snapshot_io as sn
 import orbax.checkpoint as ocp
 from jax_rmhd.types import SimulationState
-jr.init_cluster()
 
 # ---------------------------------------------------------------------------
 # Regression test for cross-rank snapshot-numbering desynchronization when

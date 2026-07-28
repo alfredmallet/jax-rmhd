@@ -5,7 +5,6 @@ import jax_rmhd as jr
 import jax.numpy as jnp
 import jax_rmhd.snapshot_io as sn
 from jax_rmhd.physics import shared_physics
-jr.init_cluster()
 
 # ---------------------------------------------------------------------------
 # Simple 3D forced-turbulence reference run at 64^3. Meant as a quick
@@ -15,9 +14,8 @@ jr.init_cluster()
 # forcing parameters match examples/forced-turbulence-3D.ipynb.
 #
 # NB: gate rank-0-only prints on params.rank (MPI rank), NOT
-# jax.process_index() as tests/test_advection.py does. init_cluster()
-# deliberately keeps every MPI rank as its own single-process JAX runtime
-# (see config.py) -- parallelism here is handled entirely by MPI/mpi4jax, not
+# jax.process_index(): under the mpi4jax backend every MPI rank is its own
+# single-process JAX runtime -- parallelism here is handled entirely by MPI/mpi4jax, not
 # by JAX's own multi-controller distributed system. jax.process_index() is
 # therefore 0 on every rank and can't be used to distinguish them.
 # ---------------------------------------------------------------------------

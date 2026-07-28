@@ -209,6 +209,53 @@ beyond 1 GPU. **Unroll (lsrk_scan=False) wins on GPU for BOTH backends** (+22% m
 halo_start overlap: no measurable effect either backend at this size/transport.
 Pending before final gate verdicts: V100×2 fp64 anchor, A40 multi-node scaling.
 
+## Results — 2080Ti multi-node scale (job 35895464, fp32, 512²×256, forced+nps, 16×GTX2080TI / 4 nodes, 2-pass means; replaces the A40 job which pends ~1 week — substituted per queue pressure, same scaling question, ~117 SU/hr)
+
+ms/step: mpi4jax a4 284 | a8 204 | a16 165 | a16un 130 | a16he 165 (neutral) | unforced a16U 131.
+jax/NCCL j4 200 | j8 102 | j16 48.1 | j16hl 49.1 (hook ~neutral) | j16un 66.
+Reading: **jax backend 3.4x faster than mpi4jax at 16 GPUs / 4 nodes; scaling 4→16 GPUs
+is 4.15x (ideal+) for jax vs 1.72x for mpi4jax — near-ideal NCCL scaling ACROSS NODE
+BOUNDARIES on TCP transport (no IB userspace, no P2P).** This is the multi-node verdict:
+T9 keeps its win where it matters most. Unroll REVERSES for jax multi-node (j16un 66 vs
+j16 48, vs +12% single-node A5000): keep lsrk_scan=True default for the jax backend;
+unroll remains the consistent mpi4jax-GPU win (+21%). Note: earlier job 35894622 was
+contaminated (2 ranks silently on CPU after transient cuInit NO_DEVICE — a8 "4097 ms");
+bench now aborts such ranks via RMHD_REQUIRE_GPU=1. First 2080 job also ran without
+RUN_JAX=1 exported — config banner records run_jax, always check it.
+
+## Results — CPU scaling reference (job 35893732, savio3, mpi4jax, fp64 unless noted, 2-pass)
+
+Strong 256²×256: s16 1331 | s32 1363 | s64 762 | s128 434 ms/step — within-node core scaling
+saturates by ~16 cores (bandwidth-bound FFTs: s32==s16); ACROSS nodes ~88%/doubling.
+Weak (256²×4/rank): 370 | 750 | 762 | 771 — flat 1→4 nodes (97%), the production regime.
+Cross rows, exact A5000 grid+precision (fp32 512²×128): x32 1563 (1 node) | x64 866 (2
+nodes; grid caps CPU at 64 ranks). Economics: 4×A5000/jax = 77 ms vs CPU floor 866 ms →
+**~11x faster at comparable SU rates (~75 vs 64 SU/hr) — order-of-magnitude cheaper per
+simulated step at fp32.** Caveat: fp64 on workstation GPUs pays 1/32, so fp64 production
+stays on CPU *on Savio*; on A100/H100-class hardware the win carries to fp64 (V100 job
+will anchor). Historical consistency: s32 fp64 256² ≈ 3.9x the Phase-2 128² number — checks.
+
+## Post-A4 cleanups (2026-07-27, after the final review signed off — NOT covered by A4's diff)
+
+Two user-requested refactors, each verified by the full local battery (smoke ALL PASS, nps
+ALL PASS, dissipation completes, test_backend_jax 43/43) AND an fp64 20-step forced-3D A/B
+against the immediately-prior tree: **bitwise identical (max|diff| = 0.0) in both cases**.
+
+1. `init_cluster` DELETED (config.py + `__init__.py` export + all ~10 script callers + 10
+   notebooks + doc references). It was a no-op at size>1 and its size==1 jax.distributed
+   init served nothing while carrying a fixed-port (8888) and Slurm-autodetect-hang hazard.
+   `comms.init_backend` (from the Parameters ctor) owns all bring-up. One exception:
+   bench_phase1.py calls it via getattr-guard because RMHD_PKG A/B runs old packages.
+2. K_Grids duplication removed (user's option "B"): dumb NamedTuple with plain fields
+   (`ksq`, `inv_ksq`, `dealias`, `hdiss`, `yfac` + Optional forcing fields), all four lazy
+   methods, `_compute_dealias`, `_shell_mask`, `_perp_yfac` and `reconstruct_envelope`'s
+   z_local fallback deleted; `setup_kgrids` is the sole constructor; 13 call sites renamed.
+   Rationale recorded in grids.py: computation can never live in the type (pytree rebuilt
+   with tracers/specs/global arrays). CLAUDE.md kgrid + comms + forcing_scale paragraphs
+   updated to current reality.
+
+These sit UNCOMMITTED with the A4 fixes; the pre-merge Savio CPU battery covers them.
+
 ## Status
 
 - A1 (T8 prep): DONE — `SAVIO_GPU_SETUP.md` rewritten (env build, per-rank GPU binding via
@@ -261,3 +308,13 @@ Pending before final gate verdicts: V100×2 fp64 anchor, A40 multi-node scaling.
   Unfixed MINOR: params.json keeps the *first* run's comm_backend (exempt from the diff check);
   the A40 16-GPU job takes all four 4-GPU A40 nodes (pend risk — 8×2 fallback documented) and with
   RUN_JAX=1 packs ~23 srun steps into 1 hr (submit the two backends as separate jobs).
+- A4 (final review): DONE, 1 CRITICAL + 2 MAJOR (+3 doc/script) found and FIXED. Critical:
+  snapshot_manager_setup now refuses ANY flat-layout writer (jax backend OR size==1) over a per-rank
+  tree — reproduced on orbax 0.12.1 that a top-level manager reads rank dirs as steps and max_to_keep
+  PRUNES (deletes) them. Majors: plain-mpirun (no SLURM_JOB_ID) coordinator port is now OS-assigned on
+  rank 0 instead of a fixed 20000 that collided across same-node jobs; CLAUDE.md's T7 paragraph said the
+  hook is "None for RMHD" (it is registered + per-backend gated). Also: SAVIO_GPU_SETUP pmi2→pmix drift,
+  test_backend_jax_gpu.sh used $MPI_MODE before defining it, 2080-script A40-ism comments. Re-verified
+  after fixes: battery + test_backend_jax 43/43 ALL PASS (orbax 0.12.1), mpi4jax fp64 A/B vs pre-Phase-3
+  0a11905 BITWISE identical (scan/unroll/cfl_every=2), every PHASE3_RESULTS number reproduced from the
+  rundir/a5k .out files. Merge-ready pending the Savio CPU battery per the Phase 2 convention.

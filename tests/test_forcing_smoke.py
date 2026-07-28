@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import jax_rmhd as jr
 from jax_rmhd.physics import shared_physics
-jr.init_cluster()
 
 # ---------------------------------------------------------------------------
 # Smoke tests for the O-U forcing implementation.

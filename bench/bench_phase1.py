@@ -25,7 +25,7 @@ if _pkgdir:
     assert jr.__file__.startswith(os.path.abspath(_pkgdir) + os.sep), \
         f"wrong jax_rmhd imported: {jr.__file__} (wanted {_pkgdir})"
 
-jr.init_cluster()
+getattr(jr, "init_cluster", lambda: None)()  # old packages (RMHD_PKG A/B) still define it
 label, case, donate = sys.argv[1], sys.argv[2], sys.argv[3] == "donate"
 nx = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].isdigit() else 128
 nz = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].isdigit() else 256

@@ -53,7 +53,7 @@ export PYTHONNOUSERSITE=1
 pip install -U "jax[cuda12]"
 
 # mpi4py/mpi4jax are hard requirements of this codebase even for a single-rank run
-# (config.py's init_cluster() always touches MPI.COMM_WORLD). Build mpi4py FROM SOURCE against
+# (config.py always touches MPI.COMM_WORLD at Parameters construction). Build mpi4py FROM SOURCE against
 # the loaded openmpi -- a prebuilt wheel may link a different MPI than the one `srun`/`mpirun`
 # on the compute node actually launches, which shows up as every rank reporting rank 0.
 # --no-cache-dir: pip caches locally-built wheels; without it a rebuild after an MPI/toolchain
@@ -137,7 +137,7 @@ default device**. So if all N GPUs are visible to all N ranks, all N ranks pile 
 come from Slurm:
 
 ```bash
-srun --mpi=pmi2 --ntasks=4 --cpus-per-task=4 --gres=gpu:A5000:4 --gpu-bind=single:1 \
+srun --mpi=pmix --ntasks=4 --cpus-per-task=4 --gres=gpu:A5000:4 --gpu-bind=single:1 \
      python -u bench/bench_phase1.py ...
 ```
 
@@ -150,9 +150,10 @@ srun --mpi=pmi2 --ntasks=4 --cpus-per-task=4 --gres=gpu:A5000:4 --gpu-bind=singl
   `--gres`, use `--gpus-per-task=1` instead; both are Slurm-side scoping.
 - `srun` forwards the whole environment by default, so no `mpirun -x VAR` list is needed
   (contrast with the CPU scripts `slurms/bench_phase2*.sh`).
-- `--mpi=pmi2` is the usual mode for Savio's openmpi build. If MPI init fails or every rank
-  reports rank 0 of size 1, try `--mpi=pmix`; `srun --mpi=list` (printed by the probe job)
-  shows what the site supports. All Phase 3 scripts honor `MPI_MODE=<mode>` as an env override.
+- `--mpi=pmix` is REQUIRED on Savio (audit result, section 3: this openmpi is
+  `--without-pmi` + external PMIx, so pmi2 aborts before `MPI_Init`); `srun --mpi=list`
+  (printed by the probe job) shows what a site supports. All Phase 3 scripts honor
+  `MPI_MODE=<mode>` as an env override.
 
 **Verification**: every script prints one line per rank before timing anything:
 
@@ -214,7 +215,7 @@ Env knobs (all optional, all defaulted so a bare `sbatch` works):
 |---|---|---|
 | `CUDA_MPI` | `0` | sets `MPI4JAX_USE_CUDA_MPI`; `1` only after a clean probe |
 | `RUN_JAX` | `0` | `1` adds the `comm_backend="jax"` (shard_map/NCCL) rows — leave `0` until T9 lands, so the scripts still run if it's reverted |
-| `MPI_MODE` | `pmi2` | `srun --mpi=` mode |
+| `MPI_MODE` | `pmix` | `srun --mpi=` mode (pmi2 aborts on Savio's openmpi; see section 3) |
 | `GPUS_PER_NODE` | `4` | A40 script only: set `2` if you switch to 2-GPU A40 nodes |
 
 Each case prints one result line:
