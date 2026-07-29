@@ -1,7 +1,6 @@
 from mpi4py import MPI
 import jax
 import numpy as np
-from jax.tree_util import register_pytree_node_class
 from .types import SimulationState
 from . import comms
 import os
@@ -22,7 +21,6 @@ def _json_scalar(v):
 # effect on the trajectory or the on-disk layout)
 _TRANSPORT_KEYS = ("comm_backend",)
 
-@register_pytree_node_class
 class Parameters():
     #Stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=0.0,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
@@ -52,7 +50,7 @@ class Parameters():
         self.dt = dt # Only used if adaptive_timestep==False
         self.adaptive_timestep = adaptive_timestep #Usually we want this to be true
         # recompute the CFL timestep (one global allreduce) only every cfl_every steps
-        # this is dangerous: use with caution.
+        # this is dangerous! use with caution.
         if isinstance(cfl_every,bool) or not isinstance(cfl_every,(int,np.integer)) or cfl_every < 1:
             raise ValueError(f"cfl_every must be an int >= 1, got {cfl_every!r}")
         self.cfl_every = int(cfl_every)  # int(): accept numpy ints, store a plain int
@@ -81,6 +79,8 @@ class Parameters():
         if self.comm_backend=="jax" and self.spatial_dimensions!=3:
             raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
         if self.spatial_dimensions==3:
+            if self.nz % self.size != 0:
+                raise ValueError(f"nz={self.nz} must be divisible by the number of MPI ranks ({self.size})")
             self.cart_comm = self.comm.Create_cart(dims=[self.size],periods=[True],reorder=False)
             self.left_neighbor, self.right_neighbor = self.cart_comm.Shift(direction=0, disp=1)
         else:
@@ -181,17 +181,6 @@ class Parameters():
         args = {k: (tuple(v) if isinstance(v, list) else v) for k, v in rec.items() if k in known}
         args.update(overrides)
         return cls(**args)
-
-    def tree_flatten(self):
-        children = ()
-        param_data = {k: v for k, v in self.__dict__.items()}
-        return (children, param_data)
-    @classmethod
-    def tree_unflatten(cls,param_data,children):
-        obj = cls.__new__(cls)
-        obj.__dict__.update(param_data)
-        return obj
-        
 
 # registry to set the # of fields we are solving for
 eqtype_registry = {

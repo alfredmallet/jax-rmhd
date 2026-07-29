@@ -8,7 +8,7 @@ from time import perf_counter
 from .physics import equation_registry, construct_rhs
 from .physics.shared_physics import ou_update
 from .types import SimulationState
-from .grids import fft, local_z_coords
+from .grids import fft, local_z_coords, dealias_mask
 from . import comms
 
 def initialize(func,params):
@@ -20,9 +20,9 @@ def initialize(func,params):
         y = jnp.linspace(0, params.Ly, params.ny, endpoint=False).reshape(1,1,-1)
         if params.spatial_dimensions==3:
             z_device = local_z_coords(params).reshape(-1,1,1)
-            fields = fft(f(x,y,z_device))
+            fields = fft(f(x,y,z_device)) * dealias_mask(params)
         else:
-            fields = fft(f(x,y))
+            fields = fft(f(x,y)) * dealias_mask(params)
         nkx, nky = params.nx, params.ny//2 + 1
         forcing_state = jnp.zeros((params.n_ou, 2, nkx, nky), dtype=fields.dtype)
         forcing_key = jax.random.key(params.forcing_seed)
@@ -180,7 +180,7 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     stepper,scheme = get_scheme(schemestr)
     set_timestep = equation_registry[params.eqtype].set_timestep_func
     rhs = construct_rhs(equation_registry[params.eqtype])
-    # kgrid is now an explicit argument (not a closure) so the jax backend can hand it to
+    # kgrid is an explicit argument (not a closure) so the jax backend can hand it to
     # shard_map with its own in_specs; the mpi4jax branch below re-closes over it unchanged.
     def stepper_wrapped(state,kgrid):
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)

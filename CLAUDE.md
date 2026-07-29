@@ -16,10 +16,11 @@ compressible RMHD, KRMHD, gyrokinetics, ...) without touching the core solver.
 pip install -e .
 ```
 
-`pyproject.toml`'s `dependencies` list (`jax`, `jaxlib`, `orbax-checkpoint`, `numpy`) is
-incomplete — `mpi4py`, `mpi4jax`, and `tensorstore` are hard requirements (used throughout
-`config.py`, `physics/`, `snapshot_io.py`), and `matplotlib` is needed for the example
-notebooks/test scripts. Install these manually if not already present.
+`pyproject.toml`'s `dependencies` list is complete as of 2026-07-28 (`jax`, `jaxlib`,
+`orbax-checkpoint`, `numpy`, `mpi4py`, `mpi4jax`, `tensorstore`, `etils[epath]`), so
+`pip install -e .` needs a working MPI toolchain on the machine (mpi4py/mpi4jax build
+against it). `matplotlib` is the optional `examples` extra (`pip install -e ".[examples]"`),
+needed only for the example notebooks/plotting test scripts.
 
 Precision is controlled by an env var read at import time, not a runtime flag:
 ```
@@ -56,14 +57,28 @@ forcing_scale)` — see the forcing section for `forcing_scale`'s lifecycle.
 `fields` has shape `(nfields, nz_local, nkx, nky)`: real-space grid in z, rfft2 spectral in
 (x,y). **This axis is never dropped, even in 2D** — `dims=2` still produces
 `(nfields, 1, nx, ny//2+1)`, not a 3D-rank array; `run.py::initialize` reshapes the x,y
-coordinate grids with a leading axis of 1 unconditionally, 2D or 3D.
+coordinate grids with a leading axis of 1 unconditionally, 2D or 3D. `initialize` also
+applies the 2/3 dealias mask (`grids.dealias_mask`, the same mask baked into
+`kgrid.dealias`) to the transformed initial condition: the nonlinear term is the only
+place the mask is applied during evolution, so an unmasked IC's beyond-cutoff energy
+would otherwise persist forever and alias the brackets. `dims==3` requires
+`nz % size == 0` — validated in `Parameters.__init__` (before 2026-07-28 the mpi4jax
+path silently truncated to `size*(nz//size)` planes, misplacing the periodic z-seam).
 
 rfft2 convention: `kx` (`grids.py::K_Grids`) is full two-sided (`fftfreq`), `ky` is
 half/non-negative (`rfftfreq`) — real-space reality is a constraint *between* `(kx,ky)` and
 `(-kx,ky)` at `ky=0` and `ky=Nyquist`, not a per-mode constraint. Anything that writes
 directly into k-space rather than deriving it via fft of a real field (e.g. stochastic
 forcing) must enforce this explicitly or the reconstructed field silently isn't real at
-those rows. `jnp.fft.rfft2`/`irfft2` (`grids.py::fft`/`ifft`) are unnormalized transforms:
+those rows. When enforcing it on *noise*, divide the symmetrized combination by sqrt(2),
+not 2 (`shared_physics._symmetrize_real_line`): a plain average halves the variance both
+of the paired modes and of the self-conjugate kx=0/Nyquist points (whose target variance
+is that of a real, not complex, Gaussian — the single sqrt(2) restores both at once),
+anisotropically underforcing the purely-x-varying shell modes. Fixed 2026-07-28 — forced
+runs from before
+and after do not reproduce bitwise (same RNG stream, different amplitudes at those rows),
+so old forced benchmarks need re-baselining. `jnp.fft.rfft2`/`irfft2`
+(`grids.py::fft`/`ifft`) are unnormalized transforms:
 an O(1) real-space field has raw coefficients of magnitude O(nx*ny), not O(1) — matters for
 any synthetic k-space process whose amplitude is meant to be grid-resolution-independent.
 
@@ -80,10 +95,13 @@ JSON record (`_json_scalar`); anything else unserializable is a clear `TypeError
 other code versions are ignored with a warning, precision mismatch warns (it's env-set at
 import). Both are explicit calls — nothing writes params.json automatically.
 
-`Parameters` (`config.py`) is a JAX pytree with **all fields as static aux_data**
-(`tree_flatten` returns empty `children`) — every attribute is a compile-time constant
-under `jax.jit`, so plain Python `if params.foo:` branching in physics code is correct and
-preferred over `jax.lax.cond`. z-related attributes (`dz`, `Lz`, `z_diss`, `cart_comm`,
+`Parameters` (`config.py`) is **not a pytree** (the registration was removed 2026-07-28 —
+it was never flattened anywhere, and its aux dict carried MPI comm handles). It is only
+ever closed over by jitted functions or passed via `static_argnums`, so every attribute is
+a compile-time constant under `jax.jit` and plain Python `if params.foo:` branching in
+physics code is correct and preferred over `jax.lax.cond`. Never pass a `Parameters` as a
+traced (non-static) jit argument or put one inside a scanned/mapped tree — it is not a
+valid JAX type. z-related attributes (`dz`, `Lz`, `z_diss`, `cart_comm`,
 `left_neighbor`/`right_neighbor`) only exist when `dims==3`; guard access to them.
 `z_diff_order`/`z_diss_hyper` are accepted by `Parameters.__init__` and stored, but
 `physics/rmhd.py::LinearTerm` doesn't read them back — z-derivatives are hardcoded to 4th

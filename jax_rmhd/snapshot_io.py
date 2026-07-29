@@ -400,4 +400,4 @@ def load_slice(isnap,iz,nzslice,snap_path,item='fields'):
         'path': item,       
     }
     f = ts.open(spec).result()
-    return f[iz:iz+nzslice , :, :].read().result()
+    return f[:, iz:iz+nzslice].read().result()

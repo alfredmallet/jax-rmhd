@@ -11,7 +11,14 @@ dependencies = [
     "jaxlib",
     "orbax-checkpoint",
     "numpy",
+    "mpi4py",
+    "mpi4jax",
+    "tensorstore",
+    "etils[epath]",
 ]
+
+[project.optional-dependencies]
+examples = ["matplotlib"]
 
 [tool.setuptools]
 packages = ["jax_rmhd"]

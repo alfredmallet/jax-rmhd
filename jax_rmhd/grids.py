@@ -5,7 +5,7 @@ from jax.sharding import PartitionSpec as P
 from typing import NamedTuple, Optional
 from . import comms
 
-# nb the code is only spectral in the perpendciular plane, so fourier stuff is all 2D
+# nb the code is only spectral in the perpendicular plane, so fourier stuff is all 2D
 
 class K_Grids(NamedTuple):
     # pytree container for the wavenumber grids and every derived concrete array.
@@ -28,6 +28,17 @@ class K_Grids(NamedTuple):
     fidx_x: Optional[jnp.ndarray] = None
     fidx_y: Optional[jnp.ndarray] = None
 
+def dealias_mask(params):
+    # 2/3-rule elliptical dealiasing mask
+    kx = ft.fftfreq(params.nx) * params.nx * 2 * jnp.pi / params.Lx
+    ky = ft.rfftfreq(params.ny) * params.ny * 2 * jnp.pi / params.Ly
+    kx_grid = kx.reshape(-1, 1)
+    ky_grid = ky.reshape(1, -1)
+    nx = jnp.shape(kx_grid)[0]
+    ny = 2 * (jnp.shape(ky_grid)[1] - 1)
+    return ((kx_grid/kx_grid[1,0])**2 / (nx/3.0)**2 +
+            (ky_grid/ky_grid[0,1])**2 / (ny/3.0)**2) < 1.0
+
 def setup_kgrids(params):
     # gets the wavenumber grid object from parameters, precomputing all the static
     # concrete arrays (ksq, inv_ksq, dealias, hdiss, y-doubling factor, forcing shell
@@ -41,11 +52,7 @@ def setup_kgrids(params):
 
     ksq = kx_grid**2 + ky_grid**2
     inv_ksq = jnp.where(ksq > 0, 1.0/ksq, 0.0)
-    # 2/3-rule elliptical dealiasing mask
-    nx = jnp.shape(kx_grid)[0]
-    ny = 2 * (jnp.shape(ky_grid)[1] - 1)
-    dealias = ((kx_grid/kx_grid[1,0])**2 / (nx/3.0)**2 +
-               (ky_grid/ky_grid[0,1])**2 / (ny/3.0)**2) < 1.0
+    dealias = dealias_mask(params)
     diss = jnp.array(params.diss).reshape(-1,1,1,1)
     hdiss = -diss*ksq**params.hyper
 
