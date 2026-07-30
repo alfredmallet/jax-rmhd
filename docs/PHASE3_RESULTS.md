@@ -129,3 +129,42 @@ V100×2 fp64 anchor job still queued (consistency check only; target hardware is
 full-rate fp64). Savio ticket on ACS/P2P and rdma-core — chatbot confirmed the known issue; escalate to a human with
 the reproducer if direct P2P is wanted. A40 normal-QoS job: cancel. Before merge: Savio CPU battery
 (test_restart_resharding -n 2→4, test_advection -n 4) per the Phase 2 convention.
+
+## Appendix: rationale & perf notes (moved from CLAUDE.md, 2026-07-28)
+
+Spans Phases 1–3; kept here so CLAUDE.md carries only the rules, not the reasoning.
+
+- **Forcing reality symmetrization — sqrt(2), not 2.** At the ky=0/Nyquist rows a plain
+  conjugate-average halves the variance both of the paired (kx,-kx) modes and of the
+  self-conjugate kx=0/Nyquist points (whose target variance is a real, not complex,
+  Gaussian's); dividing the symmetrized combination by sqrt(2) restores both at once,
+  while /2 anisotropically underforces the purely-x-varying shell modes. Fixed
+  2026-07-28: forced runs before/after don't reproduce bitwise (same RNG stream,
+  different amplitudes at those rows) — old forced benchmarks need re-baselining.
+- **`forcing_scale_max` — cap the scale factor, don't floor `P`.** Flooring the
+  denominator near zero gives sign-flipped or enormous scales when `P` is
+  small-but-nonzero or exactly 0 (e.g. the first forcing evaluation from a zero IC);
+  capping the resulting scale bounds the worst case regardless of `P`'s units.
+- **`forcing_norm_per_step`:** ~+8% at fp64/32 ranks (hence production default). Scale
+  lags one step, error O(dt/tau); larger bounded overshoot during quiescent spin-up
+  (accepted).
+- **`forcing_shell_noise`:** faster single-device but ~5% slower on Savio CPU at 32
+  ranks — hence opt-in; revisit on GPU.
+- **`halo_start` gating:** mpi4jax — no fp64 win (the token chain serializes comm with
+  compute anyway); jax backend — neutral on Savio at bench sizes, kept on by default for
+  NVLink/IB hardware. `params.halo_start` overrides either way (how the benchmark
+  measures the on/off pair).
+- **`lsrk_scan`:** scan ~20% faster on CPU; unrolled is the GPU candidate (see the T3
+  verdict above). Bitwise-identical trajectories at fp64.
+- **`cfl_every` cost/benefit:** one extra standalone `grad_func` eval per block (stage-0
+  rhs no longer doubles as the dt source), so N>1 only pays when the allreduce is
+  expensive (high rank counts). Quiescent-start hazard, measured: the CFL dt collapses
+  ~10x within a few steps of forced spin-up; frozen dt at N=20 NaNs by t~2, N=5 survives.
+- **2D MHD physics context:** energy cascades forward/direct in 2D MHD (opposite of 2D
+  hydro's inverse cascade), but `<psi^2>` inverse-cascades regardless — don't read a
+  plateaued energy spectrum as saturated without checking `<psi^2>` has stopped climbing.
+  Per the zeroth law of turbulence, `visc`/`res` set time-to-saturation and the
+  dissipation-range cutoff, not the saturated amplitude (given adequate resolution).
+- **`diagnostics.energy`:** wraps `perp_inner_product_batch` (MPI-correct); identical to
+  the old local-slab real-space version at size==1; its former independent real-space
+  Parseval check lives in `tests/test_energy_parseval.py`.

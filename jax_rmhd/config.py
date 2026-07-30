@@ -3,6 +3,7 @@ import jax
 import numpy as np
 from .types import SimulationState
 from . import comms
+from .physics import equation_registry
 import os
 import json
 import time
@@ -30,8 +31,10 @@ class Parameters():
         # capture the constructor arguments (before any normalization below) so
         # save()/from_snapshot() can reproduce this object exactly via __init__
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
+        if eqtype not in equation_registry:
+            raise ValueError(f"eqtype must be one of {list(equation_registry)}, got {eqtype!r}")
         self.eqtype=eqtype
-        self.nfields=eqtype_registry[self.eqtype]
+        self.nfields=equation_registry[self.eqtype].nfields
         #perpendicular grid
         self.nx=nx
         if ny%2==1:
@@ -181,10 +184,5 @@ class Parameters():
         args = {k: (tuple(v) if isinstance(v, list) else v) for k, v in rec.items() if k in known}
         args.update(overrides)
         return cls(**args)
-
-# registry to set the # of fields we are solving for
-eqtype_registry = {
-    "RMHD": 2
-}
 
 

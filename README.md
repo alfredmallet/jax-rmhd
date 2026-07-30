@@ -14,10 +14,9 @@ To see how to use the code, look at an example e.g. examples/orzag-tang-3D.ipynb
 
 To add a new equation type you need to:
 
-1. Add a new entry to eqtype_registry in config.py
-2. Add a new entry to physics_registry in physics/__init__.py. This is a tuple of functions: (set_timestep, (term1,term2,...),grad)
-3. Add a new file under physics/. This should contain everything you listed in physics_registry.
-4. Import this file in physics/__init__.py
+1. Add a new entry to equation_registry in physics/__init__.py. This is an EquationRecipe: (set_timestep, (term1,term2,...), grad, nfields, and optionally forcing_scale and halo_start functions)
+2. Add a new file under physics/. This should contain everything you listed in equation_registry.
+3. Import this file in physics/__init__.py
 
 Tips:
 

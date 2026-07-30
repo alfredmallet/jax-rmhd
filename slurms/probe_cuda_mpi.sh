@@ -14,7 +14,7 @@
 # T8 pre-flight: does the `openmpi` module do CUDA-aware transfers, and does mpi4jax use it?
 # Answers three questions in one submission: (1) ompi_info's CUDA capability, (2) which srun
 # PMI modes exist for launching mpi4py, (3) device-buffer sendrecv correctness + latency with
-# MPI4JAX_USE_CUDA_MPI=1 vs =0. See SAVIO_GPU_SETUP.md "CUDA-aware MPI audit".
+# MPI4JAX_USE_CUDA_MPI=1 vs =0. See docs/SAVIO_GPU_SETUP.md "CUDA-aware MPI audit".
 # NOTE: not `set -e` -- a failing/segfaulting CUDA-MPI probe IS one of the two expected
 # outcomes and must not abort the rest of the audit.
 set -uo pipefail

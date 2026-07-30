@@ -109,7 +109,7 @@ if [ "$RUN_JAX" = "1" ]; then
     done
 fi
 
-# One profiled case (F2(b) stream syncs at scale); reading it: SAVIO_GPU_SETUP.md "Reading the profile".
+# One profiled case (F2(b) stream syncs at scale); reading it: docs/SAVIO_GPU_SETUP.md "Reading the profile".
 echo "=== profile: 16 GPU forced, trace under \$SLURM_SUBMIT_DIR/prof_p3a40 ==="
 export RMHD_PROFILE_DIR=$SLURM_SUBMIT_DIR/prof_p3a40_$SLURM_JOB_ID
 run 16 a16prof 3d_forced donate nx$NX nz$NZ nps cfl1 halo_late $STEPS --profile

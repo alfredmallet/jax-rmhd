@@ -101,7 +101,7 @@ if [ "$RUN_JAX" = "1" ]; then
     done
 fi
 
-# One profiled case (F2(b): per-call stream syncs). Reading the trace: SAVIO_GPU_SETUP.md
+# One profiled case (F2(b): per-call stream syncs). Reading the trace: docs/SAVIO_GPU_SETUP.md
 # "Reading the profile". Rank 0 only; RMHD_PROFILE_ALL=1 would trace every rank.
 echo "=== profile: 4 GPU forced, trace under \$SLURM_SUBMIT_DIR/prof_p3a5k ==="
 export RMHD_PROFILE_DIR=$SLURM_SUBMIT_DIR/prof_p3a5k_$SLURM_JOB_ID

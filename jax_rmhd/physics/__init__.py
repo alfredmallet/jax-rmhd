@@ -5,6 +5,8 @@ class EquationRecipe(NamedTuple):
     set_timestep_func: Callable
     term_funcs: Tuple[Callable,...]
     grad_func: Callable
+    # number of evolved fields (sets the leading axis of state.fields)
+    nfields: int
     # per-equation once-per-step forcing scale (params.forcing_norm_per_step)
     forcing_scale_func: Optional[Callable] = None
     # hook issuing the equation's halo exchange first
@@ -41,6 +43,7 @@ equation_registry = {
     "RMHD": EquationRecipe(set_timestep_func = rmhd.set_timestep,
                            term_funcs = (rmhd.NonlinearTerm, rmhd.LinearTerm, rmhd.ForcingTerm),
                            grad_func = rmhd.grad,
+                           nfields = 2,
                            forcing_scale_func = rmhd.forcing_scale,
                            halo_start_func = rmhd.halo_start
                            ),
