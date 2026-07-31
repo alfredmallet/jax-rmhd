@@ -337,7 +337,12 @@ Two review catches worth remembering: mpi4jax is sdist-only and links mpi4py's A
 `--no-build-isolation` is right but `setuptools>=82 wheel nanobind` must be hand-installed
 first or the build fails every time; and `continue-on-error` belongs on the test STEP, not
 the job — at job level a broken toolchain install would stay green forever.
-NOT YET RUN ON GITHUB: expect 1-2 rounds of iteration on the first push.
+First push (2026-07-30, branch `performance`): all three jobs green first try, no
+iteration needed. mpi2 gave the first real mpirun coverage outside Savio — halo_width
+and energy_parseval both ALL PASS at n=2 and n=4 — so its `continue-on-error` was
+dropped. `fast` is deliberately NOT a required status check: tests legitimately lag
+new physics, and a required check would create pressure to edit tests mid-experiment
+just to unblock a merge. CI reports; it does not gate.
 
 
 

@@ -6,12 +6,16 @@
 # installs a real OpenMPI + mpi4py + mpi4jax and runs the two jobs whose whole
 # point is rank-boundary behaviour, at their n=2 and n=4 phases.
 #
-# continue-on-error is deliberate and should STAY until this has been green for a
-# while: mpi4jax is fiddly to build, and a flaky MPI job that blocks merges gets
-# ignored, which is worse than no job. Savio remains the authority for MPI.
-# It sits on the TEST STEP, not on the job: a broken toolchain install should turn
-# this job red (it means the tier is running nothing), while a genuine multi-rank
-# failure stays advisory. Job-level continue-on-error would hide both equally.
+# This job ran green on its first push (2026-07-30, branch `performance`): mpi4jax
+# built, and all 4 phases reported ALL PASS at both n=2 and n=4. The
+# `continue-on-error` it launched with was removed at that point -- it existed only
+# to stop an unproven job from crying wolf, and keeping it past the proof would just
+# mean not noticing the next break. If this starts failing for environment reasons
+# rather than code reasons, put it back ON THE TEST STEP (never on the job: at job
+# level a broken toolchain install stays green, i.e. the tier silently runs nothing).
+#
+# Savio remains the authority for MPI: 4 ranks here are oversubscribed onto 2 cores,
+# and the n>4 / GPU tiers only exist there.
 #
 # pytest is never run under mpirun (see docs/RUNNING_TESTS.md). We reuse the Savio
 # runner, which script-runs each file under a launcher template and applies the
@@ -71,7 +75,6 @@ jobs:
       # `timeout 300` inside the template turns a deadlocked collective into a
       # failure instead of a job that burns the full wall clock.
       - name: Run the 2-rank tier
-        continue-on-error: true
         env:
           RMHD_LAUNCH: timeout 300 mpirun --oversubscribe -n {n}
           RMHD_TEST_OUTDIR: ${{ runner.temp }}/rmhd-mpi2
