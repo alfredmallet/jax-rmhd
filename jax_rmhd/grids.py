@@ -1,4 +1,3 @@
-import jax
 import jax.numpy as jnp
 import jax.numpy.fft as ft
 from jax.sharding import PartitionSpec as P

@@ -16,40 +16,19 @@ bootstrap()
 import pytest  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Collection control.
-#
-# Legacy script-style test files (module-level code, no test_* functions) are
-# executed at import time when pytest collects them -- that works, but only in the
-# fp64 session, because each forces RMHD_PRECISION=64 at its own top while the
-# process precision is already fixed. As files are converted to pytest-style
-# functions (Phase 2 of docs/TESTING_PLAN.md), remove them from _LEGACY_SCRIPTS.
+# Collection control. (All fast test files are pytest-style as of Phase 2 of
+# docs/TESTING_PLAN.md -- the legacy import-time-script list is gone.)
 # ---------------------------------------------------------------------------
-
-_LEGACY_SCRIPTS = [
-    "test_backend_jax.py",
-    "test_energy_parseval.py",
-    "test_forcing_norm_per_step.py",
-    "test_forcing_smoke.py",
-    "test_halo_width.py",
-]
 
 # Never collected by pytest (see docs/TESTING_PLAN.md):
 #   - test_backend_jax_mpi.py: argv-driven multi-GPU driver, real MPI only
 #   - test_restart_resharding.py: two-phase, two rank counts, real MPI only
-#   - test_advection.py: Savio-scale convergence study (Phase 4 adds a fast tier)
-#   - test_dissipation.py: minutes-scale study with plot output (Phase 4 converts)
 collect_ignore = [
     "data",
     "local_mpi_stub.py",
     "test_backend_jax_mpi.py",
     "test_restart_resharding.py",
-    "test_advection.py",
-    "test_dissipation.py",
 ]
-
-if os.environ.get("RMHD_PRECISION", "64") == "32":
-    collect_ignore += _LEGACY_SCRIPTS
-
 
 def pytest_addoption(parser):
     parser.addoption("--runslow", action="store_true", default=False,

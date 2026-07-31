@@ -57,6 +57,40 @@ first at `-n 2`, then at `-n 4` against the same snapshot dir (see
 multi-GPU driver (see `slurms/test_backend_jax_gpu.sh`).
 `bench/savio_scaling/` is a timing benchmark, not a test.
 
+## The whole suite on Savio: one sbatch each
+
+You rarely need to run individual scripts by hand. From the repo root (or anywhere —
+logs land under the submission cwd):
+
+```
+sbatch slurms/run_test_suite_cpu.sh     # savio3: every CPU job, ~30-45 min
+sbatch slurms/run_test_suite_gpu.sh     # savio4_gpu: the 5-phase backend battery
+```
+
+Both wrappers call `tests/run_savio_suite.py`, which reads the job table in
+`tests/savio_manifest.py` and subprocess-runs each test file in script mode at its
+proper rank counts (`mpirun -n 2/4/8` on CPU; the two srun launch modes on GPU).
+Per-phase output is teed into `$RMHD_TEST_OUTDIR` (default
+`data/test_suite_{cpu,gpu}_<jobid>/<job>_fp<prec>/phaseN_<label>.log`), each job runs
+in its own clean scratch cwd (stale snapshot dirs can never trip the layout guard),
+and cheap single-process files run at both precisions. The pass rule per phase is
+**exit 0 AND the `ALL PASS` banner** — mpirun can mask a rank's exit code — and the
+job ends with a summary table and exits nonzero on any failure.
+
+Extra arguments to `sbatch slurms/run_test_suite_*.sh` are forwarded to the runner:
+
+```
+sbatch slurms/run_test_suite_cpu.sh --only halo --only parseval   # substring filter
+sbatch slurms/run_test_suite_cpu.sh --precision 64                # one session only
+sbatch slurms/run_test_suite_cpu.sh --list                        # print the table, run nothing
+python tests/run_savio_suite.py --list                            # same, from a login node
+```
+
+Adding a test to the suite = adding one entry to `tests/savio_manifest.py` (see the
+field comments there). The targeted single-purpose slurm scripts
+(`test_backend_jax_gpu.sh`, `test_restart_resharding.sh`, …) still work and remain
+the right tool when iterating on one failure.
+
 ## Writing a new test
 
 Copy the shape of `tests/test_infra.py`. The skeleton:

@@ -101,7 +101,10 @@ RK/LSRK sub-stages rebuild states: **always `state._replace(...)`, never positio
 `SimulationState(...)`** — positional construction silently drops/misaligns the forcing
 fields, which must survive unchanged within a step (updated once per step, not per
 sub-stage). `lsrk_advance` has scan (`lsrk_scan=True`, default) and unrolled stage
-loops — bitwise-identical at fp64; per-machine perf knob.
+loops — agree to round-off at fp64 (~1e-15 after 20 steps; bitwise identity is
+machine/jax-version dependent — held where first measured, does NOT hold under jax
+0.6.2/CPU: XLA fuses the two loop structures differently; test_scheme_equivalence).
+Per-machine perf knob.
 
 `params.cfl_every` (default 1) recomputes the adaptive dt (and its CFL allreduce) once
 per N-step block: `run._cfl_block` computes dt from the block's start state and passes

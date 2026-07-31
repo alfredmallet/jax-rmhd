@@ -8,9 +8,12 @@ PYTEST ?= python -m pytest
 
 .PHONY: test test-fast test-slow test-one
 
+# Phase 5 (docs/TESTING_PLAN.md) widened the fp32 session from `-m fp32` to the
+# whole suite: every file carries precision-split tolerances now, and fp64-marked
+# tests auto-skip.
 test:
 	RMHD_PRECISION=64 $(PYTEST) tests
-	RMHD_PRECISION=32 $(PYTEST) tests -m fp32
+	RMHD_PRECISION=32 $(PYTEST) tests
 
 test-fast:
 	RMHD_PRECISION=64 $(PYTEST) tests

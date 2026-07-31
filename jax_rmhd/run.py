@@ -227,6 +227,6 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     mngr.wait_until_finished()
     t_sim = perf_counter()-t_start
     if params.rank==0:
-        print(f"Ending simulation at t = "+str(state.t)+". It took "+str(t_sim)+"s")
+        print("Ending simulation at t = "+str(state.t)+". It took "+str(t_sim)+"s")
     return state
 

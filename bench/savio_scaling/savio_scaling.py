@@ -3,7 +3,6 @@ os.environ["RMHD_PRECISION"] = "64"
 import jax
 import jax_rmhd as jr
 import jax.numpy as jnp
-import jax.numpy.fft as ft
 #import matplotlib.pyplot as plt
 import time
 

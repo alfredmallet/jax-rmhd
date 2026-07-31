@@ -15,7 +15,7 @@
 #   NCCL_ALGO=Ring NCCL_PROTO=Simple        # simplest collective schedule
 # Whichever first prints "psum OK" identifies the broken layer — put those exports in the
 # GPU sbatch scripts and report the finding (with this file) to Savio support.
-import os, socket, sys, faulthandler
+import os, socket, faulthandler
 faulthandler.dump_traceback_later(60, repeat=True)  # stacks every 60 s if we hang
 
 use_mpi = not os.environ.get("RMHD_REPRO_NOMPI")

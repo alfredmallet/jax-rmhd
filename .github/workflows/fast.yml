@@ -1,0 +1,75 @@
+# Fast tier (docs/TESTING_PLAN.md Phase 7) -- the required check.
+#
+# `pip install -e .` CANNOT work on a stock runner: mpi4py/mpi4jax are hard
+# dependencies and there is no MPI toolchain here. Do NOT demote them in
+# pyproject.toml to make this green -- Savio needs them. Instead we install the
+# package with --no-deps and hand pip the dependency list explicitly, omitting
+# exactly those two; tests/conftest.py then auto-installs tests/local_mpi_stub.py
+# plus 4 fake XLA devices, which is the same path a local `make test` takes.
+#
+# Genuine multi-rank coverage lives in mpi2.yml (2 real ranks) and, for anything
+# larger or GPU, in slurms/run_test_suite_{cpu,gpu}.sh on Savio.
+
+name: fast
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The ruff version is pinned in pyproject.toml's `lint` extra and read back
+      # here, so CI and a local run can never disagree about the ruleset. Ruff's
+      # DEFAULT rule selection widens between releases (0.16 added notebooks and
+      # several opinionated families); [tool.ruff.lint] select = ["F"] pins scope.
+      - name: Install ruff at the pinned version
+        run: |
+          RUFF=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['optional-dependencies']['lint'][0])")
+          echo "pinned: $RUFF"
+          python -m pip install --upgrade pip
+          pip install "$RUFF"
+
+      - run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      # Keep this list in sync with [project].dependencies MINUS mpi4py/mpi4jax,
+      # plus the `test` extra.
+      - name: Install dependencies (no MPI -- the stub covers it)
+        run: |
+          python -m pip install --upgrade pip
+          pip install jax jaxlib numpy orbax-checkpoint tensorstore "etils[epath]" \
+                      "pytest>=7" matplotlib
+          pip install --no-deps -e .
+
+      - name: Confirm the MPI stub is what's active
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("mpi4py") is not None:
+              sys.exit("mpi4py is installed -- this job is meant to exercise the stub path")
+          print("no mpi4py: tests/conftest.py will install local_mpi_stub")
+          PY
+
+      # Both precision sessions. Precision is read once at jax_rmhd import, so
+      # fp64 and fp32 cannot share a process -- see the Makefile.
+      - name: make test
+        run: make test

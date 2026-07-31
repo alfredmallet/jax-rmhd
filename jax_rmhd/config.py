@@ -1,7 +1,6 @@
 from mpi4py import MPI
 import jax
 import numpy as np
-from .types import SimulationState
 from . import comms
 from .physics import equation_registry
 import os

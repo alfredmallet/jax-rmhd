@@ -24,3 +24,17 @@ from .grids import K_Grids, setup_kgrids
 from .config import Parameters
 from .snapshot_io import snapshot_manager_setup
 from .run import simulate,simulate_scan,estimate_good_nblock,initialize
+
+# These imports are the package's public surface, not accidents: __all__ declares
+# that to readers and to linters alike (they are "unused" only within this file).
+__all__ = [
+    "SimulationState",
+    "K_Grids",
+    "setup_kgrids",
+    "Parameters",
+    "snapshot_manager_setup",
+    "simulate",
+    "simulate_scan",
+    "estimate_good_nblock",
+    "initialize",
+]

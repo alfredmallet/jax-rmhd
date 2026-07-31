@@ -9,7 +9,9 @@ bootstrap()
 import numpy as np
 import pytest
 
-import jax_rmhd as jr
+# Imported for its side effect and as the template's point: `import jax_rmhd`
+# must come AFTER bootstrap(), which pins precision and installs the MPI stub.
+import jax_rmhd as jr  # noqa: F401
 from jax_rmhd import snapshot_io
 
 

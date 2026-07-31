@@ -52,7 +52,6 @@ import jax.numpy as jnp
 import jax_rmhd as jr
 import jax_rmhd.snapshot_io as sn
 from jax_rmhd import comms
-from jax_rmhd.physics import shared_physics
 
 nx = ny = int(os.environ.get("RMHD_NX", 64))
 nz = int(os.environ.get("RMHD_NZ", 32))

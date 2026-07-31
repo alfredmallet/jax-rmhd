@@ -1,7 +1,5 @@
 import jax
-from jax import jit
 import jax.numpy as jnp
-from .types import SimulationState
 from typing import NamedTuple,Tuple
 
 # Standard RK4 with integrating factor.
@@ -127,7 +125,12 @@ _scheme_registry = {
                        -567301805773 / 1357537059087,
                        -2404267990393 / 2016746695238,
                        -3550918686646 / 2091501179385,
-                       -3270041069962 / 2362476162756
+                       # NB corrected 2026-07-30 (caught by tests/test_scheme_equivalence.py):
+                       # this was -3270041069962/2362476162756 (~-1.3841), which breaks even
+                       # the 1st-order condition (stability polynomial z-coefficient 1.0096).
+                       # The published Carpenter & Kennedy (1994) value below satisfies the
+                       # 4th-order conditions exactly (verified in rational arithmetic).
+                       -1275806237668 / 842570457699
                        ),
                    betas = (
                        1432997174477 / 9575080441755,

@@ -20,11 +20,36 @@ dependencies = [
 [project.optional-dependencies]
 examples = ["matplotlib"]
 test = ["pytest>=7", "matplotlib"]
+lint = ["ruff==0.16.1"]
 
 [tool.setuptools]
 # NB: jax_rmhd.physics must be listed -- an install without it ships a package
 # that cannot import its own equation registry (editable installs mask this).
 packages = ["jax_rmhd", "jax_rmhd.physics"]
+
+[tool.ruff]
+# Rule scope is PINNED deliberately, and so is the ruff version (see the `lint`
+# extra above). Ruff's *default* ruleset widens between releases -- 0.16 both
+# started linting notebooks and pulled in whole opinionated families (C408, UP,
+# PL, SIM, ...), which would have turned 19 real findings into 237. Widening is a
+# decision to make on purpose, not one to inherit from an upgrade.
+#
+# F = pyflakes: unused imports, undefined names, redefinitions. Error-class only,
+# no style opinions. Adding "I" (import sorting) later is a one-line change plus a
+# single mechanical `ruff check --fix` commit.
+target-version = "py310"
+extend-exclude = [
+    # Notebooks legitimately carry imports for cells not yet written; holding
+    # exploratory examples to package standards fights how they are used.
+    "*.ipynb",
+    "examples",
+    "data",
+    "rundir",
+    "a5k",
+]
+
+[tool.ruff.lint]
+select = ["F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

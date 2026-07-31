@@ -1,6 +1,4 @@
-import jax
 import jax.numpy as jnp
-from . import grids
 import jax.numpy.fft as ft
 from . import comms
 

@@ -1,0 +1,88 @@
+# Two-rank MPI tier (docs/TESTING_PLAN.md Phase 7).
+#
+# The one thing neither `make test` nor any sandbox can provide: a REAL mpirun.
+# Locally the suite runs against tests/local_mpi_stub.py, so halo exchange and the
+# allreduce-backed diagnostics are only ever exercised single-process. This job
+# installs a real OpenMPI + mpi4py + mpi4jax and runs the two jobs whose whole
+# point is rank-boundary behaviour, at their n=2 and n=4 phases.
+#
+# continue-on-error is deliberate and should STAY until this has been green for a
+# while: mpi4jax is fiddly to build, and a flaky MPI job that blocks merges gets
+# ignored, which is worse than no job. Savio remains the authority for MPI.
+# It sits on the TEST STEP, not on the job: a broken toolchain install should turn
+# this job red (it means the tier is running nothing), while a genuine multi-rank
+# failure stays advisory. Job-level continue-on-error would hide both equally.
+#
+# pytest is never run under mpirun (see docs/RUNNING_TESTS.md). We reuse the Savio
+# runner, which script-runs each file under a launcher template and applies the
+# real pass rule: exit 0 AND the "ALL PASS" banner -- mpirun can mask a single
+# rank's non-zero exit, so the exit code alone is not trustworthy.
+
+name: mpi2
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: mpi2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mpi2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install OpenMPI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin
+          mpirun --version
+
+      # mpi4jax is sdist-only on PyPI, so it always builds from source, and it links
+      # against mpi4py's ABI -- building it against a DIFFERENT mpi4py than the one
+      # we run with is a real runtime-breakage risk. Hence --no-build-isolation, so
+      # it compiles against the mpi4py installed on the line above.
+      #
+      # The cost of turning isolation off is that pip installs none of mpi4jax's
+      # build requirements for us, so they go in by hand first: nanobind, and a
+      # setuptools newer than the one setup-python ships (upgrading pip does NOT
+      # upgrade setuptools). Omitting these fails the build every time.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install jax jaxlib numpy orbax-checkpoint tensorstore "etils[epath]" \
+                      "pytest>=7" matplotlib
+          pip install mpi4py
+          pip install "setuptools>=82" wheel nanobind
+          pip install mpi4jax --no-build-isolation
+          pip install --no-deps -e .
+
+      - name: Sanity-check the real MPI stack
+        run: mpirun --oversubscribe -n 2 python -c "from mpi4py import MPI; print('rank', MPI.COMM_WORLD.Get_rank(), 'of', MPI.COMM_WORLD.Get_size())"
+
+      # halo_width and energy_parseval each run an n=2 then an n=4 phase. The
+      # runner is a 2-core box, so --oversubscribe is required for the n=4 half.
+      # `timeout 300` inside the template turns a deadlocked collective into a
+      # failure instead of a job that burns the full wall clock.
+      - name: Run the 2-rank tier
+        continue-on-error: true
+        env:
+          RMHD_LAUNCH: timeout 300 mpirun --oversubscribe -n {n}
+          RMHD_TEST_OUTDIR: ${{ runner.temp }}/rmhd-mpi2
+        run: |
+          python tests/run_savio_suite.py --tier cpu \
+              --only halo_width --only energy_parseval
+
+      - name: Upload per-phase logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpi2-logs
+          path: ${{ runner.temp }}/rmhd-mpi2
+          if-no-files-found: warn
