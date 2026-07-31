@@ -134,6 +134,12 @@ only) or 2 (`"elsasser"`, z± = phi±psi independently, each with its own
 `forcing_power_elsasser`); axis 1 is the [A,B] cos/sin z-envelope coefficients (dims=3;
 dims=2 uses A only).
 
+`forcing_power` and both entries of `forcing_power_elsasser` are in the SAME units — a
+contribution to the total energy injection rate. Total dE/dt is `forcing_power` in
+momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` matches
+`forcing_power=p`. `rmhd._forcing_scale_from` carries the factor 2 this needs (E_tot =
+(E+ + E-)/2); before 2026-07-31 the elsasser entries meant half this.
+
 - `shared_physics` (`ou_update`, `reconstruct_envelope`, `perp_inner_product`,
   `perp_mean_square`) is equation-agnostic; `rmhd.ForcingTerm` does the RMHD power
   normalization and (phi,psi) mapping.

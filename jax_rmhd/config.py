@@ -7,6 +7,7 @@ import os
 import json
 import time
 import inspect
+import warnings
 
 def _json_scalar(v):
     # json.dump fallback for Parameters.save: numpy/jax 0-d scalars (e.g. a dt pulled out
@@ -23,7 +24,7 @@ _TRANSPORT_KEYS = ("comm_backend",)
 
 class Parameters():
     #Stores all static parameters for the problem
-    def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=0.0,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
+    def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend="mpi4jax",
                  cfl_every=1):
@@ -45,7 +46,10 @@ class Parameters():
         self.dx=Lx/nx
         self.dy=Ly/ny
         #perpendicular dissipation
-        self.diss = diss # should be a tuple of length nfields
+        if np.shape(diss) not in ((), (1,), (self.nfields,)):
+            raise ValueError(f"diss must be a scalar (applied to every field) or a length-"
+                             f"{self.nfields} sequence (one per {self.eqtype} field), got {diss!r}")
+        self.diss = diss
         self.hyper=hyper
         #timestepping
         self.cfl_safety=cfl_safety
@@ -57,9 +61,13 @@ class Parameters():
             raise ValueError(f"cfl_every must be an int >= 1, got {cfl_every!r}")
         self.cfl_every = int(cfl_every)  # int(): accept numpy ints, store a plain int
         #dimensions
+        if dims not in (2,3):
+            raise ValueError(f"dims must be 2 or 3, got {dims!r}")
         self.spatial_dimensions=dims
         if dims==3:
             #z grid parameters
+            if Lz <= 0:
+                raise ValueError(f"dims=3 requires Lz > 0, got {Lz!r}")
             self.nz = nz
             self.Lz = Lz
             self.dz = Lz/nz
@@ -98,8 +106,16 @@ class Parameters():
         self.forcing = forcing
         if forcing_mode not in ("momentum","elsasser"):
             raise ValueError(f"forcing_mode must be 'momentum' or 'elsasser', got {forcing_mode!r}")
+        if forcing:
+            if np.shape(fshell) != (2,) or fshell[0] >= fshell[1]:
+                raise ValueError(f"fshell must be (nmin, nmax) with nmin < nmax, got {fshell!r}")
+            if forcing_mode == "elsasser" and np.shape(forcing_power_elsasser) != (2,):
+                raise ValueError(f"forcing_mode='elsasser' requires forcing_power_elsasser to be "
+                                 f"(eps_plus, eps_minus), got {forcing_power_elsasser!r}")
         self.forcing_mode = forcing_mode
         self.forcing_power = forcing_power
+        #(eps_plus, eps_minus), total energy injection rate = eps_plus+eps_minus
+        #nb. Etot = (E^+ + E^-)/2 with E^pm = (z^pm)^2/2
         self.forcing_power_elsasser = forcing_power_elsasser
         self.forcing_tau = forcing_tau
         self.fshell = fshell
@@ -112,6 +128,11 @@ class Parameters():
         # vs statically unrolled (lsrk_scan=False; in principle could
         # be faster on some GPU systems)
         self.lsrk_scan = lsrk_scan
+        if self.spatial_dimensions==3 and self.rank==0 and (z_diff_order != 4 or z_diss_hyper != 2.0):
+            warnings.warn(f"z_diff_order={z_diff_order}, z_diss_hyper={z_diss_hyper}: both are "
+                          "stored but IGNORED. rmhd.LinearTerm is fixed at 4th-order centered "
+                          "differences with d_z^4 hyperdissipation.", stacklevel=2)
+
     def save(self, snap_path, filename="params.json"):
         # record the constructor arguments (not derived attrs) to snap_path/filename, so a
         # run directory documents how it was made and from_snapshot can reproduce it.

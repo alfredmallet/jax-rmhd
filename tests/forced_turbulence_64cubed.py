@@ -39,7 +39,7 @@ hyper = 3
 #forcing parameters (same choice as examples/forced-turbulence-3D.ipynb)
 forcing = True
 forcing_mode = "elsasser"
-forcing_power_elsasser = (0.3, 0.3)   #target energy injection rate, one per Elsasser variable
+forcing_power_elsasser = (0.15, 0.15)  #(eps_plus, eps_minus); they sum to the total target rate 0.3
 forcing_tau = 1.0                      #O-U decorrelation time of the forcing pattern
 fshell = (1, 3)                        #force the shell 1 <= |k_perp|/dk < 3 (large scales)
 forcing_seed = 42                      #random seed

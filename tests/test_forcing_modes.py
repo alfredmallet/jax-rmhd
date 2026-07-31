@@ -7,9 +7,9 @@
 #     differs (1 vs 2), so ou_update draws differently-shaped noise and the RNG
 #     streams diverge -- the envelopes are therefore injected by hand here.
 #   - asymmetric forcing_power_elsasser=(0.6,0.2): with per-stage normalization
-#     and diss=0, energy must grow at (0.6+0.2)/2 = 0.4 and cross-helicity
-#     <grad phi . grad psi> = (E+ - E-)/2 at (0.6-0.2)/2 = 0.2. A swapped
-#     f_plus/f_minus flips the cross-helicity SIGN -- caught loudly.
+#     and diss=0, energy must grow at eps_p+eps_m = 0.8 and cross-helicity
+#     <grad phi . grad psi> at eps_p-eps_m = 0.4. A swapped f_plus/f_minus flips
+#     the cross-helicity SIGN -- caught loudly.
 #   - 2D momentum forcing from a quiescent start is pure hydro: psi's only 2D
 #     source vanishes and it stays EXACTLY zero (CLAUDE.md).
 #
@@ -28,7 +28,7 @@ from jax_rmhd import snapshot_io
 from jax_rmhd.physics import rmhd, shared_physics
 
 _F = dict(nx=32, ny=32, dims=2, diss=(0.0, 0.0), forcing=True,
-          forcing_power=0.7, forcing_power_elsasser=(0.7, 0.7),
+          forcing_power=0.7, forcing_power_elsasser=(0.35, 0.35),
           forcing_tau=0.5, fshell=(1, 5), forcing_seed=3,
           forcing_norm_per_step=False)  # per-stage normalization: exact injection
 
@@ -81,10 +81,10 @@ def test_asymmetric_elsasser_injection_rates():
     rate_E, rate_H = E / t, Hc / t
     with checks() as c:
         c.check(f"energy injection rate {rate_E:.3f} within 30% of "
-                f"(0.6+0.2)/2 = 0.4", 0.7 * 0.4 < rate_E < 1.3 * 0.4)
+                f"0.6+0.2 = 0.8", 0.7 * 0.8 < rate_E < 1.3 * 0.8)
         c.check(f"cross-helicity rate {rate_H:.3f} within 40% of "
-                f"(0.6-0.2)/2 = 0.2 (sign catches swapped f_plus/f_minus)",
-                0.6 * 0.2 < rate_H < 1.4 * 0.2)
+                f"0.6-0.2 = 0.4 (sign catches swapped f_plus/f_minus)",
+                0.6 * 0.4 < rate_H < 1.4 * 0.4)
 
 
 def test_2d_momentum_quiescent_keeps_psi_zero():

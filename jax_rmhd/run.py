@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from functools import partial
 from jax.sharding import PartitionSpec as P
 from .timestepping import get_scheme
-from .snapshot_io import save_snapshot
+from .snapshot_io import save_snapshot, get_saved_steps
 from time import perf_counter
 from .physics import equation_registry, construct_rhs
 from .physics.shared_physics import ou_update
@@ -143,7 +143,7 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
         advance = lambda s: block_of_steps_jit(s,kgrid,params,nblock,scheme,stepper)[0]
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    snap=max(mngr.all_steps(), default=-1)+1
+    snap=max(get_saved_steps(mngr.directory), default=-1)+1
     if params.size>1:
         snap = params.comm.bcast(snap, root=0)
     if save:
@@ -152,9 +152,11 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
         save_snapshot(snap,state,mngr,params)
         mngr.wait_until_finished()
     block_count=0
+    saved_current=True
     while state.t<t_end:
         state = advance(state)
         block_count+=1
+        saved_current=False
         if params.rank==0 and block_count%print_every==0:
             print(state.t) #this doesnt affect performance; state.t already on host from while
         if state.t - t_last_snapshot > t_snap and save:
@@ -164,8 +166,9 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
             save_snapshot(snap,state,mngr,params)
             mngr.wait_until_finished()
             t_last_snapshot=float(state.t)
-    snap=snap+1
-    if save:
+            saved_current=True
+    if save and not saved_current:
+        snap=snap+1
         if params.rank==0:
             print("Saving final state as snapshot "+str(snap))
         save_snapshot(snap,state,mngr,params)
@@ -206,7 +209,7 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     state=_refresh_forcing_scale(initial_state, kgrid, params)
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    snap=max(mngr.all_steps(), default=-1)+1
+    snap=max(get_saved_steps(mngr.directory), default=-1)+1
     if params.size>1:
         snap = params.comm.bcast(snap, root=0)
     if save:

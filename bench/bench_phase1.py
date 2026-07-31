@@ -101,7 +101,7 @@ if "sep" in sys.argv:
         phik, psik = fields[0], fields[1]
         Pp = shared_physics.perp_inner_product(phik + psik, f_raw[0], kgrid, params)
         Pm = shared_physics.perp_inner_product(phik - psik, f_raw[1], kgrid, params)
-        eps_p, eps_m = params.forcing_power_elsasser
+        eps_p, eps_m = (2.0*e for e in params.forcing_power_elsasser)
         return jnp.stack([shared_physics.safe_scale(eps_p, Pp, params.forcing_scale_max),
                           shared_physics.safe_scale(eps_m, Pm, params.forcing_scale_max)])
     rmhd._forcing_scale_from = _sep

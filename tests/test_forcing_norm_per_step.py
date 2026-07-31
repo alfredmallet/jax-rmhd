@@ -14,7 +14,7 @@ from jax_rmhd import snapshot_io
 from jax_rmhd.physics import shared_physics
 
 _FORCING = dict(nx=32, ny=32, dims=2, diss=(0.0, 0.0), forcing=True,
-                forcing_power=1.0, forcing_power_elsasser=(1.0, 1.0),
+                forcing_power=1.0, forcing_power_elsasser=(0.5, 0.5),
                 forcing_tau=0.5, fshell=(1, 5), forcing_seed=1,
                 forcing_norm_per_step=True)
 
@@ -32,9 +32,8 @@ def _injection_rate_check(mode):
         end = jr.simulate(st, kg, p, t_snap=1.0, t_end=0.5, mngr=mngr, save=False)
         E_kin = 0.5 * float(shared_physics.perp_inner_product(end.fields[0], end.fields[0], kg, p))
         E_mag = 0.5 * float(shared_physics.perp_inner_product(end.fields[1], end.fields[1], kg, p))
-        # momentum: forcing_power into E_kin. elsasser: eps_p into E+=<|grad z+|^2>/2
-        # and eps_m into E-, and E_tot=(E+ + E-)/2, so the total target is
-        # (eps_p+eps_m)/2 = 1.
+        # both modes target the same TOTAL injection rate: forcing_power for momentum,
+        # eps_p+eps_m for elsasser.
         target = 1.0
         rate = (E_kin + E_mag) / float(end.t)
         with checks() as c:

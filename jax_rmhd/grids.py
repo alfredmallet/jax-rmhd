@@ -68,6 +68,10 @@ def setup_kgrids(params):
         nmin, nmax = params.fshell
         kmag_over_dk = jnp.sqrt(ksq) / kunit
         fmask = (kmag_over_dk >= nmin) & (kmag_over_dk < nmax)
+        if not bool(jnp.any(fmask)):
+            raise ValueError(f"forcing shell fshell={params.fshell} contains no modes on this grid "
+                             f"(nx={params.nx}, ny={params.ny}, Lx={params.Lx}, Ly={params.Ly}); "
+                             f"the run would proceed silently unforced")
         # static shell index set (concrete here, outside jit) for shell-restricted noise;
         # only carried when opted in (params.forcing_shell_noise)
         if params.forcing_shell_noise:

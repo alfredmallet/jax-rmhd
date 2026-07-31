@@ -307,6 +307,67 @@ def test_transport_is_not_persisted_or_compared():
                     _read_record(d)["comm_backend"] == "jax")
 
 
+def test_constructor_rejects_malformed_arguments():
+    # Each of these used to construct happily and fail late (or not at all -- dims=4
+    # silently ran a 2D problem, a bad fshell silently ran unforced).
+    bad = {
+        "dims=4 is not a dimensionality": dict(dims=4),
+        "dims=2.5 is not a dimensionality": dict(dims=2.5),
+        "Lz<=0 with dims=3": dict(dims=3, Lz=0.0),
+        "diss longer than nfields": dict(dims=2, diss=(1.0, 2.0, 3.0)),
+        "fshell with nmin>=nmax": dict(dims=2, forcing=True, fshell=(5, 1)),
+        "forcing_power_elsasser not a pair": dict(dims=2, forcing=True,
+                                                  forcing_mode="elsasser",
+                                                  forcing_power_elsasser=(1.0, 2.0, 3.0)),
+    }
+    ok = {
+        "scalar diss (broadcast to every field)": dict(dims=2, diss=0.01),
+        "diss of length nfields": dict(dims=2, diss=(0.01, 0.02)),
+        "malformed fshell is ignored while forcing is off": dict(dims=2, forcing=False,
+                                                                 fshell=(5, 1)),
+    }
+    with checks() as c:
+        for name, kw in bad.items():
+            try:
+                fresh_params(**kw)
+                raised = None
+            except ValueError as e:
+                raised = str(e)
+            c.check(f"rejected: {name}", raised is not None, "constructed without error")
+        for name, kw in ok.items():
+            try:
+                fresh_params(**kw)
+                raised = None
+            except ValueError as e:
+                raised = str(e)
+            c.check(f"accepted: {name}", raised is None, f"raised {raised!r}")
+
+
+def test_offgrid_forcing_shell_is_rejected_by_setup_kgrids():
+    # A shell that lands between grid modes leaves fmask empty; the run would otherwise
+    # proceed silently unforced. Caught where fmask is built, not in Parameters.
+    p = fresh_params(dims=2, forcing=True, fshell=(50, 60))
+    with checks() as c:
+        try:
+            jr.setup_kgrids(p)
+            raised = None
+        except ValueError as e:
+            raised = str(e)
+        c.check("setup_kgrids rejects a forcing shell containing no modes",
+                raised is not None and "no modes" in raised, f"raised {raised!r}")
+
+
+def test_unused_z_options_warn():
+    # z_diff_order / z_diss_hyper are stored but never read back by rmhd.LinearTerm.
+    with checks() as c:
+        _, out = _capture(lambda: fresh_params(dims=3, z_diff_order=6))
+        c.check("a non-default z_diff_order warns that it is ignored",
+                "z_diff_order" in out and "IGNORED" in out, out)
+        _, quiet = _capture(lambda: fresh_params(dims=3))
+        c.check("the default z-stencil options warn about nothing", "IGNORED" not in quiet,
+                quiet)
+
+
 if __name__ == "__main__":
     import sys
     from _rmhd_testing import script_main

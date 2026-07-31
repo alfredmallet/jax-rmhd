@@ -19,6 +19,7 @@ def set_timestep(grads,params):
     gpsi = grads[1]    
     max_vy_eff = jnp.max(jnp.abs(gphi[0])+jnp.abs(gpsi[0]))
     max_vx_eff = jnp.max(jnp.abs(gphi[1])+jnp.abs(gpsi[1]))
+    #velocity floor: caps dt at cfl_safety*min(dx,dy)/eps for a near-quiescent field
     eps=0.1
     max_eps = jnp.maximum(eps/params.dx,eps/params.dy)
     max_all = jnp.maximum(max_vx_eff/params.dx, max_vy_eff/params.dy)
@@ -65,10 +66,11 @@ def _forcing_scale_from(fields, f_raw, kgrid, params):
     if params.forcing_mode == "momentum":
         P = shared_physics.perp_inner_product(phik,f_raw[0],kgrid,params)
         return jnp.reshape(shared_physics.safe_scale(params.forcing_power,P,params.forcing_scale_max),(1,))
-    # elsasser: (Pp,Pm) now computed with a single stacked allreduce instead of two.
     za = jnp.stack([phik + psik, phik - psik])
     Ppm = shared_physics.perp_inner_product_batch(za,f_raw,kgrid,params)
-    eps = jnp.asarray(params.forcing_power_elsasser)
+    #factor 2: E_tot = (E+ + E-)/2, so this makes each forcing_power_elsasser entry a
+    #contribution to the TOTAL energy injection rate, in the same units as forcing_power
+    eps = 2.0*jnp.asarray(params.forcing_power_elsasser)
     return shared_physics.safe_scale(eps,Ppm,params.forcing_scale_max)
 
 def forcing_scale(state,kgrid,params):
