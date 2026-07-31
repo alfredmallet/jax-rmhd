@@ -70,4 +70,7 @@ all_ok &= check("diagnostics.energy == 0.5 * perp_inner_product_batch",
                 bool(jnp.array_equal(E_kin, 0.5*spec[0])) and bool(jnp.array_equal(E_mag, 0.5*spec[1])))
 
 print()
+if params.size > 1:  # a single bad rank must fail the whole mpirun job
+    all_ok = all(params.comm.allgather(bool(all_ok)))
 print("ALL PASS" if all_ok else "SOME CHECKS FAILED -- see [FAIL] lines above")
+assert all_ok, f"[rank {params.rank}] energy/Parseval checks failed"

@@ -27,8 +27,6 @@ visc=0.0
 res=0.0
 hyper=3
 
-mngr=jr.snapshot_manager_setup(snap_path=snap_path,nsnap=nsnap)
-
 def init_fields(x,y,z):
     phi = jnp.cos(x) * jnp.cos(y) * jnp.cos(z)
     psi = phi # z+ wave propagates backwards at vA=1
@@ -37,14 +35,16 @@ def init_fields(x,y,z):
 
 params=jr.Parameters(nx=nx,ny=ny,nz=nz,Lx=Lx,Ly=Ly,Lz=Lz,diss=(visc,res),
                      hyper=hyper,cfl_safety=cfl_safety,dims=spatial_dimensions)
+mngr=jr.snapshot_manager_setup(params,snap_path=snap_path,nsnap=nsnap)
 kgrid = jr.setup_kgrids(params)
 state=jr.initialize(init_fields,params)
 
 is_control = (params.rank==0)
 
-#warmup
+#warmup (donates state's buffers -- donate_argnums=(0,) -- so rebuild state after)
 e=jr.simulate_scan(state,kgrid,params,nblock=1,t_snap=t_snap,t_end=0.0001,mngr=mngr,save=False)
 jax.block_until_ready(e)
+state=jr.initialize(init_fields,params)
 
 start_time=time.perf_counter()
 

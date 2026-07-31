@@ -10,7 +10,7 @@ The fields are stored in k-space (nfields,nz,nkx,nky); the gradients are stored 
 
 Currently only some basic explicit solvers are implemented: classic RK4, low-storage RK3 (LSRK33, Williamson 1980), and low-storage 5-stage 4th-order RK (LSRK54, Carpenter & Kennedy 1994).
 
-To see how to use the code, look at an example e.g. examples/orzag-tang-3D.ipynb
+To see how to use the code, start with an example, e.g. examples/orzag-tang-2D.ipynb (see examples/README.md for the full list and suggested order).
 
 To add a new equation type you need to:
 

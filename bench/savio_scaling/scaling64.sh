@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=scaling512
+#SBATCH --job-name=scaling64
 #SBATCH --account=fc_kawturb  
 #SBATCH --partition=savio3       
-#SBATCH --nodes=16                  
+#SBATCH --nodes=2                  
 #SBATCH --ntasks-per-node=32
 #SBATCH --cpus-per-task=1     
 #SBATCH --time=00:30:00           
-#SBATCH --output=scaling512_%j.out
-#SBATCH --error=scaling512_%j.err
+#SBATCH --output=scaling64_%j.out
+#SBATCH --error=scaling64_%j.err
 #SBATCH --mem=0
 
 set -euo pipefail
@@ -24,6 +24,7 @@ export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export XLA_CPU_ASYNC_THREAD_COUNT=1
+export OMPI_MCA_pml=ucx
 
 PY=/global/home/users/alfredmallet/.conda/envs/jax_cpu/bin/python 
-time srun "$PY" -u test_savio_scaling.py
+time mpirun -n $SLURM_NTASKS "$PY" -u savio_scaling.py

@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=scaling32
+#SBATCH --job-name=scaling128
 #SBATCH --account=fc_kawturb  
 #SBATCH --partition=savio3       
-#SBATCH --nodes=1                  
+#SBATCH --nodes=4                  
 #SBATCH --ntasks-per-node=32
 #SBATCH --cpus-per-task=1     
 #SBATCH --time=00:30:00           
-#SBATCH --output=scaling32_%j.out
-#SBATCH --error=scaling32_%j.err
+#SBATCH --output=scaling128_%j.out
+#SBATCH --error=scaling128_%j.err
 #SBATCH --mem=0
 
 set -euo pipefail
@@ -27,4 +27,4 @@ export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
 PY=/global/home/users/alfredmallet/.conda/envs/jax_cpu/bin/python 
-time mpirun -n $SLURM_NTASKS "$PY" -u test_savio_scaling.py
+time mpirun -n $SLURM_NTASKS "$PY" -u savio_scaling.py

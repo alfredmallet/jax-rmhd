@@ -52,4 +52,6 @@ def _install():
     jax.distributed.initialize = lambda *a, **k: print("local_mpi_stub: skipped jax.distributed.initialize")
 
 
-_install()
+# Idempotent: a second import (or an already-present real mpi4jax) must not re-install.
+if "mpi4jax" not in sys.modules:
+    _install()

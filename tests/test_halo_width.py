@@ -101,4 +101,7 @@ all_ok &= check("default path: output fields finite after a few steps",
                 bool(jnp.all(jnp.isfinite(end_state.fields))))
 
 print()
+if params.size > 1:  # a single bad rank must fail the whole mpirun job
+    all_ok = all(params.comm.allgather(bool(all_ok)))
 print("ALL PASS" if all_ok else "SOME CHECKS FAILED -- see [FAIL] lines above")
+assert all_ok, f"[rank {params.rank}] halo-width checks failed"

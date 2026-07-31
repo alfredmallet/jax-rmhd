@@ -19,11 +19,19 @@ pip install -e ".[examples]"         # adds matplotlib for notebooks/plot script
 RMHD_PRECISION=64 python script.py   # float64/complex128; default 32. Read at import.
 ```
 
-No pytest suite or lint config. `tests/` are standalone scripts run directly
-(`python tests/test_dissipation.py`); most print/plot for a human,
-`test_forcing_smoke.py` asserts PASS/FAIL. 3D MPI runs: `mpirun -n 4 python tests/...`.
-2D (`dims=2`) is single-process only. `tests/savio_scaling/` and `slurms/` are
-Savio-cluster-specific. Current notebooks: `orzag-tang-2D/3d`, `forced-turbulence-2D/3D`;
+Tests: `make test` locally (two pytest sessions, fp64 then fp32; no MPI needed —
+`tests/conftest.py` auto-installs `tests/local_mpi_stub.py` + 4 fake XLA devices when
+mpi4py is absent). Test files are ALSO standalone scripts: `mpirun -n 4 python
+tests/...` is the multi-rank driver on Savio — pytest is never run under mpirun.
+New/converted test modules start with `from _rmhd_testing import bootstrap;
+bootstrap()` BEFORE `import jax_rmhd`, and end with the `script_main(globals())`
+footer; helpers live in `tests/_rmhd_testing.py` (never cache a SimulationState —
+donation; never mutate `ctx()` results — identity-hashed jit cache). Markers: mpi,
+savio, slow, fp32/fp64, multidev (skip logic in conftest + `_script_skip_reason`).
+Legacy script-style files still run whole-module at pytest collection; they're listed
+in `conftest._LEGACY_SCRIPTS` until converted. 2D (`dims=2`) is single-process only.
+`bench/savio_scaling/` (scaling benchmark, not a test) and `slurms/` are
+Savio-cluster-specific. How-to: docs/RUNNING_TESTS.md; roadmap: docs/TESTING_PLAN.md. Current notebooks: `orzag-tang-2D/3d`, `forced-turbulence-2D/3D`;
 the others predate the API and will error.
 
 ## Architecture

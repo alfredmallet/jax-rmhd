@@ -121,4 +121,7 @@ all_ok &= check("2D kinetic energy injection rate is within 3x of forcing_power 
                 f"measured rate={rate_2d:.4f}, target={target}, t_end={float(end_state_2d.t)}")
 
 print()
+if params.size > 1:  # a single bad rank must fail the whole mpirun job
+    all_ok = all(params.comm.allgather(bool(all_ok)))
 print("ALL PASS" if all_ok else "SOME CHECKS FAILED -- see [FAIL] lines above")
+assert all_ok, f"[rank {params.rank}] forcing smoke checks failed"

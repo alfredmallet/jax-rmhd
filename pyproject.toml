@@ -19,6 +19,23 @@ dependencies = [
 
 [project.optional-dependencies]
 examples = ["matplotlib"]
+test = ["pytest>=7", "matplotlib"]
 
 [tool.setuptools]
-packages = ["jax_rmhd"]
+# NB: jax_rmhd.physics must be listed -- an install without it ships a package
+# that cannot import its own equation registry (editable installs mask this).
+packages = ["jax_rmhd", "jax_rmhd.physics"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["data", "examples", "bench", "slurms", "rundir", "a5k", "docs", ".git"]
+# Default local run = fast tier. An explicit -m on the command line overrides this.
+addopts = "-ra -m 'not mpi and not slow and not savio'"
+markers = [
+    "mpi: needs a real multi-rank MPI launch (mpirun); skipped when size==1",
+    "savio: needs cluster resources (multi-GPU / long wall clock); set RMHD_SAVIO=1",
+    "slow: minutes-scale convergence or physics study; pass --runslow",
+    "fp32: requires an RMHD_PRECISION=32 session",
+    "fp64: requires an RMHD_PRECISION=64 session",
+    "multidev: requires >=4 (fake or real) XLA devices",
+]

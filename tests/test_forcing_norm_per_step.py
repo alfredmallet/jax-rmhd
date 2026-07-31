@@ -74,3 +74,4 @@ check("shell noise + norm_per_step: run finite",
       bool(jnp.all(jnp.isfinite(end.fields))))
 
 print("\n" + ("ALL PASS" if all_ok else "SOME CHECKS FAILED"))
+assert all_ok, "forcing norm_per_step / shell_noise checks failed"
