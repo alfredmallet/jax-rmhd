@@ -262,11 +262,18 @@ def test_scan_cfl_block_unrolled_per_stage_norm_agree():
     f_ref, t_ref, nb_ref = run_scan("mpi4jax")
     f_jax, t_jax, nb_jax = run_scan("jax")
     s_rel = np.max(np.abs(f_jax - f_ref)) / np.max(np.abs(f_ref))
+    # t is accumulated dt over many adaptive steps; the two backends' dt collectives
+    # (mpi4jax allreduce vs pmax) may round differently per platform/XLA version, so
+    # exact equality of end times is not portable -- compare to the same 1e-14 rel
+    # tolerance as the fields.
+    t_rel = abs(t_jax - t_ref) / abs(t_ref)
     with checks() as c:
         c.check(f"estimate_good_nblock agrees across backends ({nb_ref})",
                 nb_ref == nb_jax)
         c.check(f"simulate_scan + cfl_every=2 + lsrk_scan=False + per-stage norm "
-                f"agree (rel {s_rel:.2e} < 1e-14)", s_rel < 1e-14 and t_jax == t_ref)
+                f"agree (rel {s_rel:.2e} < 1e-14)", s_rel < 1e-14)
+        c.check(f"... and end times agree ({t_jax!r} vs {t_ref!r}, rel {t_rel:.2e})",
+                t_rel < 1e-14)
 
 
 def _leaf_meta(path, isnap=0):
