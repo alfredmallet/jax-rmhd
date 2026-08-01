@@ -1,7 +1,7 @@
-from mpi4py import MPI
 import jax
 import numpy as np
 from . import comms
+from ._mpi_compat import HAVE_MPI4JAX, HAVE_MPI4PY, MPI, _NullComm, launcher_world_size
 from .physics import equation_registry
 import os
 import json
@@ -22,11 +22,64 @@ def _json_scalar(v):
 # effect on the trajectory or the on-disk layout)
 _TRANSPORT_KEYS = ("comm_backend",)
 
+_MPI_HINT = ('install the MPI extra: pip install "jax-rmhd[mpi]" (or use '
+             "comm_backend='serial'/None for single-process runs)")
+
+def _resolve_backend(requested):
+    # Pick the transport for THIS process. requested=None (the default) auto-resolves:
+    # mpi4py+mpi4jax -> "mpi4jax" (the unchanged production path), else "serial". Never
+    # "serial" under a real multi-rank launcher — every rank would run the full domain and
+    # overwrite the others' snapshots — so the launcher env is sniffed on every path.
+    nlaunch, definitive = launcher_world_size()
+    if HAVE_MPI4PY:
+        size = MPI.COMM_WORLD.Get_size()
+        if definitive and nlaunch > 1 and size == 1:
+            raise RuntimeError(
+                f"this process was launched as one rank of a {nlaunch}-rank job, but mpi4py "
+                "reports MPI_COMM_WORLD size 1 — mpi4py is built against a different MPI than "
+                "the launcher, so every rank would run the full domain and overwrite the "
+                "others' snapshots. Rebuild mpi4py against the launcher's MPI, e.g. "
+                "MPICC=$(which mpicc) pip install --no-binary mpi4py --force-reinstall mpi4py")
+    else:
+        # no mpi4py: the launcher environment is the only evidence of a multi-rank job
+        size = nlaunch if definitive else 1
+    if requested is not None:
+        if requested in ("mpi4jax", "jax") and not HAVE_MPI4PY:
+            raise ImportError(f"comm_backend={requested!r} needs mpi4py, which is not "
+                              f"importable — {_MPI_HINT}")
+        if requested == "mpi4jax" and not HAVE_MPI4JAX:
+            raise ImportError(f"comm_backend='mpi4jax' needs mpi4jax, which is not "
+                              f"importable — {_MPI_HINT}")
+        if requested == "serial" and size > 1:
+            raise ValueError(f"comm_backend='serial' is single-process only, but this process "
+                             f"is one of {size} ranks; use comm_backend='mpi4jax'")
+        return requested
+    if HAVE_MPI4PY and HAVE_MPI4JAX:
+        return "mpi4jax"
+    if HAVE_MPI4PY:
+        # half-installed (mpi4py builds easily, mpi4jax needs a matching jax): fine serially
+        if size > 1:
+            raise RuntimeError(f"this is a {size}-rank MPI run, but mpi4jax is not importable "
+                               f"and multi-rank transport needs it — {_MPI_HINT}")
+        return "serial"
+    if size > 1:
+        raise RuntimeError(
+            f"this process was launched as one rank of a {nlaunch}-rank MPI job, but mpi4py is "
+            "not importable — refusing to fall back to comm_backend='serial', where every rank "
+            f"would run the full domain and overwrite the others' snapshots. {_MPI_HINT}")
+    if nlaunch > 1:
+        # allocation-wide task count only: a plain `python` inside a batch script looks like
+        # this, so it is a warning, not an error
+        warnings.warn(f"the batch environment advertises {nlaunch} tasks, but this process was "
+                      "not started by an MPI launcher and mpi4py is not importable: running "
+                      "single-process with comm_backend='serial'.", stacklevel=3)
+    return "serial"
+
 class Parameters():
     #Stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
-                 forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend="mpi4jax",
+                 forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
                  cfl_every=1):
         # capture the constructor arguments (before any normalization below) so
         # save()/from_snapshot() can reproduce this object exactly via __init__
@@ -80,10 +133,14 @@ class Parameters():
             self.nz=1
         #MPI
         # transport used by jax_rmhd.comms for halos/allreduces (static: dispatched in plain python)
-        if comm_backend not in comms.COMM_BACKENDS:
-            raise ValueError(f"comm_backend must be one of {comms.COMM_BACKENDS}, got {comm_backend!r}")
-        self.comm_backend = comm_backend
-        self.comm=MPI.COMM_WORLD
+        # comm_backend=None auto-resolves to mpi4jax (MPI present) or serial (no MPI toolchain)
+        if comm_backend is not None and comm_backend not in comms.COMM_BACKENDS:
+            raise ValueError(f"comm_backend must be one of {comms.COMM_BACKENDS} or None (auto), "
+                             f"got {comm_backend!r}")
+        self.comm_backend = _resolve_backend(comm_backend)
+        # record what actually ran, not the request: params.json documents the resolved backend
+        self._init_args["comm_backend"] = self.comm_backend
+        self.comm=_NullComm() if self.comm_backend=="serial" else MPI.COMM_WORLD
         self.rank=self.comm.Get_rank()
         self.size=self.comm.Get_size()
         if self.comm_backend=="jax" and self.spatial_dimensions!=3:
@@ -91,8 +148,15 @@ class Parameters():
         if self.spatial_dimensions==3:
             if self.nz % self.size != 0:
                 raise ValueError(f"nz={self.nz} must be divisible by the number of MPI ranks ({self.size})")
-            self.cart_comm = self.comm.Create_cart(dims=[self.size],periods=[True],reorder=False)
-            self.left_neighbor, self.right_neighbor = self.cart_comm.Shift(direction=0, disp=1)
+            if self.comm_backend=="serial":
+                # single process: no cartesian topology to build, and cart_comm=None keeps the
+                # allreduces at identity (comms.halo_exchange wraps z onto self)
+                self.cart_comm = None
+                self.left_neighbor = None
+                self.right_neighbor = None
+            else:
+                self.cart_comm = self.comm.Create_cart(dims=[self.size],periods=[True],reorder=False)
+                self.left_neighbor, self.right_neighbor = self.cart_comm.Shift(direction=0, disp=1)
         else:
             self.cart_comm = None
             self.left_neighbor = None
@@ -156,7 +220,11 @@ class Parameters():
                                 if v.default is not inspect.Parameter.empty}
                 backfilled = sorted(k for k in rec if k not in old and k in sig_defaults)
                 for k in backfilled:
-                    old[k] = json.loads(json.dumps(sig_defaults[k], default=_json_scalar))
+                    # transport keys (comm_backend) document what actually ran, not a generic
+                    # ctor default — backfill from this save's resolved value so an old record
+                    # gains e.g. "serial"/"mpi4jax" instead of a misleading null
+                    old[k] = rec[k] if k in _TRANSPORT_KEYS else \
+                        json.loads(json.dumps(sig_defaults[k], default=_json_scalar))
                 # comm_backend is a transport choice, not a physics/grid parameter: a run
                 # must be restartable across backends: recorded but not compared
                 diffs = {k: (old.get(k, "<absent>"), rec.get(k, "<absent>"))
@@ -194,7 +262,7 @@ class Parameters():
         rec.pop("_created", None)
         prec = rec.pop("_precision", None)
         current_prec = "64" if jax.config.read("jax_enable_x64") else "32"
-        rank0 = MPI.COMM_WORLD.Get_rank() == 0
+        rank0 = MPI.COMM_WORLD.Get_rank() == 0 if HAVE_MPI4PY else True
         if prec is not None and prec != current_prec and rank0:
             warnings.warn(f"{path} was written at precision {prec}, but RMHD_PRECISION is "
                           f"currently {current_prec} (precision is set by env var at import time).",
@@ -205,6 +273,9 @@ class Parameters():
         if unknown and rank0:
             warnings.warn(f"ignoring unknown parameters in {path}: {unknown}", stacklevel=2)
         args = {k: (tuple(v) if isinstance(v, list) else v) for k, v in rec.items() if k in known}
+        # transport, not physics: re-resolve on THIS machine unless the caller says otherwise
+        # (a Savio params.json recording "mpi4jax" must load on a laptop with no MPI)
+        args.pop("comm_backend", None)
         args.update(overrides)
         return cls(**args)
 

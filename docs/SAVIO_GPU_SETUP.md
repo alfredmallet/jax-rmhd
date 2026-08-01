@@ -52,10 +52,14 @@ export PYTHONNOUSERSITE=1
 # cuda module is needed for JAX itself.
 pip install -U "jax[cuda12]"
 
-# mpi4py/mpi4jax are hard requirements of this codebase even for a single-rank run
-# (config.py always touches MPI.COMM_WORLD at Parameters construction). Build mpi4py FROM SOURCE against
+# mpi4py/mpi4jax (an optional `[mpi]` extra in pyproject.toml) are required for any
+# multi-rank run (config.py touches MPI.COMM_WORLD once mpi4py is present). A single-rank
+# run works serially without them (comm_backend="serial", auto-selected when they're
+# absent), but install them anyway on Savio -- the launcher-mismatch guard (every rank
+# reporting rank 0, below) needs a real mpi4py to detect. Build mpi4py FROM SOURCE against
 # the loaded openmpi -- a prebuilt wheel may link a different MPI than the one `srun`/`mpirun`
-# on the compute node actually launches, which shows up as every rank reporting rank 0.
+# on the compute node actually launches, which is exactly that every-rank-reports-rank-0
+# symptom.
 # --no-cache-dir: pip caches locally-built wheels; without it a rebuild after an MPI/toolchain
 # change silently reinstalls the stale cached wheel.
 MPICC=$(which mpicc) python -m pip install --no-cache-dir --no-binary=mpi4py mpi4py
@@ -71,6 +75,10 @@ python -m pip install --no-cache-dir --no-binary=mpi4jax mpi4jax
 
 pip install orbax-checkpoint tensorstore numpy matplotlib
 
+# NOT `pip install -e ".[mpi]"` here: the extra would let pip resolve its own mpi4py/mpi4jax
+# wheels, bypassing the from-source builds above (MPICC pinning, and mpi4jax needing jax +
+# a visible CUDA toolkit at build time -- see the ordering notes above). Both are already
+# satisfied, so plain `-e .` picks them up as-is.
 cd ~/jax_rmhd && pip install -e .
 ```
 

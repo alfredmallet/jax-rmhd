@@ -1,11 +1,11 @@
 # Fast tier -- the required check.
 #
-# `pip install -e .` CANNOT work on a stock runner: mpi4py/mpi4jax are hard
-# dependencies and there is no MPI toolchain here. Do NOT demote them in
-# pyproject.toml to make this green -- Savio needs them. Instead we install the
-# package with --no-deps and hand pip the dependency list explicitly, omitting
-# exactly those two; tests/conftest.py then auto-installs tests/local_mpi_stub.py
-# plus 4 fake XLA devices, which is the same path a local `make test` takes.
+# mpi4py/mpi4jax are an optional `[mpi]` extra (pyproject.toml), not base
+# dependencies, so a stock runner with no MPI toolchain installs cleanly via
+# `pip install -e ".[test]"` and comm_backend auto-resolves to "serial".
+# tests/conftest.py additionally installs tests/local_mpi_stub.py plus 4 fake XLA
+# devices whenever mpi4py is absent, which keeps the mpi4jax code path exercised
+# (serially) here too -- the same path a local `make test` takes.
 #
 # Genuine multi-rank coverage lives in mpi2.yml (2 real ranks) and, for anything
 # larger or GPU, in slurms/run_test_suite_{cpu,gpu}.sh on Savio.
@@ -51,14 +51,10 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      # Keep this list in sync with [project].dependencies MINUS mpi4py/mpi4jax,
-      # plus the `test` extra.
-      - name: Install dependencies (no MPI -- the stub covers it)
+      - name: Install package + test extra (no MPI -- the stub covers it)
         run: |
           python -m pip install --upgrade pip
-          pip install jax jaxlib numpy orbax-checkpoint tensorstore "etils[epath]" \
-                      "pytest>=7" matplotlib
-          pip install --no-deps -e .
+          pip install -e ".[test]"
 
       - name: Confirm the MPI stub is what's active
         run: |

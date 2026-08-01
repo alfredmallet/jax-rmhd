@@ -24,16 +24,22 @@ export PYTHONNOUSERSITE=1
 
 pip install -U jax   # CPU jax; jaxlib comes with it
 
-# mpi4py/mpi4jax are hard requirements even for single-rank runs (Parameters construction
-# always touches MPI.COMM_WORLD). Build BOTH from source against the loaded openmpi module —
-# a prebuilt wheel may link a different MPI than the one `mpirun` on the compute node
-# launches, which shows up as every rank reporting rank 0.
+# mpi4py/mpi4jax (an optional `[mpi]` extra in pyproject.toml) are required for any
+# multi-rank run (Parameters construction touches MPI.COMM_WORLD once mpi4py is present).
+# A single-rank run works serially without them (comm_backend="serial", auto-selected when
+# they're absent) but install them anyway on Savio: the launcher-mismatch guard (every rank
+# reporting rank 0, below) needs a real mpi4py to detect. Build BOTH from source against the
+# loaded openmpi module — a prebuilt wheel may link a different MPI than the one `mpirun` on
+# the compute node launches, which is exactly the every-rank-reports-rank-0 symptom.
 # --no-cache-dir: otherwise a rebuild after a toolchain change reinstalls a stale cached wheel.
 MPICC=$(which mpicc) python -m pip install --no-cache-dir --no-binary=mpi4py mpi4py
 python -m pip install --no-cache-dir --no-binary=mpi4jax mpi4jax
 
 pip install orbax-checkpoint tensorstore numpy matplotlib
 
+# NOT `pip install -e ".[mpi]"` here: the extra would let pip resolve its own mpi4py/mpi4jax
+# wheels, bypassing the MPICC-pinned from-source builds above and their build ordering
+# (mpi4py before mpi4jax). Both are already satisfied, so plain `-e .` picks them up as-is.
 cd ~/jax_rmhd && pip install -e .
 ```
 

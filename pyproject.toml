@@ -11,13 +11,17 @@ dependencies = [
     "jaxlib",
     "orbax-checkpoint",
     "numpy",
-    "mpi4py",
-    "mpi4jax",
     "tensorstore",
     "etils[epath]",
 ]
 
 [project.optional-dependencies]
+# Needed only for a real multi-rank launch (comm_backend="mpi4jax"/"jax"); a
+# single-process run works serially without it (comm_backend="serial",
+# auto-selected when these are absent). See CLAUDE.md's comms-backends bullet
+# list and docs/SAVIO_CPU_SETUP.md/docs/SAVIO_GPU_SETUP.md (which build these
+# from source by hand instead of via this extra, to pin the cluster MPI/ABI).
+mpi = ["mpi4py", "mpi4jax"]
 examples = ["matplotlib"]
 test = ["pytest>=7", "matplotlib"]
 lint = ["ruff==0.16.1"]

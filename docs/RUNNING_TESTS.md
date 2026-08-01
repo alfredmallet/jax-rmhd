@@ -8,7 +8,7 @@ existing tests and writing new ones.
 From the repo root:
 
 ```
-pip install -e ".[test]"   # once; needs an MPI toolchain on clusters, none on a laptop
+pip install -e ".[test]"   # once; on a cluster wanting real MPI, add the extra: ".[test,mpi]"
 make test
 ```
 
@@ -23,6 +23,10 @@ automatically installs a fake single-process MPI layer (`tests/local_mpi_stub.py
 and creates 4 fake XLA devices so even the multi-device `comm_backend="jax"` tests
 run single-process. If the real thing is installed, it's used and the stub stays out
 of the way.
+
+The serial tier (`comm_backend="serial"`, auto-selected when mpi4py/mpi4jax are absent)
+is what actually runs on laptops and in CI's `fast` lane; the stub exists only to keep
+the mpi4jax code path exercised, serially, alongside it.
 
 ## Two kinds of test runs
 
@@ -155,13 +159,15 @@ creates pressure to edit tests mid-experiment just to unblock a merge.
 
 Three things that will bite anyone editing these workflows:
 
-- **`pip install -e .` cannot work on a runner.** mpi4py and mpi4jax are hard
-  dependencies and must stay that way — Savio needs them. `fast` uses
-  `pip install --no-deps -e .` plus an explicit dependency list omitting those two, which
-  is what lets `conftest`'s MPI stub activate.
-- **mpi4jax is sdist-only and links mpi4py's ABI**, so `--no-build-isolation` is correct,
-  but `setuptools>=82 wheel nanobind` has to be hand-installed first or the build fails
-  every time.
+- **`pip install -e ".[test]"` is enough on a stock runner.** mpi4py/mpi4jax are the
+  optional `mpi` extra (`pyproject.toml`), not base dependencies, so `fast` installs the
+  package plainly — no explicit dependency list, no `--no-deps` — and `comm_backend`
+  auto-resolves to `"serial"`. `conftest`'s MPI stub still activates on top of that
+  (mpi4py is absent), which is what keeps the mpi4jax code path exercised, serially, in
+  this job too.
+- **mpi4jax is sdist-only and links mpi4py's ABI**, so `--no-build-isolation` is correct
+  in `mpi2.yml` (which installs the real thing), but `setuptools>=82 wheel nanobind` has
+  to be hand-installed first or the build fails every time.
 - **`continue-on-error` belongs on the test step, not the job.** At job level a broken
   toolchain install stays green forever.
 

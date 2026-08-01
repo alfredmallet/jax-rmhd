@@ -1,7 +1,12 @@
 # jax-rmhd
 Code to solve nonlinear plasma models in jax.
 
-Requires jax (tested on 0.10.0), orbax_checkpoint (tested on 0.11.37), and python (tested on 3.11.5). You can get these with pip.
+Requires jax (tested on 0.10.0), orbax_checkpoint (tested on 0.11.37), and python (tested on 3.11.5). You can get these with pip:
+
+```
+pip install -e .                # laptop / no MPI toolchain: runs single-process, comm_backend="serial"
+pip install -e ".[mpi]"         # generic Linux box with a working MPI toolchain (mpi4py/mpi4jax); zsh needs the quotes
+```
 
 Currently only the RMHD equations are implemented, but it should now be relatively easy to add new equation types (haha).
 

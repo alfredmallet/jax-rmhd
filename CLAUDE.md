@@ -14,7 +14,8 @@ other equation sets without touching the core solver.
 ## Setup / running
 
 ```
-pip install -e .                     # needs a working MPI toolchain (mpi4py/mpi4jax)
+pip install -e .                     # laptop / no MPI toolchain: comm_backend="serial"
+pip install -e ".[mpi]"              # generic Linux box with a working MPI toolchain (mpi4py/mpi4jax); zsh needs the quotes
 pip install -e ".[examples]"         # adds matplotlib for notebooks/plot scripts
 RMHD_PRECISION=64 python script.py   # float64/complex128; default 32. Read at import.
 ```
@@ -73,7 +74,8 @@ into the RHS (`construct_rhs`); dissipation is applied separately as an integrat
 factor (`kgrid.hdiss` in `timestepping.py`), not as an RHS term. **Term funcs take 5
 positional args** `(state, grads, kgrid, params, halo)` — declare `halo=None` and ignore
 if unused. `halo_start_func` pre-issues the z-halo exchange at the top of the RHS;
-enabled per backend (`_halo_start_enabled`: off for mpi4jax, on for `"jax"`),
+enabled per backend (`_halo_start_enabled`: off for mpi4jax, on for `"jax"` and `"serial"`
+— serial's exchange is a pure slice, so pre-issuing it cannot change results),
 overridable via `params.halo_start`. When off, `z_derivatives` does its own exchange.
 `comms.halo_exchange(f, params, width=2)`: a pre-issued width narrower than the stencil
 is an assertion failure (`z_derivatives` derives offsets from the received slab).
@@ -83,8 +85,9 @@ z-stencils, O-U forcing mechanics); `physics/rmhd.py` maps them onto (phi,psi).
 All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_sum`,
 `allreduce_max`, dispatched on the static `params.comm_backend`:
 
-- `"mpi4jax"` (default, CPU production): mpi4py + mpi4jax; arrays stay process-local.
-  Nothing outside comms.py imports mpi4jax — keep it that way.
+- `"mpi4jax"` (CPU production; auto-selected whenever mpi4py **and** mpi4jax import):
+  mpi4py + mpi4jax; arrays stay process-local. Nothing outside `_mpi_compat.py` imports
+  mpi4py or mpi4jax at module scope (`bench/` and `tests/` excepted) — keep it that way.
 - `"jax"` (GPU, shard_map/NCCL): control plane stays mpi4py; the three device ops become
   `ppermute`/`psum`/`pmax`, valid only inside `comms.shard_call` around the jitted
   steppers. State/kgrid become global z-sharded arrays (`comms.to_global`); inside
@@ -93,6 +96,14 @@ All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_s
   `Parameters(comm_backend="jax")` brings up `jax.distributed` — must be the first jax
   device work in the process; `"jax"`+`dims==2` is rejected. Launch flags/env:
   docs/SAVIO_GPU_SETUP.md; measured scaling in docs/performance.md.
+- `"serial"` (single-process, no MPI installed): `comm_backend=None` (the default)
+  auto-resolves to `"serial"` when mpi4jax isn't importable and the real/launcher world
+  size is 1 — the expected laptop case, silent. Semantics are exact size-1, not approximate (halo exchange self-sends,
+  allreduce is identity), but `"serial"` is NOT bitwise-identical to size-1 `"mpi4jax"`
+  (dropping the mpi4jax ops changes XLA fusion — same class as `lsrk_scan`; compare with
+  tolerances). Running under a detected multi-rank launcher without mpi4py installed is a
+  hard `RuntimeError`, never a silent single-domain fallback — every rank would otherwise
+  run the full domain and overwrite the others' output.
 
 ### Timestepping
 

@@ -43,8 +43,28 @@ _bootstrapped = False
 _stub_active = False
 
 
-def bootstrap(precision=None, devices=None):
-    """Prepare env + MPI stub. Must run before jax_rmhd is imported; idempotent."""
+def bootstrap(precision=None, devices=None, stub=None):
+    """Prepare env + MPI stub. Must run before jax_rmhd is imported; idempotent.
+
+    stub=True (default) installs tests/local_mpi_stub.py whenever no real MPI
+    toolchain is importable -- the normal test-suite path, which keeps
+    comm_backend='mpi4jax' testable single-process. stub=False (or env
+    RMHD_TEST_NO_STUB=1) skips the stub install even then, so jax_rmhd sees the
+    machine's TRUE absent-MPI state (jax_rmhd._mpi_compat.HAVE_MPI4PY/HAVE_MPI4JAX
+    both really False, not faked) -- this is what exercises the real
+    comm_backend=None -> 'serial' auto-resolve import path end to end, as opposed
+    to the stub's simulation of a size-1 mpi4jax install. Only meaningful in a
+    process where bootstrap() (this call) is the first thing to touch jax_rmhd;
+    combine with a fresh subprocess if the current process already bootstrapped
+    with the stub. Precision/XLA-device setup is identical either way -- only the
+    `import local_mpi_stub` line is skipped.
+
+    NB the env form is process-wide, so it reaches conftest's bootstrap() too: a
+    whole `RMHD_TEST_NO_STUB=1 pytest tests` session leaves every test that asks
+    for comm_backend="mpi4jax"/"jax" with no transport to build on and those fail
+    (honestly, with ImportError). It is a single-purpose subprocess knob, not a
+    supported suite-wide mode -- `make test` must not set it.
+    """
     global _bootstrapped, _stub_active
     if _bootstrapped:
         return
@@ -76,16 +96,23 @@ def bootstrap(precision=None, devices=None):
             # ImportError at import time.
             have_mpi = False
 
+    if stub is None:
+        stub = os.environ.get("RMHD_TEST_NO_STUB") != "1"
+
     if not have_mpi:
         # Fake XLA host devices for the shard_map ("jax" backend) tests. Only when
-        # running single-process under the stub -- never under a real MPI launch.
+        # running single-process without real MPI -- never under a real MPI launch.
         # Must be set before the XLA client initializes (first jax device op).
+        # Independent of `stub`: harmless (and needed by other modules) even on the
+        # true no-stub path, since nothing there constructs comm_backend="jax".
         n = int(devices or os.environ.get("RMHD_TEST_DEVICES", 4))
         flags = os.environ.get("XLA_FLAGS", "")
         if "xla_force_host_platform_device_count" not in flags:
             os.environ["XLA_FLAGS"] = (flags + f" --xla_force_host_platform_device_count={n}").strip()
-        import local_mpi_stub  # noqa: F401  (installs fake mpi4py/mpi4jax on import)
-        _stub_active = True
+        if stub:
+            import local_mpi_stub  # noqa: F401  (installs fake mpi4py/mpi4jax on import)
+            _stub_active = True
+        # else: leave mpi4py/mpi4jax genuinely absent -- the true no-MPI import path.
 
     _bootstrapped = True
 
@@ -95,7 +122,13 @@ def stub_active():
 
 
 def mpi_size():
-    from mpi4py import MPI
+    # 1 when mpi4py is genuinely absent AND the stub was skipped (bootstrap(stub=False) /
+    # RMHD_TEST_NO_STUB=1): that combination is single-process by definition, and letting
+    # the ImportError escape here would break conftest's collection hook outright.
+    try:
+        from mpi4py import MPI
+    except Exception:
+        return 1
     return MPI.COMM_WORLD.Get_size()
 
 

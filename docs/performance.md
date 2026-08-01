@@ -26,6 +26,13 @@ The decomposition is **z-only**. The perpendicular plane is never distributed �
 
 ## Backends: why two
 
+Three exist, but only two are production: `"serial"` is the single-process fallback
+(auto-selected with no MPI installed — exact size-1 semantics, no collectives, no
+tokens). Its performance has **not** been measured against size-1 `mpi4jax`; expect a
+small win from the absent token-ordering constraints, and note it is not bitwise-identical
+to size-1 `mpi4jax` (dropping the mpi4jax ops changes XLA fusion — the same class of
+difference as `lsrk_scan`, so compare with tolerances, not equality).
+
 `mpi4jax` is the CPU-cluster backend and `"jax"` (shard_map/NCCL) is the GPU one. This is
 not arbitrary:
 

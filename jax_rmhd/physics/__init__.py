@@ -15,7 +15,11 @@ class EquationRecipe(NamedTuple):
 
 # backends where pre-issuing the halo might overlap comms with compute. A wash on every
 # backend measured so far, but that depends on the scheme and the GPU, so the hook stays.
-_HALO_START_BACKENDS = ("jax",)
+# "serial" costs nothing extra either way (halo_exchange is a plain self-slice, no comm token
+# to schedule), so it's on: test_z_derivatives_halo_width_invariance/
+# test_halo_start_matches_bare_width2_exchange (tests/test_halo_width.py) show the pre-issued
+# vs fallback path is bitwise-identical unconditionally, not just under mpi4jax/jax.
+_HALO_START_BACKENDS = ("jax", "serial")
 
 def _halo_start_enabled(params):
     # check if halo start is on or off, overriden by params

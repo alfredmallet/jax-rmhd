@@ -1,22 +1,23 @@
-# two comms backends:
-# "mpi4jax" (default): mpi4py communicators + mpi4jax device ops, arrays stay process-local.
+# three comms backends:
+# "mpi4jax" (CPU production): mpi4py communicators + mpi4jax device ops, arrays stay process-local.
 # "jax": the CONTROL plane is still mpi4py (rank/size, params.save, orbax, index broadcasts)
 # only the three device ops become lax.ppermute/psum/pmax inside a shard_map over a 1D z mesh
 # state/kgrid arrays are then GLOBAL jax.Arrays sharded along z, and each device sees exactly
 # the same local shapes the mpi4jax ranks see.
+# "serial": no MPI at all (single process, size 1). Halos wrap onto self, allreduces are the
+# identity — the exact size-1 semantics, not an approximation.
 import os
 import socket
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-import mpi4jax
-from mpi4py import MPI
+from ._mpi_compat import MPI, mpi4jax  # None when not installed; only the "serial" backend runs then
 
 from .types import SimulationState
 
 # Backends implemented here; Parameters.__init__ rejects anything else at construction.
-COMM_BACKENDS = ("mpi4jax", "jax")
+COMM_BACKENDS = ("mpi4jax", "jax", "serial")
 # Mesh axis name for "jax" backend
 Z_AXIS = "z"
 
@@ -104,6 +105,10 @@ def halo_exchange(f, params, width=2):
     if width < 1 or width > nz_local:
         raise ValueError(f"halo_exchange: width={width} must be >= 1 and <= nz_local={nz_local} "
                          "(width > nz_local would need multi-hop neighbor comms, unsupported)")
+    if params.comm_backend == "serial":
+        # single process, periodic z: the only neighbor is self. Same identities the size-1
+        # mpi4jax self-sendrecv produces; before any cart_comm/mesh use (serial has neither).
+        return f[:,-width:,:,:], f[:,:width,:,:]
     if params.comm_backend == "mpi4jax":
         send_left = f[:,:width,:,:]
         send_right = f[:,-width:,:,:]
@@ -124,7 +129,7 @@ def halo_exchange(f, params, width=2):
 
 def allreduce_sum(x, params):
     # global SUM over the z-decomposition (scalar or array x); identity when not decomposed.
-    if params.cart_comm is None:
+    if params.comm_backend == "serial" or params.cart_comm is None:
         return x
     if params.comm_backend == "mpi4jax":
         return mpi4jax.allreduce(x, op=MPI.SUM, comm=params.cart_comm)
@@ -134,7 +139,7 @@ def allreduce_sum(x, params):
 
 def allreduce_max(x, params):
     # global MAX over the z-decomposition (scalar or array x); identity when not decomposed.
-    if params.cart_comm is None:
+    if params.comm_backend == "serial" or params.cart_comm is None:
         return x
     if params.comm_backend == "mpi4jax":
         return mpi4jax.allreduce(x, op=MPI.MAX, comm=params.cart_comm)

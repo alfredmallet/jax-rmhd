@@ -1,7 +1,9 @@
 # Examples
 
 All notebooks use the current API and run single-process on a laptop (3D ones at modest
-resolutions). Performance studies live in `../bench/`, cluster job scripts in
+resolutions) — a plain `pip install -e .` is enough, with no MPI toolchain: with
+`mpi4py`/`mpi4jax` absent, `comm_backend` auto-resolves to `"serial"` (exact size-1
+semantics), so no notebook sets it. Performance studies live in `../bench/`, cluster job scripts in
 `../slurms/`, correctness tests in `../tests/`. Outputs are written under
 `examples/data/` (gitignored).
 
@@ -50,5 +52,7 @@ Suggested order:
 13. **kaggle_forced_turbulence_256cubed.ipynb** — launcher for a 256³ forced-turbulence
     run on a Kaggle GPU instance (environment setup included; not runnable locally).
 
-To run a 3D example under MPI instead: convert to a script and
-`mpirun -n <N> python script.py` with `nz % N == 0`.
+To run a 3D example under MPI instead: `pip install -e ".[mpi]"`, convert the notebook to a
+script and `mpirun -n <N> python script.py` with `nz % N == 0` (`comm_backend` then
+auto-resolves to `"mpi4jax"`). Launching under `mpirun` *without* the extra installed is a
+hard error, never a silent single-domain fallback.

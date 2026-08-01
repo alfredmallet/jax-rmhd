@@ -34,6 +34,13 @@ were corrected on the way out (see below).
 - **TESTING_PLAN.md** — test-suite systematization (phases 0–7).
 - **EXAMPLES_PLAN.md** — examples audit and rewrite.
 - **HALO_WIDTH_PLAN.md** — parameterizing the z-halo width.
+- **SERIAL_BACKEND_PLAN.md** — making MPI optional via `comm_backend="serial"`
+  (A1–A5 landed 2026-07-31). The design, the resolution table and the A2/A5 audits are
+  process; the durable parts are already in CLAUDE.md (comms/backend-resolution bullets),
+  `docs/RUNNING_TESTS.md` (serial tier + CI), the two Savio setup guides and
+  `docs/performance.md`. **One item is still open and is the user's**: Savio verification
+  that the real mpi4jax and `"jax"` paths are unchanged (`mpirun -n 4 python
+  tests/test_snapshot_roundtrip.py`, one forced-turbulence restart, one GPU backend job).
 - **REVIEW_FIXES.md** — an earlier round of code-review fixes. Almost entirely
   "was X, now Y"; the invariants those fixes established already live in CLAUDE.md and
   `docs/checkpointing.md`, so nothing was extracted.
