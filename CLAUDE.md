@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Guidance for Claude Code working in this repository. Rationale and perf measurements
-behind these rules: docs/PHASE3_RESULTS.md (incl. its appendix). Checkpointing detail:
-docs/checkpointing.md.
+Guidance for Claude Code working in this repository. This file carries the rules; the
+reasoning behind them lives in docs/numerics.md (derivations and conventions),
+docs/performance.md (measurements and tuning) and docs/checkpointing.md.
 
 ## What this is
 
@@ -28,11 +28,10 @@ bootstrap()` BEFORE `import jax_rmhd`, and end with the `script_main(globals())`
 footer; helpers live in `tests/_rmhd_testing.py` (never cache a SimulationState —
 donation; never mutate `ctx()` results — identity-hashed jit cache). Markers: mpi,
 savio, slow, fp32/fp64, multidev (skip logic in conftest + `_script_skip_reason`).
-Legacy script-style files still run whole-module at pytest collection; they're listed
-in `conftest._LEGACY_SCRIPTS` until converted. 2D (`dims=2`) is single-process only.
+2D (`dims=2`) is single-process only.
 `bench/savio_scaling/` (scaling benchmark, not a test) and `slurms/` are
-Savio-cluster-specific. How-to: docs/RUNNING_TESTS.md; roadmap: docs/TESTING_PLAN.md. Current notebooks: `orzag-tang-2D/3d`, `forced-turbulence-2D/3D`;
-the others predate the API and will error.
+Savio-cluster-specific. How-to: docs/RUNNING_TESTS.md. Every notebook in `examples/`
+uses the current API; `examples/README.md` gives a suggested reading order.
 
 ## Architecture
 
@@ -48,8 +47,8 @@ requires `nz % size == 0` (validated in `Parameters.__init__`).
 rfft2 convention: `kx` full two-sided, `ky` half/non-negative — reality is a constraint
 *between* `(kx,ky)` and `(-kx,ky)` at the ky=0 and Nyquist rows. Anything writing k-space
 directly (e.g. stochastic forcing) must enforce it explicitly; when symmetrizing *noise*,
-divide by sqrt(2), not 2 (`shared_physics._symmetrize_real_line`; derivation in the
-PHASE3_RESULTS appendix). `grids.fft/ifft` are unnormalized: an O(1) real field has
+divide by sqrt(2), not 2 (`shared_physics._symmetrize_real_line`; derivation in
+docs/numerics.md). `grids.fft/ifft` are unnormalized: an O(1) real field has
 O(nx*ny) coefficients — matters for resolution-independent synthetic k-space amplitudes.
 
 ### Parameters / physics registry
@@ -65,7 +64,7 @@ so every attribute is a compile-time constant — plain `if params.foo:` is corr
 preferred over `lax.cond`. Never pass it as a traced jit arg or inside a scanned tree.
 z attributes (`dz`, `Lz`, `z_diss`, `cart_comm`, neighbors) exist only when `dims==3` —
 guard access. `z_diff_order`/`z_diss_hyper` are accepted and stored but not read back by
-`rmhd.LinearTerm` (see its TODO) — non-default values silently do nothing.
+`rmhd.LinearTerm`; `Parameters` warns when either is set away from its default.
 
 Equation sets register in `physics/__init__.py::equation_registry`:
 `EquationRecipe(set_timestep_func, term_funcs, grad_func, nfields,
@@ -93,7 +92,7 @@ All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_s
   `forcing_state`/`forcing_key` are replicated, never sharded. Constructing
   `Parameters(comm_backend="jax")` brings up `jax.distributed` — must be the first jax
   device work in the process; `"jax"`+`dims==2` is rejected. Launch flags/env:
-  docs/SAVIO_GPU_SETUP.md + docs/PHASE3_RESULTS.md.
+  docs/SAVIO_GPU_SETUP.md; measured scaling in docs/performance.md.
 
 ### Timestepping
 
@@ -144,7 +143,7 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   `perp_mean_square`) is equation-agnostic; `rmhd.ForcingTerm` does the RMHD power
   normalization and (phi,psi) mapping.
 - Normalization targets exact injection power: cap the *scale factor*
-  (`forcing_scale_max`), never floor the denominator `P` (rationale in the appendix).
+  (`forcing_scale_max`), never floor the denominator `P` (rationale in docs/numerics.md).
 - All `perp_*` reductions share one normalization (rfft2 ky-doubling, `/ nz*(nx*ny)^2`),
   matching `diagnostics.perpspec`/`energy` and `forcing_power` — keep new energy-like
   diagnostics on this convention or their numbers won't be comparable. `parspec` is
@@ -160,7 +159,7 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   statistically identical but a *different RNG stream*; opt-in.
 - `dims=2` + `"momentum"` from a quiescent start is pure hydro (`psi` stays exactly 0 —
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
-  the appendix.
+  docs/numerics.md.
 
 ### Checkpointing
 

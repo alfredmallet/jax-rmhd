@@ -124,12 +124,12 @@ for a in sys.argv:
 if getattr(p, "comm_backend", "mpi4jax") == "jax":
     from jax_rmhd import comms
     _adv = jax.jit(comms.shard_call(
-        lambda s, kgr: jrun.block_of_steps(s, kgr, p, nblock, scheme, stepper)[0], p, kg),
+        lambda s, kgr: jrun.block_of_steps(s, kgr, p, nblock, scheme, stepper), p, kg),
         **({"donate_argnums": (0,)} if donate else {}))
     step = lambda s: _adv(s, kg)
 else:
     step_jit = jax.jit(jrun.block_of_steps, **kwargs)
-    step = lambda s: step_jit(s, kg, p, nblock, scheme, stepper)[0]
+    step = lambda s: step_jit(s, kg, p, nblock, scheme, stepper)
 def barrier():
     # real mpi4py only; the local test stub's fake comm has no Barrier (single rank anyway)
     if p.size > 1:

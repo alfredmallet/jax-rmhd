@@ -1,5 +1,5 @@
 # 2/3-rule dealias mask (grids.dealias_mask) and its application in run.initialize.
-# docs/TESTING_PLAN.md Phase 3. pytest: single-process (stub). Savio driver:
+# pytest: single-process (stub). Savio driver:
 # `python tests/test_dealias.py` -- everything here is perpendicular-plane-only, so
 # it's rank-independent (identical mask on every z-rank).
 from _rmhd_testing import bootstrap, checks, ctx, make_state

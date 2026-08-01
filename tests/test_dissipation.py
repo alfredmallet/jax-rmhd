@@ -1,4 +1,4 @@
-# Perpendicular hyperdissipation decay law (docs/TESTING_PLAN.md Phase 4).
+# Perpendicular hyperdissipation decay law.
 # IC phi = psi = cos(x)cos(y)cos(z) lives entirely at k_perp^2 = 2 (kx=+-1, ky=1),
 # so with hyper=1 the integrating factor exp(kgrid.hdiss*dt) = exp(-diss*ksq*dt)
 # damps each field coefficient by exp(-2*diss*t) and the (quadratic) energy by
@@ -13,7 +13,7 @@
 # spurious decay of the kz=1 envelope on top of the perp prediction.
 # pytest: single-process (stub). Savio driver: `mpirun -n 4 python
 # tests/test_dissipation.py` (nz=8 divisible by 4; energies are global via the
-# allreduce inside diagnostics.energy -> perp_inner_product_batch).
+# allreduce inside diagnostics.energy -> perp_inner_product).
 # Debug plot (E_end/E_start vs exp(-4*diss*t)): set RMHD_TEST_PLOTS=1; saves
 # rmhd_test_dissipation.png to the cwd.
 from _rmhd_testing import alfven_ic, bootstrap, checks, ctx, make_state
@@ -49,7 +49,7 @@ def _decay_run(d):
     state = make_state(params, ic=alfven_ic)
     e_start = sum(float(e) for e in diagnostics.energy(state, kgrid, params))
     stepper, scheme = get_scheme("lsrk33")
-    end_state, _ = block_of_steps(state, kgrid, params, _NSTEPS, scheme, stepper)
+    end_state = block_of_steps(state, kgrid, params, _NSTEPS, scheme, stepper)
     e_end = sum(float(e) for e in diagnostics.energy(end_state, kgrid, params))
     # float(end_state.t), never the target time: t accumulates per RK stage.
     return e_start, e_end, float(end_state.t)

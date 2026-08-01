@@ -1,4 +1,4 @@
-# Job table for tests/run_savio_suite.py (docs/TESTING_PLAN.md Phase 6).
+# Job table for tests/run_savio_suite.py.
 #
 # Each job runs one test FILE in script mode (pytest is never run under mpirun);
 # each phase is one subprocess launch. Fields:
@@ -40,7 +40,7 @@ JOBS = [
          phases=[dict(launch="serial", n=1)], precisions=_S),
     dict(name="forcing_norm_per_step", tier="cpu", script="tests/test_forcing_norm_per_step.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
-    # Phase 5 single-process files (2D / spoofed-rank content)
+    # single-process files (2D / spoofed-rank content)
     dict(name="forcing_modes", tier="cpu", script="tests/test_forcing_modes.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
     # fp32-marked throughout: the "32" session is the one that tests anything
@@ -60,18 +60,21 @@ JOBS = [
          phases=[dict(launch="mpi", n=2), dict(launch="mpi", n=4)]),
     dict(name="energy_parseval", tier="cpu", script="tests/test_energy_parseval.py",
          phases=[dict(launch="mpi", n=2), dict(launch="mpi", n=4)]),
-    # Phase 4 conversions (asserted convergence/decay studies, mpirun-safe: all nz
-    # divisible by 4, reductions via comms.allreduce_sum / diagnostics.energy).
+    # asserted convergence/decay studies (mpirun-safe: all nz divisible by 4,
+    # reductions via comms.allreduce_sum / diagnostics.energy).
     # RMHD_RUNSLOW=1 runs advection's full nz=64->1024 study (fp64-marked -- prints
     # [SKIP] in the 32 session, which still counts as ALL PASS).
     dict(name="advection", tier="cpu", script="tests/test_advection.py",
          phases=[dict(launch="mpi", n=4, env={"RMHD_RUNSLOW": "1"})], precisions=_S),
     dict(name="dissipation", tier="cpu", script="tests/test_dissipation.py",
          phases=[dict(launch="mpi", n=4)], precisions=_S),
-    # Phase 5 mpirun-safe files (nz=8 divisible by 4; per-rank asserts, collectives
+    # mpirun-safe files (nz=8 divisible by 4; per-rank asserts, collectives
     # called in lockstep; parspec tests inside diagnostics soft-skip when size>1).
     dict(name="scheme_equivalence", tier="cpu", script="tests/test_scheme_equivalence.py",
          phases=[dict(launch="mpi", n=4)], precisions=_S),
+    # fp64-only content: an order sweep's fine end floors on the fp32 round-off floor
+    dict(name="time_order", tier="cpu", script="tests/test_time_order.py",
+         phases=[dict(launch="mpi", n=4)]),
     dict(name="cfl_every", tier="cpu", script="tests/test_cfl_every.py",
          phases=[dict(launch="mpi", n=4)], precisions=_S),
     dict(name="dims_parity", tier="cpu", script="tests/test_dims_parity.py",

@@ -16,7 +16,7 @@
 #SBATCH --output=rmhd_tests_gpu_%j.out
 #SBATCH --error=rmhd_tests_gpu_%j.err
 
-# The GPU test suite in one submission (docs/TESTING_PLAN.md Phase 6): the 5-phase
+# The GPU test suite in one submission: the 5-phase
 # mpi4jax-vs-jax/NCCL backend battery from tests/savio_manifest.py, driven by
 # tests/run_savio_suite.py (per-phase logs in $RMHD_TEST_OUTDIR, pass rule =
 # exit 0 AND the ALL PASS banner). Usage: sbatch slurms/run_test_suite_gpu.sh

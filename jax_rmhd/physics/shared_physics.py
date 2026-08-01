@@ -55,8 +55,8 @@ def _draw_symmetrized_noise(key, shape, dtype, grid_norm):
     return noise
 
 def _draw_shell_noise(key, shape, dtype, grid_norm, fidx_x, fidx_y):
-    # only draws RNG at the shell modes and scatters into the k-grid 
-    # different RNG stream, so runs differ bitwise from the full-grid draw)
+    # draws RNG only at the shell modes and scatters into the k-grid: a different RNG
+    # stream from the full-grid draw, so the two differ bitwise
     key_real, key_imag = jax.random.split(key)
     shell_shape = shape[:-2] + (fidx_x.shape[0],)
     raw = (jax.random.normal(key_real, shell_shape) + 1j * jax.random.normal(key_imag, shell_shape)) / jnp.sqrt(2.0)
@@ -68,8 +68,6 @@ def _draw_shell_noise(key, shape, dtype, grid_norm, fidx_x, fidx_y):
 
 def ou_update(forcing_state, forcing_key, dt, params, kgrid):
     # Ornstein-Uhlenbeck step on the forcing-shell modes.
-    # noise is now drawn only at the precomputed shell indices (kgrid.fidx_*) when
-    # available, instead of over the full (kx,ky) grid and masking down.
     key, new_key = jax.random.split(forcing_key)
     grid_norm = float(params.nx * params.ny)
     # forcing_state has shape (n_ou, 2, nkx, nky)
@@ -98,38 +96,28 @@ def reconstruct_envelope(forcing_state, kgrid, params):
         #in 2D just use the A coefficient
         return forcing_state[:, 0][:, None, :, :]  # (n_ou, 1, nkx, nky)
 
-def _perp_reduce(integrand, params):
-    # sum over all axes (z-local, kx, ky, ...), allreduce over z-ranks if applicable
-    # normalize: divide by nz*(nx*ny)^2.
-    P = jnp.sum(integrand)
-    P = comms.allreduce_sum(P,params)  # no-op unless z-decomposed
-    norm = float(params.nz) * float(params.nx * params.ny)**2
-    return P / norm
+def perp_gradsq(field_a_k, field_b_k, kgrid):
+    # per-mode Re( grad(a)^* . grad(b) ), with the rfft2 ky-doubling applied
+    return kgrid.ksq * jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
 
-def perp_inner_product(field_a_k, field_b_k, kgrid, params):
-    # Re( sum_k grad(field_a_k)^* . grad(field_b_k) )
-    # useful for e.g. energies and power inputs
-    integrand = kgrid.ksq * jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
-    return _perp_reduce(integrand, params)
+def perp_reduce(integrand, params, axis=None):
+    # sum over `axis` (default: every axis), allreduce over z-ranks if applicable, and
+    # apply the normalization every energy-like quantity in the code shares.
+    P = comms.allreduce_sum(jnp.sum(integrand, axis=axis), params)  # no-op unless z-decomposed
+    return P / (float(params.nz) * float(params.nx * params.ny)**2)
 
-def perp_mean_square(field_a_k, field_b_k, kgrid, params):
-    # Re( sum_k field_a_k^* . field_b_k )
+def perp_inner_product(field_a_k, field_b_k, kgrid, params, batch=False):
+    # Re( sum_k grad(field_a_k)^* . grad(field_b_k) ), useful for e.g. energies and power
+    # inputs. batch=True keeps the leading axis (e.g. stacked z+/z-), giving one value per
+    # entry from a single stacked allreduce.
+    integrand = perp_gradsq(field_a_k, field_b_k, kgrid)
+    return perp_reduce(integrand, params, tuple(range(1, integrand.ndim)) if batch else None)
+
+def perp_mean_square(field_a_k, field_b_k, kgrid, params, batch=False):
+    # Re( sum_k field_a_k^* . field_b_k ), i.e. perp_inner_product without the k^2 weight
     # useful for anastrophy etc.
     integrand = jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
-    return _perp_reduce(integrand, params)
-
-def _perp_reduce_batch(integrand, params):
-    # like _perp_reduce but keeps the leading batch axis
-    P = jnp.sum(integrand, axis=tuple(range(1, integrand.ndim)))
-    P = comms.allreduce_sum(P,params)
-    norm = float(params.nz) * float(params.nx * params.ny)**2
-    return P / norm
-
-def perp_inner_product_batch(fields_a_k, fields_b_k, kgrid, params):
-    # perp_inner_product over a leading batch axis (e.g. stacked z+/z-), returning a
-    # (nbatch,) vector via a single stacked allreduce.
-    integrand = kgrid.ksq * jnp.real(jnp.conj(fields_a_k) * fields_b_k) * kgrid.yfac
-    return _perp_reduce_batch(integrand, params)
+    return perp_reduce(integrand, params, tuple(range(1, integrand.ndim)) if batch else None)
 
 def safe_scale(target, P, scale_max=1.0):
     # used to rescale power inputs

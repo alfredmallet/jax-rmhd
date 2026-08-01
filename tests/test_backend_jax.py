@@ -1,4 +1,4 @@
-# T9 correctness test for comm_backend="jax" (shard_map / ppermute / psum) WITHOUT MPI
+# Correctness test for comm_backend="jax" (shard_map / ppermute / psum) WITHOUT MPI
 # or GPUs: bootstrap() forces 4 fake XLA host devices in one process (when the MPI stub
 # is active), so the real mesh/collective code path runs and can be compared against the
 # serial mpi4jax path. pytest: `pytest tests/test_backend_jax.py` (skipped unless >=4
@@ -277,9 +277,8 @@ def _leaf_meta(path, isnap=0):
 @pytest.mark.multidev
 @pytest.mark.fp64
 def test_on_disk_leaf_sets_pruning_and_reverse_cross_restore():
-    # AMENDED (2026-07-26): the layouts may DIFFER between backends. What must hold
-    # is the leaf SET (one pytree structure), both cross-restores, and an untouched
-    # mpi4jax writer path.
+    # the on-disk layouts may DIFFER between backends. What must hold is the leaf SET
+    # (one pytree structure), both cross-restores, and an untouched mpi4jax writer path.
     ref, jx = _end_run("mpi4jax"), _end_run("jax")
     p_jax, _ = _bctx("jax")
     keys_ref, types_ref = _leaf_meta(ref["snap"])
@@ -415,7 +414,7 @@ def test_restores_pinned_to_local_device():
 @pytest.mark.multidev
 @pytest.mark.fp64
 def test_set_timestep_pmax_matches_serial():
-    # Phase 5: the only DIRECT exercise of allreduce_max's pmax branch. The IC's
+    # the only DIRECT exercise of allreduce_max's pmax branch. The IC's
     # amplitude varies with z, so each z-shard sees a DIFFERENT local CFL maximum
     # and the global dt is wrong unless pmax really reduces across the mesh (the
     # forced-run comparisons only ever feed it shard-identical values early on).

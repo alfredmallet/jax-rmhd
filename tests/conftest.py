@@ -16,11 +16,10 @@ bootstrap()
 import pytest  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Collection control. (All fast test files are pytest-style as of Phase 2 of
-# docs/TESTING_PLAN.md -- the legacy import-time-script list is gone.)
+# Collection control.
 # ---------------------------------------------------------------------------
 
-# Never collected by pytest (see docs/TESTING_PLAN.md):
+# Never collected by pytest:
 #   - test_backend_jax_mpi.py: argv-driven multi-GPU driver, real MPI only
 #   - test_restart_resharding.py: two-phase, two rank counts, real MPI only
 collect_ignore = [

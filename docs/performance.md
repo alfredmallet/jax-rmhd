@@ -1,0 +1,149 @@
+# Performance and scaling
+
+Measured numbers, the tuning knobs they justify, and the negative results — so nobody
+re-runs a cluster job to rediscover an answer. All figures from Savio (account
+fc_kawturb), 2026-07-25 → 2026-07-27. Setup instructions live in
+`docs/SAVIO_CPU_SETUP.md` / `docs/SAVIO_GPU_SETUP.md`; the reasoning behind the numerics
+is in `docs/numerics.md`.
+
+## Read this first: fp32 flatters communication savings
+
+Every accept/revert decision in this code was made on **fp64** numbers, because fp32
+halves message sizes and therefore roughly triples the apparent benefit of any
+communication optimization. Measured example: per-step forcing normalization was +27% at
+fp32 and +8% at fp64 on the same job. Benchmark at the precision you will actually run.
+
+## Architecture: what sets the ceiling
+
+The decomposition is **z-only**. The perpendicular plane is never distributed — the
+`rfft2` is process-local on every rank — so:
+
+- the maximum useful rank count is about `nz/2` (the halo is 2 planes wide);
+- a 2D run has no parallelism to express at all, which is why `dims=2` is single-process
+  and `comm_backend="jax"` rejects it at construction;
+- going further would need a pencil decomposition and distributed FFTs, which is a
+  different architecture, not a tuning change.
+
+## Backends: why two
+
+`mpi4jax` is the CPU-cluster backend and `"jax"` (shard_map/NCCL) is the GPU one. This is
+not arbitrary:
+
+- XLA:CPU collectives are slow; shard_map was tried on CPU and performed badly.
+- On GPU, mpi4jax has three specific costs: without CUDA-aware MPI every transfer stages
+  through host memory; each mpi4jax op is an XLA custom call that forces a CUDA stream
+  sync (negligible on CPU, a pipeline stall on GPU, ×10–20 per step); and the token chain
+  is opaque to XLA, so there is no compute/comm overlap.
+
+Savio's MPI is **not** CUDA-aware (built `--without-cuda`; forcing `MPI4JAX_USE_CUDA_MPI=1`
+segfaults in UCX), so mpi4jax-on-GPU is a fallback or single-GPU option only.
+
+## CPU (savio3, mpi4jax, fp64)
+
+Baseline, 32 ranks, 128²×256, lsrk54 + elsasser forcing + adaptive dt, production config:
+
+| | fp32 | fp64 |
+|---|---|---|
+| unforced | 153 ms/step | 302 ms/step |
+| forced | 174 | 353 |
+
+One allreduce costs ~4 ms at 32 ranks and ~22 ms at 128 — which is why the
+communication knobs below only pay at high rank counts.
+
+Scaling, 256²×256 strong: 1331 / 1363 / 762 / 434 ms/step at 16 / 32 / 64 / 128 ranks.
+Within a node the cores saturate memory bandwidth by about 16 (32 ranks is no faster than
+16); across nodes it holds ~88% per doubling. Weak scaling at 256²×4 per rank: 370 / 750 /
+762 / 771 — flat from 1 to 4 nodes (97%), which is the production regime.
+
+## GPU
+
+Single node, 4×A5000, fp32, 512²×128, forced:
+
+| GPUs | mpi4jax | jax/NCCL | advantage |
+|---|---|---|---|
+| 1 | 294 ms/step | 310 | −5% |
+| 2 | 176 | 158 | +11% |
+| 4 | 126 | 77.0 | +63% |
+
+Scaling 1→4: jax ~4.0× (ideal), mpi4jax ~2.3×. The −5% at one GPU is fixed
+shard_map/global-array overhead and disappears as soon as there is communication to do.
+
+Multi-node, 16×GTX2080Ti over 4 nodes, fp32, 512²×256:
+
+| GPUs (nodes) | mpi4jax | jax/NCCL | advantage |
+|---|---|---|---|
+| 4 (1) | 284 ms/step | 200 | 1.4× |
+| 8 (2) | 204 | 102 | 2.0× |
+| 16 (4) | 165 | 48 | 3.4× |
+
+Scaling 4→16: jax 4.15×, mpi4jax 1.72×. The jax curve holds **across node boundaries on
+plain TCP** — no InfiniBand userspace, PCIe peer-to-peer disabled. On NVLink/IB hardware
+the margin can only grow.
+
+### Cost per timestep (fp32, 512²×128)
+
+| Hardware | ms/step | SU/hr | SU per 1000 steps |
+|---|---|---|---|
+| 1 savio3 node (32c) | 1563 | 32 | 13.9 |
+| 2 nodes | 866 | 64 | 15.4 |
+| 1 × A5000 | 294 | 18.7 | 1.53 |
+| 4 × A5000, mpi4jax | 126 | 74.7 | 2.61 |
+| 4 × A5000, jax | 77 | 74.7 | 1.60 |
+
+CPU cost per step *rises* under strong scaling — waiting cores still bill — while the jax
+backend holds it flat while quadrupling throughput. Roughly **9× cheaper per timestep on
+GPU at fp32**. Savio's workstation GPUs run fp64 at 1/32 rate, so fp64 production stays on
+CPU there; on full-rate-fp64 hardware (A100/GH200/H100) the economics carry over.
+
+## Tuning knobs, measured
+
+| Knob | Effect | Guidance |
+|---|---|---|
+| `forcing_norm_per_step` | +8% at fp64/32 ranks | default on |
+| `cfl_every` | +1.3% (N=20) at 32 ranks, +8.9% at 128 | 10–20 at ≥128 ranks, **developed states only** |
+| `lsrk_scan=True` (scan) | ~20% faster than unrolled on CPU | default |
+| `lsrk_scan=False` (unrolled) | +21% mpi4jax-GPU, +12% jax single-node, **−38% jax multi-node** | per-machine knob, benchmark it |
+| `forcing_shell_noise` | faster single-device, ~5% *slower* on Savio CPU at 32 ranks | opt-in; revisit on GPU |
+| `halo_start` | neutral (≤2%, sub-noise) everywhere measured | see below |
+
+`cfl_every > 1` costs one extra standalone gradient evaluation per block, because the
+stage-0 RHS no longer doubles as the dt source. At 32 ranks that cancels the saving at
+N=5; it only pays once the allreduce is expensive.
+
+**The `cfl_every` hazard is real:** from a quiescent forced start the CFL dt collapses by
+~10× within a few steps of spin-up, so a frozen dt NaNs — measured, N=20 dies by t≈2 while
+N=5 survives. Use N>1 only from developed states.
+
+## Negative results
+
+Recorded so they are not re-investigated.
+
+- **Early halo issue (`halo_start`) buys nothing measurable.** On mpi4jax there is no fp64
+  win at any rank count (−0.6% at 32, sub-noise at 128) because the token chain serializes
+  communication with compute regardless. On the jax backend it is neutral on Savio at
+  bench sizes, including multi-node NCCL. The hook is kept and enabled for `"jax"` because
+  the answer plausibly changes with a different scheme or on NVLink/IB hardware, but it is
+  not currently earning its keep.
+- **Unrolled LSRK is not a universal win.** It helps every configuration except the one
+  that matters most for scaling, jax multi-node, where it costs 38%.
+- **shard_map on CPU** — measured slow, which is why `mpi4jax` remains the CPU backend.
+
+## Known, not done
+
+`run.py` calls `mngr.wait_until_finished()` immediately after every `save_snapshot`, which
+defeats orbax's asynchronous save: checkpoint I/O is serialized with compute rather than
+overlapping the next block of steps. Waiting lazily instead — before the *next* save and
+at the end of the run — was planned and never implemented. It needs care around
+`max_to_keep` deletion.
+
+## Production guidance
+
+**CPU clusters:** `mpi4jax`, fp64, `forcing_norm_per_step=True`, `cfl_every` 10–20 at
+≥128 ranks from developed states.
+
+**Savio GPU:** `comm_backend="jax"`, fp32 workloads, sizes per the cost table above.
+
+**fp64 GPU production** needs full-rate-fp64 hardware. Verified candidates as of
+2026-07-27: NASA HECC Cabeus (A100 NVLink, plus GH200 nodes), NSF ACCESS DeltaAI, TACC
+Vista. Note a quoted state size is aggregate, not per-GPU — a 270 GB state fits on one
+4-GPU A100/GH200 node.

@@ -31,7 +31,7 @@ def set_timestep(grads,params):
     return params.cfl_safety / max_all
 
 def halo_start(state,kgrid,params):
-    # T7: pre-issues LinearTerm's z halo exchange at the top of the RHS; None in 2D (no halo).
+    # pre-issues LinearTerm's z halo exchange at the top of the RHS; None in 2D (no halo).
     # width must match what shared_physics.z_derivatives' stencil expects (RMHD: 4th-order
     # centered + 5-point d4 => 2); the pre-issued halo here and the fallback exchange inside
     # z_derivatives MUST use the same width -- the one coupling in this design.
@@ -48,13 +48,13 @@ def NonlinearTerm(state,grads,kgrid,params,halo=None):
     return NLTerm_fields
 
 def LinearTerm(state,grads,kgrid,params,halo=None):
-    #TODO: add a check on z_diff_order and z_diss_hyper here. For now use 4th order centered f.d. 
-    # and d_z^4 hyperdissipation for stability
+    # fixed at 4th-order centered f.d. + d_z^4 hyperdissipation: params.z_diff_order and
+    # z_diss_hyper are not read here (Parameters warns when they are set)
     if params.spatial_dimensions==2:
         return jnp.zeros_like(state.fields)
     dz=params.dz
     diss=params.z_diss * (dz/2)**4
-    df_dz,d4f_dz4 = z_derivatives(state.fields,params,halo=halo)  # T7: reuse the pre-issued halo
+    df_dz,d4f_dz4 = z_derivatives(state.fields,params,halo=halo)
     #RMHD only logic: the z-derivatives belong to the opposite equations
     df_dz_rmhd = jnp.stack([df_dz[1],df_dz[0]])
     return df_dz_rmhd - diss * d4f_dz4
@@ -67,7 +67,7 @@ def _forcing_scale_from(fields, f_raw, kgrid, params):
         P = shared_physics.perp_inner_product(phik,f_raw[0],kgrid,params)
         return jnp.reshape(shared_physics.safe_scale(params.forcing_power,P,params.forcing_scale_max),(1,))
     za = jnp.stack([phik + psik, phik - psik])
-    Ppm = shared_physics.perp_inner_product_batch(za,f_raw,kgrid,params)
+    Ppm = shared_physics.perp_inner_product(za,f_raw,kgrid,params,batch=True)
     #factor 2: E_tot = (E+ + E-)/2, so this makes each forcing_power_elsasser entry a
     #contribution to the TOTAL energy injection rate, in the same units as forcing_power
     eps = 2.0*jnp.asarray(params.forcing_power_elsasser)

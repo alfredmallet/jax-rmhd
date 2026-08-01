@@ -1,10 +1,8 @@
 # Independent real-space Parseval cross-check on the spectral energy path
-# (shared_physics._perp_reduce / perp_inner_product_batch, which diagnostics.energy
-# wraps). This used to live inside diagnostics.energy itself; it moved here when
-# energy became a thin wrapper over the spectral path -- a check is only worth having
-# if it shares no code with the thing it checks. The real-space path below goes
-# ifft -> pointwise square -> local sum -> allreduce, touching none of the
-# _perp_reduce normalization machinery.
+# (shared_physics.perp_reduce / perp_inner_product, which diagnostics.energy wraps).
+# A check is only worth having if it shares no code with the thing it checks: the
+# real-space path below goes ifft -> pointwise square -> local sum -> allreduce,
+# touching none of the perp_reduce normalization machinery.
 # pytest: single-process (stub). Savio driver: `mpirun -n N python
 # tests/test_energy_parseval.py` (N=1,2,4).
 from _rmhd_testing import bootstrap, checks, ctx, make_state, multimode_ic
@@ -15,7 +13,7 @@ import jax
 import jax.numpy as jnp
 
 from jax_rmhd import comms, diagnostics, grids
-from jax_rmhd.physics.shared_physics import gradk, perp_inner_product_batch
+from jax_rmhd.physics.shared_physics import gradk, perp_inner_product
 
 
 def _realspace_grad_meansq(fieldk, kgrid, params):
@@ -31,7 +29,7 @@ def _realspace_grad_meansq(fieldk, kgrid, params):
 def test_parseval_spectral_vs_realspace():
     params, kgrid = ctx()
     state = make_state(params, ic=multimode_ic)
-    spec = perp_inner_product_batch(state.fields[:2], state.fields[:2], kgrid, params)
+    spec = perp_inner_product(state.fields[:2], state.fields[:2], kgrid, params, batch=True)
     real_phi = _realspace_grad_meansq(state.fields[0], kgrid, params)
     real_psi = _realspace_grad_meansq(state.fields[1], kgrid, params)
 
@@ -53,7 +51,7 @@ def test_energy_is_half_batch_reduction():
     # diagnostics.energy is exactly half the batch reduction (E = 0.5*<|grad|^2>).
     params, kgrid = ctx()
     state = make_state(params, ic=multimode_ic)
-    spec = perp_inner_product_batch(state.fields[:2], state.fields[:2], kgrid, params)
+    spec = perp_inner_product(state.fields[:2], state.fields[:2], kgrid, params, batch=True)
     E_kin, E_mag = diagnostics.energy(state, kgrid, params)
     assert jnp.array_equal(E_kin, 0.5 * spec[0])
     assert jnp.array_equal(E_mag, 0.5 * spec[1])

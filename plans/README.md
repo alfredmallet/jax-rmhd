@@ -1,0 +1,59 @@
+# plans
+
+Planning documents, progress reports and code reviews — the record of *how* the code got
+here. Not documentation: for that see `docs/` (checkpointing, running the tests, Savio
+setup) and `CLAUDE.md`.
+
+`plans/` holds work that is still live. `plans/old/` holds work that is finished.
+
+**The durable content of `plans/old/` has been extracted** (2026-07-31) into
+`docs/numerics.md` (derivations and conventions), `docs/performance.md` (cluster
+measurements, tuning knobs, negative results) and the CI section of
+`docs/RUNNING_TESTS.md`. What remains in `plans/old/` is process — task breakdowns,
+agent handoffs, status markers — kept for provenance but no longer load-bearing. Nothing
+outside `plans/` links into it, so these files can be deleted whenever they stop earning
+their disk space.
+
+Where the extracted docs and an old plan disagree, **the docs are right**: several claims
+were corrected on the way out (see below).
+
+## Live
+
+- **GDI_PLAN.md** — roadmap from the current IF-dissipation-only solver to the 3D GDI
+  equations (exact linear propagators, spectral-z, low-storage IMEX). Execution order
+  P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
+- **CODE_REVIEW_2026-07-31.md** — full-codebase review. Sections 2–5 are done; section 6
+  (repo hygiene) is partly open.
+
+## Finished
+
+- **PERFORMANCE_PLAN.md** — the original perf findings (F1, F2) and phased task list.
+- **PHASE2_PLAN.md**, **PHASE3_PLAN.md** — execution plans expanding that roadmap.
+- **PHASE3_RESULTS.md** — consolidated GPU-backend results. Its benchmarks are now in
+  `docs/performance.md` and its appendix in `docs/numerics.md`; CLAUDE.md points at those.
+- **TESTING_PLAN.md** — test-suite systematization (phases 0–7).
+- **EXAMPLES_PLAN.md** — examples audit and rewrite.
+- **HALO_WIDTH_PLAN.md** — parameterizing the z-halo width.
+- **REVIEW_FIXES.md** — an earlier round of code-review fixes. Almost entirely
+  "was X, now Y"; the invariants those fixes established already live in CLAUDE.md and
+  `docs/checkpointing.md`, so nothing was extracted.
+
+## Claims corrected during extraction
+
+Four statements in `plans/old/` are wrong about the code as it stands. They were fixed on
+the way into `docs/`, and are listed here so nobody re-imports them from the originals:
+
+- **"lsrk_scan gives bitwise-identical trajectories at fp64"** (PHASE3_RESULTS appendix)
+  is false. `tests/test_scheme_equivalence.py` measures ~2e-15 (lsrk33) and ~7e-15
+  (lsrk54) after 20 steps under jax 0.6.2/CPU; the divergence is machine-dependent.
+- **"T7 halo_start stays unregistered"** (PHASE2_PLAN verdict) is stale — it is registered
+  and enabled for `comm_backend="jax"`, on the reasoning that the measurement may change
+  with a different scheme or on NVLink/IB hardware.
+- **`perp_inner_product_batch`** (PHASE3_RESULTS appendix) no longer exists; it is
+  `perp_inner_product(..., batch=True)`.
+- **The `#TODO` in `rmhd.LinearTerm`** that HALO_WIDTH_PLAN says "stands" was removed —
+  `Parameters` now warns when `z_diff_order`/`z_diss_hyper` are set away from default.
+
+One finding was never acted on and is recorded in `docs/performance.md` under "Known, not
+done": PERFORMANCE_PLAN's F7/T10 async checkpointing. `run.py` still drains orbax
+synchronously after every save.

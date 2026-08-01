@@ -1,5 +1,5 @@
-# Checkpoint round-trip / invariant tests for jax_rmhd.snapshot_io (Phase 3 of
-# docs/TESTING_PLAN.md). Everything here is self-contained: the legacy checkpoint
+# Checkpoint round-trip / invariant tests for jax_rmhd.snapshot_io.
+# Everything here is self-contained: the legacy checkpoint
 # fixtures are SYNTHESIZED in a tmp dir, so there is no dependency on the untracked
 # tests/data tree.
 #
@@ -393,7 +393,7 @@ def test_legacy_per_rank_tree_repair_and_reshard_read():
 
 
 def test_find_items_and_load_slice():
-    # Phase 5 low-value smoke: find_items lists the stored keys without raising,
+    # low-value smoke: find_items lists the stored keys without raising,
     # and load_slice reads a z-slice of `fields` bitwise via tensorstore (the
     # laptop-diagnostics path -- flat single-process layout only).
     if _single_process_only("test_find_items_and_load_slice"):

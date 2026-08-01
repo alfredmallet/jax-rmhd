@@ -1,4 +1,4 @@
-# Real-MPI (multi-GPU) correctness driver for comm_backend="jax" (T9): runs the SAME
+# Real-MPI (multi-GPU) correctness driver for comm_backend="jax": runs the SAME
 # same-seed forced 3D problem under either backend, dumps each rank's LOCAL fields, and
 # diffs two phases. Also does cross-backend restarts. The two backends write DIFFERENT
 # on-disk layouts (mpi4jax: snap_path/<rank>/<step>; jax: one shared snap_path/<step> of

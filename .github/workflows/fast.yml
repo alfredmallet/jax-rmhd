@@ -1,4 +1,4 @@
-# Fast tier (docs/TESTING_PLAN.md Phase 7) -- the required check.
+# Fast tier -- the required check.
 #
 # `pip install -e .` CANNOT work on a stock runner: mpi4py/mpi4jax are hard
 # dependencies and there is no MPI toolchain here. Do NOT demote them in

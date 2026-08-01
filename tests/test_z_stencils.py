@@ -1,5 +1,5 @@
 # z_derivatives (4th-order centered d/dz + 5-point d4/dz4 hyperdissipation stencil,
-# shared_physics.z_derivatives) in isolation. docs/TESTING_PLAN.md Phase 3.
+# shared_physics.z_derivatives) in isolation.
 # pytest: single-process (stub, periodic self-halo). Savio driver:
 # `mpirun -n N python tests/test_z_stencils.py` for N in 1,2,4 (nz values below are
 # all divisible by 4).

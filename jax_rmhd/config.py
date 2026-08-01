@@ -38,7 +38,7 @@ class Parameters():
         #perpendicular grid
         self.nx=nx
         if ny%2==1:
-            print("ny should be even: setting ny=ny-1")
+            warnings.warn(f"ny should be even: using ny={ny-1} instead of {ny}", stacklevel=2)
             ny=ny-1
         self.ny=ny
         self.Lx=Lx
@@ -98,7 +98,8 @@ class Parameters():
             self.left_neighbor = None
             self.right_neighbor = None
             if self.size > 1 and self.rank==0:
-                print("You probably should only run a 2D run on one device, since this isn't parallelized.")
+                warnings.warn("You probably should only run a 2D run on one device, since this "
+                              "isn't parallelized.", stacklevel=2)
         # bring up the chosen transport (jax.distributed + z mesh for "jax"; no-op otherwise).
         # must happen before any jax device work
         comms.init_backend(self)
@@ -188,19 +189,21 @@ class Parameters():
         # explicitly passed overrides win
         # runs __init__ to get derived params
         path = os.path.join(str(snap_path), filename)
-        rec = json.load(open(path))
+        with open(path) as f:
+            rec = json.load(f)
         rec.pop("_created", None)
         prec = rec.pop("_precision", None)
         current_prec = "64" if jax.config.read("jax_enable_x64") else "32"
         rank0 = MPI.COMM_WORLD.Get_rank() == 0
         if prec is not None and prec != current_prec and rank0:
-            print(f"Warning: {path} was written at precision {prec}, but RMHD_PRECISION is "
-                  f"currently {current_prec} (precision is set by env var at import time).")
+            warnings.warn(f"{path} was written at precision {prec}, but RMHD_PRECISION is "
+                          f"currently {current_prec} (precision is set by env var at import time).",
+                          stacklevel=2)
         # tolerate records from newer/older code versions: ignore unknown keys with a warning
         known = set(inspect.signature(cls.__init__).parameters) - {"self"}
         unknown = sorted(set(rec) - known)
         if unknown and rank0:
-            print(f"Warning: ignoring unknown parameters in {path}: {unknown}")
+            warnings.warn(f"ignoring unknown parameters in {path}: {unknown}", stacklevel=2)
         args = {k: (tuple(v) if isinstance(v, list) else v) for k, v in rec.items() if k in known}
         args.update(overrides)
         return cls(**args)

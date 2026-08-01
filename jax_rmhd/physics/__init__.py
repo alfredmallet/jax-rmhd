@@ -13,9 +13,8 @@ class EquationRecipe(NamedTuple):
     halo_start_func: Optional[Callable] = None
 
 
-# backends for which halo start *might* work better
-# in current testing, it makes no difference for any backend
-# keeping the infrastructure for future tweaking
+# backends where pre-issuing the halo might overlap comms with compute. A wash on every
+# backend measured so far, but that depends on the scheme and the GPU, so the hook stays.
 _HALO_START_BACKENDS = ("jax",)
 
 def _halo_start_enabled(params):
@@ -33,9 +32,9 @@ def construct_rhs(recipe):
         fields_rhs = None
         for term in recipe.term_funcs:
             if fields_rhs is None:
-                fields_rhs = term(state,grads,kgrid,params,halo)  # T7: halo threaded to the terms
+                fields_rhs = term(state,grads,kgrid,params,halo)
             else:
-                fields_rhs = fields_rhs + term(state,grads,kgrid,params,halo)  # T7
+                fields_rhs = fields_rhs + term(state,grads,kgrid,params,halo)
         return fields_rhs, grads
     return rhs
 

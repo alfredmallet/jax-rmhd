@@ -1,5 +1,4 @@
 # Parameters record/restore tests: params.save() and Parameters.from_snapshot()
-# (Phase 3 of docs/TESTING_PLAN.md).
 #
 # Invariants under test (CLAUDE.md "Parameters / physics registry"):
 #   - save() records the CONSTRUCTOR ARGS + precision; from_snapshot() re-runs __init__
@@ -13,9 +12,8 @@
 #   - transport (comm/rank/size) is never persisted, and comm_backend is recorded but
 #     excluded from the differing-record comparison (runs must restart across backends).
 #
-# NOTE: config.py emits its "warnings" with print() on rank 0, not warnings.warn(), so
-# _capture() collects BOTH stdout and the warnings module -- the assertions hold either
-# way if that ever changes.
+# NOTE: _capture() collects BOTH stdout and the warnings module, so the assertions hold
+# whichever channel config.py uses (it warns via warnings.warn).
 #
 # pytest: `pytest tests/test_params.py`.  Script: `python tests/test_params.py`.
 from _rmhd_testing import bootstrap, checks, fresh_params, mpi_size, snap_dir
@@ -75,15 +73,14 @@ def _stat(d):
 
 def _capture(fn):
     """Run fn(), returning (result, captured_text). Collects stdout AND the warnings
-    module: config.py currently prints, and pytest.warns is unusable here (script mode)."""
+    module, since pytest.warns is unusable here (script mode)."""
     buf = io.StringIO()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         with contextlib.redirect_stdout(buf):
             result = fn()
-    # ResourceWarnings are dropped: config.from_snapshot does json.load(open(path))
-    # without closing, and the leaked-handle message quotes the tmp path, which would
-    # otherwise pollute substring assertions.
+    # ResourceWarnings are dropped: their messages quote tmp paths, which would
+    # otherwise pollute the substring assertions.
     msgs = "".join(str(w.message) for w in caught
                    if not issubclass(w.category, ResourceWarning))
     return result, buf.getvalue() + msgs
@@ -308,8 +305,8 @@ def test_transport_is_not_persisted_or_compared():
 
 
 def test_constructor_rejects_malformed_arguments():
-    # Each of these used to construct happily and fail late (or not at all -- dims=4
-    # silently ran a 2D problem, a bad fshell silently ran unforced).
+    # Arguments with no valid interpretation: each must be refused at construction
+    # rather than failing late, or silently running a different problem.
     bad = {
         "dims=4 is not a dimensionality": dict(dims=4),
         "dims=2.5 is not a dimensionality": dict(dims=2.5),

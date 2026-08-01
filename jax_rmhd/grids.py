@@ -28,15 +28,11 @@ class K_Grids(NamedTuple):
     fidx_y: Optional[jnp.ndarray] = None
 
 def dealias_mask(params):
-    # 2/3-rule elliptical dealiasing mask
-    kx = ft.fftfreq(params.nx) * params.nx * 2 * jnp.pi / params.Lx
-    ky = ft.rfftfreq(params.ny) * params.ny * 2 * jnp.pi / params.Ly
-    kx_grid = kx.reshape(-1, 1)
-    ky_grid = ky.reshape(1, -1)
-    nx = jnp.shape(kx_grid)[0]
-    ny = 2 * (jnp.shape(ky_grid)[1] - 1)
-    return ((kx_grid/kx_grid[1,0])**2 / (nx/3.0)**2 +
-            (ky_grid/ky_grid[0,1])**2 / (ny/3.0)**2) < 1.0
+    # 2/3-rule elliptical dealiasing mask, in mode-index space (Lx/Ly cancel out)
+    ix = ft.fftfreq(params.nx) * params.nx
+    iy = ft.rfftfreq(params.ny) * params.ny
+    return ((ix.reshape(-1,1)/(params.nx/3.0))**2 +
+            (iy.reshape(1,-1)/(params.ny/3.0))**2) < 1.0
 
 def setup_kgrids(params):
     # gets the wavenumber grid object from parameters, precomputing all the static

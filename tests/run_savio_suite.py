@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Savio test-suite driver (docs/TESTING_PLAN.md Phase 6). Launched INSIDE an sbatch
+# Savio test-suite driver. Launched INSIDE an sbatch
 # allocation by slurms/run_test_suite_{cpu,gpu}.sh -- or locally for a smoke test of
 # the runner itself (RMHD_LAUNCH="" runs the "mpi" phases single-process).
 #

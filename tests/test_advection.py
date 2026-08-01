@@ -1,4 +1,4 @@
-# Alfven-wave z-advection convergence study, asserted (docs/TESTING_PLAN.md Phase 4).
+# Alfven-wave z-advection convergence study, asserted.
 #
 # phi = psi = cos(x)cos(y)cos(z) is a single z+ Alfven wave at vA=1; the exact
 # linear (ideal, unforced) solution is cos(x)cos(y)cos(z+t). Fixed dt=1e-3 for an
@@ -54,7 +54,7 @@ def _advect_errors(nz):
     params, kgrid = ctx(nz=nz, diss=(0.0, 0.0), dt=_DT)
     state = jr.initialize(alfven_ic, params)
     stepper, scheme = get_scheme("lsrk33")
-    end_state, _ = _block_jit(state, kgrid, params, _NSTEPS, scheme, stepper)
+    end_state = _block_jit(state, kgrid, params, _NSTEPS, scheme, stepper)
     t = float(end_state.t)  # t accumulates in floating point (0.09999974... at fp32)
 
     def exact_ic(x, y, z):

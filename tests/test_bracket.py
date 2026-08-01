@@ -1,4 +1,4 @@
-# Poisson-bracket / NonlinearTerm correctness (docs/TESTING_PLAN.md Phase 3).
+# Poisson-bracket / NonlinearTerm correctness.
 # pytest: single-process (stub). Savio driver: `python tests/test_bracket.py`
 # (2D sections keep this single-process only; block_of_steps direct call keeps the
 # ideal-run section to an exact step count regardless of adaptive dt).
@@ -154,7 +154,7 @@ def test_ideal_run_conserves_energy_and_cross_helicity():
     E0 = sum(float(e) for e in diagnostics.energy(state0, kgrid, params))
     H0 = float(shared_physics.perp_inner_product(state0.fields[0], state0.fields[1], kgrid, params))
     stepper, scheme = get_scheme("lsrk33")
-    final_state, _ = block_of_steps(state0, kgrid, params, 20, scheme, stepper)
+    final_state = block_of_steps(state0, kgrid, params, 20, scheme, stepper)
     with checks() as c:
         c.check("run advanced (t>0) and stayed finite",
                 float(final_state.t) > 0.0 and bool(jnp.all(jnp.isfinite(final_state.fields))))

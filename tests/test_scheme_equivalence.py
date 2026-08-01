@@ -1,13 +1,11 @@
-# Timestepping scheme coverage (docs/TESTING_PLAN.md Phase 5).
+# Timestepping scheme coverage.
 #
-#   1. lsrk_scan=True (lax.scan stage loop) vs =False (unrolled). FINDING
-#      (2026-07-30): CLAUDE.md's "bitwise-identical at fp64" does NOT hold under
-#      jax 0.6.2/CPU -- XLA fuses the scan body and the unrolled 3/5-stage graphs
-#      differently and the end states differ at round-off (measured max|diff|
-#      ~2e-15 lsrk33 / ~7e-15 lsrk54 after 20 steps; also machine-dependent: the
-#      identity apparently held where the claim was first measured). CLAUDE.md has
-#      been updated; asserted here at rel < 1e-13 (fp64) per the plan's fallback,
-#      which still catches any structural divergence between the two loops.
+#   1. lsrk_scan=True (lax.scan stage loop) vs =False (unrolled) agree to round-off.
+#      They are NOT bitwise identical at fp64: XLA fuses the scan body and the
+#      unrolled 3/5-stage graphs differently, and how much they diverge is
+#      machine-dependent (max|diff| ~2e-15 lsrk33 / ~7e-15 lsrk54 after 20 steps
+#      under jax 0.6.2/CPU). Asserted at rel < 1e-13 (fp64), which still catches
+#      any structural divergence between the two loops.
 #   2. rk44 / lsrk54 (never exercised anywhere else) integrate the exact Alfven
 #      solution. IC phi = psi = cos(x)cos(y)cos(z) is an exact solution of the FULL
 #      RMHD system (nonlinear terms vanish identically -- see test_dissipation's
@@ -43,7 +41,7 @@ _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
 
 def _run(params, kgrid, ic, nsteps, schemestr):
     stepper, scheme = get_scheme(schemestr)
-    end, _ = _advance(make_state(params, ic=ic), kgrid, params, nsteps, scheme, stepper)
+    end = _advance(make_state(params, ic=ic), kgrid, params, nsteps, scheme, stepper)
     return end
 
 
@@ -115,7 +113,7 @@ def test_get_scheme_registry():
         for name, nstages in (("lsrk33", 3), ("lsrk54", 5)):
             stepper, scheme = get_scheme(name)
             c.check(f"{name} resolves to lsrk_advance with {nstages} stages",
-                    stepper is lsrk_advance and scheme.nstages == nstages)
+                    stepper is lsrk_advance and len(scheme.alphas) == nstages)
         try:
             get_scheme("nope")
             raised = ""

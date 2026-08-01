@@ -10,7 +10,7 @@
 #SBATCH --error=rmhd_tests_cpu_%j.err
 #SBATCH --mem=0
 
-# The full CPU test suite in one submission (docs/TESTING_PLAN.md Phase 6):
+# The full CPU test suite in one submission:
 #     sbatch slurms/run_test_suite_cpu.sh                 # everything
 #     sbatch slurms/run_test_suite_cpu.sh --only halo     # substring filter
 #     sbatch slurms/run_test_suite_cpu.sh --list          # print the job table

@@ -1,4 +1,4 @@
-# params.cfl_every block-CFL coverage (docs/TESTING_PLAN.md Phase 5).
+# params.cfl_every block-CFL coverage.
 #
 # The IC is the UNFORCED tiny-amplitude Alfven wave (amplitude 1e-3): the CFL
 # reduction max_all = max(grad-terms/dx, eps/dx, 1/dz, z_diss) is then pinned by the
@@ -30,7 +30,7 @@ _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
 def _run(nblock, **overrides):
     params, kgrid = ctx(**overrides)
     stepper, scheme = get_scheme("lsrk33")
-    end, _ = _advance(make_state(params, ic=tiny_alfven_ic), kgrid, params,
+    end = _advance(make_state(params, ic=tiny_alfven_ic), kgrid, params,
                       nblock, scheme, stepper)
     return params, end
 

@@ -6,10 +6,44 @@ Findings are ordered by severity within each section.
 Baseline at review time: `ruff check .` clean; `RMHD_PRECISION=64 pytest tests`
 → 87 passed, 5 skipped.
 
-**Status — B1–B9 fixed 2026-07-31.** Suite now 90 passed / 5 skipped (fp64), 80 passed /
-15 skipped (fp32), ruff clean. Sections C (bloat/duplication), D (comment style), E (test
-gaps) and F (repo hygiene) are NOT done and remain open. B5 changed the meaning of
-`forcing_power_elsasser` — see the note under that finding.
+**Status — §2 (B1–B9) and §3 (C1–C6) done 2026-07-31.** Suite 90 passed / 5 skipped
+(fp64), 80 passed / 15 skipped (fp32), ruff clean. Package is 124 lines lighter.
+B5 changed the meaning of `forcing_power_elsasser` — see the note under that finding.
+C6's `_init_args` item was declined (left as is).
+
+**§4 (comment hygiene) done 2026-07-31.** Change-narration removed throughout the package
+and tests; the load-bearing engineering comments were kept deliberately (see the note at
+the end of that section). The halo-start machinery is KEPT — the measurement is a wash
+today, but that depends on the scheme and the GPU, and the rationale comment now says so.
+
+**§5 gaps 1 and 2 closed 2026-07-31** by `tests/test_time_order.py` (fp64, registered in
+`savio_manifest`). Measured fitted orders — ideal: lsrk33 3.005, rk44 4.005, lsrk54 4.004;
+nonlinear + dissipative: 2.983 / 3.968 / 3.995. Both verified against mutated code rather
+than assumed to work (see that file's header).
+
+**§6 (repo hygiene) done 2026-07-31.** `rundir/` and `a5k/` deleted (5.3 MB of Slurm
+job logs and one orphaned orbax test tree). Plan documents moved out of `docs/` into
+`plans/` and `plans/old/` — see `plans/README.md`; every cross-reference in CLAUDE.md,
+the Makefile, the CI workflows and `slurms/` was updated. Notebook outputs are KEPT by
+decision: the plots are dense field maps at modest resolution, `examples/` is the
+documentation, and the repo is only 8.5 MB.
+
+**Two §6 claims in this review were wrong**, corrected here:
+
+- "`rundir`/`a5k` are untracked but not in `.gitignore` — they clutter every `git status`"
+  is false. The existing `*.out`, `*.err` and `data/` patterns already covered essentially
+  everything in them, so they were invisible to git. Deleting them was a disk-tidiness
+  win, not a repo one.
+- "notebooks are committed with outputs" implied the figures were oversized. They are not:
+  40 PNGs, median 40 KB, none wider than 1600 px. The large ones are turbulence and tearing
+  field maps whose per-pixel structure simply does not compress. There is no free win from
+  lowering DPI — the choice is keep the plots or lose them.
+
+§5 gap 3 was resolved by the B1–B4 tests. Nothing from this review is now open.
+
+Noted while refactoring: `shared_physics.perp_mean_square` has no callers anywhere in the
+repo. Kept (it's a documented helper for future equation sets) but it is untested and
+unused.
 
 ---
 

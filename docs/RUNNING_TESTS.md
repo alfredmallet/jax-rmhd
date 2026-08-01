@@ -1,8 +1,7 @@
 # Running the tests
 
 A guide for people working on jax_rmhd. Two minutes to read; covers running the
-existing tests and writing new ones. The longer-term roadmap is in
-docs/TESTING_PLAN.md.
+existing tests and writing new ones.
 
 ## The one command
 
@@ -138,6 +137,33 @@ Rules that will save you a debugging afternoon (details in CLAUDE.md):
 - Tolerances: bitwise (`jnp.array_equal`) for "must be the same code path",
   ~1e-12 relative for "same quantity, different fp path" at fp64, and physics
   bounds (2-3x) only for stochastic injection-rate checks.
+
+## Continuous integration
+
+Two GitHub Actions workflows in `.github/workflows/`. Both **report**; neither gates a
+merge. That is deliberate: tests legitimately lag new physics, and a required check
+creates pressure to edit tests mid-experiment just to unblock a merge.
+
+- `fast.yml` — jobs `lint` + `test`. Runs `make test` (both precision sessions) and ruff,
+  ~3–5 min. The ruff version is read back out of `pyproject.toml` by the workflow, so CI
+  and a local run cannot disagree about it.
+- `mpi2.yml` — installs a real OpenMPI + mpi4py + mpi4jax and runs
+  `tests/run_savio_suite.py --only halo_width --only energy_parseval` under
+  `mpirun -n 2`. Reusing the Savio driver rather than hand-rolling mpirun lines is what
+  buys the real pass rule (exit 0 **and** an "ALL PASS" banner). This is the only
+  multi-rank coverage outside the cluster.
+
+Three things that will bite anyone editing these workflows:
+
+- **`pip install -e .` cannot work on a runner.** mpi4py and mpi4jax are hard
+  dependencies and must stay that way — Savio needs them. `fast` uses
+  `pip install --no-deps -e .` plus an explicit dependency list omitting those two, which
+  is what lets `conftest`'s MPI stub activate.
+- **mpi4jax is sdist-only and links mpi4py's ABI**, so `--no-build-isolation` is correct,
+  but `setuptools>=82 wheel nanobind` has to be hand-installed first or the build fails
+  every time.
+- **`continue-on-error` belongs on the test step, not the job.** At job level a broken
+  toolchain install stays green forever.
 
 ## Troubleshooting
 

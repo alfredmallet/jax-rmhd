@@ -1,7 +1,7 @@
-# 2D/3D parity (docs/TESTING_PLAN.md Phase 5): a z-INVARIANT 3D IC must evolve
-# exactly like the corresponding dims=2 run, plane by plane -- every z-derivative
-# in LinearTerm acts on constants (round-off-level output, see test_z_stencils'
-# constant-field finding) and the perpendicular dynamics are identical code.
+# 2D/3D parity: a z-INVARIANT 3D IC must evolve exactly like the corresponding
+# dims=2 run, plane by plane -- every z-derivative in LinearTerm acts on constants
+# (round-off-level output, see test_z_stencils' constant-field case) and the
+# perpendicular dynamics are identical code.
 #
 # This is a LOUD halo-bug detector: any error in the z halo exchange (wrong
 # neighbor, wrong width, wrong slab offsets) breaks the z-invariance of the fields
@@ -52,8 +52,8 @@ def test_z_invariant_3d_matches_2d():
     p3, kg3 = ctx()          # dims=3 defaults (fixed dt=0.01, z_diss=0.25)
     p2, kg2 = ctx(dims=2)
     stepper, scheme = get_scheme("lsrk33")
-    end3, _ = _advance(make_state(p3, ic=_ic3d), kg3, p3, _NSTEPS, scheme, stepper)
-    end2, _ = _advance(make_state(p2, ic=_ic2d), kg2, p2, _NSTEPS, scheme, stepper)
+    end3 = _advance(make_state(p3, ic=_ic3d), kg3, p3, _NSTEPS, scheme, stepper)
+    end2 = _advance(make_state(p2, ic=_ic2d), kg2, p2, _NSTEPS, scheme, stepper)
     f3 = np.asarray(end3.fields)          # (2, nz_local, nkx, nky)
     f2 = np.asarray(end2.fields)[:, 0]    # (2, nkx, nky)
 

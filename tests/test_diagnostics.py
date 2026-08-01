@@ -1,5 +1,5 @@
-# diagnostics.perpspec / parspec / energy consistency (docs/TESTING_PLAN.md
-# Phase 5). All energy-like reductions in the code share ONE normalization
+# diagnostics.perpspec / parspec / energy consistency. All energy-like
+# reductions in the code share ONE normalization
 # convention (rfft2 ky-doubling, / nz*(nx*ny)^2 -- CLAUDE.md): the integral of
 # each spectrum must therefore equal diagnostics.energy EXACTLY (round-off only).
 # This guards the convention itself: a diagnostic that silently changes

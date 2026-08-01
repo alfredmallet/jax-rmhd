@@ -7,7 +7,6 @@ from typing import NamedTuple,Tuple
 # I think it is always better to use the LSRK schemes
 
 def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None):
-    #print("---COMPILING rk_advance---") #add this back in to check that jit is working properly
     #RK4 substep 1
     k1, grads = rhs(state,kgrid,params)
     # dt_override: dt already computed for a whole cfl_every block by run.py
@@ -39,7 +38,6 @@ class LSRK_Scheme(NamedTuple):
     alphas: Tuple[float,...]
     betas: Tuple[float,...]
     gammas: Tuple[float,...]
-    nstages: int
 
 # LSRK timestepper: includes an integrating factor for the dissipative terms.
 # params.lsrk_scan=True: lax.scan (default); =False or (unrolled, could help on some GPU)
@@ -59,7 +57,7 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
 
     current_state = state
     delta = None
-    for istage in range(scheme.nstages):
+    for istage in range(len(scheme.alphas)):
         alpha, beta, gamma = scheme.alphas[istage], scheme.betas[istage], scheme.gammas[istage]
         # stage 0 reuses init_rhs (also used for dt above); alphas[0]=0 so delta starts at dt*rhs
         stage_rhs = init_rhs if istage == 0 else rhs(current_state,kgrid,params)[0]
@@ -79,7 +77,7 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_expo
     init_delta = jnp.zeros_like(state.fields)
     init_carry = (state,init_delta)
 
-    stage_pars = (alphas_arr, betas_arr, gammas_arr, jnp.arange(scheme.nstages))
+    stage_pars = (alphas_arr, betas_arr, gammas_arr, jnp.arange(len(scheme.alphas)))
 
     def scan_stage_func(carry,stage_vals):
         current_state, delta = carry
@@ -116,7 +114,6 @@ _scheme_registry = {
                    alphas = (0.0, -5.0 / 9.0, -153.0 / 128.0),
                    betas  = (1.0 / 3.0, 15.0 / 16.0, 8.0 / 15.0),
                    gammas = (1.0 / 3.0, 5.0 / 12.0, 1.0 / 4.0),
-                   nstages = 3,
                    )), #This is the original Williamson 1980 RK3 scheme
     "lsrk54": (lsrk_advance,
                LSRK_Scheme(
@@ -125,11 +122,6 @@ _scheme_registry = {
                        -567301805773 / 1357537059087,
                        -2404267990393 / 2016746695238,
                        -3550918686646 / 2091501179385,
-                       # NB corrected 2026-07-30 (caught by tests/test_scheme_equivalence.py):
-                       # this was -3270041069962/2362476162756 (~-1.3841), which breaks even
-                       # the 1st-order condition (stability polynomial z-coefficient 1.0096).
-                       # The published Carpenter & Kennedy (1994) value below satisfies the
-                       # 4th-order conditions exactly (verified in rational arithmetic).
                        -1275806237668 / 842570457699
                        ),
                    betas = (
@@ -140,7 +132,6 @@ _scheme_registry = {
                        2277821191437 / 14882151754819
                        ),
                    gammas = _get_LSRK54_gammas(),
-                   nstages = 5,
                    )) #5-stage, 4th-order scheme from Carpenter & Kennedy 1994
 }
 

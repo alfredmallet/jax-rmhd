@@ -80,9 +80,8 @@ def snapshot_manager_setup(params,snap_path="data",nsnap=1000):
                                  options=ocp.CheckpointManagerOptions(max_to_keep=nsnap))
 
 def _wrap_key(k):
-    # keys are stored as real key arrays in both layouts (orbax unwraps a typed PRNG key to
-    # its uint32 key_data and records the impl, then rewraps on restore), so this is a no-op
-    # for anything current; it only rescues a leaf that came back as raw key_data.
+    # orbax unwraps a typed PRNG key to its uint32 key_data and records the impl, then
+    # rewraps on restore, so this only has to rescue a leaf that came back as raw key_data.
     if jax.dtypes.issubdtype(k.dtype, jax.dtypes.prng_key):
         return k
     return jax.random.wrap_key_data(jnp.asarray(k))

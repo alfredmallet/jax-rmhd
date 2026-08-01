@@ -1,8 +1,7 @@
-# fp32 production-default coverage (docs/TESTING_PLAN.md Phase 5). RMHD_PRECISION
-# defaults to 32 (jax_rmhd/__init__.py) and that default was never tested before
-# this file: every legacy script forced 64. Everything here is @fp32-marked, so it
-# runs in the `RMHD_PRECISION=32 -m fp32` session of `make test` and prints [SKIP]
-# in the fp64 session (script mode included).
+# fp32 coverage: RMHD_PRECISION defaults to 32 (jax_rmhd/__init__.py), so this is the
+# production default. Everything here is @fp32-marked, so it runs in the
+# `RMHD_PRECISION=32` session of `make test` and prints [SKIP] in the fp64 session
+# (script mode included).
 #
 # The default-precision check spawns a SUBPROCESS with RMHD_PRECISION scrubbed
 # from the environment -- the in-process value is pinned by bootstrap() at import

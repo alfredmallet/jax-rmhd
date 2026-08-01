@@ -1,4 +1,4 @@
-# momentum <-> elsasser forcing relationship (docs/TESTING_PLAN.md Phase 5).
+# momentum <-> elsasser forcing relationship.
 #
 #   - elsasser with EQUAL envelopes and psi=0 fields: the two z+/z- normalization
 #     denominators are computed from identical rows, so f_psi = (f_plus-f_minus)/2
@@ -53,8 +53,8 @@ def test_elsasser_equal_envelopes_reduce_to_momentum():
     F_e = np.asarray(rmhd.ForcingTerm(st_e, None, kg_e, p_e))
     F_m = np.asarray(rmhd.ForcingTerm(st_m, None, kg_m, p_m))
 
-    # z+/z- denominators come from perp_inner_product_batch (row-wise sums) while
-    # momentum uses perp_inner_product (one flat sum): equal values, different
+    # z+/z- denominators come from perp_inner_product(batch=True) (row-wise sums) while
+    # momentum uses the flat reduction: equal values, different
     # summation order -- so f_phi agreement is round-off, not bitwise.
     tol = 1e-13 if jax.config.jax_enable_x64 else 1e-5
     rel = float(np.max(np.abs(F_e[0] - F_m[0])) / np.max(np.abs(F_m[0])))

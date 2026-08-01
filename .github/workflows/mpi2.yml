@@ -1,4 +1,4 @@
-# Two-rank MPI tier (docs/TESTING_PLAN.md Phase 7).
+# Two-rank MPI tier.
 #
 # The one thing neither `make test` nor any sandbox can provide: a REAL mpirun.
 # Locally the suite runs against tests/local_mpi_stub.py, so halo exchange and the

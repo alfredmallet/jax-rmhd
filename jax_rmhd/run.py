@@ -102,27 +102,50 @@ def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
     return final_state
 
 def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
+    recipe = equation_registry[params.eqtype]
+    set_timestep = recipe.set_timestep_func
+    rhs = construct_rhs(recipe)
     if _use_cfl_blocks(params):
         # nblock rounded up to a whole multiple of cfl_every: dt frozen per block.
-        set_timestep = equation_registry[params.eqtype].set_timestep_func
-        rhs = construct_rhs(equation_registry[params.eqtype])
         def block(state,_):
             return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper), None
         final_state,_ = jax.lax.scan(block,state,None,-(-nblock//params.cfl_every))
-        return final_state,None
+        return final_state
     def stepping(state,_):
-        set_timestep = equation_registry[params.eqtype].set_timestep_func
-        rhs = construct_rhs(equation_registry[params.eqtype])
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
         # advance the O-U forcing state (and per-step norm scale) once per full timestep
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
         return new_state, None
     final_state,_ = jax.lax.scan(stepping,state,None,nblock)
-    return final_state,None
+    return final_state
 
 #currently an orbax checkpoint mngr must be set outside of the simulate function
 #this makes it a little easier to set up snapshots etc but could be changed
+
+def _write_snapshot(snap,state,params,mngr,save,label="snapshot"):
+    # one snapshot write, drained before returning; returns the next free index
+    if not save:
+        return snap
+    if params.rank==0:
+        print(f"Saving {label} as snapshot {snap} at t = {float(state.t)}")
+    save_snapshot(snap,state,mngr,params)
+    mngr.wait_until_finished()
+    return snap+1
+
+def _start_snapshots(state,params,mngr,save):
+    # next free index, enumerated from disk and broadcast from rank 0, with the initial
+    # state written as the first snapshot
+    snap=max(get_saved_steps(mngr.directory), default=-1)+1
+    if params.size>1:
+        snap = params.comm.bcast(snap, root=0)
+    return _write_snapshot(snap,state,params,mngr,save,"initial state")
+
+def _finish(state,params,t_start):
+    mngr_time = perf_counter()-t_start
+    if params.rank==0:
+        print("Ending simulation at t = "+str(state.t)+". It took "+str(mngr_time)+"s")
+    return state
 
 def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33',save=True,print_every=1):
     # this simulates repeated fixed number of timesteps
@@ -135,22 +158,15 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
     if params.comm_backend == "jax":
         # same stepper, wrapped in the z-mesh shard_map that the collectives need
         advance_jit = jax.jit(comms.shard_call(
-            lambda s,kg: block_of_steps(s,kg,params,nblock,scheme,stepper)[0], params, kgrid),
+            lambda s,kg: block_of_steps(s,kg,params,nblock,scheme,stepper), params, kgrid),
             donate_argnums=(0,))
         advance = lambda s: advance_jit(s,kgrid)
     else:
         block_of_steps_jit = jax.jit(block_of_steps,static_argnums=(2,3,4,5),donate_argnums=(0,))
-        advance = lambda s: block_of_steps_jit(s,kgrid,params,nblock,scheme,stepper)[0]
+        advance = lambda s: block_of_steps_jit(s,kgrid,params,nblock,scheme,stepper)
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    snap=max(get_saved_steps(mngr.directory), default=-1)+1
-    if params.size>1:
-        snap = params.comm.bcast(snap, root=0)
-    if save:
-        if params.rank==0:
-            print("Saving initial state as snapshot "+str(snap))
-        save_snapshot(snap,state,mngr,params)
-        mngr.wait_until_finished()
+    snap = _start_snapshots(state,params,mngr,save)
     block_count=0
     saved_current=True
     while state.t<t_end:
@@ -159,24 +175,14 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
         saved_current=False
         if params.rank==0 and block_count%print_every==0:
             print(state.t) #this doesnt affect performance; state.t already on host from while
-        if state.t - t_last_snapshot > t_snap and save:
-            snap=snap+1
-            if params.rank==0:
-                print("Saving snapshot "+str(snap))
-            save_snapshot(snap,state,mngr,params)
-            mngr.wait_until_finished()
+        if state.t - t_last_snapshot > t_snap:
+            snap = _write_snapshot(snap,state,params,mngr,save)
             t_last_snapshot=float(state.t)
             saved_current=True
-    if save and not saved_current:
-        snap=snap+1
-        if params.rank==0:
-            print("Saving final state as snapshot "+str(snap))
-        save_snapshot(snap,state,mngr,params)
+    if not saved_current:
+        snap = _write_snapshot(snap,state,params,mngr,save,"final state")
     mngr.wait_until_finished()
-    t_sim = perf_counter()-t_start
-    if params.rank==0:
-        print("Ending simulation at t = " + str(state.t)+". It took "+str(t_sim)+"s")
-    return state
+    return _finish(state,params,t_start)
 
 def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',save=True,print_every=1):
     t_start = perf_counter()
@@ -209,27 +215,13 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     state=_refresh_forcing_scale(initial_state, kgrid, params)
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    snap=max(get_saved_steps(mngr.directory), default=-1)+1
-    if params.size>1:
-        snap = params.comm.bcast(snap, root=0)
-    if save:
-        if params.rank==0:
-            print("Saving initial state as snapshot "+str(snap))
-        save_snapshot(snap,state,mngr,params)
-        mngr.wait_until_finished()
+    snap = _start_snapshots(state,params,mngr,save)
+    # every iteration ends on a snapshot and the loop only exits past t_end, so the
+    # returned state is always the last one written
     while state.t<t_end:
-        t_next_snapshot=min(t_last_snapshot+t_snap,t_end)
-        state = sim_to_next_snap_jit(state,t_next_snapshot)
-        snap=snap+1
-        if save:
-            if params.rank==0:
-                print ("Saving snapshot "+str(snap)+ " at t = "+str(state.t))
-            save_snapshot(snap,state,mngr,params)
-            mngr.wait_until_finished()
+        state = sim_to_next_snap_jit(state,min(t_last_snapshot+t_snap,t_end))
+        snap = _write_snapshot(snap,state,params,mngr,save)
         t_last_snapshot=float(state.t)
     mngr.wait_until_finished()
-    t_sim = perf_counter()-t_start
-    if params.rank==0:
-        print("Ending simulation at t = "+str(state.t)+". It took "+str(t_sim)+"s")
-    return state
+    return _finish(state,params,t_start)
 
