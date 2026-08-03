@@ -32,8 +32,9 @@ def init_fields(x,y,z):
     return jnp.stack([phi,psi],axis=0)
 
 
-params=jr.Parameters(nx=nx,ny=ny,nz=nz,Lx=Lx,Ly=Ly,Lz=Lz,diss=(visc,res),
-                     hyper=hyper,cfl_safety=cfl_safety,dims=spatial_dimensions)
+params=jr.Parameters(nx=nx,ny=ny,nz=nz,Lx=Lx,Ly=Ly,Lz=Lz,
+                     eqpars={"diss":(visc,res),"hyper":hyper},
+                     cfl_safety=cfl_safety,dims=spatial_dimensions)
 mngr=jr.snapshot_manager_setup(params,snap_path=snap_path,nsnap=nsnap)
 kgrid = jr.setup_kgrids(params)
 state=jr.initialize(init_fields,params)

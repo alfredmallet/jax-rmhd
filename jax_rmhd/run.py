@@ -20,9 +20,9 @@ def initialize(func,params):
         y = jnp.linspace(0, params.Ly, params.ny, endpoint=False).reshape(1,1,-1)
         if params.spatial_dimensions==3:
             z_device = local_z_coords(params).reshape(-1,1,1)
-            fields = fft(f(x,y,z_device)) * dealias_mask(params)
+            fields = fft(f(x,y,z_device),params) * dealias_mask(params)
         else:
-            fields = fft(f(x,y)) * dealias_mask(params)
+            fields = fft(f(x,y),params) * dealias_mask(params)
         nkx, nky = params.nx, params.ny//2 + 1
         forcing_state = jnp.zeros((params.n_ou, 2, nkx, nky), dtype=fields.dtype)
         forcing_key = jax.random.key(params.forcing_seed)

@@ -455,8 +455,8 @@ import jax.numpy as jnp
 if mc.HAVE_MPI4PY:
     print("REAL_MPI_PRESENT")
 else:
-    p = jr.Parameters(nx=8, ny=8, Lx=1.0, Ly=1.0, dims=2, diss=(0.0, 0.0), hyper=1,
-                      cfl_safety=0.5)
+    p = jr.Parameters(nx=8, ny=8, Lx=1.0, Ly=1.0, dims=2,
+                      eqpars={{"diss": (0.0, 0.0), "hyper": 1}}, cfl_safety=0.5)
     ok = (p.comm_backend == "serial" and p.rank == 0 and p.size == 1
           and p.cart_comm is None and not mc.HAVE_MPI4JAX)
     st = jr.initialize(lambda x, y: jnp.zeros((2,) + x.shape), p)

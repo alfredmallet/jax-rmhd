@@ -36,7 +36,7 @@ t_end_A = 0.4
 t_end_B = 1.0
 
 params = jr.Parameters(nx=nx, ny=ny, Lx=Lx, Ly=Ly, nz=nz, Lz=Lz,
-                       diss=(1e-5, 1e-5), hyper=3, cfl_safety=0.5, dims=3,
+                       eqpars={"diss": (1e-5, 1e-5), "hyper": 3}, cfl_safety=0.5, dims=3,
                        forcing=True, forcing_mode="elsasser",
                        forcing_power_elsasser=(0.3, 0.3), forcing_tau=1.0,
                        fshell=(1, 3), forcing_seed=42, forcing_scale_max=1.0)

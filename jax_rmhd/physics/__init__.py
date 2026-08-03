@@ -1,5 +1,6 @@
 from typing import NamedTuple,Tuple,Callable,Optional
 from . import rmhd
+from . import gdi
 
 class EquationRecipe(NamedTuple):
     set_timestep_func: Callable
@@ -11,6 +12,10 @@ class EquationRecipe(NamedTuple):
     forcing_scale_func: Optional[Callable] = None
     # hook issuing the equation's halo exchange first
     halo_start_func: Optional[Callable] = None
+    # (kgrid, params) -> the k-local LINEAR operator L, with dt f = L f + N(f). Built once
+    # in grids.setup_kgrids; the timesteppers apply exp(L*tau) through jax_rmhd.propagators
+    # instead of summing it into the RHS. None: no linear operator (identity propagator).
+    linear_matrix_func: Optional[Callable] = None
 
 
 # backends where pre-issuing the halo might overlap comms with compute. A wash on every
@@ -48,6 +53,13 @@ equation_registry = {
                            grad_func = rmhd.grad,
                            nfields = 2,
                            forcing_scale_func = rmhd.forcing_scale,
-                           halo_start_func = rmhd.halo_start
+                           halo_start_func = rmhd.halo_start,
+                           linear_matrix_func = rmhd.linear_matrix
                            ),
+    "GDI": EquationRecipe(set_timestep_func = gdi.set_timestep,
+                          term_funcs = (gdi.NonlinearTerm,),
+                          grad_func = gdi.grad,
+                          nfields = 2,
+                          linear_matrix_func = gdi.linear_matrix
+                          ),
 }

@@ -105,15 +105,15 @@ def test_from_snapshot_roundtrips_ctor_args():
                     f"({rec.get('_precision')!r})",
                     rec.get("_precision") == _current_precision())
             c.check("tuple-valued args are stored as JSON lists",
-                    rec["diss"] == [0.01, 0.02] and rec["fshell"] == [1, 3]
+                    rec["eqpars"]["diss"] == [0.01, 0.02] and rec["fshell"] == [1, 3]
                     and rec["forcing_power_elsasser"] == [0.6, 0.2])
             c.check("from_snapshot restores every ctor arg identically "
                     "(lists come back as tuples)",
                     p2._init_args == p._init_args,
                     detail=str({k: (v, p2._init_args.get(k)) for k, v in p._init_args.items()
                                 if p2._init_args.get(k) != v}))
-            c.check("restored tuple args really are tuples",
-                    isinstance(p2.diss, tuple) and isinstance(p2.fshell, tuple)
+            c.check("restored tuple args really are tuples (incl. inside eqpars)",
+                    isinstance(p2.eqpars["diss"], tuple) and isinstance(p2.fshell, tuple)
                     and isinstance(p2.forcing_power_elsasser, tuple))
             c.check("derived attributes are recomputed by the re-run __init__",
                     (p2.nfields, p2.n_ou, p2.spatial_dimensions) == (p.nfields, p.n_ou,
@@ -156,7 +156,7 @@ def test_differing_record_raises():
         before = _stat(d)
         errs = {}
         for label, other in (("nx", fresh_params(**dict(_KW, nx=32))),
-                             ("diss", fresh_params(**dict(_KW, diss=(0.02, 0.02)))),
+                             ("eqpars", fresh_params(**dict(_KW, diss=(0.02, 0.02)))),
                              ("forcing_seed", fresh_params(**dict(_KW, forcing_seed=6)))):
             try:
                 other.save(d)
@@ -257,12 +257,13 @@ def test_overrides_win_over_recorded_values():
     p = fresh_params(**_KW)
     with snap_dir() as d:
         p.save(d)
-        p2 = jr.Parameters.from_snapshot(d, nx=32, hyper=1, diss=(0.5, 0.5),
+        p2 = jr.Parameters.from_snapshot(d, nx=32, eqpars={"diss": (0.5, 0.5), "hyper": 1},
                                          forcing=False, cfl_every=1)
         with checks() as c:
-            c.check("scalar overrides win", p2.nx == 32 and p2.hyper == 1
+            c.check("scalar overrides win", p2.nx == 32 and p2.eqpars["hyper"] == 1
                     and p2.cfl_every == 1)
-            c.check("tuple overrides win (not the recorded list)", p2.diss == (0.5, 0.5))
+            c.check("tuple overrides win (not the recorded list)",
+                    p2.eqpars["diss"] == (0.5, 0.5))
             c.check("boolean overrides win", p2.forcing is False)
             c.check("un-overridden values still come from the record",
                     p2.ny == p.ny and p2.nz == p.nz and p2.forcing_seed == p.forcing_seed
@@ -311,15 +312,14 @@ def test_constructor_rejects_malformed_arguments():
         "dims=4 is not a dimensionality": dict(dims=4),
         "dims=2.5 is not a dimensionality": dict(dims=2.5),
         "Lz<=0 with dims=3": dict(dims=3, Lz=0.0),
-        "diss longer than nfields": dict(dims=2, diss=(1.0, 2.0, 3.0)),
+        "a tuple cfl_safety (the old positional diss slot)": dict(dims=2,
+                                                                  cfl_safety=(0.1, 0.1)),
         "fshell with nmin>=nmax": dict(dims=2, forcing=True, fshell=(5, 1)),
         "forcing_power_elsasser not a pair": dict(dims=2, forcing=True,
                                                   forcing_mode="elsasser",
                                                   forcing_power_elsasser=(1.0, 2.0, 3.0)),
     }
     ok = {
-        "scalar diss (broadcast to every field)": dict(dims=2, diss=0.01),
-        "diss of length nfields": dict(dims=2, diss=(0.01, 0.02)),
         "malformed fshell is ignored while forcing is off": dict(dims=2, forcing=False,
                                                                  fshell=(5, 1)),
     }
@@ -352,6 +352,87 @@ def test_offgrid_forcing_shell_is_rejected_by_setup_kgrids():
             raised = str(e)
         c.check("setup_kgrids rejects a forcing shell containing no modes",
                 raised is not None and "no modes" in raised, f"raised {raised!r}")
+
+
+def test_eqpars_reject_non_dict_and_are_read_by_the_recipe():
+    # eqpars is the equation set's parameter dict: Parameters only type-checks it, the
+    # recipe (rmhd.linear_matrix, via setup_kgrids) validates the contents.
+    with checks() as c:
+        try:
+            jr.Parameters(nx=8, ny=8, Lx=1.0, Ly=1.0, cfl_safety=0.5, dims=2,
+                          eqpars=[("diss", 0.0)])
+            raised = None
+        except ValueError as e:
+            raised = str(e)
+        c.check("a non-dict eqpars is rejected at construction",
+                raised is not None and "eqpars" in raised, f"raised {raised!r}")
+        # NB fresh_params folds its diss/hyper knobs into eqpars, so the "missing" case is
+        # built straight from Parameters.
+        empty = lambda: jr.Parameters(nx=8, ny=8, Lx=1.0, Ly=1.0, cfl_safety=0.5, dims=2)
+        cases = {
+            "diss longer than nfields": (lambda: fresh_params(dims=2, diss=(1.0, 2.0, 3.0)), True),
+            "eqpars missing diss/hyper": (empty, True),
+            "scalar diss (broadcast to every field)": (lambda: fresh_params(dims=2, diss=0.01), False),
+            "diss of length nfields": (lambda: fresh_params(dims=2, diss=(0.01, 0.02)), False),
+        }
+        for name, (build, should_raise) in cases.items():
+            p = build()
+            try:
+                jr.setup_kgrids(p)
+                raised = None
+            except ValueError as e:
+                raised = str(e)
+            c.check(f"setup_kgrids {'rejects' if should_raise else 'accepts'}: {name}",
+                    (raised is not None) == should_raise, f"raised {raised!r}")
+
+
+def test_legacy_toplevel_diss_hyper_folds_into_eqpars():
+    # diss/hyper were Parameters ctor args before 2026-08-01 and are recorded at top level
+    # in every params.json written until then: from_snapshot folds them into eqpars (with a
+    # warning) and re-saving must refresh the file instead of reporting a differing record.
+    if _single_process_only("test_legacy_toplevel_diss_hyper_folds_into_eqpars"):
+        return
+    p = fresh_params(**_KW)
+    with snap_dir() as d:
+        p.save(d)
+        rec = _read_record(d)
+        legacy = {k: v for k, v in rec.items() if k != "eqpars"}
+        legacy["diss"], legacy["hyper"] = rec["eqpars"]["diss"], rec["eqpars"]["hyper"]
+        _write_record(d, legacy)
+        p2, out = _capture(lambda: jr.Parameters.from_snapshot(d))
+        try:
+            p.save(d)      # the same parameters, in the new format
+            err = None
+        except ValueError as e:
+            err = str(e)
+        after = _read_record(d)
+        with checks() as c:
+            c.check("the legacy record loads with diss/hyper in eqpars",
+                    p2.eqpars == p.eqpars, f"{p2.eqpars!r} != {p.eqpars!r}")
+            c.check(f"... and warns about the fold (captured: {out.strip()!r})",
+                    "eqpars" in out and "diss" in out)
+            c.check("... without calling them unknown keys", "unknown" not in out.lower())
+            c.check(f"re-saving the same parameters is not a differing record (got {err!r})",
+                    err is None)
+            c.check("re-saving rewrites the record in eqpars form",
+                    after.get("eqpars") == rec["eqpars"]
+                    and "diss" not in after and "hyper" not in after)
+
+
+def test_eqpars_nested_tuples_roundtrip():
+    # JSON restore must recurse into eqpars VALUES: a nested tuple round-trips as nested
+    # tuples, not a tuple of lists (review finding on _lists_to_tuples, 2026-08-01).
+    if _single_process_only("test_eqpars_nested_tuples_roundtrip"):
+        return
+    p = fresh_params(**dict(_KW, eqpars={"diss": ((0.01,), (0.02,)), "hyper": 2}))
+    with snap_dir() as d:
+        p.save(d)
+        p2 = jr.Parameters.from_snapshot(d)
+        with checks() as c:
+            c.check("nested tuples inside eqpars survive save/from_snapshot",
+                    p2.eqpars == p.eqpars, f"{p2.eqpars!r} != {p.eqpars!r}")
+            c.check("... as tuples all the way down",
+                    isinstance(p2.eqpars["diss"][0], tuple), repr(p2.eqpars))
 
 
 def test_unused_z_options_warn():

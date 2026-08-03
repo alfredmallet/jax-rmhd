@@ -1,0 +1,141 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1.1in]{geometry}
+\newcommand{\kp}{k_\perp}
+\newcommand{\gpar}{\gamma_\parallel}
+\newcommand{\nuin}{\nu_{in}}
+\title{Derivation of the GDI linear matrix $L$ in \texttt{jax\_rmhd}\\
+\large and resolution of the apparent discrepancy with eq.~(5.3) of the notes}
+\author{P4a implementation note}
+\date{2026-08-01}
+\begin{document}
+\maketitle
+
+\noindent All equation numbers refer to \texttt{docs/GDI\_nonlinear\_equations (10).pdf}.
+The code evolves $f=(N,\varphi)$ with the convention
+$\partial_t f = L f + \mathcal{N}(f)$, propagator $e^{L\tau}$ (putzer2 backend).
+Everything below is in the normalized units of \S5.1: $\rho_s=c_s=\Omega_i=1$.
+
+\section{Starting point}
+
+The normalized 2D equations (5.4)--(5.5), with the parallel current-closure term
+represented by a perpendicular-$k$-local $\gpar$:
+\begin{align}
+\frac{\partial N}{\partial t} - \frac{1}{L_n}\frac{\partial\varphi}{\partial y}
+  + \{\varphi, N\} - \gpar\,[\varphi - N] &= 0,
+  \tag{5.4}\\
+\frac{\partial \nabla_\perp^2\varphi}{\partial t} + \{\varphi,\nabla_\perp^2\varphi\}
+  + \nuin\nabla_\perp^2\varphi - \nuin v_0 \frac{\partial N}{\partial y}
+  - \gpar\,[\varphi-N] &= 0.
+  \tag{5.5}
+\end{align}
+For P4a (strictly 2D) the closure floor of eq.~(4.3) is used, scaled by the tunable
+\texttt{eqpars} key \texttt{gpar\_fac}:
+\begin{equation}
+\gpar = \texttt{gpar\_fac}\;\nuin \kp^2 \;(\text{default } 1).
+\label{eq:closure}
+\end{equation}
+(Relation to eq.~(4.7)'s $\alpha$: with $\gpar$ substituted for $D_\parallel k_z^2$ one
+gets $\alpha = 1 + \texttt{gpar\_fac}$, so the default reproduces $\alpha=2$, the
+minimum-$\gpar$ factor quoted at eq.~(4.6). Below, $\alpha$ denotes
+$\texttt{gpar\_fac}$ itself only inside the matrix \eqref{eq:L}, where it abbreviates
+$\gpar/\kp^2\nuin$.)
+Note $\gpar/\kp^2 = \alpha\nuin$ is $k$-independent under this closure --- this constant
+appears repeatedly below.
+
+\section{Fourier form and the vorticity division}
+
+With $\partial_y \to i k_y$ and $\nabla_\perp^2 \to -\kp^2$, the linear part of (5.4) is
+immediate:
+\begin{equation}
+\partial_t N = \underbrace{-\gpar}_{L_{NN}} N
+ + \underbrace{\Big(\gpar + \tfrac{i k_y}{L_n}\Big)}_{L_{N\varphi}} \varphi
+ \;+\; \text{(bracket)}.
+\end{equation}
+Equation (5.5) evolves the vorticity $-\kp^2\varphi$; dividing by $-\kp^2$
+(zero mode masked via \texttt{inv\_ksq}, exactly as the RMHD $\varphi$ equation):
+\begin{equation}
+\partial_t \varphi
+ = \underbrace{\Big(\frac{\gpar}{\kp^2} - \frac{i k_y \nuin v_0}{\kp^2}\Big)}_{L_{\varphi N}} N
+ + \underbrace{\Big(-\nuin - \frac{\gpar}{\kp^2}\Big)}_{L_{\varphi\varphi}} \varphi
+ \;+\; \frac{\{\varphi,\nabla_\perp^2\varphi\}}{-\kp^2}\Big|_{\text{sign as coded}}.
+\end{equation}
+Collecting, and adding the numerical hyperdissipation closure on both diagonal entries
+(required because the linear growth rate does not decay at large $\kp$, cf.\ eq.~3.14):
+\begin{equation}
+\boxed{\;
+L \;=\;
+\begin{pmatrix}
+ -\gpar - D_k & \gpar + \dfrac{i k_y}{L_n}\\[2ex]
+ \alpha\nuin - \dfrac{i k_y \nuin v_0}{\kp^2} & -\nuin - \alpha\nuin - D_k
+\end{pmatrix},
+\qquad D_k \equiv \texttt{diss}\,\kp^{2\cdot\texttt{hyper}},
+\;}
+\label{eq:L}
+\end{equation}
+using $\gpar/\kp^2=\alpha\nuin$ from \eqref{eq:closure}. This is verbatim
+\texttt{\_L\_entries} in \texttt{jax\_rmhd/physics/gdi.py}. (The $ik_y$ factors use
+$k_y$ with the Nyquist row zeroed: an odd-order spectral derivative is ill-defined on the
+self-conjugate row, and unlike the nonlinear terms, $L$ is applied without dealiasing, so
+the row must be fixed explicitly to preserve rfft2 reality. One edge row, no interior
+physics.)
+
+\section{Check against the dispersion relation}
+
+With $f\propto e^{\lambda t}$ and $D_k=0$, the characteristic polynomial of \eqref{eq:L},
+$\lambda^2 - (\operatorname{tr}L)\lambda + \det L = 0$, factors as
+\begin{equation}
+(\lambda + \gpar)\Big[(\lambda + \nuin)\kp^2 + \gpar\Big]
+ = \big(\gpar + i\omega_*\big)\big(\gpar - i\omega_{\rm Ped}\big),
+\qquad
+\omega_* \equiv \frac{k_y}{L_n},\;\;
+\omega_{\rm Ped} \equiv k_y \nuin v_0 .
+\end{equation}
+Substituting $\lambda = -i\omega$ (each bracket picks up a factor $-i$; the right side
+rearranges with $i\cdot(-i)=1$) gives exactly eq.~(3.7) of the notes:
+\begin{equation}
+(\omega + i\gpar)\Big[(\omega + i\nuin)\kp^2 + i\gpar\Big]
+ = -\big(\omega_{\rm Ped} + i\gpar\big)\big(\omega_* - i\gpar\big).
+\tag{3.7}
+\end{equation}
+At $\gpar=0$ this collapses to $\omega(\omega+i\nuin) = -\omega_*\omega_{\rm Ped}/\kp^2
+= -A$ with $A = k_y^2\nuin v_0/(\kp^2 L_n)$, i.e.\ eq.~(2.8); the code's tests further
+verify the collisional limit (2.9), the inertial limit (2.11), and, at finite $\gpar$,
+the roots of (3.7) directly (numpy \texttt{roots} vs.\ eigenvalues of \eqref{eq:L},
+rtol $10^{-10}$), plus a propagator-level check that putzer2-evolved fields grow at
+$\max\operatorname{Re}(m\pm s)$.
+
+\section{The ``corrected term'' that wasn't}
+
+The P4a implementation report claimed the derived $L_{\varphi N}$ contains an
+$\alpha\nuin$ term \emph{absent} from the notes' transcribed matrix (5.3). That claim is
+wrong, and the note-writer (not the paper) needed correcting: on visual inspection of
+p.~7, eq.~(5.3) reads, in the $\partial_t f + M f = 0$ convention,
+\begin{equation}
+M = \begin{pmatrix}
+\gpar & -i k_y \rho_s c_s/L_n - \gpar\\[0.5ex]
+i k_y \nuin v_0 / \kp^2\rho_s c_s \;\underline{-\;\gpar/\kp^2\rho_s^2} &
+\nuin + \gpar/\kp^2\rho_s^2
+\end{pmatrix},
+\tag{5.3}
+\end{equation}
+whose $(\varphi,N)$ entry \emph{does} include $-\gpar/\kp^2\rho_s^2$. Hence
+$L = -M$ agrees with \eqref{eq:L} in \emph{every} entry (before the added
+hyperdissipation): the derivation from (5.4)--(5.5), the transcription (5.3), and the
+implemented matrix are all mutually consistent. The implementation's validation never
+relied on (5.3) --- the dispersion-relation tests above are the arbiter --- but no
+discrepancy with the notes exists.
+
+\section{Sanity limits}
+
+$\gpar\to\infty$ (adiabatic): the $N$-equation row forces $N\to\varphi$
+(eq.~3.8 with $\gpar$ dominant), and the growth shuts off --- consistent with the
+stabilization role of current closure. $\nuin$ enters $L_{\varphi\varphi}$ as bare
+vorticity friction with relaxation rate exactly $\nuin$ (the ``mild'' stiffness claim in
+the plan's design background). Growing solutions at $A>0$: $s^2 = m^2 - \det L$ is
+complex in general; all propagator arithmetic is complex, and the growth rate extracted
+from evolved fields matches $\operatorname{Re}(m+s)$ to $10^{-6}$ (fp64).
+
+\end{document}

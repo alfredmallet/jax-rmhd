@@ -60,7 +60,7 @@ t_end = float(os.environ.get("RMHD_TEND", 1.0))  # long enough that forcing has 
 # NB Parameters() brings up jax.distributed for the "jax" backend, so nothing above may
 # touch jax devices — the device print below deliberately comes after this line.
 params = jr.Parameters(nx=nx, ny=ny, Lx=2*np.pi, Ly=2*np.pi, nz=nz, Lz=2*np.pi,
-                       diss=(1e-4, 1e-4), hyper=2, cfl_safety=0.5, dims=3,
+                       eqpars={"diss": (1e-4, 1e-4), "hyper": 2}, cfl_safety=0.5, dims=3,
                        comm_backend=backend, forcing=True, forcing_mode="elsasser",
                        forcing_power_elsasser=(0.5, 0.5), forcing_tau=1.0,
                        fshell=(1, 3), forcing_seed=7)

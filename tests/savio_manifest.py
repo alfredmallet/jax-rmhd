@@ -36,6 +36,16 @@ JOBS = [
          phases=[dict(launch="serial", n=1)], precisions=_S),
     dict(name="params", tier="cpu", script="tests/test_params.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
+    # propagator algebra only (no MPI content); both sessions because the Taylor
+    # branch cutoff and the tolerances are precision-dependent
+    dict(name="linear_propagator", tier="cpu", script="tests/test_linear_propagator.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
+    # 2D GDI physics (dims=2, single-process by construction)
+    dict(name="gdi_linear", tier="cpu", script="tests/test_gdi_linear.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
+    # spectral-z mode: size==1 by construction (the z-FFT needs the whole z domain)
+    dict(name="z_spectral", tier="cpu", script="tests/test_z_spectral.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
     dict(name="forcing_smoke", tier="cpu", script="tests/test_forcing_smoke.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
     dict(name="forcing_norm_per_step", tier="cpu", script="tests/test_forcing_norm_per_step.py",

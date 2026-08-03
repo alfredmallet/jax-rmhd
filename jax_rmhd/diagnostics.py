@@ -24,7 +24,9 @@ def parspec(state,kgrid,params,bin_factor=2.0):
     # the z-FFT is unnormalized, so nz^2 rides on top of the shared perpendicular norm
     norm = 1.0 / float(params.nx*params.ny*params.nz)**2
     def spec(fk):
-        fkz = ft.fft(fk,axis=0)
+        # z_spectral: axis 0 already IS kz, so the transform is a no-op there and this
+        # becomes a plain sum over the perpendicular plane at each kz
+        fkz = fk if params.z_spectral else ft.fft(fk,axis=0)
         full = jnp.sum(0.5*perp_gradsq(fkz,fkz,kgrid),axis=(1,2)) * norm
         return full[:half+1].at[1:half].add(full[half+1:][::-1])
     kz = ft.rfftfreq(params.nz) * params.nz * 2 * jnp.pi / params.Lz

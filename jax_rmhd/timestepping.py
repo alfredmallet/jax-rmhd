@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple,Tuple
+from .propagators import get_propagator
 
 # Standard RK4 with integrating factor.
 # Problem is it uses a lot of memory on k1-k4.
@@ -16,21 +17,23 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None)
         dt = set_timestep(grads,params)
     else:
         dt = params.dt
-    #dissipation factors 
-    diss_full = jnp.exp(kgrid.hdiss*dt)
-    diss_half = jnp.exp(kgrid.hdiss*dt/2)
-    f1 = diss_half * (state.fields + 0.5 * dt * k1)
+    # exact linear propagator (dissipation for RMHD); exp(L*tau) composes over sub-stages
+    # since the same fixed L commutes with itself
+    prop = get_propagator(kgrid,params)
+    f1 = prop.apply_exp(state.fields + 0.5 * dt * k1, dt/2)
     #RK4 substep 2
     # NB: forcing_state/forcing_key are threaded through unchanged at every sub-stage via
     # _replace (they're only updated once per full step, in run.block_of_steps).
     k2,_ = rhs(state._replace(t=state.t+dt/2.0,fields=f1),kgrid,params)
-    f2 = diss_half * state.fields + 0.5*dt*k2
+    f2 = prop.apply_exp(state.fields,dt/2) + 0.5*dt*k2
     #RK4 substep 3
     k3,_ = rhs(state._replace(t=state.t+dt/2.0,fields=f2),kgrid,params)
-    f3 = diss_full * state.fields + dt * diss_half * k3
+    # coef=dt: the dt multiplies the propagator FACTOR (pre-P1 `dt*diss_half*k3` order)
+    f3 = prop.apply_exp(state.fields,dt) + prop.apply_exp(k3,dt/2,dt)
     #RK4 final step
     k4,_ = rhs(state._replace(t=state.t+dt,fields=f3),kgrid,params)
-    f_end = diss_full * state.fields + (dt/6.0) * (diss_full * k1 + 2.0*diss_half*k2+2.0*diss_half*k3+k4)
+    f_end = prop.apply_exp(state.fields,dt) + (dt/6.0) * (prop.apply_exp(k1,dt)
+            + 2.0*prop.apply_exp(k2,dt/2) + 2.0*prop.apply_exp(k3,dt/2) + k4)
     return state._replace(t=state.t + dt, fields=f_end)
 
 # object defining low-storage Runge-Kutta (lsrk) schemes
@@ -50,10 +53,12 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
     else:
         dt = params.dt
 
-    diss_exponents = kgrid.hdiss * dt
+    # pre-scale the linear operator by dt once per step, so a stage's exponent is
+    # (L*dt)*gamma -- the op order the pre-P1 `exp(kgrid.hdiss*dt*gamma)` used
+    prop = get_propagator(kgrid,params).scaled(dt)
 
     if params.lsrk_scan:
-        return _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_exponents)
+        return _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop)
 
     current_state = state
     delta = None
@@ -61,15 +66,14 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
         alpha, beta, gamma = scheme.alphas[istage], scheme.betas[istage], scheme.gammas[istage]
         # stage 0 reuses init_rhs (also used for dt above); alphas[0]=0 so delta starts at dt*rhs
         stage_rhs = init_rhs if istage == 0 else rhs(current_state,kgrid,params)[0]
-        diss_factors = jnp.exp(diss_exponents*gamma)
-        delta = diss_factors * (dt*stage_rhs if istage == 0 else alpha*delta + dt*stage_rhs)
+        delta = prop.apply_exp(dt*stage_rhs if istage == 0 else alpha*delta + dt*stage_rhs, gamma)
         # forcing fields threaded through unchanged via _replace (see rk_advance comment above).
         current_state = current_state._replace(t=current_state.t + gamma*dt,
-                                               fields=diss_factors*current_state.fields + beta*delta)
+                                               fields=prop.apply_exp(current_state.fields,gamma) + beta*delta)
     return current_state
 
 # used if params.lsrk_scan=True
-def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_exponents):
+def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop):
     alphas_arr = jnp.array(scheme.alphas)
     betas_arr = jnp.array(scheme.betas)
     gammas_arr = jnp.array(scheme.gammas)
@@ -86,10 +90,8 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, diss_expo
         stage_rhs = jax.lax.cond(istage == 0,lambda: init_rhs,
                                  lambda: rhs(current_state,kgrid,params)[0])
 
-        diss_factors = jnp.exp(diss_exponents*gamma)
-
-        next_delta = diss_factors * (alpha * delta + dt * stage_rhs)
-        next_fields = diss_factors * current_state.fields + beta*next_delta
+        next_delta = prop.apply_exp(alpha * delta + dt * stage_rhs, gamma)
+        next_fields = prop.apply_exp(current_state.fields, gamma) + beta*next_delta
         next_t = current_state.t + gamma*dt
         # forcing_state/forcing_key threaded through unchanged
         return (current_state._replace(t=next_t,fields=next_fields),next_delta), None

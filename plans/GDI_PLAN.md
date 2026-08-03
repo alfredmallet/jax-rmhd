@@ -121,7 +121,9 @@ the JSON list→tuple restore must recurse into eqpars values. `Parameters` hash
 identity, so a dict attribute is safe.
 
 Acceptance: (a) local battery; (b) **fp64 bitwise A/B vs pre-P1 code** for 2D and 3D
-forced RMHD (diagonal backend is a pure refactor); (c) new
+forced RMHD (diagonal backend is a pure refactor). Same `comm_backend` on both sides —
+the no-MPI sandbox auto-resolves to `"serial"` (added 2026-07-31), which is fine but is
+NOT bitwise vs size-1 mpi4jax, so never mix backends across the A/B; (c) new
 `tests/test_linear_propagator.py`: putzer2 vs `scipy.linalg.expm` over random 2×2
 batches (complex, defective, growing, oscillatory cases; both precisions), plus a
 rotation test — conjugate a diagonal system by a constant 2×2 rotation, evolve with
@@ -253,8 +255,87 @@ P3's tests are best run with P2 available — if parallelized, land P2 first.
 
 ## Status
 
-- P1 (propagator machinery + eqpars): not started
-- P4a (2D GDI): not started
-- P2 (z_spectral): not started
+- P1 (propagator machinery + eqpars): code complete 2026-08-01 (fp64 A/B bitwise for 2D
+  and 3D forced RMHD, all schemes)
+- P4a (2D GDI): code complete 2026-08-01 (physics/gdi.py + "GDI" registry entry; L
+  cross-checked against eqs 2.8/2.9/2.11/3.7 in tests/test_gdi_linear.py, measured
+  propagator-evolved growth rate vs. dispersion relation agree to 2.6% in a live nonlinear
+  run in examples/gdi-2D.ipynb; energy-budget closure ~4e-8 relative at fp64; full battery
+  green both precisions, 0 regressions)
+- Review round 1 (P1+P4a): DONE 2026-08-01, verdict merge-with-notes (0 CRITICAL,
+  2 MAJOR, 9 MINOR; reviewer independently reproduced the bitwise A/B, the L derivation
+  — adjudicating that (5.3) agrees entry-by-entry, see docs/gdi_linear_matrix_note.tex —
+  and the energy budget term-by-term). All findings fixed same day EXCEPT
+  examples/gdi-2D.ipynb (MAJOR 2: loads a gitignored snapshot no cell generates; the
+  k⊥⁻³ saturation-spectrum acceptance item also still open — the notebook's diss settings
+  diverge rather than saturate on longer runs). Deferred to a user pass.
+  RESOLVED 2026-08-01: MAJOR 2 fixed — examples/gdi_2d_run.py now holds the run
+  configuration and a resumable/idempotent `make_data` (params.save + snapshot_io, checked
+  for existing/partial data, wall-clock-bounded per call); the notebook's data cell calls it
+  in a loop and needs no bundled input on a fresh clone; the stale 64² snapshot dir was
+  deleted. The saturation-spectrum acceptance item is also delivered: retuned to a denser
+  k-lattice (256², Lx=Ly=8π, same Ln/v0/nu_in/gpar_fac family, diss=2e-5/hyper=2) giving 88
+  unstable dealiased lattice modes (vs. 1 before) and confirmed statistical saturation
+  (fluctuating energy, no secular trend, ~9% drive/dissipation budget residual over the
+  averaging window) by t~36-52; measured saturated spectral slopes ≈ -3.3 (|∇⊥φ|², close to
+  the anticipated k⊥⁻³-ish range) and ≈ -6 (|N|², steeper). The false claim that
+  tests/test_gdi_linear.py covers GDI checkpoint-restore was also removed from the
+  notebook (it does not; restart-workflow.ipynb's pattern is what the new data cell uses).
+  RETUNED 2026-08-02 (weak-drive): the strong-drive family above saturated at
+  delta n/n0 >> 1 (N_rms~10-17, max|N|~21-37), well outside the model's perturbative
+  ordering, and kept drifting rather than settling. examples/gdi_2d_run.py's eqpars are now
+  Ln=84, v0=25, nu_in=0.05, gpar_fac=1, diss=5e-6, hyper=2 (same 256², Lx=Ly=8π box; mixing-
+  length estimate max delta n/n ~ L_box/Ln targeting ~0.3), giving kc~2.44, gamma_max~0.134,
+  376 unstable dealiased lattice modes. Measured saturation (t_avg>=130 of a t_end=170 run):
+  N_rms~0.52, max|N|~1.3-1.8 (delta n/n restored to O(1) but still ~2-6x the 0.3 mixing-
+  length target — reported honestly in the notebook, not re-tuned further since the target
+  was a rough estimate and the linear-band criteria were the ones specified for iteration);
+  energy-budget residual ~1% (vs ~9% before); spectral slopes ≈ -3.3 (|∇⊥φ|²) and ≈ -4.8
+  (|N|²). The notebook also gained a permanent per-mode eigenvector-vs-time check (theory
+  ratio from gdi._L_entries vs measured, both amplitude and phase, across 4 representative
+  modes) and an adiabaticity diagnostic (time-averaged |N|²/|φ|² and |N-φ|²/|φ|² vs k,
+  locating the γ∥-relaxation crossover empirically) plus an animated GIF of N/∇²φ.
+  RETUNED AGAIN 2026-08-02 (γmax-calibration, final): the weak-drive family above undershot
+  its own mixing-length-in-Ln target (max|N|~1.3-1.8 vs ~0.3). Direct empirical calibration
+  (three probes at fixed kc=sqrt(v0/(nu_in·Ln)): γmax=0.134→max|N|~1.6 still drifting at
+  t=170; γmax=0.060→max|N|~0.83 still creeping at t~240; γmax=0.017→max|N|~0.18, N_rms~0.06,
+  steady t=350-600) found the saturation amplitude is set by γmax=sqrt(nu_in·v0/Ln) at fixed
+  kc, not by Ln alone — the Ln-gradient drive term is negligible in this Pedersen-dominated
+  family (drive_Ln/drive_pedersen ~1%), so the mixing-length-in-Ln picture doesn't apply. A
+  local power-law interpolation (exponent ~1.2) through the three probes gives
+  examples/gdi_2d_run.py's current eqpars: Ln=392, v0=25, nu_in=0.0106, gpar_fac=1,
+  diss=5e-6, hyper=2 (same 256², Lx=Ly=8π box), giving kc~2.45 (unchanged), gamma_max
+  ~0.0285 (lattice-measured), 344 unstable dealiased lattice modes, dt ceiling ~0.10.
+  t_end raised to 550 (e-folding ~35 t.u. vs ~7.5 before) and snap_every to 5. Measured
+  saturation (t_avg>=350 of the t_end=550 run, 32 snapshots): max|N|~0.35-0.52 (mean
+  ~0.41), N_rms~0.11-0.13 — inside the 0.3-mixing-length target's [0.2,0.45] acceptance
+  band on the first attempt, no retune needed. E(t) itself oscillates by ~20-25% around a
+  flat mean (verified flat across t_avg_min=300-500, not a secular drift — a genuine
+  physical difference from the earlier families: the phi/vorticity-dominated energy swings
+  more than the density field the amplitude target is defined on); energy-budget residual
+  ~0.6%; spectral slopes ≈ -3.5 (|∇⊥φ|²) and ≈ -4.9 (|N|²); adiabaticity crossover
+  k~6.75 (peak |N|²/|φ|²~4.75), |N-φ|²/|φ|² down to ~0.07 (a few percent) by the dealias
+  cutoff — closer to fully adiabatic there than either earlier family. The eigenvector-
+  vs-time check still confirms the linear solve (all 4 modes track theory to ~30%/15° through
+  t~70) but is visibly noisier than the fast weak-drive family's few-percent match, because
+  make_data's snapshot spacing is set by whole nblock-step blocks (~17-20 t.u. early on,
+  comparable to the ~10 t.u. mode-eigenvector relaxation time) and because 344
+  comparably-slow-growing modes cross-couple nonlinearly before any one dominates —
+  reported honestly in the notebook rather than glossed over.
+- P2 (z_spectral): code complete 2026-08-02. `params.z_spectral` (dims==3 + size==1, "jax"
+  rejected, recorded/compared in params.json); `grids.fft` now takes `params` and both
+  transforms dispatch rfft2 <-> rfftn over (z,x,y); `kgrid.kz` + 3D dealias mask; RMHD's
+  `linear_matrix` gains the `+-i*kz` off-diagonals (putzer2 with a real kz extent — the P1
+  z-extent path exercised for the first time) plus an optional `eqpars['z_diss_k']`
+  (`-z_diss_k*kz^4`, default off); `LinearTerm`/`halo_start`/the 1/dz+z_diss CFL terms are
+  skipped; normalization sweep done in one go (`perp_reduce` /nz -> /nz^2, `parspec` a plain
+  kz sum, `reconstruct_envelope` an exact `(A -+ iB)*nz/2` scatter onto the kz=+-2pi/Lz planes).
+  Verified: fp64 bitwise A/B for z_spectral=False (2D and 3D forced RMHD, lsrk54/lsrk33/rk44,
+  scan and unrolled — ALL BITWISE IDENTICAL); measured Alfven dispersion |omega-kz| <= 2.2e-15
+  and damping error <= 1.6e-14 with and without dissipation; FD-z -> spectral convergence order
+  3.88 (nz=16/32/64, same-nz pairs); forcing power / normalization scale / injection rate /
+  energy match the real-z computation to ~1e-16 relative (Parseval); `examples/orzag-tang-3d-
+  spectral-z.ipynb` written and executed. Full battery green at both precisions (131/116
+  passed, 0 failed).
 - P3 (CB-IMEX): not started
 - P4b (3D GDI): not started

@@ -10,7 +10,7 @@
 #      reference and the only remaining error is the time integration. Nominal orders:
 #      3 (lsrk33), 4 (rk44, lsrk54).
 #   2. Nonlinear + dissipative. The integrating factor advances the fields by
-#      exp(hdiss*dt*gamma) per stage; on a purely linear problem that is exact and
+#      exp(L*dt*gamma) per stage (L = kgrid.lin_L); on a purely linear problem that is exact and
 #      therefore says nothing, so the order is only meaningful with the nonlinear terms
 #      active. The reference is the same problem integrated with lsrk54 at
 #      _NL_T/_NL_REF_STEPS, i.e. 16x finer than the finest sweep point, so the
@@ -22,7 +22,7 @@
 # Both tests were checked against deliberately mutated code. Restoring the historical
 # broken lsrk54 A5 takes test 1's fitted order 4.004 -> 0.003. Dropping the integrating
 # factor from the low-storage accumulator (`next_delta`) is INVISIBLE to test 1 (4.004,
-# unchanged -- the factor is 1 when hdiss=0) and takes test 2's to 1.029: test 2 covers
+# unchanged -- the factor is 1 when L=0) and takes test 2's to 1.029: test 2 covers
 # something test 1 structurally cannot.
 #
 # Savio driver: `mpirun -n 4 python tests/test_time_order.py` (nz=8 divisible by 4;
@@ -59,7 +59,7 @@ _NSTEPS = (10, 20, 40, 80)  # dt = _T_END/nsteps: 0.1 -> 0.0125
 _NL_T = 0.4
 _NL_STEPS = (10, 20, 40, 80)  # dt = _NL_T/nsteps: 0.04 -> 0.005
 _NL_REF_STEPS = 80 * 16
-# diss=0.2 drains ~39% of the energy over _NL_T while |hdiss|*dt stays <= 0.2 at the
+# diss=0.2 drains ~39% of the energy over _NL_T while |L|*dt stays <= 0.2 at the
 # coarsest point, so the integrating factor matters without the problem going stiff.
 _NL_KW = dict(diss=(0.2, 0.2), hyper=1)
 

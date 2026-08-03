@@ -8,8 +8,8 @@ docs/performance.md (measurements and tuning) and docs/checkpointing.md.
 
 A pseudospectral solver for reduced MHD (RMHD) and related plasma fluid models, in JAX.
 Spectral (rfft2) in the perpendicular (x,y) plane, 4th-order finite-difference in z,
-MPI-decomposed along z only. Only RMHD is implemented; the architecture supports adding
-other equation sets without touching the core solver.
+MPI-decomposed along z only. Implemented equation sets: RMHD and 2D GDI; the
+architecture supports adding others without touching the core solver.
 
 ## Setup / running
 
@@ -52,6 +52,20 @@ divide by sqrt(2), not 2 (`shared_physics._symmetrize_real_line`; derivation in
 docs/numerics.md). `grids.fft/ifft` are unnormalized: an O(1) real field has
 O(nx*ny) coefficients — matters for resolution-independent synthetic k-space amplitudes.
 
+**`params.z_spectral`** (default False; `dims==3` + `size==1` only, `comm_backend="jax"`
+rejected) flips `grids.fft/ifft` (BOTH take `params`) from rfft2 to rfftn/irfftn over
+`(z,x,y)`: shapes are unchanged, axis 1 means **kz**. Then reality reads
+`F(-kx,-kz,ky)=conj(F(kx,kz,ky))` on the ky=0/Nyquist rows (both mirrors — anything writing
+k-space directly must preserve it, and `i*kz` needs the kz-Nyquist plane zeroed exactly like
+gdi's `ky_deriv`); `dealias` gains a 2/3 kz cut; `perp_reduce` divides by nz^2, not nz
+(Parseval), which is what keeps `energy`/`perpspec`/forcing power identical to the real-z
+computation; the parallel operator lives in `rmhd.linear_matrix` as `+-i*kz` off-diagonals
+(`LinearTerm`/`halo_start` skipped, `set_timestep` drops 1/dz and z_diss); optional
+`eqpars['z_diss_k']` (`-z_diss_k*kz^4`). Fields have the SAME shape in both modes and
+different meaning — `z_spectral` is recorded in params.json and `params.save`'s
+differing-record check is the ONLY thing stopping a cross-mode restart. Derivations:
+docs/numerics.md; tests: `tests/test_z_spectral.py`.
+
 ### Parameters / physics registry
 
 `params.save(snap_path)` records constructor args + precision to `params.json`; identical
@@ -65,13 +79,24 @@ so every attribute is a compile-time constant — plain `if params.foo:` is corr
 preferred over `lax.cond`. Never pass it as a traced jit arg or inside a scanned tree.
 z attributes (`dz`, `Lz`, `z_diss`, `cart_comm`, neighbors) exist only when `dims==3` —
 guard access. `z_diff_order`/`z_diss_hyper` are accepted and stored but not read back by
-`rmhd.LinearTerm`; `Parameters` warns when either is set away from its default.
+`rmhd.LinearTerm`; `Parameters` warns when either is set away from its default (so is
+`z_diss` under `z_spectral`, where every finite-difference-z knob is dead).
+
+Per-equation physics parameters live in `params.eqpars` (a plain-JSON dict, recorded in
+params.json, `{}` by default): RMHD reads `diss`/`hyper` (and the z_spectral-only `z_diss_k`) from it — they were ctor args
+until 2026-08-01, and old records are folded into `eqpars` with a warning by
+`from_snapshot`/`save`. `Parameters` hashes by identity, so a dict attribute is safe.
 
 Equation sets register in `physics/__init__.py::equation_registry`:
 `EquationRecipe(set_timestep_func, term_funcs, grad_func, nfields,
-forcing_scale_func=None, halo_start_func=None)` per `eqtype`. `term_funcs` are summed
-into the RHS (`construct_rhs`); dissipation is applied separately as an integrating
-factor (`kgrid.hdiss` in `timestepping.py`), not as an RHS term. **Term funcs take 5
+forcing_scale_func=None, halo_start_func=None, linear_matrix_func=None)` per `eqtype`.
+`term_funcs` are summed into the RHS (`construct_rhs`); the k-local LINEAR part is not an
+RHS term — `linear_matrix_func(kgrid, params) -> L` (convention `dt f = L f + N(f)`) is
+built once by `setup_kgrids` into `kgrid.lin_L`/`lin_m`/`lin_s2`, and the steppers apply
+it only through the `jax_rmhd.propagators` hook (`apply_exp`, `solve_shifted`, `scaled`;
+backend chosen by L's shape — diagonal 4-d, putzer2 2x2 5-d). Never reintroduce
+`kgrid.hdiss` or read `lin_*` from a stepper directly; the op order inside `apply_exp` is
+the RMHD bitwise-equivalence gate (docs/numerics.md). **Term funcs take 5
 positional args** `(state, grads, kgrid, params, halo)` — declare `halo=None` and ignore
 if unused. `halo_start_func` pre-issues the z-halo exchange at the top of the RHS;
 enabled per backend (`_halo_start_enabled`: off for mpi4jax, on for `"jax"` and `"serial"`

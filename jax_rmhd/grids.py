@@ -3,8 +3,10 @@ import jax.numpy.fft as ft
 from jax.sharding import PartitionSpec as P
 from typing import NamedTuple, Optional
 from . import comms
+from . import propagators
 
-# nb the code is only spectral in the perpendicular plane, so fourier stuff is all 2D
+# nb the code is spectral in the perpendicular plane by default, so fourier stuff is 2D;
+# params.z_spectral (single process, dims==3) makes z spectral too -- see fft/ifft below.
 
 class K_Grids(NamedTuple):
     # pytree container for the wavenumber grids and every derived concrete array.
@@ -15,9 +17,17 @@ class K_Grids(NamedTuple):
     ky: jnp.ndarray
     ksq: jnp.ndarray          # kx^2 + ky^2
     inv_ksq: jnp.ndarray      # 1/ksq, 0 at the zero mode
-    dealias: jnp.ndarray      # 2/3-rule elliptical mask
-    hdiss: jnp.ndarray        # per-field hyperdissipation exponents (-diss * ksq**hyper)
+    dealias: jnp.ndarray      # 2/3-rule elliptical mask ((nz,nkx,nky) when z_spectral)
     yfac: jnp.ndarray         # rfft2 y-doubling factor (1 at ky=0 and Nyquist, else 2)
+    # parallel wavenumbers, shape (nz,1,1) so it broadcasts onto a (nz,nkx,nky) field.
+    # Only built when params.z_spectral (axis 1 of the fields is then kz, not z); None otherwise.
+    kz: Optional[jnp.ndarray] = None
+    # linear-propagator entries (jax_rmhd.propagators): the equation set's k-local linear
+    # operator L (dt f = L f + N(f)) and, for the putzer2 backend, its precomputed
+    # half-trace and discriminant. None when the recipe declares no linear_matrix_func.
+    lin_L: Optional[jnp.ndarray] = None    # (nfields, nz-or-1, nkx, nky) or (2, 2, nz-or-1, nkx, nky)
+    lin_m: Optional[jnp.ndarray] = None    # putzer2 only: tr L / 2
+    lin_s2: Optional[jnp.ndarray] = None   # putzer2 only: (tr L/2)^2 - det L
     # forcing-only entries: None when params.forcing is off
     fmask: Optional[jnp.ndarray] = None
     z_envcos: Optional[jnp.ndarray] = None
@@ -28,16 +38,23 @@ class K_Grids(NamedTuple):
     fidx_y: Optional[jnp.ndarray] = None
 
 def dealias_mask(params):
-    # 2/3-rule elliptical dealiasing mask, in mode-index space (Lx/Ly cancel out)
+    # 2/3-rule elliptical dealiasing mask, in mode-index space (Lx/Ly cancel out).
+    # z_spectral: the brackets are pointwise in z, so products alias in kz too — the perp
+    # ellipse then gets a plain 2/3 kz cut multiplied onto it, giving an (nz,nkx,nky) mask
+    # (a subset of the full 3D box rule, hence still a valid dealiasing).
     ix = ft.fftfreq(params.nx) * params.nx
     iy = ft.rfftfreq(params.ny) * params.ny
-    return ((ix.reshape(-1,1)/(params.nx/3.0))**2 +
+    perp = ((ix.reshape(-1,1)/(params.nx/3.0))**2 +
             (iy.reshape(1,-1)/(params.ny/3.0))**2) < 1.0
+    if not params.z_spectral:
+        return perp
+    iz = ft.fftfreq(params.nz) * params.nz
+    return (jnp.abs(iz).reshape(-1,1,1) < params.nz/3.0) & perp[None,:,:]
 
 def setup_kgrids(params):
     # gets the wavenumber grid object from parameters, precomputing all the static
-    # concrete arrays (ksq, inv_ksq, dealias, hdiss, y-doubling factor, forcing shell
-    # mask/z-envelopes)
+    # concrete arrays (ksq, inv_ksq, dealias, the equation set's linear operator,
+    # y-doubling factor, forcing shell mask/z-envelopes)
     # the scaling here respects jax.numpy's fourier transform conventions
     # so that e.g. we can calculate derivatives correctly.
     kx = ft.fftfreq(params.nx) * params.nx * 2 * jnp.pi / params.Lx
@@ -48,11 +65,14 @@ def setup_kgrids(params):
     ksq = kx_grid**2 + ky_grid**2
     inv_ksq = jnp.where(ksq > 0, 1.0/ksq, 0.0)
     dealias = dealias_mask(params)
-    diss = jnp.array(params.diss).reshape(-1,1,1,1)
-    hdiss = -diss*ksq**params.hyper
 
     nky = ky_grid.shape[-1]
     yfac = jnp.full((nky,), 2.0).at[0].set(1.0).at[-1].set(1.0)
+
+    # parallel wavenumbers, only meaningful when axis 1 of the fields is kz
+    kz = None
+    if params.z_spectral:
+        kz = (ft.fftfreq(params.nz) * params.nz * 2 * jnp.pi / params.Lz).reshape(-1,1,1)
 
     fmask = None
     fidx_x = None
@@ -72,19 +92,35 @@ def setup_kgrids(params):
         # only carried when opted in (params.forcing_shell_noise)
         if params.forcing_shell_noise:
             fidx_x, fidx_y = jnp.nonzero(fmask)
-        if params.spatial_dimensions == 3:
+        if params.spatial_dimensions == 3 and not params.z_spectral:
+            # z_spectral: no real-space z envelope to precompute — reconstruct_envelope
+            # scatters (A -+ iB)*nz/2 onto the kz = +-2pi/Lz planes instead.
             z_local = local_z_coords(params)
             z_envcos = jnp.cos(2*jnp.pi*z_local/params.Lz)[:, None, None]
             z_envsin = jnp.sin(2*jnp.pi*z_local/params.Lz)[:, None, None]
 
     kgrid = K_Grids(kx=kx_grid, ky=ky_grid, ksq=ksq, inv_ksq=inv_ksq,
-                    dealias=dealias, hdiss=hdiss, yfac=yfac, fmask=fmask,
+                    dealias=dealias, yfac=yfac, kz=kz, fmask=fmask,
                     z_envcos=z_envcos, z_envsin=z_envsin, fidx_x=fidx_x, fidx_y=fidx_y)
+    kgrid = _attach_linear_operator(kgrid, params)
     if params.comm_backend == "jax":
         kgrid = _kgrid_to_global(kgrid, params)  # global (z-sharded) arrays for shard_map
     return kgrid
 
+def _attach_linear_operator(kgrid, params):
+    # builds the equation set's linear operator L (dt f = L f + N(f)) plus the propagator
+    # precomputes, from the partially built kgrid the recipe needs (ksq etc.). Still inside
+    # setup_kgrids, which stays the only K_Grids constructor.
+    from .physics import equation_registry   # local import: physics imports grids
+    linear_matrix_func = equation_registry[params.eqtype].linear_matrix_func
+    if linear_matrix_func is None:
+        return kgrid
+    L = linear_matrix_func(kgrid, params)
+    return kgrid._replace(**propagators.linear_fields(L, params))
+
 # K_Grids entries carrying a z axis (axis 0); everything else is perpendicular-only.
+# (kz and the z-extent lin_L/lin_m/lin_s2 of z_spectral mode never reach here: z_spectral is
+# single-process, and propagators.linear_fields rejects a z-extent operator under "jax".)
 _Z_KGRID_FIELDS = ("z_envcos", "z_envsin")
 
 def kgrid_specs(kgrid):
@@ -100,10 +136,17 @@ def _kgrid_to_global(kgrid, params):
                              comms.to_global(val, params, z_axis=0 if name in _Z_KGRID_FIELDS else None))
                       for name, val in zip(K_Grids._fields, kgrid)})
 
-def fft(f):
+# forward/inverse transforms, unnormalized. Default: rfft2 over the perpendicular plane
+# only (z stays real, finite-differenced). params.z_spectral: rfftn over (z,x,y) as well, so
+# axis -3 of a field is kz — the shapes are unchanged, only the meaning of that axis is.
+def fft(f,params):
+    if params.z_spectral:
+        return ft.rfftn(f,axes=(-3,-2,-1))
     return ft.rfft2(f,axes=(-2,-1))
 
 def ifft(f,params):
+    if params.z_spectral:
+        return ft.irfftn(f,s=(params.nz,params.nx,params.ny),axes=(-3,-2,-1))
     return ft.irfft2(f,s=(params.nx,params.ny),axes=(-2,-1))
 
 def local_z_coords(params):

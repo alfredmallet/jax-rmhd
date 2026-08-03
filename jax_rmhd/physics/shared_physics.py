@@ -86,11 +86,23 @@ def ou_update(forcing_state, forcing_key, dt, params, kgrid):
     return new_forcing_state, new_key
 
 def reconstruct_envelope(forcing_state, kgrid, params):
-    # Rebuilds the real-space-projected forcing from its (A,B) cos/sin envelope coefficients,
-    # using the z-envelopes precomputed in setup_kgrids (dims==3).
+    # Rebuilds the z-projected forcing from its (A,B) cos/sin envelope coefficients, using
+    # the z-envelopes precomputed in setup_kgrids (dims==3).
     if params.spatial_dimensions == 3:
         A = forcing_state[:, 0]  # (n_ou, nkx, nky)
         B = forcing_state[:, 1]
+        if params.z_spectral:
+            # exact z-FFT of A*cos(2pi z/Lz) + B*sin(2pi z/Lz): the unnormalized transform
+            # puts (A-iB)*nz/2 on kz index +1 and (A+iB)*nz/2 on kz index -1 (== nz-1) and
+            # nothing anywhere else. `.add` rather than `.set` so the degenerate nz=2 case,
+            # where those two planes coincide, still sums to the right thing.
+            # This preserves reality for free: A/B are already kx-Hermitian on the ky=0 and
+            # Nyquist rows, and mirroring BOTH kx and kz there maps +1 <-> -1 and conjugates.
+            half_nz = 0.5*params.nz
+            out = jnp.zeros((forcing_state.shape[0], params.nz) + forcing_state.shape[2:],
+                            dtype=forcing_state.dtype)
+            return (out.at[:, 1].add(half_nz*(A - 1j*B))
+                       .at[:, params.nz - 1].add(half_nz*(A + 1j*B)))
         return A[:, None, :, :] * kgrid.z_envcos + B[:, None, :, :] * kgrid.z_envsin
     else:
         #in 2D just use the A coefficient
@@ -103,8 +115,13 @@ def perp_gradsq(field_a_k, field_b_k, kgrid):
 def perp_reduce(integrand, params, axis=None):
     # sum over `axis` (default: every axis), allreduce over z-ranks if applicable, and
     # apply the normalization every energy-like quantity in the code shares.
+    # z_spectral: the z axis carries the UNNORMALIZED z-FFT, so Parseval turns the z-average
+    # (1/nz)*sum_z into (1/nz^2)*sum_kz -- one extra factor of nz, shared by every
+    # energy-like quantity (diagnostics.energy/perpspec, forcing power) so they stay
+    # comparable across the two modes.
     P = comms.allreduce_sum(jnp.sum(integrand, axis=axis), params)  # no-op unless z-decomposed
-    return P / (float(params.nz) * float(params.nx * params.ny)**2)
+    znorm = float(params.nz)**2 if params.z_spectral else float(params.nz)
+    return P / (znorm * float(params.nx * params.ny)**2)
 
 def perp_inner_product(field_a_k, field_b_k, kgrid, params, batch=False):
     # Re( sum_k grad(field_a_k)^* . grad(field_b_k) ), useful for e.g. energies and power

@@ -22,6 +22,31 @@ def _json_scalar(v):
 # effect on the trajectory or the on-disk layout)
 _TRANSPORT_KEYS = ("comm_backend",)
 
+# ctor args that MOVED into the per-equation `eqpars` dict (2026-08-01). A params.json
+# written before that records them at top level; they carry the same information there.
+_EQPARS_MOVED_KEYS = ("diss", "hyper")
+
+def _fold_legacy_eqpars(rec):
+    # top-level diss/hyper in an old record -> rec["eqpars"]; returns the moved key names
+    moved = [k for k in _EQPARS_MOVED_KEYS if k in rec]
+    if not moved:
+        return moved
+    eqpars = dict(rec.get("eqpars") or {})
+    for k in moved:
+        value = rec.pop(k)
+        eqpars.setdefault(k, value)
+    rec["eqpars"] = eqpars
+    return moved
+
+def _lists_to_tuples(v):
+    # JSON restore: lists become tuples (Parameters compares/records tuples), recursing
+    # into eqpars-style dicts so equation parameters round-trip like ctor args do
+    if isinstance(v, list):
+        return tuple(_lists_to_tuples(x) for x in v)   # recurse: nested tuples too
+    if isinstance(v, dict):
+        return {k: _lists_to_tuples(x) for k, x in v.items()}
+    return v
+
 _MPI_HINT = ('install the MPI extra: pip install "jax-rmhd[mpi]" (or use '
              "comm_backend='serial'/None for single-process runs)")
 
@@ -77,10 +102,10 @@ def _resolve_backend(requested):
 
 class Parameters():
     #Stores all static parameters for the problem
-    def __init__(self,nx,ny,Lx,Ly,diss,hyper,cfl_safety,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
+    def __init__(self,nx,ny,Lx,Ly,cfl_safety,eqpars=None,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
-                 cfl_every=1):
+                 cfl_every=1,z_spectral=False):
         # capture the constructor arguments (before any normalization below) so
         # save()/from_snapshot() can reproduce this object exactly via __init__
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
@@ -98,13 +123,17 @@ class Parameters():
         self.Ly=Ly
         self.dx=Lx/nx
         self.dy=Ly/ny
-        #perpendicular dissipation
-        if np.shape(diss) not in ((), (1,), (self.nfields,)):
-            raise ValueError(f"diss must be a scalar (applied to every field) or a length-"
-                             f"{self.nfields} sequence (one per {self.eqtype} field), got {diss!r}")
-        self.diss = diss
-        self.hyper=hyper
+        #equation-set parameters (plain-JSON dict; RMHD: diss/hyper, which were ctor args
+        #before 2026-08-01). Interpreted by the equation recipe, not here.
+        if eqpars is not None and not isinstance(eqpars, dict):
+            raise ValueError(f"eqpars must be a dict of equation parameters (e.g. "
+                             f"{{'diss': (nu, eta), 'hyper': 1}}), got {eqpars!r}")
+        self.eqpars = dict(eqpars) if eqpars is not None else {}
+        self._init_args["eqpars"] = dict(self.eqpars)  # decoupled from the caller's dict
         #timestepping
+        if np.shape(cfl_safety) != ():
+            raise ValueError(f"cfl_safety must be a scalar, got {cfl_safety!r} — note that "
+                             f"diss/hyper are no longer ctor args (pass eqpars=...)")
         self.cfl_safety=cfl_safety
         self.dt = dt # Only used if adaptive_timestep==False
         self.adaptive_timestep = adaptive_timestep #Usually we want this to be true
@@ -164,6 +193,22 @@ class Parameters():
             if self.size > 1 and self.rank==0:
                 warnings.warn("You probably should only run a 2D run on one device, since this "
                               "isn't parallelized.", stacklevel=2)
+        # spectral z (plans/GDI_PLAN.md P2): fields' axis 1 is kz, not z. Single-process
+        # only (a z-FFT needs the whole z domain), 3D only, and never under the sharded
+        # "jax" backend. Recorded in params.json: snapshots are NOT cross-mode compatible,
+        # and the save() comparison is what stops a mixed-mode restart.
+        self.z_spectral = bool(z_spectral)
+        if self.z_spectral:
+            if self.spatial_dimensions != 3:
+                raise ValueError("z_spectral=True requires dims=3 (there is no z axis to "
+                                 "transform in 2D)")
+            if self.size != 1:
+                raise ValueError(f"z_spectral=True is single-process only (the z-FFT needs the "
+                                 f"whole z domain on one rank), but this process is one of "
+                                 f"{self.size} ranks")
+            if self.comm_backend == "jax":
+                raise ValueError("z_spectral=True is incompatible with comm_backend='jax' "
+                                 "(the jax backend exists to decompose z across devices)")
         # bring up the chosen transport (jax.distributed + z mesh for "jax"; no-op otherwise).
         # must happen before any jax device work
         comms.init_backend(self)
@@ -197,6 +242,12 @@ class Parameters():
             warnings.warn(f"z_diff_order={z_diff_order}, z_diss_hyper={z_diss_hyper}: both are "
                           "stored but IGNORED. rmhd.LinearTerm is fixed at 4th-order centered "
                           "differences with d_z^4 hyperdissipation.", stacklevel=2)
+        if self.z_spectral and self.rank==0 and z_diss != 0.25:
+            # every finite-difference-z knob is dead in spectral z: no stencil, no halo, no
+            # dz-based CFL term. kz dissipation is eqpars['z_diss_k'] instead.
+            warnings.warn(f"z_spectral=True: z_diss={z_diss} is a finite-difference-z knob and "
+                          "is IGNORED; use eqpars['z_diss_k'] (-z_diss_k*kz^4) for kz "
+                          "dissipation.", stacklevel=2)
 
     def save(self, snap_path, filename="params.json"):
         # record the constructor arguments (not derived attrs) to snap_path/filename, so a
@@ -213,6 +264,9 @@ class Parameters():
                 with open(path) as f:
                     old = json.load(f)
                 old.pop("_created", None)
+                # pre-eqpars records keep diss/hyper at top level: same information, so
+                # fold them in (and refresh the file) rather than report a differing record
+                moved = _fold_legacy_eqpars(old)
                 # a record written by older code lacks newer ctor args: backfill them with
                 # the current signature defaults (JSON-normalized) so adding a Parameters
                 # argument never invalidates existing run directories
@@ -235,7 +289,7 @@ class Parameters():
                            f"(saved, current): {diffs}. If the change is intended, delete "
                            f"{filename} and re-save; to reuse the recorded values, "
                            f"Parameters.from_snapshot(...) and pass overrides explicitly.")
-                elif backfilled:
+                elif backfilled or moved:
                     # semantically identical: refresh the file so it records the new keys
                     old["_created"] = time.strftime("%Y-%m-%d %H:%M:%S")
                     with open(path, "w") as f:
@@ -263,6 +317,13 @@ class Parameters():
         prec = rec.pop("_precision", None)
         current_prec = "64" if jax.config.read("jax_enable_x64") else "32"
         rank0 = MPI.COMM_WORLD.Get_rank() == 0 if HAVE_MPI4PY else True
+        # legacy shim: diss/hyper were ctor args before 2026-08-01, they are equation
+        # parameters now. Fold before the unknown-key check so they are not "unknown".
+        moved = _fold_legacy_eqpars(rec)
+        if moved and rank0:
+            warnings.warn(f"{path} is a pre-eqpars record: top-level {moved} folded into "
+                          f"eqpars={rec['eqpars']!r}. Re-save to update the file.",
+                          stacklevel=2)
         if prec is not None and prec != current_prec and rank0:
             warnings.warn(f"{path} was written at precision {prec}, but RMHD_PRECISION is "
                           f"currently {current_prec} (precision is set by env var at import time).",
@@ -272,7 +333,7 @@ class Parameters():
         unknown = sorted(set(rec) - known)
         if unknown and rank0:
             warnings.warn(f"ignoring unknown parameters in {path}: {unknown}", stacklevel=2)
-        args = {k: (tuple(v) if isinstance(v, list) else v) for k, v in rec.items() if k in known}
+        args = {k: _lists_to_tuples(v) for k, v in rec.items() if k in known}
         # transport, not physics: re-resolve on THIS machine unless the caller says otherwise
         # (a Savio params.json recording "mpi4jax" must load on a laptop with no MPI)
         args.pop("comm_backend", None)

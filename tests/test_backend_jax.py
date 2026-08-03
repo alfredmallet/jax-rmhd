@@ -29,7 +29,7 @@ from jax_rmhd import comms
 from jax_rmhd.physics import rmhd, shared_physics
 
 _KW = dict(nx=16, ny=16, nz=16, Lx=2 * np.pi, Ly=2 * np.pi, Lz=2 * np.pi,
-           diss=(1e-4, 1e-4), hyper=2, cfl_safety=0.5, dims=3,
+           eqpars={"diss": (1e-4, 1e-4), "hyper": 2}, cfl_safety=0.5, dims=3,
            forcing=True, forcing_mode="elsasser", forcing_power_elsasser=(0.5, 0.5),
            forcing_tau=1.0, fshell=(1, 3), forcing_seed=7)
 T_END = 0.5
@@ -112,7 +112,7 @@ def test_forced_devices_present():
 @pytest.mark.fp64
 def test_dims2_rejected_for_jax_backend():
     with pytest.raises(ValueError):
-        jr.Parameters(nx=8, ny=8, Lx=1.0, Ly=1.0, diss=(0.0, 0.0), hyper=1,
+        jr.Parameters(nx=8, ny=8, Lx=1.0, Ly=1.0, eqpars={"diss": (0.0, 0.0), "hyper": 1},
                       cfl_safety=0.5, dims=2, comm_backend="jax")
 
 

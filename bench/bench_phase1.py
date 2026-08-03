@@ -36,7 +36,7 @@ for a in sys.argv:
 forced = case.endswith("forced")
 L = 2 * np.pi
 # lsrk54 + elsasser + adaptive dt is the comm-heaviest configuration (plan F1)
-common = dict(Lx=L, Ly=L, diss=(1e-4, 1e-4), hyper=2, cfl_safety=0.5,
+common = dict(Lx=L, Ly=L, eqpars={"diss": (1e-4, 1e-4), "hyper": 2}, cfl_safety=0.5,
               forcing=forced, forcing_mode="elsasser", forcing_power_elsasser=(1.0, 1.0),
               forcing_tau=1.0, fshell=(1, 3), forcing_seed=1)
 # Phase 3: backend=<mpi4jax|jax> is a pass-through to Parameters(comm_backend=...); only added

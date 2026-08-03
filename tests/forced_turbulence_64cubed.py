@@ -45,8 +45,9 @@ fshell = (1, 3)                        #force the shell 1 <= |k_perp|/dk < 3 (la
 forcing_seed = 42                      #random seed
 forcing_scale_max = 1.0                #caps the energy added per timestep
 
-params = jr.Parameters(nx=nx, ny=ny, Lx=Lx, Ly=Ly, nz=nz, Lz=Lz, diss=(visc, res),
-                        hyper=hyper, cfl_safety=cfl_safety, dims=spatial_dimensions,
+params = jr.Parameters(nx=nx, ny=ny, Lx=Lx, Ly=Ly, nz=nz, Lz=Lz,
+                        eqpars={"diss": (visc, res), "hyper": hyper},
+                        cfl_safety=cfl_safety, dims=spatial_dimensions,
                         forcing=forcing, forcing_mode=forcing_mode,
                         forcing_power_elsasser=forcing_power_elsasser,
                         forcing_tau=forcing_tau, fshell=fshell, forcing_seed=forcing_seed,

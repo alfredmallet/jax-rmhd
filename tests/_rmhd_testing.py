@@ -174,10 +174,24 @@ def _param_kwargs(overrides):
     return kw
 
 
+def _ctor_kwargs(kw):
+    """Parameters(**kw) kwargs. diss/hyper are RMHD *equation* parameters (params.eqpars)
+    since 2026-08-01, but they stay flat, HASHABLE knobs here so ctx()'s cache key works;
+    this is the only place that folds them into the eqpars dict. An explicit eqpars=
+    override wins for keys it sets."""
+    kw = dict(kw)
+    eqpars = dict(kw.pop("eqpars", None) or {})
+    for name in ("diss", "hyper"):
+        if name in kw:
+            eqpars.setdefault(name, kw.pop(name))
+    kw["eqpars"] = eqpars
+    return kw
+
+
 def fresh_params(**overrides):
     """A new (uncached) Parameters. Use when the test mutates attributes."""
     import jax_rmhd as jr
-    return jr.Parameters(**_param_kwargs(overrides))
+    return jr.Parameters(**_ctor_kwargs(_param_kwargs(overrides)))
 
 
 def fake_ranked_params(rank, size, **overrides):
@@ -192,7 +206,7 @@ def fake_ranked_params(rank, size, **overrides):
 @functools.lru_cache(maxsize=None)
 def _ctx_cached(key):
     import jax_rmhd as jr
-    p = jr.Parameters(**dict(key))
+    p = jr.Parameters(**_ctor_kwargs(dict(key)))
     return p, jr.setup_kgrids(p)
 
 
