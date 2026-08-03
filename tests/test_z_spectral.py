@@ -17,7 +17,7 @@ import jax.numpy as jnp
 
 import jax_rmhd as jr
 from jax_rmhd import diagnostics as dg
-from jax_rmhd.grids import dealias_mask, fft, ifft
+from jax_rmhd.grids import fft, ifft
 from jax_rmhd.physics import rmhd, shared_physics
 from jax_rmhd.run import block_of_steps
 from jax_rmhd.timestepping import get_scheme

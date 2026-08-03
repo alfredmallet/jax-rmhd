@@ -4,9 +4,10 @@
 #
 #       dt f = L f + N(f)          ->   propagator = exp(L*tau)
 #
-# The timesteppers never see L: they only call the two hook methods
+# The timesteppers never see L: they only call the three hook methods
 #   apply_exp(arr, tau)     multiply by exp(L*tau)        (integrating-factor schemes)
-#   solve_shifted(arr, a)   apply (I - a*L)^-1            (IMEX schemes, unused until P3)
+#   solve_shifted(arr, a)   apply (I - a*L)^-1            (IMEX schemes, P3)
+#   apply_L(arr)            multiply by L                 (IMEX schemes, P3)
 # plus scaled(factor), which returns the propagator of factor*L (see LSRK note below).
 # apply_exp's optional `coef` multiplies the FACTOR, not the array: coef*exp(L*tau) @ arr.
 # It exists so the steppers can keep the exact floating-point op order of the pre-P1
@@ -43,6 +44,10 @@ class IdentityPropagator:
     def solve_shifted(self, arr, a):
         return arr
 
+    def apply_L(self, arr):
+        # L = 0: an IMEX scheme on this backend degenerates to its explicit part
+        return jnp.zeros_like(arr)
+
 class DiagonalPropagator:
     # L diagonal in fields and k: everything is elementwise.
     def __init__(self, L):
@@ -59,6 +64,10 @@ class DiagonalPropagator:
 
     def solve_shifted(self, arr, a):
         return arr/(1.0 - a*self.L)
+
+    def apply_L(self, arr):
+        # the IMEX steppers' stiff-derivative evaluation L*u (never reads kgrid.lin_L)
+        return self.L*arr
 
 class Putzer2Propagator:
     # nfields=2: exp(L*tau) = e^(m*tau)[cosh(s*tau) I + (sinh(s*tau)/s)(L - m I)] with
@@ -105,7 +114,12 @@ class Putzer2Propagator:
         return jnp.stack([m00*arr[0] + m01*arr[1], m10*arr[0] + m11*arr[1]])
 
     def solve_shifted(self, arr, a):
-        # closed-form inverse of the 2x2 M = I - a*L
+        # closed-form inverse of the 2x2 M = I - a*L. Pole note (mirrors apply_exp's
+        # overflow note): det(I - a*L) = 0 when a GROWING eigenvalue satisfies
+        # lambda = 1/a (a = a_ii*dt in the IMEX steppers, so lambda*dt ~ 2-3). Unreachable
+        # under an adaptive dt (the equation sets' ceilings keep gamma_max*dt ~ O(1) with
+        # safety < 1), but a large FIXED dt on an unstable L can hit it -- symptom is
+        # instant NaNs/huge values from the division, not drift.
         m00 = 1.0 - a*self.L[0,0]
         m01 = -a*self.L[0,1]
         m10 = -a*self.L[1,0]
@@ -113,6 +127,11 @@ class Putzer2Propagator:
         det = m00*m11 - m01*m10
         return jnp.stack([(m11*arr[0] - m01*arr[1])/det,
                           (m00*arr[1] - m10*arr[0])/det])
+
+    def apply_L(self, arr):
+        # plain 2x2 matvec: the IMEX steppers' stiff-derivative evaluation L*u
+        return jnp.stack([self.L[0,0]*arr[0] + self.L[0,1]*arr[1],
+                          self.L[1,0]*arr[0] + self.L[1,1]*arr[1]])
 
 def get_propagator(kgrid, params):
     # Backend chosen by the shape of the stored L (grids.setup_kgrids validated it).

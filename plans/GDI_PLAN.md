@@ -337,5 +337,208 @@ P3's tests are best run with P2 available — if parallelized, land P2 first.
   energy match the real-z computation to ~1e-16 relative (Parseval); `examples/orzag-tang-3d-
   spectral-z.ipynb` written and executed. Full battery green at both precisions (131/116
   passed, 0 failed).
-- P3 (CB-IMEX): not started
-- P4b (3D GDI): not started
+- P3 (CB-IMEX): code complete 2026-08-02. Four new `_scheme_registry` entries from Cavaglieri
+  & Bewley, JCP 286:172-193 (2015) (PDF: http://robotics.ucsd.edu/pubs/CB15.pdf), all with an
+  L-stable, stiffly accurate (a^IM_{s,i}=b_i) implicit part: `imexcb2` (IMEXRKCB2, eq. 24 —
+  2nd order, [2R], 3 stages, SSP explicit part), `imexcb3e` (IMEXRKCB3e, eq. 30 — 3rd order,
+  [2R], 4 stages, ERK accuracy maximized, delta=1/24 so its ERK stability region is RK4's;
+  all coefficients exactly rational, hence the default recommendation), `imexcb3c`
+  (IMEXRKCB3c, eq. 28a — same class, ERK negative-real-axis stability maximized, delta=1/54,
+  SSP) and `imexcb3f` (IMEXRKCB3f, eq. 32c — 3rd order, [3R], the only stage-order-2 member).
+  Two new steppers `imex2r_advance` / `imex3r_advance` implement the paper's three-register
+  [2R] (eq. 19) and four-register [3R] (eq. 21) algorithms; the paper's two-register [2R]
+  variant is deliberately NOT used (its own footnote 4 rules it out for spectral methods: it
+  buys the register back with two extra nonlinear evaluations, i.e. FFT batches, per stage).
+  UPDATE 2026-08-02: the [2R] stepper now honors `params.lsrk_scan` (scan default,
+  user-requested — unrolled LSRK was slow on their CPU): stages 1..s-1 are uniform and the
+  special first stage sits before the loop, so unlike `_lsrk_scan_stages` no `lax.cond` is
+  needed; the never-formed z_1 of cb2/3c/3e enters the scan as zeros whose k=1 coefficient
+  is exactly 0.0. Scan carry = exactly the 3 registers. `imexcb3f`'s [3R] stepper stays
+  unrolled only (its y-update needs lookahead coefficients a_(k+1,k-1) and skips the last
+  stage — a scan would need a cond for one scheme). test_imex.py gained
+  test_imex2r_scan_vs_unrolled (tolerance assertion 1e-13 fp64 / 1e-5 fp32 — measured
+  bitwise on the dev sandbox, NOT promised, same fusion caveat as lsrk_scan — plus a
+  bitwise check that cb3f ignores the knob); with lsrk_scan defaulting True the whole
+  IMEX test set (incl. the 1e-12 dense-tableau match) re-ran through the scan path at
+  both precisions. Battery after: fp64 140 / fp32 123, 0 fail. The propagator hook gained one method,
+  `apply_L(arr)` (diagonal/putzer2/identity), so the steppers still never touch
+  `kgrid.lin_L`; each implicit stage is exactly one `solve_shifted(., a_ii*dt)`. b_1 = 0 and
+  a^IM_{2,1} = 0 in cb2/3c/3e, so their first implicit derivative is skipped entirely
+  (s-1 solves). ALL of L is implicit — no exponential in this path — so an L-stable solve
+  damps oscillatory linear terms at |omega|*dt >~ 1 and these schemes must never be pointed
+  at a wave-dominated L (z_spectral's +-i*kz) at large dt; that is recorded at the code.
+  `rk_advance`/`lsrk_advance` and the LSRK coefficient tables are byte-for-byte untouched
+  (the only diff line in the pre-existing code is a trailing comma on the lsrk54 entry).
+  Verified in `tests/test_imex.py` (8 tests): every order condition of both tableaux plus the
+  coupling conditions and the [2R]/[3R] structure re-derived from the stored coefficients
+  (residuals <= 1e-13 at float64; the published 3c/3f decimals reproduce exactly to ~1e-24 in
+  Fraction arithmetic); L-stability sampled over the left half plane to |z|=1e6 with the
+  z -> -inf tail evaluated in exact rationals (a float evaluation bottoms out at ~1e-7 for
+  3f); the low-storage steppers reproduce a dense-tableau IMEX integrator to 1e-12 relative
+  after 6 steps (this is what validates the register recurrences, the [3R] one especially);
+  measured convergence order on a manufactured NONLINEAR problem 2.00/2.99/2.97/2.98;
+  forced-2D RMHD total energy at t=5 within 2% of lsrk54 (4.145/4.060/4.047/4.046 vs 4.061);
+  z_spectral 3D runs finite and converges to the IF result at slope ~3.0.
+  **Stiff quasi-static (the motivating item)**: at fixed gamma*dt = 10, taking gamma 200 ->
+  2000, |u-g|/|g| falls exactly 10x for every IMEX scheme (cb2 1.33e-1 -> 1.31e-2, cb3e
+  6.74e-3 -> 6.28e-4, cb3c 9.44e-2 -> 9.34e-3, cb3f 1.01e-1 -> 1.00e-2), i.e. u = g +
+  O(1/gamma) as required, while the IF schemes' error is flat in gamma (lsrk33 5.71e-1 ->
+  5.60e-1, lsrk54 1.08e-1 -> 1.16e-1, rk44 7.09e-1 -> 7.11e-1) — they miss the quasi-static
+  balance outright. NB the IMEX error is O(dt) at fixed gamma*dt, not O(dt^order): the
+  classic stage-order-one order reduction. IMEXRKCB3f's stage order 2 does NOT help there,
+  because it applies to the implicit part only and the drive lives in the explicit part;
+  cb3e simply has the smallest stiff error constant of the four (~15x below cb3c/cb3f).
+  Register audit: the [2R] stepper holds 3 field-sized values live (x, y, z) and the [3R]
+  stepper 4 (x, y, z_im, z_ex) — no per-stage k_1..k_s anywhere. Corroborated by XLA
+  memory_analysis on a 256^2 step with a minimal non-fusable RHS: peak temporaries of 3.0
+  (cb2), 4.0 (cb3e/3c/3f) field-register equivalents against 4.5 for lsrk33/lsrk54 and 5.0
+  for rk44. (XLA does not always reach the algorithm's theoretical minimum — cb3e's dataflow
+  is 3 but it schedules 4.) Full battery green at both precisions: fp64 139 passed / 5
+  skipped, fp32 122 passed / 22 skipped, 0 failed, exactly +8 and +6 over the pre-P3
+  131/116 (the 2 extra fp32 skips are this file's two fp64-marked runs).
+- P4b (3D GDI): code complete 2026-08-02. `physics/gdi.py` extended to dims==3 (requires
+  `z_spectral=True`, raised as `NotImplementedError` otherwise; dims==2 code paths are
+  untouched — verified bit-for-bit, see below). `linear_matrix`/`_max_re_lambda`/
+  `energy_budget` now share one helper (`_closure_terms`) computing gamma_par(k) =
+  gpar_fac*nu_in*k_perp^2 [P4a 2D floor, eq 4.3] + D_par*kz^2 [P4b real closure, eqs
+  3.5-3.7] ADDITIVELY. Decision: the 2D floor is NOT retired in 3D but its default flips to
+  OFF (gpar_fac=0) — with a real kz axis resolved there is no sub-grid closure gap to patch,
+  so the honest 3D default is the real D_par*kz^2 term alone; gpar_fac stays available as an
+  optional supplement, unlocking the REQUIRED consistency property for free: at kz=0 with
+  gpar_fac=0 (the 3D default) gamma_par_total==0 identically, so dims==3's L collapses to
+  EXACTLY the dims==2 L at gpar_fac=0 (and, since the construction is additive, to the 2D L
+  at ANY gpar_fac value if that value is matched on both sides — verified for gpar_fac in
+  (0.0, 1.0)). eqpars gains `D_par` (required in 3D, rejected as an unknown key in 2D so a
+  stray D_par silently doing nothing is impossible). [phi,N]/[phi,phi] divide gamma_par by
+  k_perp^2 as before; for the 2D floor this ratio is exactly k-independent (bit-for-bit
+  P4a), but D_par*kz^2/k_perp^2 is NOT k_perp-independent (diverges at k_perp->0, kz!=0) so
+  it is masked with inv_ksq, the same zero-mode convention used everywhere else in the file.
+  gamma_par*kz^2 is EVEN in kz so (unlike rmhd's +-i*kz) no kz-Nyquist fix was needed;
+  `propagators._check_hermitian_compatible` (which mirrors both kx and kz under
+  z_spectral) accepted every L built in testing with no special-casing. Production scheme:
+  CB-IMEX (imexcb3e default, per P3) — recorded at the recipe (module docstring) alongside
+  the documented IF-LSRK fixed-dt fallback bound; GDI's L has no +-i*kz wave term (pure
+  growth/damping spectrum) so there is no wave-damping caveat against IMEX here, unlike
+  z_spectral RMHD. Sizing note recorded verbatim in the recipe (512^3 fp32: ~0.54 GB/field
+  register x up to 4 IMEX registers x nfields=2 ~= 4.3 GB, fits a single 40-80 GB GPU).
+  Diagnostics: new `gdi.kperp_break(params, kz)` (numeric bisection on max Re(lambda(L)),
+  not the paper's closed-form eq 4.5 — see below for why) and `gdi.measure_alpha(state,
+  kgrid, params, kz_index, modes)` (mode-by-mode alpha = 1 + gamma_par/(nu_in*k_perp^2),
+  review-round-1 NOTE preserved: alpha = 1 + gpar_fac, NOT gpar_fac); `cross_phase_spectrum`
+  gained a `kz_index` argument (default 0, 2D behavior unchanged) to select a kz plane.
+  L derivation route and cross-check: derived directly from eqs (3.5)-(3.6) (the *general*
+  3D PDEs, of which P4a's (5.4)-(5.5) is the gamma_par->closure-floor special case) with
+  gamma_par_total substituted for the bare D_par*d^2/dz^2 term — i.e. the SAME algebra as
+  docs/gdi_linear_matrix_note.tex's P4a derivation, just not fixing gamma_par's k-dependence
+  up front. Cross-checked three independent ways: (1) the exact quadratic (3.7) (same
+  quadratic as P4a's, gamma_par now general) via `np.roots` vs L's putzer2 eigenvalues,
+  scanned over gamma_par (kz values) at both a hand-built single mode AND the real
+  `setup_kgrids`->`linear_matrix` pipeline (exercising the kz-broadcasting code, not just
+  the algebra); (2) the literal quartic (3.11) and its (3.10) omega_R relation, independently
+  transcribed from the PDF and evaluated (not solved) at the exact eigenvalues' Re/Im parts;
+  (3) the named asymptotic limits eq (3.9) (nearly-adiabatic, gamma_par->infinity), eq (3.12)
+  (Hasegawa-Wakatani, nu_in=0), and eq (3.15) (stabilization boundary sign flip) --
+  all three limit formulas were FIRST derived independently by hand from (3.11)/(3.7) (not
+  copied from the boxed PDF equations) and numerically verified (relative error -> 0 as the
+  asymptotic parameter grows, e.g. eq (3.12) relerr 3.1e-3 -> 8e-6 -> 8e-8 as gamma_par
+  20 -> 100 -> 1000) before being written into the test. The paper's OWN closed-form eq
+  (4.5) ("k_perp^c break") was NOT trusted for a pytest assertion: substituting its boxed
+  self-referential form back into itself gives a DIFFERENT power law ((k_perp^c)^3 ~
+  ky^2*v0/(rho_s*Ln)) than solving the (4.4) balance it's allegedly derived from directly
+  ((k_perp^c)^4 ~ ky^2*v0/(nu_in*Ln*rho_s^2)) -- a genuine unresolved transcription
+  ambiguity (OCR/PDF subscript risk, the exact class of error CLAUDE.md's P4a history
+  lesson warns about), so `kperp_break` bisects the ACTUAL L numerically instead (exact,
+  no transcription risk) and is used as a diagnostic/demonstration tool, not asserted
+  against eq (4.5)'s boxed algebra in any test.
+  Validation (`tests/test_gdi_linear.py`, all PASS both precisions): `test_kz0_plane_matches_2D_model`
+  (REQUIRED consistency check, both gpar_fac=0 and 1, tol 1e-12 fp64/1e-5 fp32);
+  `test_3D_grid_dispersion_matches_quadratic_and_quartic_scan` (8 kz grid planes at a fixed
+  mode, real setup_kgrids pipeline, quadratic rtol 1e-9 fp64 and quartic (3.11)/(3.10)
+  residual both satisfied at every plane); `test_HW_limit_matches_eq312` (gamma_par
+  20/100/1000, relerr 3.1e-3/2.0e-4/8e-6); `test_nearly_adiabatic_matches_eq39` (gamma_par
+  1e4/1e5, relerr 3.2e-4/3.2e-5); `test_stabilization_boundary_matches_eq315` (6 gamma_par
+  values straddling the predicted boundary near 0.2-0.5, sign of max Re(lambda) matches
+  eq (3.15)'s prediction at every one); `test_3D_eqpars_validation` (D_par required/rejected
+  correctly, gpar_fac defaults 0.0/1.0 in 3D/2D); `test_energy_budget_closure_nonlinear_3D`
+  (fp64-only, imexcb3e, 8x8x4 grid, measured centered-difference dE/dt matches
+  `gdi.energy_budget`'s total to rel=1e-4 tolerance, exercising the kz-dependent gamma_par
+  sink term for the first time in a live nonlinear run). Every pre-existing 2D test in the
+  file still passes UNCHANGED (verified the 2D `linear_matrix`/`_L_entries` arithmetic is
+  bit-for-bit identical to pre-P4b by construction — kz=None short-circuits every new term).
+  Science-diagnostic demonstration: `examples/gdi_3d_run.py` (gdi_2d_run.py's resumable
+  `make_data` pattern; 64x64x16 grid, Lx=Ly=8*pi, Lz=2*pi, D_par-only eqpars, imexcb3e, fp32)
+  plus a `report()` function printing the full diagnostic suite -- delivered as "cells
+  appended to a small standalone driver" (the plan's explicit alternative to a notebook;
+  no working Jupyter-kernel execution path was available in this sandbox session, unlike
+  the prior P4a session's, so a live .ipynb was not attempted rather than risk an
+  unverifiable one). Executed end to end (`python -c "from gdi_3d_run import report;
+  report()"`, full output in the P4b agent report): `kperp_break` shrinks monotonically
+  with kz (4.09 -> 3.96 -> 3.57 -> 2.74 -> unstable-nowhere by kz=4), confirming higher-kz
+  planes are more strongly stabilized, as expected. A genuinely new 3D finding, reported
+  honestly rather than glossed over: because gamma_par=D_par*kz^2 does NOT grow with
+  k_perp (unlike the 2D floor's gamma_par=gpar_fac*nu_in*k_perp^2), the N-phi adiabaticity
+  crossover at fixed nonzero kz runs OPPOSITE to the P4a 2D-floor picture -- adiabatic
+  (small phase) at SMALL k_perp where gamma_par/k_perp^2 is large, GDI-like (phase->90deg)
+  at LARGE k_perp where it vanishes -- and is a genuinely DIFFERENT scale from
+  `kperp_break`'s marginal-stability crossing, not the same k_perp^c. The theoretical
+  eigenvector cross-phase (computed directly from L, no run needed) shows this cleanly
+  (e.g. kz=2: 26deg at k_perp=0.25 rising to 85.5deg at k_perp=7); the actual evolved run's
+  `cross_phase_spectrum` at the matching kz plane reproduces this shape closely (24.6deg ->
+  87.8deg across the same k range) -- a good quantitative match despite the run being well
+  into the nonlinear regime by the demonstration snapshot (t~25.6). `measure_alpha` on the
+  same run state matches `alpha_theory`'s ORDER OF MAGNITUDE and qualitative k-dependence at
+  most probed modes but not tightly (occasional sign flips/large deviations on
+  low-amplitude modes) -- attributed honestly to nonlinear mode-coupling contamination, not
+  re-tuned further given the sandbox time budget. HONESTY on the underlying run itself
+  (unlike P4a's, this one did NOT go through a multi-round saturation-amplitude retune):
+  energy grows smoothly through >4 orders of magnitude from t=0 to t~45 with no clear
+  plateau reached (E: 2.1e-4 -> 4.0 at t=30 -> 20.9 at t=45), and real-space max|N| reaches
+  ~10-17 by t~36-45 -- well outside the model's own delta-n/n<<1 perturbative ordering
+  (same failure mode P4a's first strong-drive family hit, see this Status section's P4a
+  entry). The diagnostics are demonstrated on this genuinely-reached, genuinely-nonlinear
+  but NOT verified-saturated state, exactly as plans/GDI_PLAN.md's escape hatch allows,
+  rather than claiming saturation that was not confirmed. A calibrated, saturating 3D
+  family (analogous to gdi_2d_run.py's several retune rounds) is left for a follow-up user
+  pass.
+  Battery: fp64 147 passed / 5 skipped (was 140/5), fp32 130 passed / 22 skipped (was
+  123/22), 0 failed at either precision -- exactly +7 at both (the 7 new/renamed P4b test
+  functions in tests/test_gdi_linear.py; one, the fp64-gated nonlinear energy test, prints
+  [SKIP] internally and returns rather than using pytest.skip, so it still counts as a pass
+  under pytest, matching the existing test_energy_budget_closure_nonlinear convention).
+  `ruff check .` clean. Files changed: `jax_rmhd/physics/gdi.py` (extended, no other
+  jax_rmhd/ files touched -- the propagator/kgrid/dealias/normalization machinery needed
+  for 3D GDI was already generic from P1-P3, exactly as the plan anticipated);
+  `tests/test_gdi_linear.py` (extended); new `examples/gdi_3d_run.py`.
+- Review round 2 (P2+P3+P4b): DONE 2026-08-03, fresh Fable agent (not the overseer),
+  verdict **merge-with-notes** (0 CRITICAL, 2 MAJOR, 4 MINOR). Independently reproduced:
+  the full battery and ruff; every CB-IMEX tableau entry against the paper's eqs
+  (24)/(28a)/(30)/(32c) -- adjudicating (28a)'s aIM_43/aEX_43 label as a paper typo via
+  the exact identity b2+ex43=1 (shared denominator 2334033219546); order/coupling/
+  stiff-accuracy/L-stability from the STORED tables (residuals <=2e-16, R(-1e12)~1e-12);
+  both register recurrences line-by-line vs the paper's eqs (19)/(21) including the scan
+  variant's z_1=zeros/exact-0.0-coefficient argument; the GDI (3.7)/(3.9)-(3.12)/(3.15)/
+  (3.18)/(4.7) algebra from its own PDF transcription; the P2 normalization-sweep
+  completeness by grep+tests; kperp_break's example sequence exactly. Pre-adjudicated
+  non-findings (eq 4.5 non-use -- user accepted; unsaturated gdi_3d_run) respected.
+  ALL FINDINGS FIXED same day (overseer, user-approved M1 direction):
+  - M1: gdi.set_timestep's dt ceiling applied max|Re lambda| (stiff DAMPED branch
+    included) for every scheme, throttling imexcb3e 67x on the shipped 3D config and
+    ~1e5x at the 512^3 sizing -- negating P3's payoff. FIXED: growth-rate-only ceiling
+    (max(Re lambda, 0) over the dealiased region; 0 = stable = no ceiling, CFL binds).
+    Measured post-fix: shipped 3D config ceiling 1.79 vs CFL 1.57 (CFL binds). NOTE the
+    2D behavior change: the weak-drive family's old 0.10 ceiling is gone (damped branch
+    there is mild, gamma*dt<1 at CFL dt, so lsrk54 accuracy is unaffected); IF schemes on
+    3D GDI now have NO automatic stiff-dt protection -- hand-set dt <~ 1/max(gamma_par),
+    documented at _max_re_lambda and the module docstring.
+  - M2: gdi.energy_budget's -gamma_par*|N-phi|^2 overcounted at k_perp=0, kz!=0 (L's
+    phi-row gamma_par is inv_ksq-masked; the budget wasn't) -- 1.1e-2 closure error if
+    such modes are seeded. FIXED with the exact per-row form (-gamma_par*Re(N*(N-phi)) +
+    ksq*gpar_ratio*Re(phi*(N-phi))); reviewer's own repro now closes at 1.1e-8.
+  - m1: stale gdi-3D.ipynb reference removed from gdi_3d_run.py; driver added to
+    examples/README.md. m2: _max_re_lambda now computes one kz plane at a time -- 512^3
+    evaluates in ~2 s (previously OOM-killed at the docstring's own sizing). m4:
+    Putzer2Propagator.solve_shifted det(I-aL)=0 pole documented (mirrors the apply_exp
+    overflow note). m3 (silent gpar_fac 1->0 default flip in 3D): left as-is -- D_par is
+    mandatory in 3D so an eqpars edit is forced anyway, and the decision is documented;
+    accepted residual risk.
+  Post-fix battery: fp64 147 / 5 skipped, fp32 130 / 22 skipped, 0 failed; ruff clean.

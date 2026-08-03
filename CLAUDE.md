@@ -132,7 +132,7 @@ All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_s
 
 ### Timestepping
 
-RK/LSRK sub-stages rebuild states: **always `state._replace(...)`, never positional
+RK/LSRK/IMEX sub-stages rebuild states: **always `state._replace(...)`, never positional
 `SimulationState(...)`** — positional construction silently drops/misaligns the forcing
 fields, which must survive unchanged within a step (updated once per step, not per
 sub-stage). `lsrk_advance` has scan (`lsrk_scan=True`, default) and unrolled stage
@@ -140,6 +140,30 @@ loops — agree to round-off at fp64 (~1e-15 after 20 steps; bitwise identity is
 machine/jax-version dependent — held where first measured, does NOT hold under jax
 0.6.2/CPU: XLA fuses the two loop structures differently; test_scheme_equivalence).
 Per-machine perf knob.
+
+Two scheme families in `_scheme_registry`, one contract
+(`stepper(state,kgrid,params,rhs,set_timestep,scheme,dt_override=None)`):
+
+- **IF (integrating-factor)** — `rk44`, `lsrk33`, `lsrk54` (RMHD production). L applied
+  exactly via `apply_exp`; treats the linear physics exactly but misweights the nonlinear
+  forcing of stiffly DAMPED modes at |Reλ|·dt ≳ 1 (gives u ~ dt·N, not the quasi-static
+  u ≈ N/γ — test_imex.py records the flat-in-γ error).
+- **CB-IMEX** — `imexcb2`/`imexcb3e`/`imexcb3c`/`imexcb3f` (Cavaglieri & Bewley, JCP
+  286:172 (2015); `imex2r_advance` 3 registers, `imex3r_advance` 4). ALL of L is implicit
+  (dissipation included, no exponential in this path): one `solve_shifted(·, aᵢᵢ·dt)` per
+  implicit stage plus `apply_L` — still only the `propagators` hook, never `kgrid.lin_*`.
+  Recovers the quasi-static limit (L-stable, stiffly accurate) — the GDI/γ∥ path. The flip
+  side: an L-stable solve artificially DAMPS oscillatory linear terms at |ω|·dt ≳ 1 —
+  **never use an IMEX scheme on a wave-dominated L (e.g. z_spectral RMHD's ±i·kz) at large
+  dt**; IF is the wave path. Error at fixed γ·dt is O(dt), not O(dt^order) (stage-order-1
+  reduction — expected, all four schemes). `imexcb3e` is the recommended default (exactly
+  rational coefficients, smallest stiff error constant). The [2R] stepper honors
+  `lsrk_scan` (scan default; agrees with unrolled to round-off, same fusion caveat as
+  lsrk); `imexcb3f`'s [3R] stepper is unrolled only (lookahead coefficients — the knob is
+  not read). Coefficient tables are verified against order/coupling/
+  L-stability conditions rebuilt from the stored values in test_imex.py — any edit to a
+  tableau must keep that test green (history: a transcribed lsrk54 coefficient was wrong
+  for years).
 
 `params.cfl_every` (default 1) recomputes the adaptive dt (and its CFL allreduce) once
 per N-step block: `run._cfl_block` computes dt from the block's start state and passes
