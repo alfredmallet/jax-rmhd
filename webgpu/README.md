@@ -58,4 +58,5 @@ diss to resolve (k_η ≈ (ε/diss³)^¼ must stay below nx/3, e.g. diss ≳ 1.5
 - Resolutions 128/256/512 (1024 would hit the WebGPU minimum workgroup-storage limit
   exactly; see SPEC §8).
 - 2D only, elsasser forcing only, no snapshots. The display draws grid row y=0 at the
-  top of the canvas.
+  top of the canvas, in matplotlib's afmhot colormap (symmetric ±max for the signed
+  fields); the "velocity |u|" / "magnetic |b|" modes add a ≤32×32 arrow overlay.

@@ -21,12 +21,19 @@
      let every canvas scale to the viewport width (intrinsic aspect ratio preserved) */
   @media (max-width: 1000px) {
     #display { flex-direction: column; }
+    #cvwrap { width: 100%; max-width: 514px; }
     #cv { width: 100%; max-width: 512px; height: auto; }
     #charts { width: 100%; max-width: 512px; }
     canvas.chart { width: 100%; height: auto; }
   }
-  #cv { width: 512px; height: 512px; background: #000; border: 1px solid #2b303a;
+  /* the border lives on the wrapper, so the absolutely-positioned vector overlay
+     (inset 0 of the padding box) lines up with #cv exactly at every scale */
+  #cvwrap { position: relative; display: block; width: max-content; max-width: 100%;
+            border: 1px solid #2b303a; box-sizing: border-box; }
+  #cv { width: 512px; height: 512px; background: #000;
         image-rendering: auto; display: block; }
+  #cvVec { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+           display: block; pointer-events: none; }
   canvas.chart { display: block; background: #0f1115; border: 1px solid #2b303a; }
   .panel { min-width: 300px; max-width: 980px; }
   .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
@@ -67,6 +74,8 @@
       <option value="1">current</option>
       <option value="2">phi</option>
       <option value="3">psi</option>
+      <option value="4">velocity |u| + vectors</option>
+      <option value="5">magnetic |b| + vectors</option>
     </select>
   </div>
   <div class="row">
@@ -94,7 +103,10 @@
 
 <div id="display">
   <div>
-    <canvas id="cv" width="512" height="512"></canvas>
+    <div id="cvwrap">
+      <canvas id="cv" width="512" height="512"></canvas>
+      <canvas id="cvVec" width="512" height="512"></canvas>
+    </div>
     <div id="readout">initialising&hellip;</div>
   </div>
   <div id="charts">
@@ -240,6 +252,14 @@ function makeGrid(p) {
 // integer-shell spectrum: bin b = round(|k|/kunit), b = 0 .. NB-1. NB is tied to the
 // dealias cutoff (min(nx,ny)/3), so every retained mode lands in a bin.
 function nbins(nx, ny) { return Math.floor(Math.min(nx, ny) / 3); }
+
+// arrow-overlay subsampling: at most 32x32 arrows. stride = max(1, n/32), so nx=32
+// gives stride 1 (the full grid) and 128/256/512 give exactly 32 arrows per axis.
+// Shared by the WGSL constants and the JS readback size -- keep them in one place.
+function arrowDims(nx, ny) {
+  const sx = Math.max(1, Math.floor(nx / 32)), sy = Math.max(1, Math.floor(ny / 32));
+  return { sx, sy, nax: Math.max(1, Math.floor(nx / sx)), nay: Math.max(1, Math.floor(ny / sy)) };
+}
 
 // ---------------------------------------------------------------------------
 // WGSL
@@ -670,22 +690,67 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 
   // ---- display: pick a field, reduce |.|max, colorize ---------------------
+  // modes 0..3 are scalars (outk only, outk2 = 0); modes 4/5 are the perpendicular
+  // vector fields u = zhat x grad phi and b = zhat x grad psi, i.e. (-d_y f, +d_x f),
+  // whose two components go to outk / outk2 and get their own inverse transform.
   S.prepDisp = pre + `
 struct Mode { mode: u32, pad0: u32, pad1: u32, pad2: u32 };
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> outk: array<vec2<f32>>;
 @group(0) @binding(3) var<uniform> md: Mode;
+@group(0) @binding(4) var<storage, read_write> outk2: array<vec2<f32>>;
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m: u32 = gid.x;
   if (m >= NM) { return; }
-  var v: vec2<f32>;
+  var v: vec2<f32> = vec2<f32>(0.0, 0.0);
+  var v2: vec2<f32> = vec2<f32>(0.0, 0.0);
   if (md.mode == 0u) { v = -gridA[m].z * fields[m]; }
   else if (md.mode == 1u) { v = -gridA[m].z * fields[NM + m]; }
   else if (md.mode == 2u) { v = fields[m]; }
-  else { v = fields[NM + m]; }
+  else if (md.mode == 3u) { v = fields[NM + m]; }
+  else {
+    let f: vec2<f32> = select(fields[m], fields[NM + m], md.mode == 5u);
+    let kx: f32 = gridA[m].x;
+    let ky: f32 = gridA[m].y;
+    v  = vec2<f32>( ky * f.y, -ky * f.x);   // -i*ky*f  =  -d_y f
+    v2 = vec2<f32>(-kx * f.y,  kx * f.x);   // +i*kx*f  =  +d_x f
+  }
   outk[m] = v;
+  outk2[m] = v2;
+}`;
+  // |(ux,uy)| in place: a <- sqrt(a^2 + b^2), so the existing max-reduce and
+  // colorize see the (non-negative) magnitude in dispR without a new binding.
+  S.vecMag = pre + `
+@group(0) @binding(0) var<storage, read_write> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i: u32 = gid.x;
+  if (i >= NR) { return; }
+  let x: f32 = a[i];
+  let y: f32 = b[i];
+  a[i] = sqrt(x * x + y * y);
+}`;
+  // subsample the vector field for the arrow overlay (point sample at the cell corner)
+  const AD = arrowDims(nx, ny);
+  S.vecGather = pre + `
+const SX: u32 = ${AD.sx}u;
+const SY: u32 = ${AD.sy}u;
+const NAX: u32 = ${AD.nax}u;
+const NAY: u32 = ${AD.nay}u;
+@group(0) @binding(0) var<storage, read> ux: array<f32>;
+@group(0) @binding(1) var<storage, read> uy: array<f32>;
+@group(0) @binding(2) var<storage, read_write> av: array<vec2<f32>>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i: u32 = gid.x;
+  if (i >= NAX * NAY) { return; }
+  let ax: u32 = i / NAY;
+  let ay: u32 = i % NAY;
+  let s: u32 = (ax * SX) * NY + (ay * SY);
+  av[i] = vec2<f32>(ux[s], uy[s]);
 }`;
   S.maxPartial = pre + `
 @group(0) @binding(0) var<storage, read> f: array<f32>;
@@ -717,27 +782,27 @@ ${reduceTail("f32", "max")}
   if (tid == 0u) { mx[0] = sh[0]; }
 }`;
   S.colorize = pre + `
+struct Mode { mode: u32, pad0: u32, pad1: u32, pad2: u32 };
 @group(0) @binding(0) var<storage, read> f: array<f32>;
 @group(0) @binding(1) var<storage, read> mx: array<f32>;
 @group(0) @binding(2) var tex: texture_storage_2d<rgba8unorm, write>;
-fn cmap(t: f32) -> vec3<f32> {
-  var c: array<vec3<f32>, 9> = array<vec3<f32>, 9>(
-    vec3<f32>(0.0196, 0.1882, 0.3804), vec3<f32>(0.1294, 0.4000, 0.6745),
-    vec3<f32>(0.2627, 0.5765, 0.7647), vec3<f32>(0.5725, 0.7725, 0.8706),
-    vec3<f32>(0.9686, 0.9686, 0.9686), vec3<f32>(0.9922, 0.8588, 0.7804),
-    vec3<f32>(0.9569, 0.6471, 0.5098), vec3<f32>(0.8392, 0.3765, 0.3020),
-    vec3<f32>(0.6980, 0.0941, 0.1686));
-  let u: f32 = clamp((t + 1.0) * 0.5, 0.0, 1.0) * 8.0;
-  let i0: u32 = min(u32(floor(u)), 7u);
-  let fr: f32 = u - f32(i0);
-  return mix(c[i0], c[i0 + 1u], fr);
+@group(0) @binding(3) var<uniform> md: Mode;
+// matplotlib "afmhot": black -> red -> orange -> white, no LUT needed
+fn cmap(x: f32) -> vec3<f32> {
+  let t: f32 = clamp(x, 0.0, 1.0);
+  return vec3<f32>(clamp(2.0 * t, 0.0, 1.0),
+                   clamp(2.0 * t - 0.5, 0.0, 1.0),
+                   clamp(2.0 * t - 1.0, 0.0, 1.0));
 }
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= NX || gid.y >= NY) { return; }
   let v: f32 = f[gid.x * NY + gid.y] / max(mx[0], 1e-30);
-  let c: vec3<f32> = cmap(clamp(v, -1.0, 1.0));
-  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(c, 1.0));
+  // signed fields: vmin=-vmax, vmax=+vmax (imshow(..., cmap="afmhot", vmin=-s, vmax=s));
+  // magnitude modes are already non-negative and map straight onto [0,1].
+  var x: f32;
+  if (md.mode >= 4u) { x = v; } else { x = 0.5 * (clamp(v, -1.0, 1.0) + 1.0); }
+  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(x), 1.0));
 }`;
 
   S.render = `
@@ -789,6 +854,10 @@ class Solver {
     this.nPartR = Math.ceil(this.nr / 1024);
     this.nPartM = Math.ceil(this.g.nm / 1024);
     this.nb = nbins(q.nx, q.ny);
+    const ad = arrowDims(q.nx, q.ny);
+    this.nax = ad.nax; this.nay = ad.nay;
+    this.narrow = this.nax * this.nay;
+    this.mode = 0;
     this.nsteps = 0;
     this.rng = new Gauss(q.seed);
     this._noise = new Float32Array(2 * this.ns * 2);
@@ -826,6 +895,12 @@ class Solver {
       dispK: d.createBuffer({ size: cx, usage: SQ }),
       dispTmp: d.createBuffer({ size: cx, usage: SQ }),
       dispR: d.createBuffer({ size: nr * 4, usage: SQ }),
+      // second display component (vector modes only): its own scratch, so the
+      // physics buffers are never touched by the display path
+      dispK2: d.createBuffer({ size: cx, usage: SQ }),
+      dispTmp2: d.createBuffer({ size: cx, usage: SQ }),
+      dispR2: d.createBuffer({ size: nr * 4, usage: SQ }),
+      arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
       cfg: d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       dispMode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       stage: [0, 1, 2].map(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
@@ -871,7 +946,8 @@ class Solver {
       ou: cp(S.ou, "ou"), scale: cp(S.scale, "scale"), icFinish: cp(S.icFinish, "icFinish"),
       spectrum: cp(S.spectrum, "spectrum"),
       prepDisp: cp(S.prepDisp, "prepDisp"), maxPartial: cp(S.maxPartial, "maxPartial"),
-      maxFinal: cp(S.maxFinal, "maxFinal"), colorize: cp(S.colorize, "colorize")
+      maxFinal: cp(S.maxFinal, "maxFinal"), colorize: cp(S.colorize, "colorize"),
+      vecMag: cp(S.vecMag, "vecMag"), vecGather: cp(S.vecGather, "vecGather")
     };
     const rmod = mod(S.render, "render");
     this.plRender = d.createRenderPipeline({
@@ -909,16 +985,21 @@ class Solver {
       ou: bg(this.pl.ou, [B.forcing, B.shell, B.noise, B.scalars, B.cfg]),
       scale: bg(this.pl.scale, [B.fields, B.forcing, B.gridA, B.gridB, B.shell, B.scalars, B.cfg]),
       icFinish: bg(this.pl.icFinish, [B.nlk, B.gridB, B.fields]),
-      prepDisp: bg(this.pl.prepDisp, [B.fields, B.gridA, B.dispK, B.dispMode]),
+      prepDisp: bg(this.pl.prepDisp, [B.fields, B.gridA, B.dispK, B.dispMode, B.dispK2]),
       colsInvDisp: bg(this.pl.colsInv, [B.dispK, B.dispTmp]),
       rowsC2RDisp: bg(this.pl.rowsC2R, [B.dispTmp, B.dispR]),
+      colsInvDisp2: bg(this.pl.colsInv, [B.dispK2, B.dispTmp2]),
+      rowsC2RDisp2: bg(this.pl.rowsC2R, [B.dispTmp2, B.dispR2]),
+      vecGather: bg(this.pl.vecGather, [B.dispR, B.dispR2, B.arrows]),
+      vecMag: bg(this.pl.vecMag, [B.dispR, B.dispR2]),
       maxPartial: bg(this.pl.maxPartial, [B.dispR, B.maxPart]),
       maxFinal: bg(this.pl.maxFinal, [B.maxPart, B.maxVal]),
       colorize: d.createBindGroup({
         layout: this.pl.colorize.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: B.dispR } },
                   { binding: 1, resource: { buffer: B.maxVal } },
-                  { binding: 2, resource: this.tex.createView() }]
+                  { binding: 2, resource: this.tex.createView() },
+                  { binding: 3, resource: { buffer: B.dispMode } }]
       }),
       render: d.createBindGroup({
         layout: this.plRender.getBindGroupLayout(0),
@@ -948,7 +1029,10 @@ class Solver {
     this.device.queue.writeBuffer(this.buf.cfg, 0, new Float32Array([
       q.Lx / q.nx, q.Ly / q.ny, q.cfl, q.tau, q.epsP, q.epsM, q.smax, 0]));
   }
-  setDisplayMode(mode) { this.device.queue.writeBuffer(this.buf.dispMode, 0, new Uint32Array([mode, 0, 0, 0])); }
+  setDisplayMode(mode) {
+    this.mode = mode | 0;
+    this.device.queue.writeBuffer(this.buf.dispMode, 0, new Uint32Array([this.mode, 0, 0, 0]));
+  }
 
   // ---- initial condition --------------------------------------------------
   setIC(zero) {
@@ -1081,6 +1165,18 @@ class Solver {
     p.dispatchWorkgroups(this.g.nky);
     p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, this.bg.rowsC2RDisp);
     p.dispatchWorkgroups(this.g.nx);
+    if (this.mode >= 4) {
+      // second component -> dispR2, subsample for the overlay, then collapse
+      // dispR to |(ux,uy)| for the autoscale + colormap
+      p.setPipeline(this.pl.colsInv); p.setBindGroup(0, this.bg.colsInvDisp2);
+      p.dispatchWorkgroups(this.g.nky);
+      p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, this.bg.rowsC2RDisp2);
+      p.dispatchWorkgroups(this.g.nx);
+      p.setPipeline(this.pl.vecGather); p.setBindGroup(0, this.bg.vecGather);
+      p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
+      p.setPipeline(this.pl.vecMag); p.setBindGroup(0, this.bg.vecMag);
+      p.dispatchWorkgroups(Math.ceil(this.nr / 64));
+    }
     p.setPipeline(this.pl.maxPartial); p.setBindGroup(0, this.bg.maxPartial);
     p.dispatchWorkgroups(this.nPartR);
     p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, this.bg.maxFinal);
@@ -1100,6 +1196,11 @@ class Solver {
   }
 
   async readStats() { return readBuf(this.device, this.buf.scalars, 32); }
+
+  // subsampled (ux,uy) pairs for the arrow overlay; filled by the last render() in a
+  // vector mode (<= 32*32*2 f32 = 8 kB). Throttled by the caller: one frame of lag is
+  // fine, and this must not turn into a per-step submit.
+  async readArrows() { return readBuf(this.device, this.buf.arrows, this.narrow * 8); }
 
   // recompute + read back the shell spectra: 2*NB floats ([E_u | E_b]). Throttled by
   // the caller (this is a full pass over the fields plus a mapAsync round trip).
@@ -1156,6 +1257,67 @@ function chartCtx(id, w, h) {
   c.textBaseline = "alphabetic";
   return c;
 }
+// ---------------------------------------------------------------------------
+// vector overlay: a transparent 2D canvas sitting exactly on top of #cv
+// ---------------------------------------------------------------------------
+// Orientation. The render fragment samples the field texture with v = 1 - uv.y, so
+// texel row iy sits at screen row iy counted DOWNWARD (and column ix at screen x = ix,
+// counted rightward). The 2D canvas y axis also points down, so the arrow for grid
+// point (ix,iy) goes at (ix,iy) with no position flip, and the physical +y component
+// -- which points DOWN on screen because of that same texture flip -- is drawn as
+// canvas dy = +uy. Relative to a y-up plotting convention that is a sign flip of uy;
+// here it is exactly what keeps the arrows consistent with the colour field.
+const VEC_SIZE = 512;
+let vecCx = null, vecDrawn = false, arrowAt = 0;
+function vecCtx() {
+  if (vecCx) return vecCx;
+  const cv = el("cvVec"), dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(VEC_SIZE * dpr); cv.height = Math.round(VEC_SIZE * dpr);
+  vecCx = cv.getContext("2d");
+  vecCx.setTransform(dpr, 0, 0, dpr, 0, 0);   // all drawing in a logical 512x512 space
+  return vecCx;
+}
+function clearArrows() {
+  if (!vecDrawn) return;
+  vecCtx().clearRect(0, 0, VEC_SIZE, VEC_SIZE);
+  vecDrawn = false;
+}
+function drawArrows(a, nax, nay) {
+  const c = vecCtx(), W = VEC_SIZE, H = VEC_SIZE;
+  c.clearRect(0, 0, W, H);
+  vecDrawn = true;
+  let mx = 0;
+  for (let i = 0; i < nax * nay; i++) {
+    const m = Math.hypot(a[2 * i], a[2 * i + 1]);
+    if (m > mx) mx = m;
+  }
+  if (!isFinite(mx) || mx <= 0) return;
+  const cw = W / nax, ch = H / nay;
+  const sc = 0.9 * Math.min(cw, ch) / mx;     // longest arrow ~ 0.9 * subsample cell
+  const ca = Math.cos(2.6), sa = Math.sin(2.6);
+  const path = new Path2D();
+  for (let ix = 0; ix < nax; ix++) {
+    for (let iy = 0; iy < nay; iy++) {
+      const i = ix * nay + iy;
+      const dx = a[2 * i] * sc, dy = a[2 * i + 1] * sc;
+      const len = Math.hypot(dx, dy);
+      if (!(len > 0.6)) continue;             // sub-pixel (or NaN) -> skip
+      const x0 = (ix + 0.5) * cw - 0.5 * dx, y0 = (iy + 0.5) * ch - 0.5 * dy;
+      const x1 = x0 + dx, y1 = y0 + dy;
+      const ex = dx / len, ey = dy / len, hl = Math.min(0.4 * len, 4);
+      path.moveTo(x0, y0); path.lineTo(x1, y1);
+      path.moveTo(x1, y1);
+      path.lineTo(x1 + hl * (ex * ca - ey * sa), y1 + hl * (ex * sa + ey * ca));
+      path.moveTo(x1, y1);
+      path.lineTo(x1 + hl * (ex * ca + ey * sa), y1 + hl * (ey * ca - ex * sa));
+    }
+  }
+  // afmhot spans black -> white, so every arrow gets a dark halo underneath
+  c.lineCap = "round"; c.lineJoin = "round";
+  c.strokeStyle = "rgba(0,0,0,0.55)"; c.lineWidth = 2.6; c.stroke(path);
+  c.strokeStyle = "rgba(190,255,255,0.8)"; c.lineWidth = 1.1; c.stroke(path);
+}
+
 function histReset() { hist.t.length = 0; hist.ek.length = 0; hist.em.length = 0; }
 function histPush(t, ek, em) {
   if (hist.t.length >= HIST_MAX) {          // full -> keep every other sample
@@ -1424,6 +1586,18 @@ async function loop() {
       histPush(s[1], s[2], s[3]);
       drawEnergy();
     }
+    // arrow overlay: the gather already ran inside render()'s pass, so this is only a
+    // copy + map round trip. ~10 Hz, one frame of lag, and it never runs per step.
+    if (solver.mode >= 4) {
+      const tnow = performance.now();
+      if (tnow - arrowAt > 100) {
+        arrowAt = tnow;
+        const sv = solver;
+        const av = await sv.readArrows();
+        if (sv === solver && solver.mode >= 4) drawArrows(av, sv.nax, sv.nay);
+      }
+    } else clearArrows();
+
     // spectra: a full extra pass over the fields + a map round trip -> throttle hard
     const now = performance.now();
     if (now - specAt > 300) {
@@ -1631,7 +1805,10 @@ async function boot() {
   el("selRes").onchange = rebuild;
   el("selHyper").onchange = applyControls;
   el("btnAutoDiss").onclick = autoDiss;
-  el("selField").onchange = () => solver.setDisplayMode(parseInt(el("selField").value, 10));
+  el("selField").onchange = () => {
+    solver.setDisplayMode(parseInt(el("selField").value, 10));
+    if (solver.mode < 4) clearArrows();
+  };
   for (const id of ["rDiss", "rEps", "rTau", "rCfl", "rCflEvery"]) {
     el(id).oninput = applyControls;
   }

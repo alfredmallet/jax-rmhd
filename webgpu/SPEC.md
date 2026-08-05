@@ -175,9 +175,13 @@ spin-up).
 - Energy: `E_kin = 0.5 * Σ ksq*|phik|²*yfac / (nx*ny)²`, `E_mag` same with `psik`
   (this normalization is shared with P± above — keep it).
 - Display: time t, step count, dt, E_kin, E_mag, steps/s. Render vorticity (default) /
-  current / φ / ψ to canvas each animation frame (one extra ifft of the selected field;
-  render at most once per rAF, stepping multiple times per frame if fast). Diverging
-  colormap (e.g. RdBu) with symmetric autoscaled range.
+  current / φ / ψ / |u| / |b| to canvas each animation frame (one extra ifft of the
+  selected field — two for the vector modes, whose components are u = ẑ×∇φ and
+  b = ẑ×∇ψ; render at most once per rAF, stepping multiple times per frame if fast).
+  matplotlib afmhot colormap: signed fields map x = (v/vmax + 1)/2 over a symmetric
+  autoscaled range, the non-negative magnitude modes map x = v/vmax. The two vector
+  modes also overlay a subsampled (≤32×32) arrow field on a transparent 2D canvas,
+  gathered on the GPU and read back at ~10 Hz (one frame of lag is fine).
 - Controls: run/pause, reset, resolution (128/256/512), diss, hyper (1/2), eps⁺=eps⁻
   (total power), tau, cfl_safety, cfl_every, seed. Changing resolution/hyper rebuilds;
   sliders take effect live.
