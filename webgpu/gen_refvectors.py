@@ -1,0 +1,110 @@
+"""Generate reference test vectors for the WebGPU RMHD port.
+
+Run at fp64 (RMHD_PRECISION=64) so the reference is cleaner than the browser's fp32;
+the browser self-test compares with fp32-appropriate tolerances.
+
+Everything recorded is DETERMINISTIC given the recorded inputs: the one-step
+comparison starts from a recorded (fields, forcing_state, forcing_scale) triple and
+uses dt_override, so no RNG needs to be reproduced in the browser (jax threefry is
+not portable). The OU update itself is validated statistically in-browser instead.
+"""
+import os, json
+os.environ["RMHD_PRECISION"] = "64"
+import numpy as np
+import jax.numpy as jnp
+
+from jax_rmhd.config import Parameters
+from jax_rmhd.grids import setup_kgrids, fft
+from jax_rmhd.run import initialize, _advance_forcing, _refresh_forcing_scale
+from jax_rmhd.timestepping import get_scheme
+from jax_rmhd.physics import equation_registry, construct_rhs
+from jax_rmhd.physics import rmhd
+from jax_rmhd.diagnostics import energy
+
+NX = NY = 32
+params = Parameters(nx=NX, ny=NY, Lx=2*np.pi, Ly=2*np.pi, cfl_safety=0.4,
+                    eqpars={"diss": 0.01, "hyper": 1}, dims=2,
+                    forcing=True, forcing_mode="elsasser",
+                    forcing_power_elsasser=(0.5, 0.5), forcing_tau=1.0,
+                    fshell=(1, 2), forcing_seed=7)
+kgrid = setup_kgrids(params)
+recipe = equation_registry["RMHD"]
+rhs = construct_rhs(recipe)
+stepper, scheme = get_scheme("lsrk33")
+set_timestep = recipe.set_timestep_func
+
+
+def ic(x, y):
+    phi = 0.1*(jnp.sin(x)*jnp.cos(2*y) + jnp.cos(3*x)*jnp.sin(y))
+    psi = 0.1*(jnp.cos(2*x)*jnp.cos(y) + jnp.sin(x)*jnp.sin(3*y))
+    return jnp.stack([phi, psi])
+
+
+def c2j(a):
+    """complex array -> {re: nested list, im: nested list} (z axis squeezed)."""
+    a = np.asarray(a)
+    if a.ndim == 4:            # (nf, 1, nkx, nky) -> (nf, nkx, nky)
+        a = a[:, 0]
+    elif a.ndim == 3 and a.shape[0] == 1:
+        a = a[0]
+    return {"re": a.real.tolist(), "im": a.imag.tolist()}
+
+
+def r2j(a):
+    return np.asarray(a).tolist()
+
+
+out = {"nx": NX, "ny": NY, "Lx": params.Lx, "Ly": params.Ly,
+       "diss": 0.01, "hyper": 1, "cfl_safety": params.cfl_safety,
+       "forcing_power_elsasser": [0.5, 0.5], "forcing_tau": 1.0,
+       "fshell": [1, 2], "forcing_scale_max": params.forcing_scale_max}
+
+# ---- FFT test vector: a deterministic real field and its (unnormalized) rfft2 ----
+x = np.linspace(0, 2*np.pi, NX, endpoint=False).reshape(-1, 1)
+y = np.linspace(0, 2*np.pi, NY, endpoint=False).reshape(1, -1)
+ftest = np.sin(x)*np.cos(2*y) + 0.3*np.cos(3*x + y) + 0.05*np.sin(5*x)*np.sin(7*y)
+out["fft_input"] = r2j(ftest)
+out["fft_output"] = c2j(np.fft.rfft2(ftest))
+
+# ---- static grids the browser must reproduce ----
+out["dealias"] = np.asarray(kgrid.dealias, dtype=np.float64).tolist()
+out["fmask"] = np.asarray(kgrid.fmask, dtype=np.float64).tolist()
+out["lin_L"] = r2j(np.asarray(kgrid.lin_L[0, 0].real))   # -diss*ksq^hyper (diagonal, real)
+
+# ---- initial condition (k-space, dealiased) ----
+state = initialize(ic, params)
+state = _refresh_forcing_scale(state, kgrid, params)
+out["ic_fields_k"] = c2j(state.fields)
+
+# ---- spin-up: 30 real steps so forcing_state/fields are nontrivial ----
+for _ in range(30):
+    prev_t = state.t
+    state = stepper(state, kgrid, params, rhs, set_timestep, scheme)
+    state = _advance_forcing(state, prev_t, kgrid, params)
+
+A = state
+out["A_t"] = float(A.t)
+out["A_fields_k"] = c2j(A.fields)
+out["A_forcing_state"] = c2j(A.forcing_state[:, 0])   # (2, nkx, nky); 2D uses A-coef only
+out["A_forcing_scale"] = r2j(A.forcing_scale)
+
+# ---- granular diagnostics at A ----
+grads = rmhd.grad(A, kgrid, params)
+out["A_nonlinear_k"] = c2j(rmhd.NonlinearTerm(A, grads, kgrid, params))
+out["A_forcing_term_k"] = c2j(rmhd.ForcingTerm(A, grads, kgrid, params))
+out["A_scale_check"] = r2j(rmhd.forcing_scale(A, kgrid, params))  # recompute from A
+ek, em = energy(A, kgrid, params)
+out["A_energy"] = [float(ek), float(em)]
+dtA = float(set_timestep(grads, params))
+out["A_dt"] = dtA
+
+# ---- one deterministic LSRK33 step from A (no OU update afterwards) ----
+B = stepper(A, kgrid, params, rhs, set_timestep, scheme, dt_override=dtA)
+out["B_t"] = float(B.t)
+out["B_fields_k"] = c2j(B.fields)
+
+dst = "/sessions/relaxed-determined-brahmagupta/mnt/outputs/refvectors.json"
+with open(dst, "w") as f:
+    json.dump(out, f)
+print("wrote", dst, os.path.getsize(dst), "bytes")
+print("A energy:", out["A_energy"], "dt:", dtA, "scale:", out["A_forcing_scale"])
