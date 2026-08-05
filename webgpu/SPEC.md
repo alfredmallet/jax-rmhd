@@ -1,5 +1,11 @@
 # WebGPU 2D forced RMHD — implementation spec
 
+> **File layout note (2026-08-05):** the app was split into `webgpu/rmhd2d.html` (this
+> spec's app: UI, physics WGSL, Solver, inlined reference vectors) plus `webgpu/common.js`
+> (machinery shared with the 3D app) and `webgpu/style.css`; `webgpu/index.html` is now a
+> landing page. Everything below is unchanged as a contract — read "index.html" as
+> "rmhd2d.html + common.js".
+
 Target: a single self-contained `webgpu/index.html` (no build step, no server — must work
 from `file://`) implementing the 2D forced-RMHD solver of this repo (`jax_rmhd`) on
 WebGPU, with the LSRK33 integrating-factor scheme. fp32 throughout (WebGPU has no f64).
