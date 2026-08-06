@@ -13,6 +13,7 @@
   &middot; <a href="index.html">overview</a></div>
 
 <div id="controls">
+  <div class="hint" id="demohint" style="display:none"></div>
   <div class="row">
     <button id="btnRun">Run</button>
     <button id="btnReset">Reset</button>
@@ -24,6 +25,25 @@
       <option value="3">psi</option>
       <option value="4">velocity |u| + vectors</option>
       <option value="5">magnetic |b| + vectors</option>
+      <option value="6">Elsasser |z+| + vectors</option>
+      <option value="7">Elsasser |z-| + vectors</option>
+      <option value="8">cross helicity &sigma;_c</option>
+    </select>
+  </div>
+  <div class="row">
+    <label>dual view</label><input type="checkbox" id="cbDual"
+      title="show a second display of the same state, with its own quantity">
+    <label>show 2</label>
+    <select id="selField2" disabled>
+      <option value="0">vorticity</option>
+      <option value="1">current</option>
+      <option value="2">phi</option>
+      <option value="3">psi</option>
+      <option value="4">velocity |u|</option>
+      <option value="5">magnetic |b|</option>
+      <option value="6" selected>Elsasser |z+|</option>
+      <option value="7">Elsasser |z-|</option>
+      <option value="8">cross helicity &sigma;_c</option>
     </select>
   </div>
   <div class="row">
@@ -32,13 +52,66 @@
     <label>hyper</label>
     <select id="selHyper"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option></select>
   </div>
+  <div class="row">
+    <label>initial condition</label>
+    <select id="selIC">
+      <option value="modes">large-scale modes</option>
+      <option value="letters">letters (Elsasser packets)</option>
+      <option value="custom">custom (drawn blobs)</option>
+      <option value="quiescent">quiescent (zero)</option>
+    </select>
+    <label>letters</label>
+    <input type="text" id="tLetters" value="AB" maxlength="2" style="width:46px"
+      title="first character -> z+, second -> z-">
+    <label>amplitude</label>
+    <input type="range" id="rAmp" min="-2" max="1" step="0.05" value="0"><span class="val" id="vAmp"></span>
+  </div>
+  <div class="row" id="rowDraw" style="display:none">
+    <button id="btnEdit" title="pause and paint gaussian blobs on the display canvas">edit IC</button>
+    <label>paint</label>
+    <select id="selPaint">
+      <option value="zp">z&#8314;</option>
+      <option value="zm">z&#8315;</option>
+      <option value="phi">&phi;</option>
+      <option value="psi">&psi;</option>
+    </select>
+    <label>&sigma;&perp;</label>
+    <input type="range" id="rSigP" min="0.01" max="0.3" step="0.005" value="0.08"><span class="val" id="vSigP"></span>
+    <label>negative</label><input type="checkbox" id="cbNeg" title="deposit with a minus sign (or just drag with the right button)">
+    <button id="btnApply">apply &amp; run</button>
+    <button id="btnClear" title="erase the drawing (there is no undo stack)">clear</button>
+  </div>
   <div class="row"><label>power &epsilon;</label><input type="checkbox" id="cbForce" checked title="forcing on/off (unchecked: decaying turbulence)"><input type="range" id="rEps" min="-3" max="1" step="0.05" value="-0.52"><span class="val" id="vEps"></span></div>
   <div class="row"><label>diss</label><input type="range" id="rDiss" min="-20" max="-1" step="0.05" value="-13"><span class="val" id="vDiss"></span><button id="btnAutoDiss" title="set a marginally-resolved diss for the current hyper / resolution / power">auto</button></div>
   <div class="row"><label>tau</label><input type="range" id="rTau" min="0.05" max="5" step="0.05" value="1"><span class="val" id="vTau"></span></div>
   <div class="row"><label>cfl_safety</label><input type="range" id="rCfl" min="0.05" max="0.9" step="0.01" value="0.4"><span class="val" id="vCfl"></span></div>
   <div class="row"><label>cfl_every</label><input type="range" id="rCflEvery" min="1" max="16" step="1" value="4"><span class="val" id="vCflEvery"></span></div>
   <div class="row"><label>seed</label><input type="number" id="nSeed" value="7" style="width:80px"></div>
-  <div class="hint">dt is recomputed every cfl_every steps (forced to every step for the
+  <div class="hint">The <b>initial condition</b> selector picks what Reset loads:
+    the built-in large-scale modes, an exactly quiescent state, or &ldquo;letters&rdquo;
+    &mdash; one rasterized, gaussian-smoothed glyph per Elsasser field
+    (z&#8314; = &phi;+&psi; from the first character, z&#8315; = &phi;&minus;&psi; from the
+    second), each scaled so that max |&zcaron;&times;&nabla;z&plusmn;| equals the amplitude
+    knob (approximately: the 2/3 dealias trims it slightly). Try it with forcing off for
+    decaying turbulence, or open <a href="?demo=decay">the decay demo</a>.
+    &ldquo;custom&rdquo; opens the <b>blob editor</b>: press <b>edit IC</b> (this pauses
+    the run), then click or drag on the display to deposit periodic gaussian blobs into
+    the chosen field &mdash; z&plusmn; are the Elsasser stream functions, &phi;/&psi; the
+    evolved ones (&phi; = a blob in both z&plusmn;, &psi; one of each sign). &sigma;&perp;
+    is the blob width (floored at 2 cells), the amplitude slider its peak
+    |&zcaron;&times;&nabla;| and the &ldquo;negative&rdquo; box &mdash; or dragging with
+    the RIGHT button &mdash; flips its sign. The canvas shows the drawn STREAM FUNCTION
+    of the painted field on the CPU (no GPU round trip while editing);
+    <b>apply &amp; run</b> uploads it and starts stepping, <b>clear</b> erases (there is
+    no undo stack), and Reset re-applies the same drawing until you change preset or
+    resolution.
+    &ldquo;dual view&rdquo; adds a second canvas showing the same state as a
+    different quantity. |z&plusmn;| are the Elsasser fields z&plusmn; = &phi;&plusmn;&psi;
+    (shown as |&zcaron;&times;&nabla;z&plusmn;|); &sigma;_c = (|z&#8314;|&sup2;&minus;|z&#8315;|&sup2;)/(|z&#8314;|&sup2;+|z&#8315;|&sup2;)
+    is drawn on a FIXED &plusmn;1 range (no autoscale, so colours are comparable between
+    frames) and is set to 0 wherever the local Elsasser energy is below 10&#8315;&#8308; of its
+    maximum &mdash; there the ratio is noise. Arrows and the cut trace follow display 1.
+    dt is recomputed every cfl_every steps (forced to every step for the
     first 200 steps of a run &mdash; a frozen dt from a quiescent start blows up).
     hyper=1 needs MUCH larger diss to resolve &mdash; k_diss &asymp; (&epsilon;/diss&sup3;)<sup>1/4</sup>
     must stay below the dealias cutoff nx/3, i.e. diss &gtrsim; 1.5e-3 at 512&sup2; &mdash; and
@@ -51,9 +124,21 @@
 
 <div id="display">
   <div>
-    <div id="cvwrap">
-      <canvas id="cv" width="512" height="512"></canvas>
-      <canvas id="cvVec" width="512" height="512"></canvas>
+    <div id="views">
+      <div>
+        <div id="cvwrap">
+          <canvas id="cv" width="512" height="512"></canvas>
+          <canvas id="cvVec" width="512" height="512"></canvas>
+          <canvas id="cvEdit" width="512" height="512"></canvas>
+        </div>
+        <div class="viewcap" id="cap1"></div>
+      </div>
+      <div id="view2">
+        <div id="cvwrap2">
+          <canvas id="cv2" width="512" height="512"></canvas>
+        </div>
+        <div class="viewcap" id="cap2"></div>
+      </div>
     </div>
     <div id="readout">initialising&hellip;</div>
   </div>
@@ -86,6 +171,7 @@
 </div>
 
 <script src="common.js"></script>
+<script src="physics.js"></script>
 <script>
 "use strict";
 
@@ -143,7 +229,8 @@ function makeGrid(p) {
 }
 
 // ---------------------------------------------------------------------------
-// WGSL (2D-specific kernels; the generic pieces come from common.js)
+// WGSL (2D-specific kernels; the shared physics + display templates come from
+// physics.js, the generic reductions and the FFT template from common.js)
 // ---------------------------------------------------------------------------
 const MODE_STRUCT = `struct Mode { mode: u32, pad0: u32, pad1: u32, pad2: u32 };`;
 
@@ -160,6 +247,11 @@ const NR: u32 = ${nr}u;
 const INVN2: f32 = ${invN2};
 struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f32, pad: f32 };
 `;
+  // the constants object physics.js templates over (see its header): no gridZ, a
+  // flat mode index, real-space kernels at 64 threads, the display buffer is the
+  // whole domain.
+  const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
+              ns: g.shell.length, modeStruct: MODE_STRUCT };
 
   const S = {};
 
@@ -213,60 +305,13 @@ const NKY_: u32 = ${nky}u;`;
     store: `  for (var idx: u32 = tid; idx < NX_; idx = idx + ${WGC}u) { cout[base + idx * NKY_] = buf[src + idx] * SCL; }`
   });
 
-  // ---- gradients in k-space: i*k * {phi, psi, vort, jpar} ------------------
-  S.prepGrads = pre + `
-@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> outg: array<vec2<f32>>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let m: u32 = gid.x;
-  if (m >= NM) { return; }
-  let g: vec4<f32> = gridA[m];
-  let phi: vec2<f32> = fields[m];
-  let psi: vec2<f32> = fields[NM + m];
-  let vort: vec2<f32> = -g.z * phi;
-  let jpar: vec2<f32> = -g.z * psi;
-  outg[m]           = vec2<f32>(-g.x * phi.y,  g.x * phi.x);
-  outg[NM + m]      = vec2<f32>(-g.y * phi.y,  g.y * phi.x);
-  outg[2u*NM + m]   = vec2<f32>(-g.x * psi.y,  g.x * psi.x);
-  outg[3u*NM + m]   = vec2<f32>(-g.y * psi.y,  g.y * psi.x);
-  outg[4u*NM + m]   = vec2<f32>(-g.x * vort.y, g.x * vort.x);
-  outg[5u*NM + m]   = vec2<f32>(-g.y * vort.y, g.y * vort.x);
-  outg[6u*NM + m]   = vec2<f32>(-g.x * jpar.y, g.x * jpar.x);
-  outg[7u*NM + m]   = vec2<f32>(-g.y * jpar.y, g.y * jpar.x);
-}`;
-
-  // ---- Poisson brackets in real space -------------------------------------
-  S.bracket = pre + `
-@group(0) @binding(0) var<storage, read> gr: array<f32>;
-@group(0) @binding(1) var<storage, read_write> nl: array<f32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i: u32 = gid.x;
-  if (i >= NR) { return; }
-  let ax: f32 = gr[i];            let ay: f32 = gr[NR + i];        // grad phi
-  let bx: f32 = gr[2u*NR + i];    let by: f32 = gr[3u*NR + i];     // grad psi
-  let cx: f32 = gr[4u*NR + i];    let cy: f32 = gr[5u*NR + i];     // grad vort
-  let dx_: f32 = gr[6u*NR + i];   let dy_: f32 = gr[7u*NR + i];    // grad jpar
-  nl[i]      = (bx * dy_ - by * dx_) - (ax * cy - ay * cx);        // {psi,jpar} - {phi,vort}
-  nl[NR + i] = -(ax * by - ay * bx);                               // -{phi,psi}
-}`;
-
-  // ---- assemble the nonlinear part of the RHS (dealias here and ONLY here) --
-  S.nlAssemble = pre + `
-@group(0) @binding(0) var<storage, read> nlk: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> gridB: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> rhs: array<vec2<f32>>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let m: u32 = gid.x;
-  if (m >= NM) { return; }
-  let de: f32 = gridB[m].x;
-  rhs[m]      = (-gridA[m].w * de) * nlk[m];
-  rhs[NM + m] = de * nlk[NM + m];
-}`;
+  // ---- shared physics kernels (physics.js) --------------------------------
+  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar
+  //   bracket     the two Poisson brackets in real space
+  //   nlAssemble  the nonlinear RHS (dealias here and ONLY here)
+  S.prepGrads = prepGradsWGSL(C);
+  S.bracket = bracketWGSL(C);
+  S.nlAssemble = nlAssembleWGSL(C);
 
   // ---- add the (already normalized) Elsasser forcing ----------------------
   S.forcingAdd = pre + `
@@ -312,33 +357,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // ---- energy + dissipation rate -----------------------------------------
   const nPartM = Math.ceil(nm / 1024);
-  S.energyPartial = pre + `
-@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> gridB: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> part: array<vec4<f32>>;
-var<workgroup> sh: array<vec4<f32>, 256>;
-fn add4(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> { return a + b; }
-@compute @workgroup_size(256)
-fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let tid: u32 = lid.x;
-  var acc: vec4<f32> = vec4<f32>(0.0);
-  var m: u32 = wgid.x * 1024u + tid;
-  for (var c: u32 = 0u; c < 4u; c = c + 1u) {
-    if (m < NM) {
-      let A: vec4<f32> = gridA[m];
-      let B: vec4<f32> = gridB[m];
-      let phi: vec2<f32> = fields[m];
-      let psi: vec2<f32> = fields[NM + m];
-      let ek: f32 = A.z * dot(phi, phi) * B.w;
-      let em: f32 = A.z * dot(psi, psi) * B.w;
-      acc = acc + vec4<f32>(ek, em, -B.y * (ek + em), 0.0);
-    }
-    m = m + 256u;
-  }
-${reduceTail("vec4<f32>", "add4")}
-  if (tid == 0u) { part[wgid.x] = sh[0]; }
-}`;
+  S.energyPartial = energyPartialWGSL(C);
   S.energyFinal = energyFinalWGSL(pre, nPartM);
 
   // ---- shell-binned perpendicular energy spectra --------------------------
@@ -384,120 +403,28 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   // ---- t += dt, and the time integral of the dissipation rate -------------
   S.tick = tickWGSL(pre);
 
-  // ---- OU update on the shell modes --------------------------------------
-  S.ou = pre + `
-@group(0) @binding(0) var<storage, read_write> frc: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> shell: array<u32>;
-@group(0) @binding(2) var<storage, read> noise: array<vec2<f32>>;
-@group(0) @binding(3) var<storage, read> sc: array<f32>;
-@group(0) @binding(4) var<uniform> cfg: Cfg;
-const NS: u32 = ${g.shell.length}u;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let n: u32 = gid.x;
-  if (n >= 2u * NS) { return; }
-  let ou: u32 = n / NS;
-  let s: u32 = n - ou * NS;
-  let m: u32 = ou * NM + shell[s];
-  let decay: f32 = exp(-sc[0] / cfg.tau);
-  let diff: f32 = sqrt(max(0.0, 1.0 - decay * decay));
-  frc[m] = frc[m] * decay + diff * noise[n];
-}`;
-
-  // ---- once-per-step power normalization (lagged by design) ---------------
-  S.scale = pre + `
-@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> frc: array<vec2<f32>>;
-@group(0) @binding(2) var<storage, read> gridA: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read> gridB: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read> shell: array<u32>;
-@group(0) @binding(5) var<storage, read_write> sc: array<f32>;
-@group(0) @binding(6) var<uniform> cfg: Cfg;
-var<workgroup> sh: array<vec4<f32>, 64>;
-const NS: u32 = ${g.shell.length}u;
-@compute @workgroup_size(64)
-fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
-  let tid: u32 = lid.x;
-  var acc: vec4<f32> = vec4<f32>(0.0);
-  for (var s: u32 = tid; s < NS; s = s + 64u) {
-    let m: u32 = shell[s];
-    let w: f32 = gridA[m].z * gridB[m].w;      // ksq * yfac
-    let phi: vec2<f32> = fields[m];
-    let psi: vec2<f32> = fields[NM + m];
-    let zp: vec2<f32> = phi + psi;
-    let zm: vec2<f32> = phi - psi;
-    acc = acc + vec4<f32>(w * dot(zp, frc[m]), w * dot(zm, frc[NM + m]), 0.0, 0.0);
-  }
-  sh[tid] = acc;
-  workgroupBarrier();
-  var stride: u32 = 32u;
-  loop {
-    if (stride == 0u) { break; }
-    if (tid < stride) { sh[tid] = sh[tid] + sh[tid + stride]; }
-    workgroupBarrier();
-    stride = stride >> 1u;
-  }
-  if (tid == 0u) {
-    let Pp: f32 = sh[0].x * INVN2;
-    let Pm: f32 = sh[0].y * INVN2;
-    sc[4] = select(clamp(2.0 * cfg.epsP / Pp, -cfg.smax, cfg.smax), 0.0, cfg.epsP == 0.0);
-    sc[5] = select(clamp(2.0 * cfg.epsM / Pm, -cfg.smax, cfg.smax), 0.0, cfg.epsM == 0.0);
-  }
-}`;
+  // ---- forcing: OU update on the shell modes, then the power normalization -
+  S.ou = ouWGSL(C);
+  S.scale = scaleWGSL(C);
 
   // ---- initial condition: dealias the transformed IC ----------------------
-  S.icFinish = pre + `
-@group(0) @binding(0) var<storage, read> ick: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> gridB: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> fields: array<vec2<f32>>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx: u32 = gid.x;
-  if (idx >= 2u * NM) { return; }
-  let m: u32 = select(idx, idx - NM, idx >= NM);
-  fields[idx] = ick[idx] * gridB[m].x;
-}`;
+  S.icFinish = icFinishWGSL(C);
 
-  // ---- display: pick a field, reduce |.|max, colorize ---------------------
-  // modes 0..3 are scalars (outk only, outk2 = 0); modes 4/5 are the perpendicular
-  // vector fields u = zhat x grad phi and b = zhat x grad psi, i.e. (-d_y f, +d_x f),
-  // whose two components go to outk / outk2 and get their own inverse transform.
-  S.prepDisp = pre + `
-${MODE_STRUCT}
-@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> outk: array<vec2<f32>>;
-@group(0) @binding(3) var<uniform> md: Mode;
-@group(0) @binding(4) var<storage, read_write> outk2: array<vec2<f32>>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let m: u32 = gid.x;
-  if (m >= NM) { return; }
-  var v: vec2<f32> = vec2<f32>(0.0, 0.0);
-  var v2: vec2<f32> = vec2<f32>(0.0, 0.0);
-  if (md.mode == 0u) { v = -gridA[m].z * fields[m]; }
-  else if (md.mode == 1u) { v = -gridA[m].z * fields[NM + m]; }
-  else if (md.mode == 2u) { v = fields[m]; }
-  else if (md.mode == 3u) { v = fields[NM + m]; }
-  else {
-    let f: vec2<f32> = select(fields[m], fields[NM + m], md.mode == 5u);
-    let kx: f32 = gridA[m].x;
-    let ky: f32 = gridA[m].y;
-    v  = vec2<f32>( ky * f.y, -ky * f.x);   // -i*ky*f  =  -d_y f
-    v2 = vec2<f32>(-kx * f.y,  kx * f.x);   // +i*kx*f  =  +d_x f
-  }
-  outk[m] = v;
-  outk2[m] = v2;
-}`;
-  // generic display helpers (common.js): magnitude collapse, arrow subsample,
-  // cut-trace gather, autoscale reduction, afmhot colorize, screen blit
-  S.vecMag = vecMagWGSL(pre, "NR", 64);
-  S.vecGather = vecGatherWGSL(pre, arrowDims(nx, ny));
-  S.cutGather = cutGatherWGSL(pre);
+  // ---- display chain (physics.js): pick the field, collapse vector modes to
+  // a magnitude, subsample for the arrows, gather the cut line, colorize ----
+  S.prepDisp = prepDispWGSL(C);
+  S.vecMag = vecMagWGSL(C);
+  S.vecGather = vecGatherWGSL(C);
+  S.cutGather = cutGatherWGSL(C);
+  S.colorize = colorizeWGSL(C);
+  S.render = RENDER_WGSL;
+  // sigma_c extras: |z+-|^2, the floor's max reduction, and the ratio
+  S.vecMagSq = vecMagSqWGSL(C);
+  S.maxSumPartial = maxSumPartialWGSL(C);
+  S.sigmaCombine = sigmaCombineWGSL(C);
+  // generic autoscale reduction (common.js)
   S.maxPartial = maxPartialWGSL(pre, "NR");
   S.maxFinal = maxFinalWGSL(pre, nPartR);
-  S.colorize = colorizeWGSL(pre, MODE_STRUCT);
-  S.render = RENDER_WGSL;
 
   return S;
 }
@@ -523,14 +450,16 @@ class Solver {
     const ad = arrowDims(q.nx, q.ny);
     this.nax = ad.nax; this.nay = ad.nay;
     this.narrow = this.nax * this.nay;
-    this.mode = 0;
+    this.mode = 0;                 // display 1's mode (mirrored for the frame loop)
     this.cube = 0;                 // the 2D app has no cube-face mode
+    this.disp = [];                // display chains; chain 1 is built on demand
     this.nsteps = 0;
     this.rng = new Gauss(q.seed);
     this._noise = new Float32Array(2 * this.ns * 2);
     this._raw = new Float32Array(2 * this.ns * 2);
     this._buildBuffers();
     this._buildPipelines();
+    this.chain(0);
     this.uploadGrid();
     this.uploadCfg();
     this.setIC();
@@ -557,30 +486,101 @@ class Solver {
       cflPart: d.createBuffer({ size: this.nPartR * 8, usage: SQ }),
       enPart: d.createBuffer({ size: this.nPartM * 16, usage: SQ }),
       specBins: d.createBuffer({ size: 2 * this.nb * 4, usage: SQ }),
-      maxPart: d.createBuffer({ size: this.nPartR * 4, usage: SQ }),
-      maxVal: d.createBuffer({ size: 4, usage: SQ }),
-      dispK: d.createBuffer({ size: cx, usage: SQ }),
-      dispTmp: d.createBuffer({ size: cx, usage: SQ }),
-      dispR: d.createBuffer({ size: nr * 4, usage: SQ }),
-      // second display component (vector modes only): its own scratch, so the
-      // physics buffers are never touched by the display path
-      dispK2: d.createBuffer({ size: cx, usage: SQ }),
-      dispTmp2: d.createBuffer({ size: cx, usage: SQ }),
-      dispR2: d.createBuffer({ size: nr * 4, usage: SQ }),
+      // arrow + cut gathers are display-1 only (see _makeChain)
       arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
       cut: d.createBuffer({ size: this.g.ny * 4, usage: SQ }),
       cfg: d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-      dispMode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       stage: [0, 1, 2].map(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
     for (let s = 0; s < 3; s++) {
       d.queue.writeBuffer(this.buf.stage[s], 0,
         new Float32Array([LSRK33.alpha[s], LSRK33.beta[s], LSRK33.gamma[s], 0]));
     }
-    this.tex = d.createTexture({
+  }
+
+  // ---- display chains -----------------------------------------------------
+  // One chain = the scratch, bind groups, Mode uniforms and output texture of ONE
+  // canvas. Chain 0 is built with the solver and also owns the arrow / cut gathers
+  // (both are display-1 only); chain 1 is built on demand, the first time dual view
+  // is enabled, so a single-view session pays nothing for it.
+  //
+  // Buffer reuse inside a chain (dispK/dispTmp are pure scratch, so BOTH sigma_c
+  // halves run through them):
+  //   half 0 (any mode, or z+ of sigma_c): components -> dispR, dispR2
+  //   half 1 (z- of sigma_c):              components -> dispR2, dispR3
+  // after which magSqA collapses (dispR, dispR2) -> dispR = |z+|^2 and magSqB
+  // collapses (dispR2, dispR3) -> dispR2 = |z-|^2. Dispatches inside one compute
+  // pass are ordered, so the reuse is safe.
+  _makeChain(ci) {
+    const d = this.device, nm = this.g.nm, nr = this.nr, cx = nm * 8;
+    const B = {
+      dispK: d.createBuffer({ size: cx, usage: SQ }),
+      dispTmp: d.createBuffer({ size: cx, usage: SQ }),
+      dispR: d.createBuffer({ size: nr * 4, usage: SQ }),
+      // second display component (vector / sigma_c modes): its own scratch, so the
+      // physics buffers are never touched by the display path
+      dispK2: d.createBuffer({ size: cx, usage: SQ }),
+      dispTmp2: d.createBuffer({ size: cx, usage: SQ }),
+      dispR2: d.createBuffer({ size: nr * 4, usage: SQ }),
+      dispR3: d.createBuffer({ size: nr * 4, usage: SQ }),
+      maxPart: d.createBuffer({ size: this.nPartR * 4, usage: SQ }),
+      maxVal: d.createBuffer({ size: 4, usage: SQ }),
+      mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // pinned to the z- vector: the second half of the sigma_c chain
+      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    };
+    d.queue.writeBuffer(B.modeM, 0, new Uint32Array([DISP_ZMINUS, 0, 0, 0]));
+    const tex = d.createTexture({
       size: [this.g.nx, this.g.ny], format: "rgba8unorm",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
     });
+    const P = this.buf;
+    const bgOf = (pipe, entries) => d.createBindGroup({
+      layout: pipe.getBindGroupLayout(0),
+      entries: entries.map((r, i) => ({ binding: i, resource: r.buffer ? r : { buffer: r } }))
+    });
+    const bg = {
+      prepDisp: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.mode, B.dispK2]),
+      prepDispM: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.modeM, B.dispK2]),
+      colsInvDisp: bgOf(this.pl.colsInv, [B.dispK, B.dispTmp]),
+      colsInvDisp2: bgOf(this.pl.colsInv, [B.dispK2, B.dispTmp2]),
+      rowsC2RDisp: bgOf(this.pl.rowsC2R, [B.dispTmp, B.dispR]),
+      rowsC2RDisp2: bgOf(this.pl.rowsC2R, [B.dispTmp2, B.dispR2]),
+      // the sigma_c second half writes one buffer further along
+      rowsC2RDispH1: bgOf(this.pl.rowsC2R, [B.dispTmp, B.dispR2]),
+      rowsC2RDisp2H1: bgOf(this.pl.rowsC2R, [B.dispTmp2, B.dispR3]),
+      vecMag: bgOf(this.pl.vecMag, [B.dispR, B.dispR2]),
+      magSqA: bgOf(this.pl.vecMagSq, [B.dispR, B.dispR2]),
+      magSqB: bgOf(this.pl.vecMagSq, [B.dispR2, B.dispR3]),
+      maxSumPartial: bgOf(this.pl.maxSumPartial, [B.dispR, B.dispR2, B.maxPart]),
+      sigmaCombine: bgOf(this.pl.sigmaCombine, [B.dispR, B.dispR2, B.maxVal]),
+      maxPartial: bgOf(this.pl.maxPartial, [B.dispR, B.maxPart]),
+      maxFinal: bgOf(this.pl.maxFinal, [B.maxPart, B.maxVal]),
+      colorize: d.createBindGroup({
+        layout: this.pl.colorize.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: B.dispR } },
+                  { binding: 1, resource: { buffer: B.maxVal } },
+                  { binding: 2, resource: tex.createView() },
+                  { binding: 3, resource: { buffer: B.mode } }]
+      }),
+      render: d.createBindGroup({
+        layout: this.plRender.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: this.sampler },
+                  { binding: 1, resource: tex.createView() }]
+      })
+    };
+    if (ci === 0) {
+      bg.vecGather = bgOf(this.pl.vecGather, [B.dispR, B.dispR2, P.arrows]);
+      bg.cutGather = bgOf(this.pl.cutGather, [B.dispR, P.cut]);
+    }
+    return { mode: 0, buf: B, tex, bg };
+  }
+
+  // chain ci, built on first use
+  chain(ci) {
+    const i = ci | 0;
+    if (!this.disp[i]) this.disp[i] = this._makeChain(i);
+    return this.disp[i];
   }
 
   _buildPipelines() {
@@ -603,7 +603,9 @@ class Solver {
       prepDisp: cp(S.prepDisp, "prepDisp"), maxPartial: cp(S.maxPartial, "maxPartial"),
       maxFinal: cp(S.maxFinal, "maxFinal"), colorize: cp(S.colorize, "colorize"),
       vecMag: cp(S.vecMag, "vecMag"), vecGather: cp(S.vecGather, "vecGather"),
-      cutGather: cp(S.cutGather, "cutGather")
+      cutGather: cp(S.cutGather, "cutGather"), vecMagSq: cp(S.vecMagSq, "vecMagSq"),
+      maxSumPartial: cp(S.maxSumPartial, "maxSumPartial"),
+      sigmaCombine: cp(S.sigmaCombine, "sigmaCombine")
     };
     const rmod = mod(S.render, "render");
     this.plRender = d.createRenderPipeline({
@@ -640,33 +642,18 @@ class Solver {
       tick: bg(this.pl.tick, [B.scalars]),
       ou: bg(this.pl.ou, [B.forcing, B.shell, B.noise, B.scalars, B.cfg]),
       scale: bg(this.pl.scale, [B.fields, B.forcing, B.gridA, B.gridB, B.shell, B.scalars, B.cfg]),
-      icFinish: bg(this.pl.icFinish, [B.nlk, B.gridB, B.fields]),
-      prepDisp: bg(this.pl.prepDisp, [B.fields, B.gridA, B.dispK, B.dispMode, B.dispK2]),
-      colsInvDisp: bg(this.pl.colsInv, [B.dispK, B.dispTmp]),
-      rowsC2RDisp: bg(this.pl.rowsC2R, [B.dispTmp, B.dispR]),
-      colsInvDisp2: bg(this.pl.colsInv, [B.dispK2, B.dispTmp2]),
-      rowsC2RDisp2: bg(this.pl.rowsC2R, [B.dispTmp2, B.dispR2]),
-      vecGather: bg(this.pl.vecGather, [B.dispR, B.dispR2, B.arrows]),
-      vecMag: bg(this.pl.vecMag, [B.dispR, B.dispR2]),
-      cutGather: bg(this.pl.cutGather, [B.dispR, B.cut]),
-      maxPartial: bg(this.pl.maxPartial, [B.dispR, B.maxPart]),
-      maxFinal: bg(this.pl.maxFinal, [B.maxPart, B.maxVal]),
-      colorize: d.createBindGroup({
-        layout: this.pl.colorize.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: B.dispR } },
-                  { binding: 1, resource: { buffer: B.maxVal } },
-                  { binding: 2, resource: this.tex.createView() },
-                  { binding: 3, resource: { buffer: B.dispMode } }]
-      }),
-      render: d.createBindGroup({
-        layout: this.plRender.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: this.sampler },
-                  { binding: 1, resource: this.tex.createView() }]
-      })
+      icFinish: bg(this.pl.icFinish, [B.nlk, B.gridB, B.fields])
     };
   }
 
-  destroy() { for (const k in this.buf) { const b = this.buf[k]; if (Array.isArray(b)) b.forEach(x => x.destroy()); else b.destroy(); } this.tex.destroy(); }
+  destroy() {
+    for (const k in this.buf) { const b = this.buf[k]; if (Array.isArray(b)) b.forEach(x => x.destroy()); else b.destroy(); }
+    for (const D of this.disp) {
+      if (!D) continue;
+      for (const k in D.buf) D.buf[k].destroy();
+      D.tex.destroy();
+    }
+  }
 
   // ---- parameter / grid uploads ------------------------------------------
   uploadGrid() {
@@ -686,14 +673,22 @@ class Solver {
     this.device.queue.writeBuffer(this.buf.cfg, 0, new Float32Array([
       q.Lx / q.nx, q.Ly / q.ny, q.cfl, q.tau, q.epsP, q.epsM, q.smax, 0]));
   }
-  setDisplayMode(mode) {
-    this.mode = mode | 0;
-    this.device.queue.writeBuffer(this.buf.dispMode, 0, new Uint32Array([this.mode, 0, 0, 0]));
+  // ci = which display chain (0 = the main canvas, 1 = the dual-view canvas)
+  setDisplayMode(ci, mode) {
+    const D = this.chain(ci);
+    D.mode = mode | 0;
+    if ((ci | 0) === 0) this.mode = D.mode;
+    this.device.queue.writeBuffer(D.buf.mode, 0, new Uint32Array([D.mode, 0, 0, 0]));
   }
 
   // ---- initial condition --------------------------------------------------
+  // The solver knows exactly two initial conditions: this built-in pair (the
+  // large-scale mode pattern of gen_refvectors.py, or an exactly quiescent state) and
+  // "here is a real-space (phi, psi)" (setICFromReal). Everything the UI offers as an
+  // "IC preset" is built on the CPU and comes in through the latter, so the self-test
+  // path -- which calls setIC() / setIC(true) -- is untouched by any of it.
   setIC(zero) {
-    const d = this.device, q = this.p, nx = q.nx, ny = q.ny;
+    const q = this.p, nx = q.nx, ny = q.ny;
     const r = new Float32Array(2 * nx * ny);
     if (!zero) {
       for (let i = 0; i < nx; i++) {
@@ -705,6 +700,27 @@ class Solver {
         }
       }
     }
+    this._uploadIC(r);
+  }
+
+  // phi, psi as real-space Float32Arrays of nx*ny each (row-major ix*ny + iy, the
+  // layout of every real-space buffer here). Either may be null = identically zero.
+  setICFromReal(phiReal, psiReal) {
+    const n = this.nr, r = new Float32Array(2 * n);
+    for (const [f, off] of [[phiReal, 0], [psiReal, n]]) {
+      if (!f) continue;
+      if (f.length !== n) throw new Error("setICFromReal: expected " + n + " values, got " + f.length);
+      r.set(f, off);
+    }
+    this._uploadIC(r);
+  }
+
+  // (2*nr) real stack -> forward rfft2 -> dealias (icFinish) -> fields, then the same
+  // zeroed forcing state / lagged scale / energy the constructor leaves behind. The
+  // dealias is applied HERE and not only in the RHS: unmasked beyond-cutoff IC energy
+  // would persist and alias (run.py::initialize).
+  _uploadIC(r) {
+    const d = this.device, q = this.p, nx = q.nx;
     d.queue.writeBuffer(this.buf.realNL, 0, r);
     d.queue.writeBuffer(this.buf.scalars, 0, new Float32Array(8));
     const enc = d.createCommandEncoder();
@@ -812,37 +828,69 @@ class Solver {
   }
 
   // ---- display ------------------------------------------------------------
-  render(ctx) {
-    const d = this.device;
+  // one half of a chain: prepDisp (through the chain's Mode uniform, or its pinned
+  // z- one for half 1) followed by the inverse transform of the first component and,
+  // for the two-component modes, of the second.
+  _dispHalf(p, D, half, twoComp) {
+    p.setPipeline(this.pl.prepDisp);
+    p.setBindGroup(0, half ? D.bg.prepDispM : D.bg.prepDisp);
+    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+    p.setPipeline(this.pl.colsInv); p.setBindGroup(0, D.bg.colsInvDisp);
+    p.dispatchWorkgroups(this.g.nky);
+    p.setPipeline(this.pl.rowsC2R);
+    p.setBindGroup(0, half ? D.bg.rowsC2RDispH1 : D.bg.rowsC2RDisp);
+    p.dispatchWorkgroups(this.g.nx);
+    if (!twoComp) return;
+    p.setPipeline(this.pl.colsInv); p.setBindGroup(0, D.bg.colsInvDisp2);
+    p.dispatchWorkgroups(this.g.nky);
+    p.setPipeline(this.pl.rowsC2R);
+    p.setBindGroup(0, half ? D.bg.rowsC2RDisp2H1 : D.bg.rowsC2RDisp2);
+    p.dispatchWorkgroups(this.g.nx);
+  }
+
+  render(ctx, ci) {
+    const d = this.device, D = this.chain(ci || 0), mode = D.mode;
+    const nrWG = Math.ceil(this.nr / 64);
     const enc = d.createCommandEncoder();
     const p = enc.beginComputePass();
-    p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, this.bg.prepDisp);
-    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
-    p.setPipeline(this.pl.colsInv); p.setBindGroup(0, this.bg.colsInvDisp);
-    p.dispatchWorkgroups(this.g.nky);
-    p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, this.bg.rowsC2RDisp);
-    p.dispatchWorkgroups(this.g.nx);
-    if (this.mode >= 4) {
-      // second component -> dispR2, subsample for the overlay, then collapse
-      // dispR to |(ux,uy)| for the autoscale + colormap
-      p.setPipeline(this.pl.colsInv); p.setBindGroup(0, this.bg.colsInvDisp2);
-      p.dispatchWorkgroups(this.g.nky);
-      p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, this.bg.rowsC2RDisp2);
-      p.dispatchWorkgroups(this.g.nx);
-      p.setPipeline(this.pl.vecGather); p.setBindGroup(0, this.bg.vecGather);
-      p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
-      p.setPipeline(this.pl.vecMag); p.setBindGroup(0, this.bg.vecMag);
-      p.dispatchWorkgroups(Math.ceil(this.nr / 64));
+    this._dispHalf(p, D, 0, dispTwoComp(mode));
+    if (dispIsSigma(mode)) {
+      // |z+|^2 -> dispR, then the z- half -> |z-|^2 in dispR2; the floor uses the
+      // max of their sum, and colorize renders the ratio on the fixed +-1 range.
+      p.setPipeline(this.pl.vecMagSq); p.setBindGroup(0, D.bg.magSqA);
+      p.dispatchWorkgroups(nrWG);
+      this._dispHalf(p, D, 1, true);
+      p.setPipeline(this.pl.vecMagSq); p.setBindGroup(0, D.bg.magSqB);
+      p.dispatchWorkgroups(nrWG);
+      p.setPipeline(this.pl.maxSumPartial); p.setBindGroup(0, D.bg.maxSumPartial);
+      p.dispatchWorkgroups(this.nPartR);
+      p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
+      p.dispatchWorkgroups(1);
+      p.setPipeline(this.pl.sigmaCombine); p.setBindGroup(0, D.bg.sigmaCombine);
+      p.dispatchWorkgroups(nrWG);
+    } else if (dispIsVector(mode)) {
+      // subsample the two components for the overlay, then collapse dispR to
+      // |(ux,uy)| for the autoscale + colormap
+      if (D.bg.vecGather) {
+        p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
+        p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
+      }
+      p.setPipeline(this.pl.vecMag); p.setBindGroup(0, D.bg.vecMag);
+      p.dispatchWorkgroups(nrWG);
     }
-    // cut trace: NY values at ix = NX/2, after the magnitude collapse so the vector
-    // modes trace |u| like the colour field does
-    p.setPipeline(this.pl.cutGather); p.setBindGroup(0, this.bg.cutGather);
-    p.dispatchWorkgroups(Math.ceil(this.g.ny / 64));
-    p.setPipeline(this.pl.maxPartial); p.setBindGroup(0, this.bg.maxPartial);
-    p.dispatchWorkgroups(this.nPartR);
-    p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, this.bg.maxFinal);
-    p.dispatchWorkgroups(1);
-    p.setPipeline(this.pl.colorize); p.setBindGroup(0, this.bg.colorize);
+    // cut trace (display 1 only): NY values at ix = NX/2, after the magnitude
+    // collapse so the vector modes trace |u| like the colour field does
+    if (D.bg.cutGather) {
+      p.setPipeline(this.pl.cutGather); p.setBindGroup(0, D.bg.cutGather);
+      p.dispatchWorkgroups(Math.ceil(this.g.ny / 64));
+    }
+    if (!dispIsSigma(mode)) {          // sigma_c has a FIXED +-1 range, no autoscale
+      p.setPipeline(this.pl.maxPartial); p.setBindGroup(0, D.bg.maxPartial);
+      p.dispatchWorkgroups(this.nPartR);
+      p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
+      p.dispatchWorkgroups(1);
+    }
+    p.setPipeline(this.pl.colorize); p.setBindGroup(0, D.bg.colorize);
     p.dispatchWorkgroups(Math.ceil(this.g.nx / 8), Math.ceil(this.g.ny / 8));
     p.end();
     const rp = enc.beginRenderPass({
@@ -851,7 +899,7 @@ class Solver {
         clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store"
       }]
     });
-    rp.setPipeline(this.plRender); rp.setBindGroup(0, this.bg.render); rp.draw(3);
+    rp.setPipeline(this.plRender); rp.setBindGroup(0, D.bg.render); rp.draw(3);
     rp.end();
     d.queue.submit([enc.finish()]);
   }
@@ -905,16 +953,133 @@ function syncLabels() {
   el("vTau").textContent = parseFloat(el("rTau").value).toFixed(2);
   el("vCfl").textContent = parseFloat(el("rCfl").value).toFixed(2);
   el("vCflEvery").textContent = el("rCflEvery").value;
+  el("vAmp").textContent = icParams().amp.toPrecision(3);
+  el("vSigP").textContent = drawSigma().toPrecision(3);
+}
+
+// ---------------------------------------------------------------------------
+// initial-condition presets
+// ---------------------------------------------------------------------------
+// A preset is a UI concept only: the solver knows the built-in pair (setIC / setIC(true))
+// and "here is a real-space (phi, psi)" (setICFromReal). "letters" rasterizes one glyph
+// per Elsasser field (common.js: icLetterField), each normalized so that
+// max |zhat x grad z+-| = the amplitude knob, and maps them to the evolved variables
+// with phi = (z+ + z-)/2, psi = (z+ - z-)/2.
+function icParams() {
+  const t = el("tLetters").value || "AB";
+  return { preset: el("selIC").value, text: t, amp: Math.pow(10, parseFloat(el("rAmp").value)) };
+}
+function syncIC() {
+  const p = el("selIC").value, isL = p === "letters", isC = p === "custom";
+  el("tLetters").disabled = !isL;
+  el("rAmp").disabled = !isL && !isC;             // "custom" reuses it as the blob amplitude
+  el("rowDraw").style.display = isC ? "" : "none";
+  if (!isC && icDraw.on) icDrawSetMode(false);
+}
+// the effective blob width: the slider is a fraction of Lx, floored at 2 cells
+function drawSigma() {
+  const q = solver ? solver.p : uiParams();
+  return icDrawSigma(parseFloat(el("rSigP").value), q.Lx, q.nx);
+}
+// (re)apply the current preset to the live solver and restart the traces
+function applyIC() {
+  if (!solver) return;
+  const q = solver.p, c = icParams();
+  if (c.preset === "quiescent") solver.setIC(true);
+  else if (c.preset === "custom") {
+    const f = icDrawFields(q);                     // zeros until something is painted
+    solver.setICFromReal(f.phi, f.psi);
+  } else if (c.preset === "letters") {
+    const n = q.nx * q.ny;
+    const zp = icLetterField(c.text.charAt(0), q.nx, q.ny, q.Lx, q.Ly, c.amp);
+    const zm = icLetterField(c.text.charAt(1) || c.text.charAt(0), q.nx, q.ny, q.Lx, q.Ly, c.amp);
+    const phi = new Float32Array(n), psi = new Float32Array(n);
+    for (let i = 0; i < n; i++) { phi[i] = 0.5 * (zp[i] + zm[i]); psi[i] = 0.5 * (zp[i] - zm[i]); }
+    solver.setICFromReal(phi, psi);
+  } else solver.setIC();
+  spsSmooth = 0;
+  histReset(); drawEnergy(); specAt = 0; clearCut();
+}
+
+// the blob editor lives in common.js; this hands it the app's knobs and buttons. In 2D
+// there is no z, so the plane and sigma_z hooks are constants.
+function wireDrawEditor() {
+  icDrawWire({
+    params: () => solver && solver.p,
+    target: () => el("selPaint").value,
+    sigmaFrac: () => parseFloat(el("rSigP").value),
+    sigmaZFrac: () => 0,
+    plane: () => 0,
+    amp: () => icParams().amp,
+    neg: () => el("cbNeg").checked,
+    enabled: () => !!solver,
+    onMode: on => {
+      el("btnEdit").textContent = on ? "stop editing" : "edit IC";
+      el("btnRun").disabled = on;
+      if (on) el("btnRun").textContent = "Run";      // icDrawSetMode paused the run
+    }
+  });
+  el("btnEdit").onclick = () => icDrawSetMode(!icDraw.on);
+  el("btnClear").onclick = () => { icDrawClear(); icDrawPreview(); };
+  el("btnApply").onclick = () => {
+    icDrawSetMode(false);
+    applyIC();                                       // uploads the drawing
+    running = true; el("btnRun").textContent = "Pause";
+  };
+  el("selPaint").onchange = () => { if (icDraw.on) icDrawPreview(); };
+  el("rSigP").oninput = syncLabels;
+}
+
+// ---------------------------------------------------------------------------
+// demos (?demo=NAME): configurations of the controls above, never new physics
+// ---------------------------------------------------------------------------
+const DEMOS = {
+  decay: {
+    set: { selRes: "512", selHyper: "4", cbForce: false, cbDual: true,
+           selField: "6", selField2: "7", selIC: "letters", tLetters: "AB", rAmp: "0",
+           rCflEvery: "4" },
+    prep: () => autoDiss(),          // marginally-resolved diss for 512^2, hyper=4
+    hint: "<b>Demo: decaying 2D turbulence.</b> Two Elsasser packets shaped like the "
+      + "letters A (z<sup>+</sup>) and B (z<sup>-</sup>), no forcing, 512&sup2;, "
+      + "hyper=4 with an auto-resolved diss. Press <b>Run</b>. Watch the spectrum panel "
+      + "settle onto the quasi-universal decaying slope while the total energy falls, and "
+      + "switch a display to <b>cross helicity &sigma;_c</b> to see dynamic alignment: "
+      + "z<sup>+</sup> and z<sup>-</sup> segregate into patches of one sign, which is "
+      + "what shuts the cascade down. The amplitude slider sets max |&zcaron;&times;&nabla;z&plusmn;| "
+      + "of each packet (re-apply with Reset)."
+  }
+};
+
+// dual view: the second canvas + its selector, shown only when the box is ticked
+// (chain 1 is built lazily on the first setDisplayMode / render for it)
+function syncDual() {
+  const on = el("cbDual").checked;
+  el("views").classList.toggle("dual", on);
+  el("selField2").disabled = !on;
+}
+// push both selectors into the solver and label the canvases with what they show
+function applyDisplayModes() {
+  if (!solver) return;
+  const on = el("cbDual").checked;
+  const s1 = el("selField"), s2 = el("selField2");
+  solver.setDisplayMode(0, parseInt(s1.value, 10));
+  el("cap1").textContent = "display 1 — " + s1.options[s1.selectedIndex].textContent;
+  if (on) {
+    solver.setDisplayMode(1, parseInt(s2.value, 10));
+    el("cap2").textContent = "display 2 — " + s2.options[s2.selectedIndex].textContent;
+  }
 }
 
 function rebuild() {
   // never destroy in an event handler: the frame loop may be awaiting a readback
   // on the old solver's buffers. Retire it and free it at the top of a later frame.
   if (solver) { graveyard.push(solver); solver = null; }
+  // a new grid means a new (empty) drawing: the editor's arrays are per-resolution
+  if (icDraw.on) icDrawSetMode(false);
   solver = new Solver(device, uiParams());
-  solver.setDisplayMode(parseInt(el("selField").value, 10));
+  applyDisplayModes();
   stepsPerFrame = 1;
-  histReset(); drawEnergy(); specAt = 0; clearCut();
+  applyIC();                 // the constructor's built-in IC, replaced by the preset
 }
 
 // slider / select -> live solver parameters (also used by the "auto" diss button)
@@ -1055,24 +1220,38 @@ async function runSelfTest() {
 async function boot() {
   // charts first: they must render their frames even if WebGPU is unavailable
   initCharts();
+  // ?demo=... rewrites the controls (and runs its "auto" prep) BEFORE the first
+  // rebuild, so the solver is constructed with the demo's grid and dissipation. Done
+  // ahead of initGPU so the demo hint is on the page even where WebGPU is missing.
+  applyDemoParams(DEMOS);
   if (!await initGPU()) return;
 
   syncLabels();
+  syncDual();
+  syncIC();
+  el("rEps").disabled = !el("cbForce").checked;
   rebuild();
 
   el("btnRun").onclick = () => { running = !running; el("btnRun").textContent = running ? "Pause" : "Run"; };
   el("btnReset").onclick = () => {
-    const q = uiParams(); solver.p.seed = q.seed; solver.setIC(); spsSmooth = 0;
-    histReset(); drawEnergy(); specAt = 0; clearCut();
+    const q = uiParams(); solver.p.seed = q.seed; applyIC();
   };
+  el("selIC").onchange = () => { syncIC(); applyIC(); syncLabels(); };
+  el("tLetters").onchange = applyIC;
+  el("rAmp").oninput = syncLabels;      // takes effect on the next Reset / IC change
+  // in "custom" the amplitude is a per-blob knob: it must NOT re-upload the drawing
+  el("rAmp").onchange = () => { if (el("selIC").value !== "custom") applyIC(); };
   el("selRes").onchange = rebuild;
+  wireDrawEditor();
   el("selHyper").onchange = applyControls;
   el("btnAutoDiss").onclick = autoDiss;
   el("cbForce").onchange = () => { el("rEps").disabled = !el("cbForce").checked; applyControls(); };
   el("selField").onchange = () => {
-    solver.setDisplayMode(parseInt(el("selField").value, 10));
-    if (solver.mode < 4) clearArrows();
+    applyDisplayModes();
+    if (!dispIsVector(solver.mode)) clearArrows();
   };
+  el("selField2").onchange = applyDisplayModes;
+  el("cbDual").onchange = () => { syncDual(); applyDisplayModes(); };
   for (const id of ["rDiss", "rEps", "rTau", "rCfl", "rCflEvery"]) {
     el(id).oninput = applyControls;
   }

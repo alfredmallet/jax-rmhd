@@ -10,6 +10,9 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
             background: #181b21; border: 1px solid #252a33; border-radius: 6px;
             padding: 8px 14px; margin-bottom: 14px; }
 #controls .hint { flex-basis: 100%; margin-top: 4px; }
+/* the ?demo= callout: same hint type, set off from the ordinary help text */
+#demohint { border-left: 2px solid #3d5a7a; padding: 2px 0 2px 9px; margin-bottom: 4px;
+            color: #9fb3c8; font-size: 12px; }
 #display { display: flex; gap: 20px; align-items: flex-start; flex-wrap: nowrap; }
 #charts { display: flex; flex-direction: column; gap: 12px; }
 /* narrow window (phone / half-screen): stack the charts under the sim display and
@@ -23,12 +26,29 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 }
 /* the border lives on the wrapper, so the absolutely-positioned vector overlay
    (inset 0 of the padding box) lines up with #cv exactly at every scale */
-#cvwrap { position: relative; display: block; width: max-content; max-width: 100%;
+#cvwrap, #cvwrap2 { position: relative; display: block; width: max-content; max-width: 100%;
           border: 1px solid #2b303a; box-sizing: border-box; }
-#cv { width: 512px; height: 512px; background: #000;
+#cv, #cv2 { width: 512px; height: 512px; background: #000;
       image-rendering: auto; display: block; }
 #cvVec { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
          display: block; pointer-events: none; }
+/* IC blob editor: an opaque 2D preview over #cv (and over the arrows), shown and made
+   clickable only while #cvwrap carries .editing. Sits after #cvVec in the DOM, so it
+   paints on top of it. touch-action: none keeps a drag from scrolling the page. */
+#cvEdit { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+          display: none; background: #000; cursor: crosshair; touch-action: none; }
+#cvwrap.editing #cvEdit { display: block; }
+/* dual view: the second canvas + both captions appear only when #views has .dual.
+   Side by side while there is room (>= 1400px), stacked below it; in either case
+   each canvas may shrink to share the width, keeping its 1:1 aspect ratio. */
+#views { display: flex; gap: 14px; align-items: flex-start; }
+#view2, .viewcap { display: none; }
+#views.dual #view2 { display: block; }
+#views.dual .viewcap { display: block; color: #7a8494; font-size: 11.5px; margin-top: 5px; }
+#views.dual > div { flex: 1 1 0; min-width: 0; }
+#views.dual #cvwrap, #views.dual #cvwrap2 { width: 100%; max-width: 514px; }
+#views.dual #cv, #views.dual #cv2 { width: 100%; max-width: 512px; height: auto; }
+@media (max-width: 1400px) { #views { flex-direction: column; } }
 canvas.chart { display: block; background: #0f1115; border: 1px solid #2b303a; }
 .panel { min-width: 300px; max-width: 980px; }
 .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }

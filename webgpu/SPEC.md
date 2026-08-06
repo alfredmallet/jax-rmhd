@@ -192,6 +192,10 @@ spin-up).
   (total power), tau, cfl_safety, cfl_every, seed. Changing resolution/hyper rebuilds;
   sliders take effect live.
 - Status line for WebGPU init failures (no adapter → clear message).
+- Outside this contract (display/IC features, no physics): the Elsasser and σ_c display
+  modes, the dual view, the CPU-built IC presets uploaded through `setICFromReal`
+  (including the `custom` gaussian-blob editor, which is CPU-only and paints into the
+  same upload path), and the `?demo=` URL configurations. See README.md.
 
 ## 8. FFT requirements (the hard part)
 

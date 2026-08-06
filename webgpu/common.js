@@ -5,17 +5,18 @@
 // dimension-agnostic WGSL snippets, device bring-up, the chart / overlay drawing,
 // the self-test table and the frame loop.
 //
-// What deliberately does NOT live here: makeGrid, buildShaders' physics kernels
-// (prepGrads, bracket, nlAssemble, forcingAdd, stage, energy, spectrum, scale, ou,
-// icFinish, prepDisp, sliceExtract, faceExtract) and the whole Solver class. Those
-// are per-app: the 2D and 3D versions differ in index layout, dispatch shape and
-// the linear operator, and merging them would cost more in indirection than the
-// duplication costs in lines.
+// What deliberately does NOT live here: the equation kernels and the display
+// chain (physics.js, which templates them over one 2D/3D constants object), the
+// per-app kernels physics.js lists as unshared (stage, forcingAdd/envExpand, the
+// spectra, sliceExtract/faceExtract/cube), makeGrid, and the Solver classes.
+// What stays: the pieces that carry no equation -- the FFT template, the generic
+// reductions (tick, CFL, energy tail, max), device bring-up, charts, overlays,
+// the self-test harness and the frame loop.
 //
-// Loaded as a plain classic <script src="common.js"> BEFORE each app's inline
-// script, so top-level `let`/`const`/`function` here are visible to it (and must
-// not be redeclared there). Works from file://; the reference vectors stay inlined
-// in the HTML because fetch() does not.
+// Loaded as a plain classic <script src="common.js"> BEFORE physics.js and each
+// app's inline script, so top-level `let`/`const`/`function` here are visible to
+// both (and must not be redeclared there). Works from file://; the reference
+// vectors stay inlined in the HTML because fetch() does not.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -283,102 +284,9 @@ ${reduceTail("f32", "max")}
 }`;
 }
 
-// |(ux,uy)| in place: a <- sqrt(a^2 + b^2), so the existing max-reduce and
-// colorize see the (non-negative) magnitude in the display buffer without a new binding.
-function vecMagWGSL(pre, count, wg) {
-  return pre + `
-@group(0) @binding(0) var<storage, read_write> a: array<f32>;
-@group(0) @binding(1) var<storage, read> b: array<f32>;
-@compute @workgroup_size(${wg})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i: u32 = gid.x;
-  if (i >= ${count}) { return; }
-  let x: f32 = a[i];
-  let y: f32 = b[i];
-  a[i] = sqrt(x * x + y * y);
-}`;
-}
-
-// subsample the vector field for the arrow overlay (point sample at the cell corner)
-function vecGatherWGSL(pre, AD) {
-  return pre + `
-const SX: u32 = ${AD.sx}u;
-const SY: u32 = ${AD.sy}u;
-const NAX: u32 = ${AD.nax}u;
-const NAY: u32 = ${AD.nay}u;
-@group(0) @binding(0) var<storage, read> ux: array<f32>;
-@group(0) @binding(1) var<storage, read> uy: array<f32>;
-@group(0) @binding(2) var<storage, read_write> av: array<vec2<f32>>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i: u32 = gid.x;
-  if (i >= NAX * NAY) { return; }
-  let ax: u32 = i / NAY;
-  let ay: u32 = i % NAY;
-  let s: u32 = (ax * SX) * NY + (ay * SY);
-  av[i] = vec2<f32>(ux[s], uy[s]);
-}`;
-}
-
-// one grid line of the displayed scalar at fixed x = Lx/2 (ix = NX/2), for the
-// cut-trace chart: NY values gathered from the displayed (slice) buffer.
-function cutGatherWGSL(pre) {
-  return pre + `
-@group(0) @binding(0) var<storage, read> f: array<f32>;
-@group(0) @binding(1) var<storage, read_write> cut: array<f32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let j: u32 = gid.x;
-  if (j >= NY) { return; }
-  cut[j] = f[(NX / 2u) * NY + j];
-}`;
-}
-
-// afmhot colorize of the displayed slice into the render texture
-function colorizeWGSL(pre, modeStruct) {
-  return pre + `
-${modeStruct}
-@group(0) @binding(0) var<storage, read> f: array<f32>;
-@group(0) @binding(1) var<storage, read> mx: array<f32>;
-@group(0) @binding(2) var tex: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(3) var<uniform> md: Mode;
-// matplotlib "afmhot": black -> red -> orange -> white, no LUT needed
-fn cmap(x: f32) -> vec3<f32> {
-  let t: f32 = clamp(x, 0.0, 1.0);
-  return vec3<f32>(clamp(2.0 * t, 0.0, 1.0),
-                   clamp(2.0 * t - 0.5, 0.0, 1.0),
-                   clamp(2.0 * t - 1.0, 0.0, 1.0));
-}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x >= NX || gid.y >= NY) { return; }
-  let v: f32 = f[gid.x * NY + gid.y] / max(mx[0], 1e-30);
-  // signed fields: vmin=-vmax, vmax=+vmax (imshow(..., cmap="afmhot", vmin=-s, vmax=s));
-  // magnitude modes are already non-negative and map straight onto [0,1].
-  var x: f32;
-  if (md.mode >= 4u) { x = v; } else { x = 0.5 * (clamp(v, -1.0, 1.0) + 1.0); }
-  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(x), 1.0));
-}`;
-}
-
-// full-screen triangle blit of the display texture
-const RENDER_WGSL = `
-@group(0) @binding(0) var samp: sampler;
-@group(0) @binding(1) var tex: texture_2d<f32>;
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex
-fn vs(@builtin(vertex_index) vi: u32) -> VOut {
-  var p: array<vec2<f32>, 3> = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
-  var o: VOut;
-  o.pos = vec4<f32>(p[vi], 0.0, 1.0);
-  o.uv = (p[vi] + vec2<f32>(1.0, 1.0)) * 0.5;
-  return o;
-}
-@fragment
-fn fs(i: VOut) -> @location(0) vec4<f32> {
-  return textureSample(tex, samp, vec2<f32>(i.uv.x, 1.0 - i.uv.y));
-}`;
+// (the display-chain kernels -- vecMag, vecGather, cutGather, colorize and the
+// blit -- moved to physics.js, next to prepDisp, so the whole display path is
+// templated in one place.)
 
 // ---------------------------------------------------------------------------
 // device / buffers
@@ -423,8 +331,15 @@ function shaderModuleFactory(device) {
   };
 }
 
-let device = null, ctx = null, canvasFormat = "bgra8unorm";
+let device = null, ctx = null, ctx2 = null, canvasFormat = "bgra8unorm";
 let solver = null, running = false, stepsPerFrame = 1, spsSmooth = 0;
+
+// dual view: on only when the page has the toggle, it is ticked, and the second
+// canvas got a context. Display 1 is always rendered.
+function dualEnabled() {
+  const c = el("cbDual");
+  return !!(ctx2 && c && c.checked);
+}
 
 // adapter + device + canvas context. opts.maxLimits asks the adapter for its own
 // reported limits (always a legal request): the 3D app's 8-field gradient stack is
@@ -463,6 +378,13 @@ async function initGPU(opts) {
   ctx = cv.getContext("webgpu");
   canvasFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({ device, format: canvasFormat, alphaMode: "opaque" });
+  // the dual-view canvas, if the page has one (configured up front; nothing is
+  // rendered into it until the toggle is on)
+  const cv2 = el("cv2");
+  if (cv2) {
+    ctx2 = cv2.getContext("webgpu");
+    if (ctx2) ctx2.configure({ device, format: canvasFormat, alphaMode: "opaque" });
+  }
   return true;
 }
 
@@ -827,8 +749,521 @@ function autoDiss() {
 }
 
 // ---------------------------------------------------------------------------
+// demo presets from the URL query (?demo=NAME)
+// ---------------------------------------------------------------------------
+// A demo is a CONFIGURATION, never new physics: `set` is a plain map of control-element
+// id -> value (booleans go to .checked, everything else to .value), applied BEFORE the
+// first rebuild so the solver is constructed with the demo's grid; `prep` runs right
+// after that (for the "auto" buttons, which derive one control from the others) and
+// `hint` is HTML dropped into #demohint. Each app owns its own registry.
+//
+// file:// is a first-class target here, and location.search works there; the try/catch
+// only covers exotic hosts (and the node smoke test) with no location object at all.
+function demoNameFromURL() {
+  try {
+    const q = (typeof location !== "undefined" && location.search) || "";
+    return new URLSearchParams(q).get("demo");
+  } catch (e) { return null; }
+}
+function applyDemoParams(registry) {
+  const name = demoNameFromURL();
+  const d = (name && registry && registry[name]) || null;
+  if (!d) return null;
+  for (const id in (d.set || {})) {
+    const e = el(id);
+    if (!e) { console.warn("demo " + name + ": no control #" + id); continue; }
+    const v = d.set[id];
+    if (typeof v === "boolean") e.checked = v; else e.value = String(v);
+  }
+  const h = el("demohint");
+  if (h && d.hint) { h.innerHTML = d.hint; h.style.display = "block"; }
+  if (d.prep) d.prep();
+  return d;
+}
+
+// ---------------------------------------------------------------------------
+// initial-condition construction (CPU side; uploaded through setICFromReal)
+// ---------------------------------------------------------------------------
+// Real-space layout, matching the solvers' buffers exactly: index ix*ny + iy in 2D,
+// (iz*nx + ix)*ny + iy in 3D. On screen ix runs right and iy runs DOWN (the render
+// pass flips v), so a glyph rasterized on an (nx wide, ny tall) canvas at pixel
+// (px, py) -> (ix, iy) = (px, py) comes out upright.
+//
+// The knob these all serve is the AMPLITUDE of the Elsasser field: the ICs are stream
+// functions z+- , and what the display (and the physics) sees is the perpendicular
+// vector zhat x grad z+- , whose magnitude is |grad z+-|. So "amplitude = a" means
+// max |grad z+-| = a, which icNormalizeShear enforces.
+
+// glyph -> [0,1] coverage mask, or null when there is no usable 2D canvas (node).
+// `blurPx`: if the canvas supports ctx.filter, the gaussian is done here; otherwise the
+// caller's 3-pass box blur does it (icLetterField handles both).
+function icGlyphRaster(text, nx, ny, cover, blurPx) {
+  let cv = null;
+  try { cv = document.createElement("canvas"); } catch (e) { return null; }
+  if (!cv || !cv.getContext) return null;
+  cv.width = nx; cv.height = ny;
+  const c = cv.getContext("2d", { willReadFrequently: true });
+  if (!c) return null;
+  c.fillStyle = "#000"; c.fillRect(0, 0, nx, ny);
+  const target = cover * Math.min(nx, ny);
+  // two-pass fit: measure at a trial size, then rescale so the INK box (not the font
+  // em box, which is mostly leading) is `cover` of the shorter side
+  const fontAt = px => "bold " + px + "px 'Helvetica Neue', Helvetica, Arial, sans-serif";
+  let px = Math.max(6, Math.round(target));
+  c.font = fontAt(px);
+  const m = c.measureText(text);
+  const w = m.width || target;
+  const h = (m.actualBoundingBoxAscent !== undefined && m.actualBoundingBoxDescent !== undefined)
+    ? (m.actualBoundingBoxAscent + m.actualBoundingBoxDescent) : 0.72 * px;
+  const big = Math.max(w, h);
+  if (big > 0) px = Math.max(6, Math.round(px * target / big));
+  c.font = fontAt(px);
+  c.textAlign = "center"; c.textBaseline = "middle";
+  const canFilter = icCanvasBlurOK(c);
+  if (canFilter && blurPx > 0) c.filter = "blur(" + blurPx + "px)";
+  c.fillStyle = "#fff";
+  c.fillText(text, nx / 2, ny / 2);
+  if (canFilter) c.filter = "none";
+  let dat;
+  try { dat = c.getImageData(0, 0, nx, ny).data; } catch (e) { return null; }
+  const out = new Float32Array(nx * ny);
+  let peak = 0;
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const v = dat[4 * (j * nx + i)] / 255;
+      out[i * ny + j] = v;
+      if (v > peak) peak = v;
+    }
+  }
+  if (!(peak > 0)) return null;              // nothing was drawn (unknown glyph)
+  out.blurred = canFilter && blurPx > 0;
+  return out;
+}
+// does this 2D context honour ctx.filter? (Safari <17 and some engines ignore it)
+function icCanvasBlurOK(c) {
+  try { c.filter = "blur(2px)"; const ok = c.filter === "blur(2px)"; c.filter = "none"; return ok; }
+  catch (e) { return false; }
+}
+
+// 3-pass periodic box blur (the fallback gaussian, and the only path in node).
+// 3 boxes of half-width r approximate a gaussian of sigma^2 = ((2r+1)^2 - 1)/4.
+function icBoxRadius(sigma) {
+  return Math.max(0, Math.round(0.5 * (Math.sqrt(4 * sigma * sigma + 1) - 1)));
+}
+function icBoxBlur(f, nx, ny, r, passes) {
+  const np = passes === undefined ? 3 : passes;
+  if (!(r >= 1) || np < 1) return f;
+  const w = 2 * r + 1, inv = 1 / w;
+  let a = Float32Array.from(f), b = new Float32Array(nx * ny);
+  for (let p = 0; p < np; p++) {
+    for (let j = 0; j < ny; j++) {                       // along x (stride ny)
+      let s = 0;
+      for (let k = -r; k <= r; k++) s += a[(((k % nx) + nx) % nx) * ny + j];
+      for (let i = 0; i < nx; i++) {
+        b[i * ny + j] = s * inv;
+        s += a[((i + r + 1) % nx) * ny + j] - a[((((i - r) % nx) + nx) % nx) * ny + j];
+      }
+    }
+    let t = a; a = b; b = t;
+    for (let i = 0; i < nx; i++) {                       // along y (contiguous)
+      const row = i * ny;
+      let s = 0;
+      for (let k = -r; k <= r; k++) s += a[row + (((k % ny) + ny) % ny)];
+      for (let j = 0; j < ny; j++) {
+        b[row + j] = s * inv;
+        s += a[row + ((j + r + 1) % ny)] - a[row + ((((j - r) % ny) + ny) % ny)];
+      }
+    }
+    t = a; a = b; b = t;
+  }
+  return a;
+}
+
+// max |grad f| over the periodic grid, 4th-order centred differences. This is the
+// estimator icNormalizeShear inverts, so "amplitude" is defined by it; on the smooth
+// (blurred) fields it is used on it agrees with the spectral gradient the GPU takes to
+// well under a percent. The dealias mask applied at upload trims the achieved value by
+// a little more than that, which is why the knob is documented as approximate.
+function icGradMax(f, nx, ny, dx, dy) {
+  const cx = 1 / (12 * dx), cy = 1 / (12 * dy);
+  let mx = 0;
+  for (let i = 0; i < nx; i++) {
+    const im2 = ((i - 2 + 2 * nx) % nx) * ny, im1 = ((i - 1 + nx) % nx) * ny;
+    const ip1 = ((i + 1) % nx) * ny, ip2 = ((i + 2) % nx) * ny, row = i * ny;
+    for (let j = 0; j < ny; j++) {
+      const jm2 = (j - 2 + 2 * ny) % ny, jm1 = (j - 1 + ny) % ny;
+      const jp1 = (j + 1) % ny, jp2 = (j + 2) % ny;
+      const gx = (f[im2 + j] - 8 * f[im1 + j] + 8 * f[ip1 + j] - f[ip2 + j]) * cx;
+      const gy = (f[row + jm2] - 8 * f[row + jm1] + 8 * f[row + jp1] - f[row + jp2]) * cy;
+      const g = Math.sqrt(gx * gx + gy * gy);
+      if (g > mx) mx = g;
+    }
+  }
+  return mx;
+}
+// remove the (gauge) mean and scale so that max |grad f| == amp. Returns the factor.
+function icNormalizeShear(f, nx, ny, Lx, Ly, amp) {
+  const n = nx * ny;
+  let s = 0;
+  for (let i = 0; i < n; i++) s += f[i];
+  s /= n;
+  for (let i = 0; i < n; i++) f[i] -= s;
+  const gm = icGradMax(f, nx, ny, Lx / nx, Ly / ny);
+  const k = gm > 0 ? amp / gm : 0;
+  for (let i = 0; i < n; i++) f[i] *= k;
+  return k;
+}
+
+// smooth non-degenerate stand-in when there is no canvas or the glyph drew nothing
+function icFallbackBlob(nx, ny) {
+  const out = new Float32Array(nx * ny);
+  for (let i = 0; i < nx; i++) {
+    const cx = Math.sin(2 * Math.PI * i / nx);
+    for (let j = 0; j < ny; j++) out[i * ny + j] = cx * Math.sin(2 * Math.PI * j / ny);
+  }
+  return out;
+}
+
+// One Elsasser stream function from one character: rasterize, gaussian-smooth,
+// zero-mean, scale to max |grad| = amp. `opts.cover` is the glyph size as a fraction
+// of the shorter side (default 0.6), `opts.blur` the gaussian width as a fraction of it
+// (default 1/32 -> 16 px at 512, 2 px at 64, with a hard 2 px floor).
+//
+// The smoothing is not cosmetic. A glyph edge is a step, and the SPECTRAL gradient the
+// GPU takes of a step overshoots the finite-difference one badly (~19% for the raw
+// raster), so the amplitude knob would mean two different things on the two sides of
+// the upload. At sigma >= 2 px the two agree to ~0.1% (node check 2), which is what
+// makes "max |zhat x grad z+-| = amp" a statement about the displayed field.
+function icLetterField(text, nx, ny, Lx, Ly, amp, opts) {
+  const o = opts || {};
+  const cover = o.cover === undefined ? 0.6 : o.cover;
+  const sigma = Math.max(2, (o.blur === undefined ? 1 / 32 : o.blur) * Math.min(nx, ny));
+  let f = (text && String(text).length)
+    ? icGlyphRaster(String(text).charAt(0), nx, ny, cover, sigma) : null;
+  if (!f) f = icFallbackBlob(nx, ny);
+  else if (!f.blurred) f = icBoxBlur(f, nx, ny, icBoxRadius(sigma), 3);
+  icNormalizeShear(f, nx, ny, Lx, Ly, amp);
+  return f;
+}
+
+// periodic gaussian z-envelope, peak normalized to exactly 1 ON THE GRID (so a packet
+// whose centre falls between planes still has the requested amplitude).
+function icGaussZ(nz, Lz, z0, sigma) {
+  const e = new Float32Array(nz);
+  let mx = 0;
+  for (let k = 0; k < nz; k++) {
+    let d = k * Lz / nz - z0;
+    d -= Lz * Math.round(d / Lz);            // minimum image
+    e[k] = Math.exp(-0.5 * (d * d) / (sigma * sigma));
+    if (e[k] > mx) mx = e[k];
+  }
+  if (mx > 0) for (let k = 0; k < nz; k++) e[k] /= mx;
+  return e;
+}
+
+// ---------------------------------------------------------------------------
+// custom ("drawn") IC: the gaussian-blob editor
+// ---------------------------------------------------------------------------
+// Everything here is CPU-only. The editor keeps the two Elsasser stream functions
+// z+ and z- at the live grid size, paints periodic gaussian blobs into them, previews
+// them on an ordinary 2D canvas, and hands (phi, psi) = ((z+ + z-)/2, (z+ - z-)/2) to
+// setICFromReal on "apply" -- the same convention icLetterField's callers use. No GPU
+// work happens while editing.
+//
+// AMPLITUDE. As everywhere else in the IC code the knob is the amplitude of the
+// DISPLAYED field, max |zhat x grad f| = max |grad f|. For f = P exp(-r^2/2 s^2),
+// |grad f| = P (r/s^2) exp(-r^2/2 s^2) peaks at r = s with the value P/(s sqrt(e)), so
+// the stream-function peak that realizes an amplitude `a` is P = a s sqrt(e).
+function icBlobPeak(amp, sigma) { return amp * sigma * Math.sqrt(Math.E); }
+
+// minimum-image separation on a periodic axis of length L
+function icWrapDelta(d, L) { return d - L * Math.round(d / L); }
+
+// Blobs are deposited PERIODICALLY (minimum image, exactly like icGaussZ) and truncated
+// at CUT sigma: exp(-CUT^2/2) = 3.7e-6 at CUT = 5, i.e. the integral keeps 1 - 4e-6 of a
+// gaussian. When the window is as wide as the axis the loop simply covers every index
+// once, still with the minimum-image distance -- so a blob at the box edge is identical
+// (up to translation) to one in the middle.
+const IC_BLOB_CUT = 5;
+
+// tabulate the periodic gaussian factor along ONE axis: the grid indices within CUT
+// sigma of x0 (or every index once, when that window is not shorter) and their
+// exp(-d^2/2 sigma^2) with d the minimum-image separation.
+function icBlobAxis(n, L, x0, sigma) {
+  const d0 = L / n, inv = 0.5 / (sigma * sigma);
+  const h = Math.ceil(IC_BLOB_CUT * sigma / d0);
+  const idx = [], fac = [];
+  if (2 * h + 1 >= n) {
+    for (let i = 0; i < n; i++) idx.push(i);
+  } else {
+    const i0 = Math.round(x0 / d0);
+    for (let t = -h; t <= h; t++) idx.push((((i0 + t) % n) + n) % n);
+  }
+  for (let p = 0; p < idx.length; p++) {
+    const d = icWrapDelta(idx[p] * d0 - x0, L);
+    fac.push(Math.exp(-inv * d * d));
+  }
+  return { idx: idx, fac: fac };
+}
+
+// add w * peak * exp(-r^2 / 2 sigma^2) into one perpendicular plane of a real-space
+// array (ix*ny + iy layout; `off` is the element offset of the plane, 0 in 2D). The
+// gaussian is separable, so the two axis tables above are all it takes.
+function icBlobAddPlane(f, nx, ny, Lx, Ly, x0, y0, sigma, peak, off, w) {
+  const a = w === undefined ? 1 : w;
+  if (!(sigma > 0) || !isFinite(peak) || a === 0) return;
+  const X = icBlobAxis(nx, Lx, x0, sigma), Y = icBlobAxis(ny, Ly, y0, sigma);
+  const A = a * peak, o = off | 0;
+  for (let p = 0; p < X.idx.length; p++) {
+    const row = o + X.idx[p] * ny, cx = A * X.fac[p];
+    for (let q = 0; q < Y.idx.length; q++) f[row + Y.idx[q]] += cx * Y.fac[q];
+  }
+}
+
+// 3D: the same blob times a periodic gaussian z-envelope of peak 1 centred on z0
+// (which the UI always puts exactly on the displayed plane, so the peak is exact).
+function icBlobAdd3D(f, g, x0, y0, z0, sigma, sigmaZ, peak) {
+  const nz = g.nz;
+  if (!(nz > 1) || !(sigmaZ > 0)) {
+    icBlobAddPlane(f, g.nx, g.ny, g.Lx, g.Ly, x0, y0, sigma, peak, 0, 1);
+    return;
+  }
+  const Z = icBlobAxis(nz, g.Lz, z0, sigmaZ), nrs = g.nx * g.ny;
+  for (let p = 0; p < Z.idx.length; p++) {
+    icBlobAddPlane(f, g.nx, g.ny, g.Lx, g.Ly, x0, y0, sigma, peak,
+                   Z.idx[p] * nrs, Z.fac[p]);
+  }
+}
+
+// ---- editor state ---------------------------------------------------------
+// zp / zm are the accumulated Elsasser stream functions at the CURRENT grid; they are
+// dropped (and the drawing is lost) whenever the grid changes, which is exactly when
+// their layout stops meaning anything. `cfg` is the per-app hook set (icDrawWire).
+const icDraw = {
+  on: false, zp: null, zm: null, key: "", n: 0, has: false,
+  cfg: null, wired: false, down: false, neg: false, last: null, pending: false
+};
+function icDrawKey(q) { return q.nx + "x" + q.ny + "x" + (q.nz || 1); }
+// (re)allocate for the live grid; returns the geometry the rest of the editor uses
+function icDrawGrid(q) {
+  const g = { nx: q.nx, ny: q.ny, nz: q.nz || 1, Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0 };
+  const key = icDrawKey(g);
+  if (icDraw.key !== key || !icDraw.zp) {
+    icDraw.key = key; icDraw.n = g.nx * g.ny * g.nz;
+    icDraw.zp = new Float32Array(icDraw.n);
+    icDraw.zm = new Float32Array(icDraw.n);
+    icDraw.has = false;
+  }
+  return g;
+}
+function icDrawClear() {
+  if (icDraw.zp) { icDraw.zp.fill(0); icDraw.zm.fill(0); }
+  icDraw.has = false; icDraw.last = null;
+}
+// z+- -> the evolved variables, the same map icLetterField's callers use
+function icDrawFields(q) {
+  icDrawGrid(q);
+  const n = icDraw.n, phi = new Float32Array(n), psi = new Float32Array(n);
+  const zp = icDraw.zp, zm = icDraw.zm;
+  for (let i = 0; i < n; i++) { phi[i] = 0.5 * (zp[i] + zm[i]); psi[i] = 0.5 * (zp[i] - zm[i]); }
+  return { phi: phi, psi: psi };
+}
+// a blob in the TARGET field, expressed in z+- : "phi" is a blob in both, "psi" one of
+// each sign, "zp"/"zm" just themselves.
+const IC_TARGETS = { zp: [1, 0], zm: [0, 1], phi: [1, 1], psi: [1, -1] };
+function icDrawBlob(q, target, x0, y0, iz, sigma, sigmaZ, amp) {
+  const g = icDrawGrid(q), w = IC_TARGETS[target] || IC_TARGETS.zp;
+  const peak = icBlobPeak(amp, sigma);
+  const z0 = g.nz > 1 ? Math.max(0, Math.min(g.nz - 1, iz | 0)) * g.Lz / g.nz : 0;
+  for (const [f, c] of [[icDraw.zp, w[0]], [icDraw.zm, w[1]]]) {
+    if (c === 0) continue;
+    if (g.nz > 1) icBlobAdd3D(f, g, x0, y0, z0, sigma, sigmaZ, c * peak);
+    else icBlobAddPlane(f, g.nx, g.ny, g.Lx, g.Ly, x0, y0, sigma, c * peak, 0, 1);
+  }
+  icDraw.has = true;
+}
+// the plane the preview shows: the target field on the displayed z slice
+function icDrawPlane(q, target, iz) {
+  const g = icDrawGrid(q), nrs = g.nx * g.ny;
+  const o = g.nz > 1 ? Math.max(0, Math.min(g.nz - 1, iz | 0)) * nrs : 0;
+  const w = IC_TARGETS[target] || IC_TARGETS.zp;
+  // phi = (z+ + z-)/2, psi = (z+ - z-)/2 -> the same weights, halved, for the combinations
+  const h = (w[0] && w[1]) ? 0.5 : 1;
+  const out = new Float32Array(nrs);
+  for (let i = 0; i < nrs; i++) out[i] = h * (w[0] * icDraw.zp[o + i] + w[1] * icDraw.zm[o + i]);
+  return out;
+}
+// sigma floors: anything under ~2 cells is not representable (the 2/3 dealias eats it)
+function icDrawSigma(frac, L, n) { return Math.max(frac * L, 2 * L / n); }
+
+// ---- preview --------------------------------------------------------------
+// #cvEdit is a plain 2D canvas laid over #cv (same box, same orientation): grid point
+// (ix, iy) is image pixel (ix, iy), i.e. row iy=0 at the TOP, matching the render pass's
+// v = 1 - uv.y flip and the arrow overlay. The nx-by-ny image is drawn through an
+// offscreen canvas and scaled up by drawImage, so the smoothing matches the GPU path's
+// linear sampler.
+const icPrev = { cx: null, off: null, ox: null, w: 0, h: 0 };
+function icDrawCtx() {
+  if (icPrev.cx) return icPrev.cx;
+  const cv = el("cvEdit");
+  if (!cv || !cv.getContext) return null;
+  const dpr = Math.min(2, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
+  icPrev.w = cv.width || 512; icPrev.h = cv.height || 512;
+  cv.width = Math.round(icPrev.w * dpr); cv.height = Math.round(icPrev.h * dpr);
+  cv.style.width = "100%"; cv.style.height = "100%";
+  const c = cv.getContext("2d");
+  if (!c) return null;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  icPrev.cx = c;
+  return c;
+}
+function icDrawPreview() {
+  const cfg = icDraw.cfg, c = icDrawCtx();
+  if (!cfg || !c) return;
+  const q = cfg.params && cfg.params();
+  if (!q) return;
+  const g = icDrawGrid(q);
+  const v = icDrawPlane(q, cfg.target(), cfg.plane ? cfg.plane() : 0);
+  let mx = 0;
+  for (let i = 0; i < v.length; i++) { const a = Math.abs(v[i]); if (a > mx) mx = a; }
+  if (!icPrev.off) {
+    try { icPrev.off = document.createElement("canvas"); } catch (e) { icPrev.off = null; }
+    if (!icPrev.off || !icPrev.off.getContext) { icPrev.off = null; return; }
+  }
+  if (icPrev.off.width !== g.nx || icPrev.off.height !== g.ny) {
+    icPrev.off.width = g.nx; icPrev.off.height = g.ny;
+    icPrev.ox = icPrev.off.getContext("2d");
+  }
+  if (!icPrev.ox) icPrev.ox = icPrev.off.getContext("2d");
+  if (!icPrev.ox) return;
+  const im = icPrev.ox.createImageData(g.nx, g.ny), d = im.data;
+  const inv = mx > 0 ? 1 / mx : 0;
+  for (let ix = 0; ix < g.nx; ix++) {
+    for (let iy = 0; iy < g.ny; iy++) {
+      // signed afmhot, exactly the colorize kernel's mapping for signed fields
+      const t = 0.5 * (Math.max(-1, Math.min(1, v[ix * g.ny + iy] * inv)) + 1);
+      const p = 4 * (iy * g.nx + ix);
+      d[p] = 255 * Math.max(0, Math.min(1, 2 * t));
+      d[p + 1] = 255 * Math.max(0, Math.min(1, 2 * t - 0.5));
+      d[p + 2] = 255 * Math.max(0, Math.min(1, 2 * t - 1));
+      d[p + 3] = 255;
+    }
+  }
+  icPrev.ox.putImageData(im, 0, 0);
+  c.clearRect(0, 0, icPrev.w, icPrev.h);
+  c.drawImage(icPrev.off, 0, 0, icPrev.w, icPrev.h);
+}
+function icDrawPreviewSoon() {
+  if (icDraw.pending) return;
+  icDraw.pending = true;
+  const run = () => { icDraw.pending = false; icDrawPreview(); };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+  else run();
+}
+
+// ---- pointer -> grid ------------------------------------------------------
+// getBoundingClientRect is in CSS pixels, so the responsive width (and any devicePixel
+// ratio) divides out. The display puts grid point i at screen fraction (i + 0.5)/n --
+// texel centres, as the linear sampler sees them, and as drawArrows places its cells --
+// so the continuous grid coordinate under the cursor is u*n - 0.5 and the nearest grid
+// point is round(u*n - 0.5) = floor(u*n) inside the canvas.
+function icDrawPos(ev, q) {
+  const cv = el("cvEdit");
+  if (!cv || !cv.getBoundingClientRect) return null;
+  const r = cv.getBoundingClientRect();
+  if (!(r.width > 0) || !(r.height > 0)) return null;
+  const u = (ev.clientX - r.left) / r.width, v = (ev.clientY - r.top) / r.height;
+  const dx = q.Lx / q.nx, dy = q.Ly / q.ny;
+  let x0 = (u * q.nx - 0.5) * dx, y0 = (v * q.ny - 0.5) * dy;
+  x0 -= q.Lx * Math.floor(x0 / q.Lx); y0 -= q.Ly * Math.floor(y0 / q.Ly);
+  return { x0: x0, y0: y0,
+           ix: ((Math.round(u * q.nx - 0.5) % q.nx) + q.nx) % q.nx,
+           iy: ((Math.round(v * q.ny - 0.5) % q.ny) + q.ny) % q.ny };
+}
+
+// one deposit from a pointer event (down or drag). Successive drag samples closer
+// together than sigma/2 are dropped, so holding the mouse still does not pile up.
+function icDrawStroke(ev) {
+  const cfg = icDraw.cfg, q = cfg && cfg.params && cfg.params();
+  if (!q) return;
+  const p = icDrawPos(ev, q);
+  if (!p) return;
+  const sigma = icDrawSigma(cfg.sigmaFrac(), q.Lx, q.nx);
+  if (icDraw.last) {
+    const dx = icWrapDelta(p.x0 - icDraw.last.x, q.Lx), dy = icWrapDelta(p.y0 - icDraw.last.y, q.Ly);
+    if (Math.hypot(dx, dy) < 0.5 * sigma) return;
+  }
+  icDraw.last = { x: p.x0, y: p.y0 };
+  const nz = q.nz || 1;
+  const sz = nz > 1 ? icDrawSigma(cfg.sigmaZFrac(), q.Lz, nz) : 0;
+  // sign: the checkbox XOR the right button
+  const s = ((cfg.neg && cfg.neg()) !== icDraw.neg) ? -1 : 1;
+  icDrawBlob(q, cfg.target(), p.x0, p.y0, cfg.plane ? cfg.plane() : 0, sigma, sz, s * cfg.amp());
+  icDrawPreviewSoon();
+}
+
+// enter / leave edit mode. Entering pauses the run (the sim must not advance under the
+// preview) and shows the overlay; the app's onMode hook syncs its own buttons.
+function icDrawSetMode(on) {
+  const cfg = icDraw.cfg;
+  if (!cfg) return;
+  if (on && cfg.enabled && !cfg.enabled()) {
+    showStatus("Switch display 1 out of cube-face mode to draw an initial condition.", "info");
+    return;
+  }
+  icDraw.on = !!on;
+  icDraw.down = false; icDraw.last = null;
+  const w = el("cvwrap");
+  if (w && w.classList) w.classList.toggle("editing", icDraw.on);
+  if (icDraw.on) {
+    running = false;
+    icDrawPreview();
+  }
+  if (cfg.onMode) cfg.onMode(icDraw.on);
+}
+
+// wire the overlay canvas once. cfg supplies the app's knobs:
+//   params()      the live solver's parameter object (nx, ny, nz, Lx, Ly, Lz) or null
+//   target()      "zp" | "zm" | "phi" | "psi"
+//   sigmaFrac()   sigma_perp as a fraction of Lx      sigmaZFrac()  sigma_z / Lz (3D)
+//   amp()         amplitude knob (max |grad| of the blob)
+//   neg()         negative-sign toggle                plane()       target z plane (3D)
+//   enabled()     false where drawing makes no sense (3D cube mode)
+//   onMode(on)    UI sync when edit mode toggles
+function icDrawWire(cfg) {
+  icDraw.cfg = cfg;
+  const cv = el("cvEdit");
+  if (!cv || !cv.addEventListener || icDraw.wired) return;
+  icDraw.wired = true;
+  cv.addEventListener("contextmenu", e => e.preventDefault());
+  cv.addEventListener("pointerdown", e => {
+    if (!icDraw.on) return;
+    e.preventDefault();
+    if (cv.setPointerCapture) { try { cv.setPointerCapture(e.pointerId); } catch (err) {} }
+    icDraw.down = true;
+    icDraw.neg = (e.button === 2) || ((e.buttons & 2) === 2);
+    icDraw.last = null;
+    icDrawStroke(e);
+  });
+  cv.addEventListener("pointermove", e => {
+    if (!icDraw.on || !icDraw.down) return;
+    e.preventDefault();
+    icDrawStroke(e);
+  });
+  for (const t of ["pointerup", "pointercancel"]) {
+    cv.addEventListener(t, () => { icDraw.down = false; icDraw.last = null; });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // main loop (identical in both apps: step, render, read back, draw)
 // ---------------------------------------------------------------------------
+// per-app extension points, both null unless an app sets them:
+//   frameHook(solver)   extra per-frame work (the 3D plane tracking readback); it owns
+//                       its own throttle and must re-check that `solver` is still the
+//                       live one after any await
+//   readoutExtra()      extra text lines appended to #readout
+let frameHook = null, readoutExtra = null;
 async function loop() {
   for (;;) {
     await new Promise(r => requestAnimationFrame(r));
@@ -843,7 +1278,9 @@ async function loop() {
       n = stepsPerFrame;
       for (let i = 0; i < n; i++) solver.step(ce);
     }
-    solver.render(ctx);
+    solver.render(ctx, 0);
+    // dual view: one extra chain run per rendered frame, same state, own quantity
+    if (dualEnabled()) solver.render(ctx2, 1);
     await device.queue.onSubmittedWorkDone();
     const ms = performance.now() - t0;
     if (running) {
@@ -853,11 +1290,15 @@ async function loop() {
       spsSmooth = spsSmooth ? 0.9 * spsSmooth + 0.1 * sps : sps;
     }
     const s = await solver.readStats();
+    if (frameHook) await frameHook(solver);
+    if (!solver) continue;                    // retired while we were awaiting
+    const extra = readoutExtra ? readoutExtra() : "";
     el("readout").textContent =
       "t = " + s[1].toFixed(4).padStart(10) + "    step = " + String(solver.nsteps).padStart(7) +
       "\ndt   = " + s[0].toExponential(4) + "   steps/s = " + (running ? spsSmooth.toFixed(1) : "-") +
       "\nEkin = " + s[2].toExponential(5) + "  Emag = " + s[3].toExponential(5) +
-      "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3);
+      "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3) +
+      (extra ? "\n" + extra : "");
 
     // energy trace: one sample per readback, but never a duplicate t while paused
     if (isFinite(s[1]) && isFinite(s[2]) && isFinite(s[3]) &&
@@ -867,14 +1308,15 @@ async function loop() {
     }
     // arrow overlay: the gather already ran inside render()'s pass, so this is only a
     // copy + map round trip. ~10 Hz, one frame of lag, and it never runs per step.
-    // (cube mode draws no slice, so both overlays are cleared there.)
-    if (solver.mode >= 4 && !solver.cube) {
+    // Display 1 only (solver.mode mirrors chain 0); cube mode draws no slice, so
+    // both overlays are cleared there.
+    if (dispIsVector(solver.mode) && !solver.cube) {
       const tnow = performance.now();
       if (tnow - arrowAt > 100) {
         arrowAt = tnow;
         const sv = solver;
         const av = await sv.readArrows();
-        if (sv === solver && solver.mode >= 4 && !solver.cube) drawArrows(av, sv.nax, sv.nay);
+        if (sv === solver && dispIsVector(solver.mode) && !solver.cube) drawArrows(av, sv.nax, sv.nay);
       }
     } else clearArrows();
 
@@ -886,7 +1328,7 @@ async function loop() {
         cutAt = tnow;
         const sv = solver;
         const cv = await sv.readCut();
-        if (sv === solver && !solver.cube) drawCut(cv, sv.p.Ly, sv.mode < 4);
+        if (sv === solver && !solver.cube) drawCut(cv, sv.p.Ly, dispIsSigned(sv.mode));
       }
     } else if (cutDrawn) clearCut();
 
