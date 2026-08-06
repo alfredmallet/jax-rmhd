@@ -24,6 +24,15 @@ the dir is flat. Each backend can restart from either layout.
   `tests/test_restart_resharding.py`).
 - `forcing_key`'s dtype comes from `jax.eval_shape(lambda: jax.random.key(0)).dtype`, not
   a guessed public constant.
+- `t` is float64 at both field precisions (`RMHD_PRECISION` only sets field dtype; see
+  docs/numerics.md "Precision model"). `load_snapshot`/`old_snapshot_repair` restore `t`
+  with its STORED dtype first (`snapshot_io._stored_t_dtype`, float32 for pre-precision-plan
+  snapshots, float64 for current ones), then widen explicitly with
+  `jnp.asarray(t, dtype=snapshot_io.T_DTYPE)` — the same repair pattern as
+  `forcing_scale`. Any direct `StandardRestore` template must give `t` a
+  `T_DTYPE`-typed `ShapeDtypeStruct`: orbax silently downcasts a stored float64 `t` into a
+  float32 template slot rather than erroring, so a template built with the wrong dtype
+  loses precision with no warning.
 - Enumerate saved steps with `get_saved_steps(snap_path)`, never `mngr.all_steps()` — a
   top-level manager over a per-rank layout misreads rank subfolders as step numbers.
 - Async saving (Phase 4 T10): don't remove the `wait_until_finished()` barrier without

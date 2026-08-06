@@ -29,6 +29,103 @@ the integral of either spectrum equals `diagnostics.energy` exactly, to round-of
 diagnostic that invents its own normalization silently stops being comparable to the
 forcing power and the dissipation rate.
 
+## Precision model
+
+`jax_enable_x64` is turned on unconditionally at import (`jax_rmhd/__init__.py`) — x64
+availability and *field* precision are no longer the same question. `RMHD_PRECISION`
+(`"32"`/`"64"`, default `"32"`, read exactly once by `jax_rmhd/_precision.py` at import)
+sets `_precision.ftype`/`ctype`, the dtypes that `fields`/`forcing_state`/`forcing_scale`
+are pinned to; it does not touch `SimulationState.t`, which is float64 at *both* field
+precisions. This exists to fix a real failure mode: at fp32, `t + dt == t` exactly once
+`t/dt > 1/eps32 ≈ 1.7e7`, so `while state.t < t_end` never terminates, and even before
+that point roundoff random-walks `t` by `~sqrt(N)·eps32`. With x64 always on, `t` can be
+fp64 for free while every field array stays at the dtype `RMHD_PRECISION` selects — an
+x64-enabled JAX process compiles an all-fp32/complex64 op graph to the same kernels it
+always did; the flag only changes *default* dtypes and the promotion of any 64-bit input
+that leaks in. The entire risk of the design is exactly that leak, which is why
+`physics/__init__.py::construct_rhs` asserts `state.fields.dtype == _precision.ctype` and
+`state.forcing_state.dtype == _precision.ctype` on every trace (`tests/test_precision_dtypes.py`
+is the regression net; a pre-change reference lives in `tests/data/`).
+
+Four rules govern any new code that touches both `t` and fields:
+
+1. **Python scalars are weak-typed.** `0.5*fields`, IMEX tableau entries (plain python
+   floats from the scheme tuples, e.g. `(b[k]*dt)*z`) do not upcast anything — leave them
+   as bare python floats.
+2. **Bare `jnp.array(...)`/`np.array(...)` (no dtype) are STRONG float64 under x64** and
+   poison every field-math op they touch — this is the dangerous case. Any such array
+   that ever multiplies fields (kgrid arrays, LSRK coefficient tables, …) must be pinned
+   explicitly to `ftype`/`ctype` at construction, not patched after the fact.
+3. **`jax.random.*` draws need an explicit `dtype=ftype`.** Without it, a draw under x64
+   is float64 — not just the wrong dtype for fields, but a *different bitstream* than the
+   float32 draw it replaces. Pinning the dtype is what keeps the fp32 RNG stream bitwise
+   identical to before x64 was unconditional (`shared_physics`'s two `jax.random.normal`
+   calls do this).
+4. **Any `t`-derived quantity must downcast to `ftype` before it re-enters field math.**
+   There is exactly one such path today: `run.py::_advance_forcing`'s
+   `dt = (new_state.t - prev_t).astype(_precision.ftype)`, which feeds the OU decay
+   factor multiplying complex64/128 `forcing_state`. A future time-dependent term func
+   that reads `t` must do the same at the point it touches fields — it will not be caught
+   by rule 2's pins because `t` itself is legitimately fp64.
+
+### The fp32 spectral noise shelf
+
+Storing a field at complex64 quantizes every Fourier coefficient to relative precision
+`eps32 ≈ 6e-8`, so a coefficient's *energy* (`~|f|²`) carries a relative roundoff floor of
+`eps32² ≈ 4e-15` against the peak of the spectrum, `E_peak`: below `~eps²·E_peak` in
+absolute terms, a perpendicular spectrum is showing fp32 storage/arithmetic roundoff, not
+physics. Don't fit a dissipation range below that floor, and don't mistake a flattening
+spectrum there for a bottleneck or condensate effect — check the same run at
+`RMHD_PRECISION=64` before drawing a physics conclusion from spectral content that close
+to `eps²·E_peak`. This is a separate mechanism from the z-stencil error below (which is
+about `k∥`-resolution, not overall field storage) and from the fp64 budget-closure gap
+fixed by promoting the *reductions* rather than the fields themselves (Appendix B of
+`plans/PRECISION_PLAN.md`).
+
+### The fp32 z-stencil error floor
+
+For a mode with parallel wavenumber `k∥` stored at fp32, the 4th-order first-derivative
+stencil (`shared_physics.z_derivatives`) has relative error
+
+```
+(k∥·dz)⁴/30                     truncation
++ eps/(k∥·dz)                   roundoff (dominated by fp32 STORAGE quantization of f —
+                                 upcasting only the stencil arithmetic recovers nothing)
+```
+
+Both terms are relative to that mode's own amplitude — the stencil acts per `(kx,ky)`
+coefficient, so the error floor is a property of each perpendicular mode independently,
+not of the field as a whole. The two terms trade off oppositely in `k∥·dz`, so the sum is
+minimized at
+
+```
+k∥·dz ≈ (7.5·eps)^(1/5)
+```
+
+which is `≈0.05` at fp32 (`eps = 6e-8`), giving an irreducible relative-error floor of
+`~1e-6`: refining `dz` *below* this makes `∂∥` **worse**, because the roundoff term grows
+as `1/(k∥·dz)`. At fp64 the same balance puts the sweet spot at `k∥·dz ≈ 1e-3` with a
+floor of `~1e-13` — invisible in any practical run.
+
+Three consequences:
+
+- **Critical balance puts the worst conditioning on the outer scale.** Since the error is
+  per-perp-mode relative to that mode's own amplitude, and critical balance scales
+  `k∥ ∝ k⊥^(2/3)`, the outer-scale modes (smallest `k⊥`, smallest `k∥`) sit furthest from
+  the `k∥·dz ≈ 0.05` optimum for a fixed `dz` — they are the modes most likely to be
+  under-resolved in `k∥·dz` even when the inertial range is fine.
+- **The spurious content lands at grid-scale `k_z`,** with amplitude `~eps·|f|` — exactly
+  the wavenumber `z_diss`'s hyperdissipation targets. Keep `z_diss` on at fp32; it is
+  what removes this roundoff-sourced grid-scale content rather than letting it
+  accumulate.
+- **`z_spectral` sidesteps the cancellation entirely.** `params.z_spectral` makes `∂∥`
+  the exact `±i·k_z` diagonal of `L`, applied as a unitary phase by `apply_exp` — there is
+  no finite-difference truncation/roundoff trade-off at all, so it is the fp32-robust
+  parallel formulation. It is currently `dims==3`, `size==1` only.
+
+Practical rule: at fp32, size `nz` so that the outer-scale `k∥·dz ≳ 0.05` — below that,
+adding z resolution actively degrades the parallel derivative rather than improving it.
+
 ## Dealiasing
 
 The 2/3 rule, applied as an ellipse in *mode-index* space with semi-axes `nx/3`, `ny/3`
