@@ -60,7 +60,11 @@ programmatically; do not try to hand-edit a 180 kB line).
   max-reduce), device bring-up, the **colormap table** (`CMAP_COEF` / `cmapRGB`, the one
   source both the WGSL and the editor preview read), the chart + overlay drawing (energy
   trace, spectra, cut trace, arrows), the **card system** (`DisplayCard`, `ChartCard`,
-  `cardsInit`/`cardsLayout`/`cardsSync`), the preset machinery (`presetBoot`,
+  `cardsInit`/`cardsLayout`/`cardsSync`), the **control-panel builder**
+  (`controlsBuild(spec)` and the row/group fragments the two pages share — the sticky
+  top bar, the cfl row, the hyper/diss row, the whole forcing group, the IC group and
+  the displays group; each app's page markup is now an empty `#topbar` / `#controls`
+  plus its own spec), the preset machinery (`presetBoot`,
   `presetWrite`) and the boot wiring both apps share (`bootApply`,
   `wireCommonControls`, the locked slider pairs, `syncCommonLabels`), the CPU-side IC
   construction (glyph raster, periodic gaussian blur, the ζ± → (φ,ψ) normalization
@@ -75,7 +79,7 @@ programmatically; do not try to hand-edit a 180 kB line).
   implementation, expanded from common.js's coefficient table at emit time):
   `prepGrads`, `bracket`, `nlAssemble`, `energyPartial`, `ou`,
   `scale`, `icFinish`, `prepDisp`, `vecMag`/`vecMagSq`, `maxSumPartial`,
-  `sigmaCombine`, the arrow/cut gathers, the colorize and the blit (the 3D-only
+  `sigmaCombine`, the arrow gather, the cut card's `cutPrep`, the colorize and the blit (the 3D-only
   `zpPrep`/`planeEnergy` tracking kernels stay in the 3D app). Every 2D/3D
   difference is derived inside the templates from the single flag `hasZ` (the 3D index
   split m = iz·NMP + mp, the kz dealias factor, the kz⁴ term in the linear diagonal),
@@ -98,10 +102,28 @@ slider or `track z⁺ / z⁻ peak`); "+ display" adds one (up to three), the × 
 closes it. Card index *is* the solver's display-chain index, so N cards cost exactly N
 chains (scratch, bind groups, gather targets, textures), each built lazily on first use.
 *Any* card can be closed down to the last one (whose × goes disabled) — the IC editor has
-its own view and anchors nothing. A *chart card* is one 2D canvas with a type selector — energy trace / spectra / cut — and "+ chart"
-adds another; several cards of the same type are allowed and share one throttled
-readback per frame. Nothing here is a special case of anything else: there is no
-dual-view flag and no fixed chart stack.
+its own view and anchors nothing. A *chart card* is one 2D canvas with a type selector — energy trace / spectra / cut — plus that
+type's own options, and "+ chart" adds another; several cards of the same type are
+allowed and share one throttled readback per frame. Nothing here is a special case of
+anything else: there is no dual-view flag and no fixed chart stack.
+
+**Chart options** (each is a small select in the card's header; the first value of each
+is the default and is what the chart drew before they existed):
+
+| chart | option | values |
+| --- | --- | --- |
+| energy trace | which energies | `E_kin / E_mag` (with E_tot) · `E⁺ / E⁻` (with E_tot) |
+| spectra | which spectra | `E_u / E_b` · `E⁺ / E⁻` · both |
+| spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only |
+| cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
+| cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
+
+The Elsasser energies are E<sup>±</sup> = E_kin + E_mag ± H_c with the cross helicity
+H_c = ⟨u·b⟩, i.e. E<sup>±</sup> = ½⟨|z<sup>±</sup>|²⟩ and E_tot = (E⁺+E⁻)/2 — the
+convention `jax_rmhd/physics/rmhd.py` uses for the forcing powers, which is what lets all
+three curves share one axis. H_c costs nothing extra: it rides in the fourth (previously
+zero) lane of `energyPartial`'s vec4 accumulator, and the spectra kernels bin it as a
+third lane, so E<sup>±</sup>(k) = E_u(k) + E_b(k) ± H_c(k) needs no second kernel.
 
 The **preset** dropdown in the sticky top bar (Run / Reset / t·step·dt·steps-per-second)
 picks a whole configuration — controls *and* card layout. `?demo=NAME` is the same thing
@@ -114,9 +136,18 @@ viewport and collapsed on a narrow one; the state is deliberately not persisted.
 Both apps: vorticity / current / phi / psi as signed fields (symmetric ±max), and the
 perpendicular vector magnitudes "velocity |u|", "magnetic |b|" and the two Elsasser
 fields "|z⁺|", "|z⁻|" (z± = φ±ψ, displayed as |ẑ×∇z±|), each with an optional ≤32×32
-arrow overlay. Grid row y=0 is drawn at the top of the canvas. A **cut trace** chart card
-plots the *first* display card's quantity along y at x = Lx/2 (its current z slice in 3D),
-autoscaled symmetrically for signed fields and to [0,max] for magnitudes.
+arrow overlay. Grid row y=0 is drawn at the top of the canvas.
+
+The **cut trace** chart card is self-contained: it plots its own selected pair of
+components along y at x = Lx/2 (of its own z plane in 3D — manual or tracked), and does
+not depend on which display cards exist. It prepares its own line rather than gathering
+a row out of a display chain, and does it without a 2D transform: e<sup>i k_x L_x/2</sup>
+is just (−1)<sup>ix</sup>, so the k_x sum (and in 3D the k_z sum, with the plane's phase)
+is analytic in one small kernel (`cutPrep`), and only the inverse along y is a transform
+— four rows through the existing `rowsC2R`. The kernel always emits all four of
+(u_x, u_y, b_x, b_y), so the pair selector, |z<sup>±</sup>| = |u ± b| included, is pure
+CPU arithmetic on 4·ny numbers. Signed pairs are autoscaled symmetrically, the
+magnitude pair to [0,max].
 
 **Colormaps** are per display card: `afmhot` (default), `viridis`, `RdBu`, `grayscale`.
 One WGSL `cmap(x, which)` serves the slice colorize and the 3D cube colorize; afmhot is
@@ -133,17 +164,19 @@ between frames and between runs). Where the local Elsasser energy density |z⁺|
 falls below 1e-4 × its maximum over the displayed field, σ_c is rendered as exactly 0:
 in quiet regions the ratio is pure noise. It costs four inverse transforms per frame
 (both components of both z±) instead of the vector modes' two — display cost only, no
-physics buffer is touched. Its cut trace is still autoscaled to the data.
+physics buffer is touched.
 
 3D only: the **cube-face** modes draw the three visible boundary faces of the box
 (z = Lz, x = Lx, y = Ly) in the oblique view `examples/forced-turbulence-3D.ipynb` uses
 (matplotlib `view_init(elev=30, azim=45)`), colorized with one common ±max across the
 three faces and depth-cued by a per-face darkening of 1.0 / 0.85 / 0.7. Any display card
 may select them (each chain owns its own face buffer and three face textures — a rounding
-error next to its nz·nx·ny scratch volume). Arrows, the cut trace and that card's z-slice
-slider are inactive there. The 3D spectrum panel also carries the
-parallel spectra E_u(k∥), E_b(k∥) as dashed curves (|kz| bins 1…nz/2, ±kz paired,
-kz = 0 omitted from the log axis).
+error next to its nz·nx·ny scratch volume). Arrows and that card's z-slice slider are
+inactive there (the cut chart is unaffected — it has its own plane). The 3D spectrum
+card also carries the parallel spectra as dashed curves (|kz| bins 1…nz/2, ±kz paired,
+kz = 0 omitted from the log axis); **the y limits are set by the perpendicular spectra
+alone**, so the dashed curves are plotted inside that range and never stretch it (unless
+∥ only is selected, when there is nothing else to scale to).
 
 ## Initial conditions
 

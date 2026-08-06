@@ -14,7 +14,7 @@
 // SHARED (here): every kernel whose only 2D/3D difference is how a flat mode
 // index is decomposed -- prepGrads, bracket, nlAssemble, energyPartial, ou,
 // scale, icFinish -- plus the whole slice display chain (prepDisp, vecMag,
-// vecMagSq, maxSumPartial, sigmaCombine, vecGather, cutGather, colorize, the
+// vecMagSq, maxSumPartial, sigmaCombine, vecGather, cutPrep, colorize, the
 // blit) and the display-mode predicates the apps and the frame loop branch on.
 // The 3D index convention is m = iz*NMP + mp; every template below
 // derives ITS OWN text for both dimensions from the single flag `C.hasZ`, so
@@ -141,6 +141,14 @@ ${_mpDecl(C)}  let de: f32 = ${_dealias(C)};
 // The dissipation rate uses only the DIAGONAL d of the linear operator: in 3D the
 // off-diagonal i*kzd Alfven coupling is energy-conserving, so d picks up the kz^4
 // damping and nothing else.
+//
+// The FOURTH accumulator lane (REFINE_PLAN H.2) is the cross helicity
+//   H_c = <u.b> = sum ksq_perp * Re(phi conj(psi)) * yfac * INVN2,
+// which is all the Elsasser energies need on top of what is already here:
+//   E+- = E_kin + E_mag +- H_c   (so E_tot = (E+ + E-)/2, the repo's convention).
+// It rides in the vec4 lane that used to be a hard 0.0 -- no new kernel, no new
+// dispatch, no new buffer, and the other three lanes are bit-for-bit unchanged
+// (the reduction is componentwise).
 function energyPartialWGSL(C) {
   const dcoefLine = C.hasZ ? "      let dcoef: f32 = B.y + gridZ[m / NMP].w;\n" : "";
   const dcoef = C.hasZ ? "dcoef" : "B.y";
@@ -164,7 +172,7 @@ ${dcoefLine}      let phi: vec2<f32> = fields[m];
       let psi: vec2<f32> = fields[NM + m];
       let ek: f32 = A.z * dot(phi, phi) * B.w;
       let em: f32 = A.z * dot(psi, psi) * B.w;
-      acc = acc + vec4<f32>(ek, em, -${dcoef} * (ek + em), 0.0);
+      acc = acc + vec4<f32>(ek, em, -${dcoef} * (ek + em), A.z * dot(phi, psi) * B.w);
     }
     m = m + 256u;
   }
@@ -319,7 +327,8 @@ const DISP_ZMINUS = 7;      // z- vector: also the pinned mode of the sigma_c 2n
 const DISP_SIGMA = 8;       // sigma_c
 const dispIsVector = m => m >= DISP_VEC0 && m <= DISP_ZMINUS;  // magnitude + arrows
 const dispIsSigma = m => m === DISP_SIGMA;
-const dispIsSigned = m => m < DISP_VEC0 || m === DISP_SIGMA;   // symmetric colour range
+// (the colour range is decided in the colorize kernel, which branches on the mode
+// itself -- there is no CPU-side signedness predicate any more)
 // modes whose display chain needs BOTH components inverse-transformed
 const dispTwoComp = m => dispIsVector(m) || dispIsSigma(m);
 
@@ -469,17 +478,74 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-// one grid line of the displayed scalar at fixed x = Lx/2 (ix = NX/2), for the
-// cut-trace chart: NY values gathered from the displayed (slice) buffer.
-function cutGatherWGSL(C) {
-  return C.pre + `
-@group(0) @binding(0) var<storage, read> f: array<f32>;
-@group(0) @binding(1) var<storage, read_write> cut: array<f32>;
+// ---------------------------------------------------------------------------
+// cut line: the four in-plane vector components along y at x = Lx/2
+// ---------------------------------------------------------------------------
+// The cut chart is SELF-CONTAINED (REFINE_PLAN H.3): it no longer gathers a row out
+// of whichever display card happens to exist, it prepares its own line. Doing that
+// through a display chain would cost two full inverse transforms; instead the two
+// transforms the line does NOT need are done analytically, right here:
+//
+//   f(x0, y) = sum_kx sum_ky F e^{i kx x0} e^{i ky y},  x0 = Lx/2  =>  e^{i kx Lx/2}
+//              = (-1)^ix  for the fftfreq index ix (nx even), so the kx sum is a
+//   signed sum, and in 3D the kz sum is the same trick with the plane's phase
+//   e^{2 pi i * ikz * iz / NZ}. What is left is ONE inverse rfft along y, which the
+//   existing rowsC2R does for four lines at once (this kernel's output layout).
+//
+// It emits all four components of (u, b) -- u = zhat x grad phi = (-d_y phi, d_x phi),
+// b likewise from psi -- because the card's pair selector is then pure CPU work:
+// z+- = u +- b, so |z+-| along the line is a hypot of what is already here. One
+// kernel, one dispatch, no mode uniform, no per-selection variants.
+//
+// Normalization: the ix (and iz) sums carry the 1/NX (and 1/NZ) that colsInv (and
+// zInv) would have applied; rowsC2R still applies its own 1/NY.
+function cutPrepWGSL(C) {
+  const inner = `      let mp: u32 = ix * NKY + j;
+      let m: u32 = ${C.hasZ ? "iz * NMP + mp" : "mp"};
+      let wgt: vec2<f32> = select(zw, -zw, (ix & 1u) == 1u);
+      let ph: vec2<f32> = cmul(wgt, fields[m]);
+      let ps: vec2<f32> = cmul(wgt, fields[NM + m]);
+      let kx: f32 = gridA[mp].x;
+      a0 = a0 + ph;   a1 = a1 + kx * ph;
+      b0 = b0 + ps;   b1 = b1 + kx * ps;`;
+  // 3D wraps the same body in the kz loop, whose phase is the only extra factor
+  const body = C.hasZ
+    ? `  for (var iz: u32 = 0u; iz < NZ; iz = iz + 1u) {
+    let th: f32 = 6.2831853071795862 * f32(iz) * f32(md.zslice) / f32(NZ);
+    let zw: vec2<f32> = vec2<f32>(cos(th), sin(th));
+    for (var ix: u32 = 0u; ix < NX; ix = ix + 1u) {
+${inner}
+    }
+  }`
+    : `  {
+    let zw: vec2<f32> = vec2<f32>(1.0, 0.0);
+    for (var ix: u32 = 0u; ix < NX; ix = ix + 1u) {
+${inner}
+    }
+  }`;
+  return C.pre + (C.hasZ ? MODE_STRUCT + "\n" : "") + `
+@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
+${C.hasZ ? "@group(0) @binding(2) var<uniform> md: Mode;\n" : ""}@group(0) @binding(${C.hasZ ? 3 : 2}) var<storage, read_write> cutk: array<vec2<f32>>;
+const INVXZ: f32 = ${C.hasZ ? "1.0 / (f32(NX) * f32(NZ))" : "1.0 / f32(NX)"};
+fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let j: u32 = gid.x;
-  if (j >= NY) { return; }
-  cut[j] = f[(NX / 2u) * NY + j];
+  if (j >= NKY) { return; }
+  var a0: vec2<f32> = vec2<f32>(0.0, 0.0);
+  var a1: vec2<f32> = vec2<f32>(0.0, 0.0);
+  var b0: vec2<f32> = vec2<f32>(0.0, 0.0);
+  var b1: vec2<f32> = vec2<f32>(0.0, 0.0);
+${body}
+  let ky: f32 = gridA[j].y;
+  // rows: u_x = -i*ky*phi, u_y = +i*kx*phi, b_x = -i*ky*psi, b_y = +i*kx*psi
+  cutk[j]            = INVXZ * vec2<f32>( ky * a0.y, -ky * a0.x);
+  cutk[NKY + j]      = INVXZ * vec2<f32>(-a1.y, a1.x);
+  cutk[2u*NKY + j]   = INVXZ * vec2<f32>( ky * b0.y, -ky * b0.x);
+  cutk[3u*NKY + j]   = INVXZ * vec2<f32>(-b1.y, b1.x);
 }`;
 }
 

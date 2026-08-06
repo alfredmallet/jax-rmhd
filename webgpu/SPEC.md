@@ -196,7 +196,10 @@ spin-up).
 - Outside this contract (display/IC features, no physics): the Elsasser and σ_c display
   modes, the display/chart CARD system (N ≤ 3 display chains, per-card quantity, colormap
   — afmhot / viridis / RdBu / grayscale, one shared WGSL `cmap(x, which)` — and arrows;
-  addable chart cards), the CPU-built IC presets uploaded through `setICFromReal` — the
+  addable chart cards, each with its own options: the energy trace draws E_kin/E_mag or
+  E±, the spectra E_u/E_b, E± or both, and the cut card its own selected pair of
+  components on its own prepared line — the CPU-built IC presets uploaded through
+  `setICFromReal` — the
   Elsasser POTENTIALS ζ± (z± = ẑ×∇ζ±), stored unnormalized and scaled to their two
   amplitude sliders only at apply time, including the `custom` gaussian-blob editor,
   which is CPU-only, lives in its own view and paints into the same upload path — and the

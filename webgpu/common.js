@@ -280,7 +280,8 @@ ${reduceTail("vec2<f32>", "max")}
 }`;
 }
 
-// second stage of the energy reduction: (Ekin, Emag, dissipation rate) -> scalars
+// second stage of the energy reduction: (Ekin, Emag, dissipation rate, H_c) -> scalars
+// (sc[8] is the cross helicity <u.b>, the fourth energyPartial lane; REFINE_PLAN H.2)
 function energyFinalWGSL(pre, nPart) {
   return pre + `
 @group(0) @binding(0) var<storage, read> part: array<vec4<f32>>;
@@ -298,6 +299,7 @@ ${reduceTail("vec4<f32>", "add4")}
     sc[2] = 0.5 * sh[0].x * INVN2;
     sc[3] = 0.5 * sh[0].y * INVN2;
     sc[6] = sh[0].z * INVN2;
+    sc[8] = sh[0].w * INVN2;
   }
 }`;
 }
@@ -338,7 +340,7 @@ ${reduceTail("f32", "max")}
 }`;
 }
 
-// (the display-chain kernels -- vecMag, vecGather, cutGather, colorize and the
+// (the display-chain kernels -- vecMag, vecGather, cutPrep, colorize and the
 // blit -- moved to physics.js, next to prepDisp, so the whole display path is
 // templated in one place.)
 
@@ -364,6 +366,24 @@ async function readBuf(device, buf, byteLen) {
   const out = new Float32Array(st.getMappedRange().slice(0));
   st.unmap(); st.destroy();
   return out;
+}
+
+// The cut chart's line readback (REFINE_PLAN H.3). Identical in both apps -- each
+// Solver only supplies the cutPrep / cutRows bind groups and (in 3D) the little Mode
+// uniform carrying the plane -- so it lives here and each app's readCutLine is one
+// line. Returns 4*ny reals: the (u_x, u_y, b_x, b_y) lines on x = Lx/2.
+async function cutLineRead(s, iz) {
+  const d = s.device;
+  if (s.buf.cutM) d.queue.writeBuffer(s.buf.cutM, 0, new Uint32Array([0, iz | 0, 0, 0]));
+  const enc = d.createCommandEncoder();
+  const p = enc.beginComputePass();
+  p.setPipeline(s.pl.cutPrep); p.setBindGroup(0, s.bg.cutPrep);
+  p.dispatchWorkgroups(Math.ceil(s.g.nky / 64));
+  p.setPipeline(s.pl.rowsC2R); p.setBindGroup(0, s.bg.cutRows);
+  p.dispatchWorkgroups(4);
+  p.end();
+  d.queue.submit([enc.finish()]);
+  return readBuf(d, s.buf.cutR, 4 * s.g.ny * 4);
 }
 
 // shader-module factory with on-page compile diagnostics (WGSL errors are otherwise
@@ -441,10 +461,13 @@ const PADE = { l: 54, r: 10, t: 10, b: 20 };
 const PADS = { l: 54, r: 10, t: 10, b: 22 };
 const PADC = { l: 54, r: 10, t: 10, b: 20 };
 const COL = { ek: "#6fb3ff", em: "#ff9c6b", et: "#9ee493",
+              zp: "#c58cf5", zm: "#5fd7c8",          // the Elsasser pair, in every chart
               grid: "#232833", axis: "#39404d", txt: "#8a94a3",
               guide: "#7d8798", shell: "#5a6472", cut: "#c9d4e2" };
 const HIST_MAX = 2000;
-const hist = { t: [], ek: [], em: [] };
+// hc is the cross helicity <u.b> (energyPartial's fourth lane): with it the same
+// history serves both trace modes, E+- = E_kin + E_mag +- H_c.
+const hist = { t: [], ek: [], em: [], hc: [] };
 
 // a chart card's canvas -> a 2D context at the right backing-store resolution.
 // The CSS width is left to the stylesheet (100% inside the card), so charts
@@ -514,16 +537,17 @@ function drawArrows(c, a, nax, nay) {
   c.strokeStyle = "rgba(190,255,255,0.8)"; c.lineWidth = 1.1; c.stroke(path);
 }
 
-function histReset() { hist.t.length = 0; hist.ek.length = 0; hist.em.length = 0; }
-function histPush(t, ek, em) {
+const _histCols = () => [hist.t, hist.ek, hist.em, hist.hc];
+function histReset() { for (const a of _histCols()) a.length = 0; }
+function histPush(t, ek, em, hc) {
   if (hist.t.length >= HIST_MAX) {          // full -> keep every other sample
-    for (const a of [hist.t, hist.ek, hist.em]) {
+    for (const a of _histCols()) {
       let w = 0;
       for (let i = 0; i < a.length; i += 2) a[w++] = a[i];
       a.length = w;
     }
   }
-  hist.t.push(t); hist.ek.push(ek); hist.em.push(em);
+  hist.t.push(t); hist.ek.push(ek); hist.em.push(em); hist.hc.push(hc || 0);
 }
 // keep line coordinates finite but far outside the clip, so the visible slope of a
 // series leaving the plot is untouched
@@ -534,29 +558,48 @@ function chartFrame(c, W, H, P) {
   c.strokeStyle = COL.axis; c.lineWidth = 1;
   c.strokeRect(P.l + 0.5, P.t + 0.5, W - P.l - P.r - 1, H - P.t - P.b - 1);
 }
-function legend(c, x, y, items) {
-  let lx = x;
+// items: [label, colour, dash?]. Wraps onto further lines at xmax, so a chart with
+// four series plus a guide line still shows every key.
+function legend(c, x, y, items, xmax) {
+  let lx = x, ly = y;
   for (const it of items) {
+    const w = 15 + c.measureText(it[0]).width + 11;
+    if (xmax && lx > x && lx + w > xmax) { lx = x; ly += 12; }
     c.strokeStyle = it[1]; c.lineWidth = 2; c.setLineDash(it[2] || []);
-    c.beginPath(); c.moveTo(lx, y - 3); c.lineTo(lx + 12, y - 3); c.stroke();
+    c.beginPath(); c.moveTo(lx, ly - 3); c.lineTo(lx + 12, ly - 3); c.stroke();
     c.setLineDash([]);
-    c.fillStyle = it[1]; c.fillText(it[0], lx + 15, y);
-    lx += 15 + c.measureText(it[0]).width + 11;
+    c.fillStyle = it[1]; c.fillText(it[0], lx + 15, ly);
+    lx += w;
   }
 }
 
-function drawEnergy(c) {
+// The two energy-trace modes (REFINE_PLAN H.2), from the SAME history:
+//   kmt  E_kin, E_mag, E_tot                          (the default: unchanged)
+//   pmt  E+, E-, E_tot with E+- = E_kin + E_mag +- H_c
+// so E_tot = (E+ + E-)/2, which is the repo's Elsasser convention (jax_rmhd
+// physics/rmhd.py) and what puts all three curves on one comparable axis.
+const ENERGY_MODES = {
+  kmt: [["E_kin", COL.ek, i => hist.ek[i]], ["E_mag", COL.em, i => hist.em[i]],
+        ["E_tot", COL.et, i => hist.ek[i] + hist.em[i]]],
+  pmt: [["E+", COL.zp, i => hist.ek[i] + hist.em[i] + hist.hc[i]],
+        ["E-", COL.zm, i => hist.ek[i] + hist.em[i] - hist.hc[i]],
+        ["E_tot", COL.et, i => hist.ek[i] + hist.em[i]]]
+};
+function drawEnergy(c, o) {
   if (!c) return;
   const P = PADE, x0 = P.l, x1 = EW - P.r, y0 = P.t, y1 = EH - P.b;
   chartFrame(c, EW, EH, P);
   const n = hist.t.length;
   c.textAlign = "left"; c.fillStyle = COL.txt;
   if (n < 2) { c.fillText("energy vs t — collecting…", x0 + 6, y0 + 13); return; }
+  const series = ENERGY_MODES[(o && o.emode)] || ENERGY_MODES.kmt;
   let lo = Infinity, hi = -Infinity, allPos = true;
   for (let i = 0; i < n; i++) {
-    const a = hist.ek[i], b = hist.em[i], s = a + b;
-    if (!(a > 0) || !(b > 0) || !(s > 0)) allPos = false;
-    lo = Math.min(lo, a, b, s); hi = Math.max(hi, a, b, s);
+    for (const sr of series) {
+      const v = sr[2](i);
+      if (!(v > 0)) allPos = false;
+      lo = Math.min(lo, v); hi = Math.max(hi, v);
+    }
   }
   if (!isFinite(lo) || !isFinite(hi)) return;
   const useLog = allPos && hi / lo >= 3;
@@ -592,48 +635,74 @@ function drawEnergy(c) {
   c.save();
   c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
   c.lineWidth = 1.25;
-  const series = [[COL.ek, i => hist.ek[i]], [COL.em, i => hist.em[i]],
-                  [COL.et, i => hist.ek[i] + hist.em[i]]];
   for (const sr of series) {
-    c.strokeStyle = sr[0]; c.beginPath();
+    c.strokeStyle = sr[1]; c.beginPath();
     for (let i = 0; i < n; i++) {
-      const x = X(hist.t[i]), y = Y(sr[1](i));
+      const x = X(hist.t[i]), y = Y(sr[2](i));
       if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
     }
     c.stroke();
   }
   c.restore();
-  legend(c, x0 + 6, y0 + 12, [["E_kin", COL.ek], ["E_mag", COL.em], ["E_tot", COL.et]]);
+  legend(c, x0 + 6, y0 + 12, series.map(s => [s[0], s[1]]), x1 - 40);
   c.fillStyle = COL.txt; c.textAlign = "right";
   c.fillText(useLog ? "log y" : "lin y", x1 - 5, y0 + 12);
   c.textAlign = "left";
 }
 
-// bins: 2*nb perpendicular shell values [E_u | E_b] (solid).
-// par (optional): 2*nzb parallel values [E_u | E_b] for |kz| bin b = 1..nzb, drawn
-// DASHED on the same axes; parKfac converts a kz bin index to the same k/kunit units
-// (so with a cubic box the two abscissae coincide).
-function drawSpectrum(c, bins, nb, fshell, par, parKfac) {
+// The binned data is THREE quantities per bin, [E_u | E_b | H_c] (the spectra kernels'
+// third accumulator lane), from which the Elsasser spectra follow without a second
+// kernel: E+-(k) = E_u(k) + E_b(k) +- H_c(k). Which of the four curves a card draws is
+// its `sq` option; `sd` picks perpendicular (solid), parallel (dashed) or both.
+//   d.perp   3*nb shell values, bin 0 = the (zero-energy) DC shell
+//   d.par    3*nzb parallel values for |kz| bin 1..nzb (3D only)
+//   d.parKfac converts a kz bin index to the same k/kunit units (so with a cubic box
+//            the two abscissae coincide)
+const SPEC_SETS = {
+  ub: [["E_u", COL.ek, (u, b, h) => u], ["E_b", COL.em, (u, b, h) => b]],
+  pm: [["E+", COL.zp, (u, b, h) => u + b + h], ["E-", COL.zm, (u, b, h) => u + b - h]]
+};
+const specSeries = sq => (sq === "both" ? SPEC_SETS.ub.concat(SPEC_SETS.pm)
+                                        : (SPEC_SETS[sq] || SPEC_SETS.ub));
+function drawSpectrum(c, d, o) {
   if (!c) return;
   const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
   chartFrame(c, SW, SH, P);
   c.textAlign = "left"; c.fillStyle = COL.txt;
-  const pu = [], pb = [];
-  let hi = 0, lo = Infinity;
-  for (let b = 1; b < nb; b++) {          // bin 0 is the (zero-energy) DC shell
-    const u = bins[b], m = bins[nb + b];
-    if (u > 0 && isFinite(u)) { pu.push(b, u); hi = Math.max(hi, u); lo = Math.min(lo, u); }
-    if (m > 0 && isFinite(m)) { pb.push(b, m); hi = Math.max(hi, m); lo = Math.min(lo, m); }
-  }
-  const qu = [], qb = [];
-  if (par && par.length >= 2) {
-    const nzb = par.length >> 1, kf = parKfac || 1;
-    for (let b = 1; b <= nzb; b++) {      // |kz| bins; kz = 0 has no place on a log axis
-      const u = par[b - 1], m = par[nzb + b - 1], k = b * kf;
-      if (u > 0 && isFinite(u)) { qu.push(k, u); hi = Math.max(hi, u); lo = Math.min(lo, u); }
-      if (m > 0 && isFinite(m)) { qb.push(k, m); hi = Math.max(hi, m); lo = Math.min(lo, m); }
+  const bins = (d && d.perp) || new Float32Array(3), nb = (d && d.nb) || 1;
+  const fshell = (d && d.fshell) || [1, 3];
+  const par = d && d.par, parKfac = (d && d.parKfac) || 1;
+  const set = specSeries(o && o.sq);
+  const sd = (o && o.sd) || "both";
+  const wantPerp = sd !== "par", wantPar = sd !== "perp" && par && par.length >= 3;
+  // curves: [points(k,v pairs), colour, dash, label]
+  const curves = [];
+  // y limits come from the PERPENDICULAR spectra alone (Alfred 2026-08-06): the dashed
+  // E(k_par) curves are plotted inside those limits and never stretch them. With only
+  // the parallel spectra selected there is nothing else to scale to, so they set it.
+  let hi = 0, lo = Infinity, hiP = 0, loP = Infinity;
+  if (wantPerp) {
+    for (const sr of set) {
+      const pts = [];
+      for (let b = 1; b < nb; b++) {
+        const v = sr[2](bins[b], bins[nb + b], bins[2 * nb + b]);
+        if (v > 0 && isFinite(v)) { pts.push(b, v); hiP = Math.max(hiP, v); loP = Math.min(loP, v); }
+      }
+      curves.push([pts, sr[1], null, sr[0]]);
     }
   }
+  if (wantPar) {
+    const nzb = Math.floor(par.length / 3);
+    for (const sr of set) {
+      const pts = [];
+      for (let b = 1; b <= nzb; b++) {   // |kz| bins; kz = 0 has no place on a log axis
+        const v = sr[2](par[b - 1], par[nzb + b - 1], par[2 * nzb + b - 1]);
+        if (v > 0 && isFinite(v)) { pts.push(b * parKfac, v); hi = Math.max(hi, v); lo = Math.min(lo, v); }
+      }
+      curves.push([pts, sr[1], [5, 3], sr[0] + "(k∥)"]);
+    }
+  }
+  if (hiP > 0) { hi = hiP; lo = loP; }
   if (nb < 2 || !(hi > 0)) { c.fillText("spectra — waiting…", x0 + 6, y0 + 13); return; }
   const ymax = Math.log10(hi) + 0.3;
   const ymin = Math.max(Math.log10(Math.max(lo, hi * 1e-14)) - 0.3, ymax - 14.6);
@@ -673,11 +742,13 @@ function drawSpectrum(c, bins, nb, fshell, par, parKfac) {
     }
   }
   c.setLineDash([]);
-  // k^-5/3 guide, anchored on E_u just above the forcing shell
+  // k^-5/3 guide, anchored on the first drawn (perpendicular) series just above the
+  // forcing shell
   const kA = Math.max(2, Math.min(nb - 1, Math.round(fshell[1])));
   let anch = 0;
-  for (let i = 0; i < pu.length; i += 2) {
-    if (pu[i] >= kA) { anch = pu[i + 1] * Math.pow(pu[i], 5 / 3); break; }
+  const first = wantPerp && curves.length ? curves[0][0] : [];
+  for (let i = 0; i < first.length; i += 2) {
+    if (first[i] >= kA) { anch = first[i + 1] * Math.pow(first[i], 5 / 3); break; }
   }
   if (anch > 0) {
     c.strokeStyle = COL.guide; c.setLineDash([5, 4]);
@@ -687,11 +758,10 @@ function drawSpectrum(c, bins, nb, fshell, par, parKfac) {
     c.stroke(); c.setLineDash([]);
   }
   c.lineWidth = 1.4;
-  for (const sr of [[pu, COL.ek, null], [pb, COL.em, null],
-                    [qu, COL.ek, [5, 3]], [qb, COL.em, [5, 3]]]) {
-    const a = sr[0];
+  for (const cv of curves) {
+    const a = cv[0];
     if (a.length < 4) continue;
-    c.strokeStyle = sr[1]; c.setLineDash(sr[2] || []); c.beginPath();
+    c.strokeStyle = cv[1]; c.setLineDash(cv[2] || []); c.beginPath();
     for (let i = 0; i < a.length; i += 2) {
       const x = X(a[i]), y = Y(a[i + 1]);
       if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
@@ -699,25 +769,44 @@ function drawSpectrum(c, bins, nb, fshell, par, parKfac) {
     c.stroke(); c.setLineDash([]);
   }
   c.restore();
-  const items = [["E_u", COL.ek], ["E_b", COL.em], ["k^-5/3", COL.guide, [4, 3]]];
-  if (qu.length >= 4 || qb.length >= 4) {
-    items.splice(2, 0, ["E_u(k∥)", COL.ek, [5, 3]], ["E_b(k∥)", COL.em, [5, 3]]);
-  }
-  legend(c, x0 + 6, y0 + 12, items);
+  const items = curves.filter(cv => cv[0].length >= 4).map(cv => [cv[3], cv[1], cv[2]]);
+  if (anch > 0) items.push(["k^-5/3", COL.guide, [4, 3]]);
+  legend(c, x0 + 6, y0 + 12, items, x1 - 30);
 }
 
 // ---------------------------------------------------------------------------
-// cut trace: the displayed scalar along y at fixed x = Lx/2 (one grid line of the
-// displayed slice). Signed quantities get a symmetric +-max axis, magnitudes [0,max].
+// cut trace: a PAIR of in-plane components along y at fixed x = Lx/2 (REFINE_PLAN
+// H.3). `d.vals` is solver.readCutLine's 4*ny stack (u_x, u_y, b_x, b_y) of the
+// card's own z plane, so the pair selector is pure arithmetic here -- including
+// z+- = u +- b, whose magnitudes need no extra readback. Signed pairs get a
+// symmetric +-max axis, the magnitude pair [0, max].
 // ---------------------------------------------------------------------------
-function drawCut(c, vals, Ly, signed) {
+const CUT_PAIRS = {
+  u: { t: ["u_x", "u_y"], c: [COL.ek, COL.em], signed: true,
+       f: (v, n, j) => [v[j], v[n + j]] },
+  b: { t: ["b_x", "b_y"], c: [COL.ek, COL.em], signed: true,
+       f: (v, n, j) => [v[2 * n + j], v[3 * n + j]] },
+  z: { t: ["|z+|", "|z-|"], c: [COL.zp, COL.zm], signed: false,
+       f: (v, n, j) => [Math.hypot(v[j] + v[2 * n + j], v[n + j] + v[3 * n + j]),
+                        Math.hypot(v[j] - v[2 * n + j], v[n + j] - v[3 * n + j])] }
+};
+function drawCut(c, d, o) {
   if (!c) return;
   const P = PADC, x0 = P.l, x1 = CW - P.r, y0 = P.t, y1 = CH - P.b;
   chartFrame(c, CW, CH, P);
   c.textAlign = "left"; c.fillStyle = COL.txt;
-  const n = vals ? vals.length : 0;
+  const pair = CUT_PAIRS[(o && o.pair)] || CUT_PAIRS.u;
+  const Ly = (d && d.Ly) || 1, signed = pair.signed;
+  const n = d && d.vals ? (d.vals.length >> 2) : 0;
+  const lines = [[], []];
   let mx = 0;
-  for (let i = 0; i < n; i++) { const v = Math.abs(vals[i]); if (isFinite(v) && v > mx) mx = v; }
+  for (let j = 0; j < n; j++) {
+    const p = pair.f(d.vals, n, j);
+    for (let s = 0; s < 2; s++) {
+      lines[s].push(p[s]);
+      const a = Math.abs(p[s]); if (isFinite(a) && a > mx) mx = a;
+    }
+  }
   if (n < 2 || !(mx > 0)) { c.fillText("cut along y at x = Lx/2 — waiting…", x0 + 6, y0 + 13); return; }
   const vlo = signed ? -mx : 0, vhi = mx;
   const X = j => x0 + (j / n) * (x1 - x0);
@@ -742,14 +831,18 @@ function drawCut(c, vals, Ly, signed) {
 
   c.save();
   c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
-  c.strokeStyle = COL.cut; c.lineWidth = 1; c.beginPath();
-  for (let j = 0; j < n; j++) {
-    const x = X(j), y = Y(vals[j]);
-    if (j === 0) c.moveTo(x, y); else c.lineTo(x, y);
+  c.lineWidth = 1;
+  for (let s = 0; s < 2; s++) {
+    c.strokeStyle = pair.c[s]; c.beginPath();
+    for (let j = 0; j < n; j++) {
+      const x = X(j), y = Y(lines[s][j]);
+      if (j === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    c.stroke();
   }
-  c.stroke();
   c.restore();
-  legend(c, x0 + 6, y0 + 12, [["cut @ x = Lx/2", COL.cut]]);
+  legend(c, x0 + 6, y0 + 12, [[pair.t[0], pair.c[0]], [pair.t[1], pair.c[1]],
+                              ["@ x = Lx/2", COL.cut]], x1 - 30);
 }
 // ===========================================================================
 // cards: ONE display-card class, ONE chart-card interface
@@ -776,22 +869,38 @@ function drawCut(c, vals, Ly, signed) {
 // Everything else -- DOM, wiring, render order, throttles -- is shared.
 const CARD_MAX_DISP = 3;
 const CARD_MIN_DISP = 1;
+// Each chart type declares its own per-card OPTION selects (REFINE_PLAN H.1-H.3):
+// `opts(cfg)` returns [{ id, ti, o: [[value, html], ...], v }], the card builds one
+// <select> per entry into its header, and `draw` gets the current values as an object.
+// Defaults are the FIRST option of each list and reproduce the pre-Phase-H chart
+// exactly. `zslice: true` additionally gives the card its own z source in 3D.
 const CHART_TYPES = {
   energy: {
     label: "energy trace", w: EW, h: EH,
-    draw: (c, d) => drawEnergy(c),
-    hint: "E<sub>kin</sub>, E<sub>mag</sub>, E<sub>tot</sub> vs t (2000 points, decimated 2:1 when full)"
+    opts: () => [{ id: "emode", ti: "which energies to trace",
+                   o: [["kmt", "E_kin / E_mag"], ["pmt", "E&#8314; / E&#8315;"]] }],
+    draw: (c, d, o) => drawEnergy(c, o),
+    hint: "vs t (2000 points, decimated 2:1 when full); E<sup>&plusmn;</sup> = E<sub>kin</sub> + "
+      + "E<sub>mag</sub> &plusmn; H<sub>c</sub>, so E<sub>tot</sub> = (E<sup>+</sup>+E<sup>&minus;</sup>)/2"
   },
   spectrum: {
     label: "spectra", w: SW, h: SH,
-    draw: (c, d) => (d ? drawSpectrum(c, d.perp, d.nb, d.fshell, d.par, d.parKfac)
-                       : drawSpectrum(c, new Float32Array(2), 1, [1, 3])),
-    hint: "shell-binned E<sub>u</sub>(k), E<sub>b</sub>(k), ~3&times;/s"
+    opts: cfg => [{ id: "sq", ti: "which spectra to bin",
+                    o: [["ub", "E_u / E_b"], ["pm", "E&#8314; / E&#8315;"], ["both", "both"]] }]
+      .concat(cfg.zslice
+        ? [{ id: "sd", ti: "perpendicular (solid) / parallel (dashed) spectra",
+             o: [["both", "&perp; + &#8741;"], ["perp", "&perp; only"], ["par", "&#8741; only"]] }]
+        : []),
+    draw: (c, d, o) => drawSpectrum(c, d, o),
+    hint: "shell-binned, ~3&times;/s; E<sup>&plusmn;</sup>(k) = E<sub>u</sub>+E<sub>b</sub>&plusmn;H<sub>c</sub>. "
+      + "The y range follows the &perp; spectra."
   },
   cut: {
-    label: "cut trace", w: CW, h: CH,
-    draw: (c, d) => drawCut(c, d ? d.vals : null, d ? d.Ly : 1, d ? d.signed : true),
-    hint: "the first display's field along y at x = L<sub>x</sub>/2, ~10&times;/s"
+    label: "cut trace", w: CW, h: CH, zslice: true,
+    opts: () => [{ id: "pair", ti: "which pair of components to trace",
+                   o: [["u", "u_x, u_y"], ["b", "b_x, b_y"], ["z", "|z&#8314;|, |z&#8315;|"]] }],
+    draw: (c, d, o) => drawCut(c, d, o),
+    hint: "its own line along y at x = L<sub>x</sub>/2, ~10&times;/s (independent of the displays)"
   }
 };
 
@@ -814,6 +923,20 @@ function _sel(parent, opts, title) {
   return s;
 }
 
+// The per-card z-plane source (3D only): "manual" plus a plane slider, or one of the
+// two packet trackers. BOTH card kinds have one -- a display card picks the plane it
+// renders, the cut chart the plane it cuts -- so it is written once. Returns the
+// elements on `card`, which is all the app's zsliceOf() needs.
+function _zSliceControls(card, head) {
+  const cfg = cards.cfg;
+  if (!cfg.zslice) return;
+  card.selZSrc = _sel(head, [{ v: "manual", t: "z slice" }, { v: "zp", t: "track z&#8314;" },
+                             { v: "zm", t: "track z&#8315;" }], "which z plane this card uses");
+  card.rSlice = _mk("input", "zslider", head);
+  card.rSlice.type = "range"; card.rSlice.min = "0"; card.rSlice.step = "1"; card.rSlice.value = "0";
+  card.rSlice.max = String(Math.max(0, cfg.nz() - 1));
+}
+
 class DisplayCard {
   constructor(ci) {
     const cfg = cards.cfg;
@@ -822,13 +945,7 @@ class DisplayCard {
     this.root = root;
     const head = _mk("div", "cardhead", root);
     this.selField = _sel(head, cfg.fields, "displayed quantity");
-    if (cfg.zslice) {
-      this.selZSrc = _sel(head, [{ v: "manual", t: "z slice" }, { v: "zp", t: "track z&#8314;" },
-                                 { v: "zm", t: "track z&#8315;" }], "which z plane this card shows");
-      this.rSlice = _mk("input", "zslider", head);
-      this.rSlice.type = "range"; this.rSlice.min = "0"; this.rSlice.step = "1"; this.rSlice.value = "0";
-      this.rSlice.max = String(Math.max(0, cfg.nz() - 1));
-    }
+    _zSliceControls(this, head);
     const al = _mk("label", "cbl", head);
     this.cbArrow = _mk("input", null, al);
     this.cbArrow.type = "checkbox"; this.cbArrow.checked = true;
@@ -889,6 +1006,7 @@ class ChartCard {
     const root = _mk("div", "card chart", cards.hostC);
     this.root = root;
     const head = _mk("div", "cardhead", root);
+    this.head = head;
     this.selType = _sel(head, Object.keys(CHART_TYPES).map(k => ({ v: k, t: CHART_TYPES[k].label })),
                         "what this chart shows");
     this.selType.value = type;
@@ -898,6 +1016,7 @@ class ChartCard {
     this.cv = _mk("canvas", "chart", root);
     this.hint = _mk("div", "hint", root);
     this.cx = null;
+    this.optEls = [];               // this type's option selects, rebuilt on retype
     this.build();
     // a retyped card must not wait out the old type's throttle window before it fills
     this.selType.onchange = () => {
@@ -907,13 +1026,47 @@ class ChartCard {
     this.btnClose.onclick = () => cardClose(this);
   }
   type() { return this.selType.value; }
+  zsrc() { return this.selZSrc ? this.selZSrc.value : "manual"; }
+  // the option selects, as { id: value } -- what the type's draw() branches on
+  optVals() {
+    const o = {};
+    for (const s of this.optEls) o[s.__optId] = s.value;
+    return o;
+  }
   build() {
     const T = CHART_TYPES[this.type()];
+    // drop the previous type's controls (a select is appended AFTER the close button,
+    // so the button is re-appended last to keep its margin-left:auto place)
+    for (const s of this.optEls) this.head.removeChild(s);
+    if (this.rSlice) { this.head.removeChild(this.selZSrc); this.head.removeChild(this.rSlice); }
+    this.optEls = []; this.selZSrc = null; this.rSlice = null;
+    const redraw = () => { this.draw(null); cardsThrottle.spec = 0; cardsThrottle.cut = 0; };
+    for (const spec of (T.opts ? T.opts(cards.cfg || {}) : [])) {
+      const s = _sel(this.head, spec.o.map(x => ({ v: x[0], t: x[1] })), spec.ti);
+      if (spec.v !== undefined) s.value = String(spec.v);
+      s.__optId = spec.id;
+      s.onchange = redraw;
+      this.optEls.push(s);
+    }
+    if (T.zslice) {
+      _zSliceControls(this, this.head);
+      if (this.selZSrc) {
+        this.selZSrc.onchange = () => { this.apply(); redraw(); };
+        this.rSlice.oninput = () => { this.apply(); redraw(); };
+      }
+    }
+    this.head.removeChild(this.btnClose); this.head.appendChild(this.btnClose);
     this.cv.style.aspectRatio = T.w + " / " + T.h;
     this.cx = chartCtx(this.cv, T.w, T.h);
     this.hint.innerHTML = T.hint;
   }
-  draw(data) { CHART_TYPES[this.type()].draw(this.cx, data); }
+  // keep the z slider in range / enabled only when this card picks its plane by hand
+  apply() {
+    if (!this.rSlice) return;
+    this.rSlice.max = String(Math.max(0, cards.cfg.nz() - 1));
+    this.rSlice.disabled = this.zsrc() !== "manual";
+  }
+  draw(data) { CHART_TYPES[this.type()].draw(this.cx, data, this.optVals()); }
   destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
 }
 
@@ -969,7 +1122,7 @@ function cardsSync() {
   // the last display card cannot be closed -- shown, not just enforced
   for (const d of cards.disp) d.btnClose.disabled = cards.disp.length <= CARD_MIN_DISP;
   for (const d of cards.disp) d.apply();
-  for (const c of cards.chart) if (c.type() === "cut") c.draw(null);
+  for (const c of cards.chart) { c.apply(); if (c.type() === "cut") c.draw(null); }
   cardsThrottle.spec = 0; cardsThrottle.cut = 0;
   if (cards.cfg && cards.cfg.onLayout) cards.cfg.onLayout();
 }
@@ -991,6 +1144,159 @@ function chartsReset() {
   cardsThrottle.spec = 0; cardsThrottle.cut = 0;
   for (const c of cards.chart) c.draw(null);
 }
+
+// ===========================================================================
+// the control panel, built from a SPEC (REFINE_PLAN H.0)
+// ===========================================================================
+// The two pages carried byte-identical markup for the sticky top bar, the whole
+// forcing group and most of the sim / dissipation / IC / displays rows. That is a
+// copy-paste variant of exactly the kind the standing rule forbids, so the markup
+// is DATA now: each app hands controlsBuild() a spec, and every row the two pages
+// share is a spec FRAGMENT below -- written once.
+//
+// A spec is { topbar: [item...], groups: [group...] }; a group is
+// { id, summary, keep, rows: [row...] }; a row is either an array of items, an
+// object { id, hide, items }, or { k: "hintdiv", id } for a bare hint line.
+// Item kinds (every item may carry `ti`, the title attribute):
+//   lab  <label>t</label> (for: the id it labels)      val  <span class="val" id>
+//   sel  <select id> from o: [[value, html], ...]      txt  <span id>t</span>
+//   rng  <input type=range> min/max/step/v             hint <span class="hint" id>
+//   num  <input type=number> v, w (px)                 btn  <button id>t</button>
+//   cb   bare checkbox (v = checked)
+//   cbl  checkbox inside <label class="cbl">t</label> (v = checked)
+// `t` is HTML (the entities the markup used); `ti` is plain text.
+function _ctrlItem(row, it) {
+  const put = (tag, cls) => _mk(tag, cls, row);
+  let e;
+  if (it.k === "sel") {
+    e = _sel(row, it.o.map(o => ({ v: o[0], t: o[1] })), it.ti);
+    if (it.v !== undefined) e.value = String(it.v);
+  } else if (it.k === "rng" || it.k === "num") {
+    e = put("input");
+    e.type = it.k === "rng" ? "range" : "number";
+    if (it.min !== undefined) e.min = String(it.min);
+    if (it.max !== undefined) e.max = String(it.max);
+    if (it.step !== undefined) e.step = String(it.step);
+    if (it.v !== undefined) e.value = String(it.v);
+    if (it.w) e.style.width = it.w + "px";
+  } else if (it.k === "cb" || it.k === "cbl") {
+    const host = it.k === "cbl" ? put("label", "cbl") : row;
+    e = _mk("input", null, host);
+    e.type = "checkbox";
+    e.checked = !!it.v;
+    if (it.k === "cbl") host.appendChild(document.createTextNode(it.t));
+  } else if (it.k === "btn") {
+    e = put("button"); e.innerHTML = it.t;
+  } else if (it.k === "lab") {
+    e = put("label"); e.innerHTML = it.t;
+    if (it.for) e.htmlFor = it.for;
+  } else if (it.k === "val") {
+    e = put("span", "val");
+  } else if (it.k === "hint") {
+    e = put("span", "hint"); if (it.t) e.innerHTML = it.t;
+  } else {
+    e = put("span"); if (it.t) e.innerHTML = it.t;
+  }
+  if (it.id) e.id = it.id;
+  if (it.ti) e.title = it.ti;
+  if (it.hide) e.style.display = "none";
+  return e;
+}
+function controlsBuild(spec) {
+  const bar = el("topbar");
+  for (const it of (spec.topbar || CTRL_TOPBAR)) _ctrlItem(bar, it);
+  const host = el("controls");
+  for (const g of spec.groups) {
+    const d = _mk("details", null, host);
+    d.id = g.id;
+    if (g.keep) d.setAttribute("data-keep-open", "");
+    _mk("summary", null, d).innerHTML = g.summary;
+    for (const r of g.rows) {
+      if (r.k === "hintdiv") { const h = _mk("div", "hint", d); h.id = r.id; continue; }
+      const items = Array.isArray(r) ? r : r.items;
+      const row = _mk("div", "row", d);
+      if (r.id) row.id = r.id;
+      if (r.hide) row.style.display = "none";
+      for (const it of items) _ctrlItem(row, it);
+    }
+  }
+}
+
+// ---- the rows both pages share --------------------------------------------
+const CTRL_TOPBAR = [
+  { k: "btn", id: "btnRun", t: "Run" },
+  { k: "btn", id: "btnReset", t: "Reset" },
+  { k: "lab", t: "preset", for: "selPreset" },
+  { k: "sel", id: "selPreset", o: [] },
+  { k: "btn", id: "btnParams", t: "hide params" },
+  { k: "txt", id: "steps" }
+];
+const CTRL_SEED = [{ k: "lab", t: "seed" }, { k: "num", id: "nSeed", v: 7, w: 70 }];
+const CTRL_CFL = [
+  { k: "lab", t: "cfl_safety" },
+  { k: "rng", id: "rCfl", min: 0.05, max: 0.9, step: 0.01, v: 0.4 }, { k: "val", id: "vCfl" },
+  { k: "lab", t: "cfl_every" },
+  { k: "rng", id: "rCflEvery", min: 1, max: 16, step: 1, v: 4 }, { k: "val", id: "vCflEvery" }
+];
+// the hyper / diss row: only the slider's default differs between the pages
+const ctrlDissRow = dflt => [
+  { k: "lab", t: "hyper" },
+  { k: "sel", id: "selHyper", o: [[1, "1"], [2, "2"], [3, "3"], [4, "4"]], v: 4 },
+  { k: "lab", t: "diss" },
+  { k: "rng", id: "rDiss", min: -20, max: -1, step: 0.05, v: dflt }, { k: "val", id: "vDiss" },
+  { k: "btn", id: "btnAutoDiss", t: "auto",
+    ti: "a marginally-resolved diss for the current hyper / resolution / power" }
+];
+// the forcing group is IDENTICAL on both pages (this block was the GATE-G MAJOR)
+const CTRL_GRP_FORCE = {
+  id: "grpForce", summary: "forcing", rows: [
+    [{ k: "cb", id: "cbForce", v: true, ti: "forcing on/off (unchecked: decaying turbulence)" },
+     { k: "lab", t: "&epsilon;&#8314;" },
+     { k: "rng", id: "rEpsP", min: -3, max: 1, step: 0.05, v: -0.82 }, { k: "val", id: "vEpsP" },
+     { k: "cbl", id: "cbEpsLock", t: "lock", v: true, ti: "move the two injection rates together" }],
+    [{ k: "lab", t: "&epsilon;&#8315;" },
+     { k: "rng", id: "rEpsM", min: -3, max: 1, step: 0.05, v: -0.82 }, { k: "val", id: "vEpsM" },
+     { k: "lab", t: "tau" },
+     { k: "rng", id: "rTau", min: 0.05, max: 5, step: 0.05, v: 1 }, { k: "val", id: "vTau" }],
+    [{ k: "lab", t: "band n" },
+     { k: "rng", id: "rFmin", min: 1, max: 8, step: 1, v: 1,
+       ti: "forcing shell: lower edge, in units of the box wavenumber" },
+     { k: "rng", id: "rFmax", min: 2, max: 12, step: 1, v: 3,
+       ti: "forcing shell: upper edge (exclusive)" }, { k: "val", id: "vFshell" }]
+  ]
+};
+// the IC group: the two amplitude rows and the paint row are shared; `letters` is
+// the wording of the letters preset and `extra` the 3D-only sigma_z row + chi line
+const ctrlGrpIC = o => ({
+  id: "grpIC", summary: "initial condition", rows: [
+    [{ k: "lab", t: "preset" },
+     { k: "sel", id: "selIC", o: [["modes", "large-scale modes"], ["letters", o.letters],
+                                  ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]] }],
+    [{ k: "lab", t: "&zeta;&#8314; amp" },
+     { k: "rng", id: "rAmpP", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpP" },
+     { k: "cbl", id: "cbAmpLock", t: "lock", v: true, ti: "move the two potential amplitudes together" }],
+    [{ k: "lab", t: "&zeta;&#8315; amp" },
+     { k: "rng", id: "rAmpM", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpM" }]
+  ].concat(o.extra || [], [
+    { id: "rowDraw", hide: true, items: [
+      { k: "btn", id: "btnEdit", t: "edit IC", ti: "pause the run and open the IC editor" },
+      { k: "lab", t: "paint" },
+      { k: "sel", id: "selPaint", o: [["zp", "&zeta;&#8314;"], ["zm", "&zeta;&#8315;"],
+                                      ["phi", "&phi;"], ["psi", "&psi;"]] },
+      { k: "lab", t: "&sigma;&perp;" },
+      { k: "rng", id: "rSigP" }, { k: "val", id: "vSigP" },
+      { k: "lab", t: "negative" },
+      { k: "cb", id: "cbNeg", ti: "deposit with a minus sign (or drag with the right button)" }
+    ] }
+  ])
+});
+// displays & charts: the two add buttons, plus whatever page-wide extras follow
+const ctrlGrpDisp = extra => ({
+  id: "grpDisp", summary: "displays &amp; charts", keep: true, rows: [
+    [{ k: "btn", id: "btnAddDisp", t: "+ display" },
+     { k: "btn", id: "btnAddChart", t: "+ chart" }].concat(extra || [])
+  ]
+});
 
 // ---------------------------------------------------------------------------
 // collapsible control groups: default-open on a wide viewport, collapsed on a
@@ -1973,10 +2279,11 @@ async function loop() {
       "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3) +
       (extra ? "\n" + extra : "");
 
-    // energy trace: one sample per readback, but never a duplicate t while paused
+    // energy trace: one sample per readback, but never a duplicate t while paused.
+    // s[8] is the cross helicity H_c, which is what the E+- mode needs.
     if (isFinite(s[1]) && isFinite(s[2]) && isFinite(s[3]) &&
         (!hist.t.length || s[1] > hist.t[hist.t.length - 1])) {
-      histPush(s[1], s[2], s[3]);
+      histPush(s[1], s[2], s[3], isFinite(s[8]) ? s[8] : 0);
       for (const c of _chartsOf("energy")) c.draw(null);
     }
     // arrow overlay, per display card: the gather already ran inside that card's
@@ -1993,22 +2300,20 @@ async function loop() {
       if (sv === solver && cards.disp.indexOf(d) >= 0 && d.showArrows()) d.drawArrows(av, sv.nax, sv.nay);
     }
 
-    // cut trace: same throttle / guard idiom as the arrows. It follows the FIRST
-    // display card (Phase H makes the cut card self-contained).
-    const cutCards = _chartsOf("cut"), pc = primaryCard();
-    if (cutCards.length && pc) {
-      const tnow = performance.now();
-      if (solver.cubeOf(pc.ci)) {
-        for (const c of cutCards) c.draw(null);
-      } else if (tnow - cardsThrottle.cut > 100) {
-        cardsThrottle.cut = tnow;
-        const sv = solver;
-        const vals = await sv.readCut(pc.ci);
-        if (sv === solver && !solver.cubeOf(pc.ci)) {
-          const d = { vals, Ly: sv.p.Ly, signed: dispIsSigned(sv.modeOf(pc.ci)) };
-          for (const c of cutCards) c.draw(d);
-        }
+    // cut trace: same throttle / guard idiom as the arrows. SELF-CONTAINED since
+    // Phase H -- it runs its own line prep and depends on no display card, only on
+    // its own z plane (2D: always 0), so one readback serves every card on that plane.
+    const cutCards = _chartsOf("cut");
+    if (cutCards.length && performance.now() - cardsThrottle.cut > 100) {
+      cardsThrottle.cut = performance.now();
+      const sv = solver, planes = new Map();
+      for (const c of cutCards) planes.set(cards.cfg.zsliceOf(c), null);
+      for (const iz of Array.from(planes.keys())) {
+        const vals = await sv.readCutLine(iz);
+        if (sv !== solver) break;                 // retired while we were awaiting
+        planes.set(iz, { vals, Ly: sv.p.Ly });
       }
+      if (sv === solver) for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
     }
 
     // spectra: a full extra pass over the fields + a map round trip -> throttle hard

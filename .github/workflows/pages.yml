@@ -1,0 +1,65 @@
+# GitHub Pages deploy -- webgpu/ only.
+#
+# The branch-based Pages pipeline tarballed the ENTIRE repo (466 MB, 452 of it
+# examples/) and published it all, notebooks included; on 2026-08-06 its final
+# deploy step started timing out at the 10-minute cap two runs in a row (build
+# and artifact upload fine, content unchanged in size -- GitHub-side flakiness,
+# but one we're exposed to only because the artifact is huge). This workflow
+# uploads webgpu/ alone (~1.5 MB), so deploys take seconds and the rest of the
+# repo is no longer served publicly.
+#
+# The site keeps its historical URLs: the artifact stages webgpu/ under a
+# webgpu/ subdirectory, so alfredmallet.github.io/jax_rmhd/webgpu/... is
+# unchanged (external links from alfredmallet.wordpress.com point there), and a
+# root index.html redirects the bare /jax_rmhd/ to it.
+#
+# ONE-TIME MANUAL STEP: repo Settings -> Pages -> "Build and deployment" ->
+# Source: "GitHub Actions" (replacing "Deploy from a branch"). Until that is
+# flipped, this workflow deploys AND the old branch pipeline keeps running;
+# after it, the branch pipeline stops. Trigger covers gdi_v2 (current work
+# branch) and main (post-merge); last push wins, which is the same behaviour
+# the branch pipeline had.
+
+name: pages
+
+on:
+  push:
+    branches: [gdi_v2, main]
+    paths:
+      - "webgpu/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage site (webgpu/ under its historical path + root redirect)
+        run: |
+          mkdir -p _site/webgpu
+          cp -r webgpu/. _site/webgpu/
+          cat > _site/index.html <<'EOF'
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=webgpu/">
+          <title>jax_rmhd</title>
+          <a href="webgpu/">webgpu demos</a>
+          EOF
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
