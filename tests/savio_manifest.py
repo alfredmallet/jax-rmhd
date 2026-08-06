@@ -57,6 +57,11 @@ JOBS = [
     # (a "64" session would be all [SKIP]).
     dict(name="precision_fp32", tier="cpu", script="tests/test_precision_fp32.py",
          phases=[dict(launch="serial", n=1)], precisions=("32",)),
+    # dtype-leak + t-accumulation guards run in BOTH sessions; the RNG-stream/reference
+    # content is fp32-marked (all [SKIP] in the "64" session, which still counts as
+    # ALL PASS). Single-process: snapshot tmp dirs + a size==1 z_spectral kgrid.
+    dict(name="precision_dtypes", tier="cpu", script="tests/test_precision_dtypes.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
     # multidev tests need >=4 XLA devices; under real MPI there is 1 CPU device per
     # process, so this file prints [SKIP] everywhere on Savio -- kept for the banner
     # (its real coverage is local fake-device pytest + the gpu tier below).
