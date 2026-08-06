@@ -188,17 +188,19 @@ spin-up).
   symmetric autoscaled range, the non-negative magnitude modes map x = v/vmax. The two
   vector modes also overlay a subsampled (≤32×32) arrow field on a transparent 2D canvas,
   gathered on the GPU and read back at ~10 Hz (one frame of lag is fine).
-- Controls: run/pause, reset, resolution (128/256/512), diss, hyper (1/2), eps⁺=eps⁻
-  (total power), tau, cfl_safety, cfl_every, seed. Changing resolution/hyper rebuilds;
-  sliders take effect live.
+- Controls: run/pause, reset, resolution (128/256/512), diss, hyper (1/2), eps⁺ and eps⁻
+  (independent, lockable; each is a contribution to dE/dt, so the total is their sum),
+  the forcing band [n_min, n_max), tau, cfl_safety, cfl_every, seed. Changing
+  resolution/hyper/band rebuilds; the other sliders take effect live.
 - Status line for WebGPU init failures (no adapter → clear message).
 - Outside this contract (display/IC features, no physics): the Elsasser and σ_c display
   modes, the display/chart CARD system (N ≤ 3 display chains, per-card quantity, colormap
   — afmhot / viridis / RdBu / grayscale, one shared WGSL `cmap(x, which)` — and arrows;
-  addable chart cards), the CPU-built IC presets uploaded through `setICFromReal`
-  (including the `custom` gaussian-blob editor, which is CPU-only and paints into the
-  same upload path), and the preset dropdown / `?demo=` URL configurations. See
-  README.md.
+  addable chart cards), the CPU-built IC presets uploaded through `setICFromReal` — the
+  Elsasser POTENTIALS ζ± (z± = ẑ×∇ζ±), stored unnormalized and scaled to their two
+  amplitude sliders only at apply time, including the `custom` gaussian-blob editor,
+  which is CPU-only, lives in its own view and paints into the same upload path — and the
+  preset dropdown / `?demo=` URL configurations. See README.md.
 
 ## 8. FFT requirements (the hard part)
 

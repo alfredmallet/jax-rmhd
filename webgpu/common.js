@@ -758,7 +758,9 @@ function drawCut(c, vals, Ly, signed) {
 // drive it (quantity, per-card colormap, arrows on/off and -- in 3D -- its own z
 // slice / peak tracker). Card index `ci` IS the solver's display-chain index, so
 // "N cards" costs exactly N chains and nothing else: there is no dual-view flag,
-// no second canvas context, no chain-0 special case anywhere.
+// no second canvas context, no chain-0 special case anywhere. EVERY display card is
+// closable down to the last one (the IC editor has its own view since Phase G, so
+// nothing is anchored to card 0 any more).
 //
 // A chart card owns one 2D canvas and a TYPE (energy / spectrum / cut) taken from
 // CHART_TYPES below; the frame loop asks each type for its data once per throttle
@@ -773,6 +775,7 @@ function drawCut(c, vals, Ly, signed) {
 //   onLayout()  called after any add/remove/close, for app-side label syncing
 // Everything else -- DOM, wiring, render order, throttles -- is shared.
 const CARD_MAX_DISP = 3;
+const CARD_MIN_DISP = 1;
 const CHART_TYPES = {
   energy: {
     label: "energy trace", w: EW, h: EH,
@@ -834,9 +837,7 @@ class DisplayCard {
     this.selCmap = _sel(head, CMAP_NAMES.map((n, i) => ({ v: i, t: n })), "colormap");
     this.btnClose = _mk("button", "x", head);
     this.btnClose.innerHTML = "&times;";
-    this.btnClose.title = ci === 0
-      ? "the first display cannot be closed (the IC editor draws on it)" : "close this display";
-    if (ci === 0) this.btnClose.disabled = true;
+    this.btnClose.title = "close this display";
 
     const wrap = _mk("div", "cvwrap", root);
     this.wrap = wrap;
@@ -844,14 +845,6 @@ class DisplayCard {
     this.cv.width = 512; this.cv.height = 512;
     this.cvVec = _mk("canvas", "cvvec", wrap);
     this.cap = _mk("div", "viewcap", root);
-    // the IC editor (common.js, one instance) paints on the FIRST display card
-    if (ci === 0) {
-      wrap.id = "cvwrap";
-      this.cvEdit = _mk("canvas", "cvedit", wrap);
-      this.cvEdit.id = "cvEdit";
-      this.cvEdit.width = 512; this.cvEdit.height = 512;
-      icDrawAttach();                 // this canvas replaced the previous card's
-    }
     this.ctx = gpuCanvasCtx(this.cv);
     this.vcx = vecCtx(this.cvVec);
     this.vecDrawn = false;
@@ -963,13 +956,18 @@ function cardClose(c) {
   const list = (c instanceof DisplayCard) ? cards.disp : cards.chart;
   const i = list.indexOf(c);
   if (i < 0) return;
-  if (list === cards.disp && c.ci === 0) return;      // the editor's anchor card
+  if (list === cards.disp && cards.disp.length <= CARD_MIN_DISP) {
+    showStatus("at least " + CARD_MIN_DISP + " display card", "info");
+    return;
+  }
   list.splice(i, 1);
   c.destroy();
   cardsSync();
 }
 // re-push every card into the solver (after a rebuild, a preset, or add/remove)
 function cardsSync() {
+  // the last display card cannot be closed -- shown, not just enforced
+  for (const d of cards.disp) d.btnClose.disabled = cards.disp.length <= CARD_MIN_DISP;
   for (const d of cards.disp) d.apply();
   for (const c of cards.chart) if (c.type() === "cut") c.draw(null);
   cardsThrottle.spec = 0; cardsThrottle.cut = 0;
@@ -981,7 +979,7 @@ function cardsLayout(L) {
   for (const c of cards.chart.slice()) { c.destroy(); }
   cards.disp.length = 0; cards.chart.length = 0;
   for (const s of (L && L.disp) || [{}]) addDisplayCard(s);
-  if (!cards.disp.length) addDisplayCard();     // slot 0 always exists (editor anchor)
+  while (cards.disp.length < CARD_MIN_DISP) addDisplayCard();
   for (const t of (L && L.charts) || ["energy", "spectrum", "cut"]) addChartCard(t);
   cardsSync();
 }
@@ -1012,14 +1010,54 @@ function groupsInit() {
 // readback on its buffers. Retire it here and free it at the top of a later frame.
 const graveyard = [];
 
+// the live geometry: the solver's own parameters while one exists, else what the
+// controls currently say (before the first rebuild, and between rebuilds).
+function liveParams() { return solver ? solver.p : uiParams(); }
+
+// ---- locked slider pairs (zeta+- amplitudes, forcing eps+-) ----------------
+// While the lock checkbox is checked, moving either handle writes both. ONE
+// implementation; the two pairs differ only in their ids and their callbacks.
+//   onInput   every tick (label sync / live parameter upload)
+//   onChange  optional, on release only (the amplitudes re-apply the IC there)
+function lockPair(idA, idB, idLock, onInput, onChange) {
+  const other = id => (id === idA ? idB : idA);
+  const mirror = id => { if (el(idLock).checked) el(other(id)).value = el(id).value; };
+  for (const id of [idA, idB]) {
+    el(id).oninput = () => { mirror(id); onInput(); };
+    if (onChange) el(id).onchange = () => { mirror(id); onChange(); };
+  }
+  el(idLock).onchange = () => { mirror(idA); onInput(); if (onChange) onChange(); };
+}
+// the two forcing powers, in the SAME units (each is a contribution to dE/dt, so the
+// total injection rate is their sum -- rmhd._forcing_scale_from's convention)
+function uiEps() {
+  const on = el("cbForce").checked;
+  return [on ? Math.pow(10, parseFloat(el("rEpsP").value)) : 0,
+          on ? Math.pow(10, parseFloat(el("rEpsM").value)) : 0];
+}
+// the two zeta+- amplitudes (max |zhat x grad zeta+-| after normalization)
+function uiAmp() {
+  return [Math.pow(10, parseFloat(el("rAmpP").value)), Math.pow(10, parseFloat(el("rAmpM").value))];
+}
+// the forcing band [n_min, n_max) in units of kunit. Integer handles, kept at least one
+// shell apart; whichever handle the user moved wins.
+function uiFshell() {
+  const a = el("rFmin"), b = el("rFmax");
+  let lo = parseInt(a.value, 10) | 0, hi = parseInt(b.value, 10) | 0;
+  hi = Math.max(hi, lo + 1); lo = Math.min(lo, hi - 1);
+  a.value = String(lo); b.value = String(hi);
+  return [lo, hi];
+}
+
 // marginally-resolved dissipation for the current hyper / resolution / injected power:
 // diss ~ eps^(1/3) * k_c^(2/3 - 2*hyper) with k_c = nx/3, times the safety margin the
 // repo's reference notebook uses. (uiParams / applyControls are per-app.)
 function autoDiss() {
   const q = uiParams();
-  // use the slider's eps even when the forcing checkbox is off (auto-diss for the
+  // use the sliders' eps even when the forcing checkbox is off (auto-diss for the
   // power you WOULD inject; with eps identically 0 the formula would degenerate)
-  const epsTot = Math.pow(10, parseFloat(el("rEps").value));
+  const epsTot = Math.pow(10, parseFloat(el("rEpsP").value)) +
+                 Math.pow(10, parseFloat(el("rEpsM").value));
   const kc = q.nx / 3;
   const diss = 30 * Math.pow(epsTot, 1 / 3) * Math.pow(kc, 2 / 3 - 2 * q.hyper);
   const lg = Math.min(-1, Math.max(-20, Math.log10(diss)));
@@ -1088,33 +1126,69 @@ function presetBoot(registry) {
 // -- the arrangement autoDiss above already relies on: common.js is loaded first, but
 // its bodies only run once the app script has declared them.
 
+// the slider readouts every page has. Each app's syncLabels() calls this and then adds
+// its own (3D: z_diss_k, sigma_z, chi) -- the shared numbers exist once.
+function syncCommonLabels() {
+  const eps = uiEps(), amp = uiAmp(), fs = uiFshell();
+  el("vDiss").textContent = Math.pow(10, parseFloat(el("rDiss").value)).toExponential(1);
+  el("vEpsP").textContent = el("cbForce").checked ? eps[0].toExponential(1) : "off";
+  el("vEpsM").textContent = el("cbForce").checked ? eps[1].toExponential(1) : "off";
+  el("vFshell").textContent = fs[0] + "–" + fs[1];
+  el("vTau").textContent = parseFloat(el("rTau").value).toFixed(2);
+  el("vCfl").textContent = parseFloat(el("rCfl").value).toFixed(2);
+  el("vCflEvery").textContent = el("rCflEvery").value;
+  el("vAmpP").textContent = amp[0].toPrecision(3);
+  el("vAmpM").textContent = amp[1].toPrecision(3);
+  el("vSigP").textContent = icSigmaPerp().toPrecision(3);
+}
+// forcing on/off: the two eps sliders and their lock follow the checkbox
+function syncForceEnabled() {
+  for (const id of ["rEpsP", "rEpsM", "cbEpsLock"]) el(id).disabled = !el("cbForce").checked;
+}
+
 // bring the page into the state a preset (or a fresh boot) asks for
 function bootApply(pre) {
   syncIC();
   syncLabels();
-  el("rEps").disabled = !el("cbForce").checked;
+  syncForceEnabled();
   rebuild();
   cardsLayout(pre && pre.layout);
 }
 // every control whose handler is the same in both apps.
 //   opts.presets    the app's preset registry
-//   opts.sliders    extra live-parameter slider ids beyond the shared five
+//   opts.sliders    extra live-parameter slider ids beyond the shared ones
 //   opts.rebuildOn  extra <select> ids that force a full rebuild (3D: selLz)
 function wireCommonControls(opts) {
   const s = el("selPreset");
   if (s) s.onchange = () => bootApply(presetWrite(opts.presets, s.value));
   el("btnRun").onclick = () => { running = !running; el("btnRun").textContent = running ? "Pause" : "Run"; };
+  // hide/show the whole #controls block from the always-visible topbar. Pure display
+  // toggle: nothing is re-read on show, so hidden controls keep their state.
+  const bp = el("btnParams");
+  if (bp) bp.onclick = () => {
+    const c = el("controls"), hide = c.style.display !== "none";
+    c.style.display = hide ? "none" : "";
+    bp.textContent = hide ? "show params" : "hide params";
+  };
   el("btnReset").onclick = () => { solver.p.seed = uiParams().seed; applyIC(); };
   el("selIC").onchange = () => { syncIC(); applyIC(); syncLabels(); };
-  el("rAmp").oninput = syncLabels;      // takes effect on the next Reset / IC change
-  // in "custom" the amplitude is a per-blob knob: it must NOT re-upload the drawing
-  el("rAmp").onchange = () => { if (el("selIC").value !== "custom") applyIC(); };
+  // amplitudes are stored OUTSIDE the drawing (REFINE_PLAN G.3): the sliders scale the
+  // normalized zeta+- at apply time, so a release re-applies in every preset, drawn
+  // ones included -- pause, move the slider, Reset really does rescale.
+  lockPair("rAmpP", "rAmpM", "cbAmpLock", syncLabels, () => { if (!icDraw.on) applyIC(); });
+  lockPair("rEpsP", "rEpsM", "cbEpsLock", applyControls);
   el("selHyper").onchange = applyControls;
   el("btnAutoDiss").onclick = autoDiss;
-  el("cbForce").onchange = () => { el("rEps").disabled = !el("cbForce").checked; applyControls(); };
+  el("cbForce").onchange = () => { syncForceEnabled(); applyControls(); };
   for (const id of ["selRes"].concat(opts.rebuildOn || [])) el(id).onchange = rebuild;
-  for (const id of ["rDiss", "rEps", "rTau", "rCfl", "rCflEvery"].concat(opts.sliders || [])) {
+  for (const id of ["rDiss", "rTau", "rCfl", "rCflEvery"].concat(opts.sliders || [])) {
     el(id).oninput = applyControls;
+  }
+  // the forcing band changes the fmask AND the shell mode list, which are baked into
+  // the grid and into the OU kernel's NS -- a rebuild, not an upload. On release only.
+  for (const id of ["rFmin", "rFmax"]) {
+    el(id).oninput = syncLabels;
+    el(id).onchange = () => { syncLabels(); rebuild(); };
   }
   wireDrawEditor();
   wireTestButton(runSelfTest);
@@ -1128,19 +1202,56 @@ function wireCommonControls(opts) {
 // pass flips v), so a glyph rasterized on an (nx wide, ny tall) canvas at pixel
 // (px, py) -> (ix, iy) = (px, py) comes out upright.
 //
-// The knob these all serve is the AMPLITUDE of the Elsasser field: the ICs are stream
-// functions z+- , and what the display (and the physics) sees is the perpendicular
-// vector zhat x grad z+- , whose magnitude is |grad z+-|. So "amplitude = a" means
-// max |grad z+-| = a, which icNormalizeShear enforces.
+// WHAT IS PAINTED IS THE ELSASSER POTENTIAL zeta+- (REFINE_PLAN G.1). The Elsasser
+// FIELDS are z+- = zhat x grad zeta+- ; the evolved variables are phi = (zeta+ + zeta-)/2
+// and psi = (zeta+ - zeta-)/2. Everything below builds zeta+- ; the identifiers stay
+// zp / zm for brevity, the labels say zeta.
+//
+// AMPLITUDE. The knob is the amplitude of the FIELD: "amplitude = a" means
+// max |z+-| = max |grad zeta+-| = a. Stored ICs (letters, drawings) are kept at their
+// natural unit scale and normalized ONLY at apply time, by icZetaFields -- so the two
+// amplitude sliders rescale an unchanged drawing (REFINE_PLAN G.3).
 
-// The two letters of the "letters" IC preset: z+ gets the first, z- the second. Fixed
-// (the free-text input was dropped in the mobile pass -- REFINE_PLAN F.5); both apps
-// read it from here.
+// The two letters of the "letters" IC preset: zeta+ gets the first, zeta- the second.
+// Fixed (the free-text input was dropped in the mobile pass -- REFINE_PLAN F.5); both
+// apps read it from here.
 const IC_LETTERS = "AB";
+
+// ONE perpendicular smoothing length, shared by the letter glyphs and the blob-width
+// slider's default (REFINE_PLAN G.2): sigma_letter = Lx/32, a PHYSICAL length, so
+// letters at 128 and at 512 carry the same k_perp content and the same chi bookkeeping.
+const IC_SIGMA_PERP_FRAC = 1 / 32;
+const icSigmaLetter = Lx => IC_SIGMA_PERP_FRAC * Lx;
+// the packet / blob length along z is capped at Lz/12, which is what makes the >= 5
+// sigma_z packet separation of packetGeom() always fit in the box (REFINE_PLAN G.6).
+const IC_SIGMA_Z_FRAC = 1 / 16;         // default: the collision preset's packet length
+const IC_SIGMA_Z_MAX_FRAC = 1 / 12;     // hard cap ("increase Lz for longer packets")
+
+// A sigma slider is a FRACTION of its box length. Its range is derived from the shared
+// constants here (min = step = max/16), so the default is exactly the constant and the
+// two can never drift. Call BEFORE presetBoot -- a preset may set these sliders.
+function icSigmaSliderInit(id, frac, maxFrac) {
+  const e = el(id), step = maxFrac / 16;
+  e.min = String(step); e.max = String(maxFrac); e.step = String(step);
+  e.value = String(frac);
+  if (Math.abs(frac / step - Math.round(frac / step)) > 1e-9) {
+    console.warn(id + ": default " + frac + " is not a multiple of the step " + step);
+  }
+}
+// the live perpendicular blob width (slider, floored at 2 cells) and packet length
+function icSigmaPerp() {
+  const q = liveParams();
+  return icDrawSigma(parseFloat(el("rSigP").value), q.Lx, q.nx);
+}
+// 3D only (the 2D apps have no rSigZ): the packet / blob length along z
+function icSigmaZ() {
+  const q = liveParams();
+  return q.nz > 1 ? icDrawSigma(parseFloat(el("rSigZ").value), q.Lz, q.nz) : 0;
+}
 
 // glyph -> [0,1] coverage mask, or null when there is no usable 2D canvas (node).
 // `blurPx`: if the canvas supports ctx.filter, the gaussian is done here; otherwise the
-// caller's 3-pass box blur does it (icLetterField handles both).
+// caller applies icGaussBlur, the exact separable periodic gaussian (icLetterField handles both).
 function icGlyphRaster(text, nx, ny, cover, blurPx) {
   let cv = null;
   try { cv = document.createElement("canvas"); } catch (e) { return null; }
@@ -1189,51 +1300,50 @@ function icCanvasBlurOK(c) {
   catch (e) { return false; }
 }
 
-// 3-pass periodic box blur (the fallback gaussian, and the only path in node).
-// 3 boxes of half-width r approximate a gaussian of sigma^2 = ((2r+1)^2 - 1)/4.
-function icBoxRadius(sigma) {
-  return Math.max(0, Math.round(0.5 * (Math.sqrt(4 * sigma * sigma + 1) - 1)));
-}
-function icBoxBlur(f, nx, ny, r, passes) {
-  const np = passes === undefined ? 3 : passes;
-  if (!(r >= 1) || np < 1) return f;
-  const w = 2 * r + 1, inv = 1 / w;
-  let a = Float32Array.from(f), b = new Float32Array(nx * ny);
-  for (let p = 0; p < np; p++) {
-    for (let j = 0; j < ny; j++) {                       // along x (stride ny)
-      let s = 0;
-      for (let k = -r; k <= r; k++) s += a[(((k % nx) + nx) % nx) * ny + j];
-      for (let i = 0; i < nx; i++) {
-        b[i * ny + j] = s * inv;
-        s += a[((i + r + 1) % nx) * ny + j] - a[((((i - r) % nx) + nx) % nx) * ny + j];
-      }
+// Separable PERIODIC gaussian blur, truncated at 3.5 sigma with the kernel renormalized
+// (it keeps 0.9995 of the mass). This is the fallback for engines whose 2D context
+// ignores ctx.filter -- and the only path in node.
+//
+// It is an exact gaussian at any sigma on purpose: the 3-pass box approximation it
+// replaced realized sigma_eff/sigma = 1.118 at 4 px and 1.031 at 16 px, so the SAME
+// physical sigma_letter came out 8% wider at 128 than at 512 -- exactly the resolution
+// dependence REFINE_PLAN G.2 is about. Cost is O(nx*ny*sigma) and it runs once per IC.
+function icGaussBlur(f, nx, ny, sigma) {
+  if (!(sigma > 0)) return f;
+  const r = Math.max(1, Math.ceil(3.5 * sigma)), w = 2 * r + 1, k = new Float64Array(w);
+  let s = 0;
+  for (let t = -r; t <= r; t++) { const v = Math.exp(-0.5 * t * t / (sigma * sigma)); k[t + r] = v; s += v; }
+  for (let t = 0; t < w; t++) k[t] /= s;
+  const a = Float32Array.from(f), b = new Float32Array(nx * ny);
+  for (let i = 0; i < nx; i++) {                         // along y (contiguous)
+    const row = i * ny;
+    for (let j = 0; j < ny; j++) {
+      let acc = 0;
+      for (let t = -r; t <= r; t++) acc += k[t + r] * a[row + ((((j + t) % ny) + ny) % ny)];
+      b[row + j] = acc;
     }
-    let t = a; a = b; b = t;
-    for (let i = 0; i < nx; i++) {                       // along y (contiguous)
-      const row = i * ny;
-      let s = 0;
-      for (let k = -r; k <= r; k++) s += a[row + (((k % ny) + ny) % ny)];
-      for (let j = 0; j < ny; j++) {
-        b[row + j] = s * inv;
-        s += a[row + ((j + r + 1) % ny)] - a[row + ((((j - r) % ny) + ny) % ny)];
-      }
+  }
+  for (let i = 0; i < nx; i++) {                         // along x (stride ny)
+    for (let j = 0; j < ny; j++) {
+      let acc = 0;
+      for (let t = -r; t <= r; t++) acc += k[t + r] * b[((((i + t) % nx) + nx) % nx) * ny + j];
+      a[i * ny + j] = acc;
     }
-    t = a; a = b; b = t;
   }
   return a;
 }
 
-// max |grad f| over the periodic grid, 4th-order centred differences. This is the
-// estimator icNormalizeShear inverts, so "amplitude" is defined by it; on the smooth
-// (blurred) fields it is used on it agrees with the spectral gradient the GPU takes to
-// well under a percent. The dealias mask applied at upload trims the achieved value by
-// a little more than that, which is why the knob is documented as approximate.
-function icGradMax(f, nx, ny, dx, dy) {
-  const cx = 1 / (12 * dx), cy = 1 / (12 * dy);
+// max |grad_perp f| over ONE periodic plane (element offset `off`), 4th-order centred
+// differences. This is the estimator icZetaFields inverts, so "amplitude" is defined by
+// it; on the smooth (blurred) fields it is used on it agrees with the spectral gradient
+// the GPU takes to well under a percent. The dealias mask applied at upload trims the
+// achieved value by a little more than that, which is why the knob is approximate.
+function icGradMax(f, nx, ny, dx, dy, off) {
+  const cx = 1 / (12 * dx), cy = 1 / (12 * dy), o = off | 0;
   let mx = 0;
   for (let i = 0; i < nx; i++) {
-    const im2 = ((i - 2 + 2 * nx) % nx) * ny, im1 = ((i - 1 + nx) % nx) * ny;
-    const ip1 = ((i + 1) % nx) * ny, ip2 = ((i + 2) % nx) * ny, row = i * ny;
+    const im2 = o + ((i - 2 + 2 * nx) % nx) * ny, im1 = o + ((i - 1 + nx) % nx) * ny;
+    const ip1 = o + ((i + 1) % nx) * ny, ip2 = o + ((i + 2) % nx) * ny, row = o + i * ny;
     for (let j = 0; j < ny; j++) {
       const jm2 = (j - 2 + 2 * ny) % ny, jm1 = (j - 1 + ny) % ny;
       const jp1 = (j + 1) % ny, jp2 = (j + 2) % ny;
@@ -1245,17 +1355,41 @@ function icGradMax(f, nx, ny, dx, dy) {
   }
   return mx;
 }
-// remove the (gauge) mean and scale so that max |grad f| == amp. Returns the factor.
-function icNormalizeShear(f, nx, ny, Lx, Ly, amp) {
-  const n = nx * ny;
-  let s = 0;
-  for (let i = 0; i < n; i++) s += f[i];
-  s /= n;
-  for (let i = 0; i < n; i++) f[i] -= s;
-  const gm = icGradMax(f, nx, ny, Lx / nx, Ly / ny);
-  const k = gm > 0 ? amp / gm : 0;
-  for (let i = 0; i < n; i++) f[i] *= k;
-  return k;
+// the two numbers icZetaFields needs about a stored potential, WITHOUT mutating it: the
+// per-plane mean (a pure gauge for a perpendicular gradient) and max |grad_perp| over
+// the whole volume (nz = 1 in 2D). The gradient is blind to the plane means, so they can
+// be measured and subtracted in either order.
+function icShearStats(f, g) {
+  const nrs = g.nx * g.ny, mean = new Float32Array(g.nz);
+  let gm = 0;
+  for (let k = 0; k < g.nz; k++) {
+    const o = k * nrs;
+    let s = 0;
+    for (let i = 0; i < nrs; i++) s += f[o + i];
+    mean[k] = s / nrs;
+    gm = Math.max(gm, icGradMax(f, g.nx, g.ny, g.Lx / g.nx, g.Ly / g.ny, o));
+  }
+  return { gradMax: gm, mean: mean };
+}
+// THE amplitude step (REFINE_PLAN G.3), and the only place (phi, psi) is formed:
+// zero-mean each stored potential plane by plane, scale it so that max |grad_perp zeta|
+// is exactly that field's amplitude slider, and map zeta+- -> (phi, psi). The inputs are
+// left untouched, so one drawing can be re-applied at any amplitude, any number of times.
+function icZetaFields(zp, zm, g, ampP, ampM) {
+  const nrs = g.nx * g.ny, n = g.nz * nrs;
+  const phi = new Float32Array(n), psi = new Float32Array(n);
+  const P = icShearStats(zp, g), M = icShearStats(zm, g);
+  const kp = P.gradMax > 0 ? ampP / P.gradMax : 0;
+  const km = M.gradMax > 0 ? ampM / M.gradMax : 0;
+  for (let k = 0; k < g.nz; k++) {
+    const o = k * nrs, mp = P.mean[k], mm = M.mean[k];
+    for (let i = 0; i < nrs; i++) {
+      const a = kp * (zp[o + i] - mp), b = km * (zm[o + i] - mm);
+      phi[o + i] = 0.5 * (a + b);
+      psi[o + i] = 0.5 * (a - b);
+    }
+  }
+  return { phi: phi, psi: psi };
 }
 
 // smooth non-degenerate stand-in when there is no canvas or the glyph drew nothing
@@ -1268,26 +1402,61 @@ function icFallbackBlob(nx, ny) {
   return out;
 }
 
-// One Elsasser stream function from one character: rasterize, gaussian-smooth,
-// zero-mean, scale to max |grad| = amp. `opts.cover` is the glyph size as a fraction
-// of the shorter side (default 0.6), `opts.blur` the gaussian width as a fraction of it
-// (default 1/32 -> 16 px at 512, 2 px at 64, with a hard 2 px floor).
+// One Elsasser potential plane from one character: rasterize and gaussian-smooth. The
+// scale is left alone -- icZetaFields normalizes. `opts.cover` is the glyph size as a
+// fraction of the shorter side (default 0.6), `opts.sigma` the smoothing width as a
+// PHYSICAL length (default icSigmaLetter(Lx) = Lx/32), converted to pixels here with a
+// 2-px representability floor.
+//
+// Specifying the blur as a length, not a pixel count (REFINE_PLAN G.2), is what makes
+// the letters resolution-independent: the same k_perp content, hence the same chi, at
+// 128 and at 512.
 //
 // The smoothing is not cosmetic. A glyph edge is a step, and the SPECTRAL gradient the
 // GPU takes of a step overshoots the finite-difference one badly (~19% for the raw
 // raster), so the amplitude knob would mean two different things on the two sides of
 // the upload. At sigma >= 2 px the two agree to ~0.1% (node check 2), which is what
-// makes "max |zhat x grad z+-| = amp" a statement about the displayed field.
-function icLetterField(text, nx, ny, Lx, Ly, amp, opts) {
+// makes "max |zhat x grad zeta+-| = amp" a statement about the displayed field.
+function icLetterField(text, nx, ny, Lx, Ly, opts) {
   const o = opts || {};
   const cover = o.cover === undefined ? 0.6 : o.cover;
-  const sigma = Math.max(2, (o.blur === undefined ? 1 / 32 : o.blur) * Math.min(nx, ny));
+  const sigL = o.sigma === undefined ? icSigmaLetter(Lx) : o.sigma;
+  const sigma = Math.max(2, sigL / (Lx / nx));            // physical length -> pixels
   let f = (text && String(text).length)
     ? icGlyphRaster(String(text).charAt(0), nx, ny, cover, sigma) : null;
   if (!f) f = icFallbackBlob(nx, ny);
-  else if (!f.blurred) f = icBoxBlur(f, nx, ny, icBoxRadius(sigma), 3);
-  icNormalizeShear(f, nx, ny, Lx, Ly, amp);
+  else if (!f.blurred) f = icGaussBlur(f, nx, ny, sigma);
   return f;
+}
+
+// The "letters" IC as a pair of stored potentials: one glyph per Elsasser potential,
+// times a gaussian z-envelope of peak 1 in 3D (`env` = [envPlus, envMinus], each nz
+// floats; null in 2D). Shared by both apps -- the only difference between them is that
+// pair of envelopes.
+function icLetterZeta(g, env) {
+  const nrs = g.nx * g.ny, out = [];
+  for (let s = 0; s < 2; s++) {
+    const glyph = icLetterField(IC_LETTERS.charAt(s) || IC_LETTERS.charAt(0),
+                                g.nx, g.ny, g.Lx, g.Ly);
+    if (!env) { out.push(glyph); continue; }
+    const f = new Float32Array(g.nz * nrs), e = env[s];
+    for (let k = 0; k < g.nz; k++) {
+      const o = k * nrs, a = e[k];
+      for (let i = 0; i < nrs; i++) f[o + i] = a * glyph[i];
+    }
+    out.push(f);
+  }
+  return { zp: out[0], zm: out[1] };
+}
+
+// The whole CPU IC path for the two potential-based presets, in one place: pick the
+// stored zeta+- pair, then normalize + map through icZetaFields.
+//   preset "custom"  the drawing;  anything else  the letters
+//   env              3D letter z-envelopes (see icLetterZeta), null in 2D
+function icPresetFields(q, preset, ampP, ampM, env) {
+  const g = icDrawGrid(q);            // also the geometry record for the letter path
+  const z = preset === "custom" ? { zp: icDraw.zp, zm: icDraw.zm } : icLetterZeta(g, env);
+  return icZetaFields(z.zp, z.zm, g, ampP, ampM);
 }
 
 // periodic gaussian z-envelope, peak normalized to exactly 1 ON THE GRID (so a packet
@@ -1306,18 +1475,49 @@ function icGaussZ(nz, Lz, z0, sigma) {
 }
 
 // ---------------------------------------------------------------------------
+// counter-propagating packets: placement and chi (3D letters / the collision preset)
+// ---------------------------------------------------------------------------
+// The packets sit symmetrically about the midplane, separated by
+//   s = clamp(5*sigma_z, 3Lz/8, Lz/2),
+// so they are ALWAYS at least 5 sigma_z apart -- on the direct side by construction and
+// on the wrap-around side because s <= Lz/2 <= Lz - s (REFINE_PLAN G.6; the slider's
+// Lz/12 cap is what keeps 5*sigma_z <= Lz/2). At the default sigma_z = Lz/16 the floor
+// binds and the placement is the historical 11Lz/16 / 5Lz/16.
+//
+// zeta+ travels toward SMALLER z and zeta- toward LARGER z (see the app's propagator
+// note), so putting zeta+ ABOVE the midplane makes them meet head-on at z = Lz/2 at
+// t = (s/2)/v_A, before the wrap-around collision at z = 0.
+const PACKET_SEP_MIN = 3 / 8;
+function packetGeom(Lz, sigmaZ) {
+  const s = Math.min(0.5 * Lz, Math.max(PACKET_SEP_MIN * Lz, 5 * sigmaZ));
+  return { sep: s, zPlus: 0.5 * (Lz + s), zMinus: 0.5 * (Lz - s), tColl: 0.5 * s };
+}
+// chi+- = a-+ * kbar_perp * sigma_z / v_A  with  kbar_perp = 1/sigma_perp  and v_A = 1
+// (REFINE_PLAN G.6). A gaussian smoothing length IS the gradient scale of the smoothed
+// structure, so the perpendicular wavenumber of the FIELD z+- = zhat x grad zeta+- is
+// ~1/sigma_perp -- sigma_letter for the letters, the blob-width slider for a drawing,
+// which is exactly why G.2 makes those the same constant by default. The nonlinearity
+// felt by one packet is set by the amplitude of the OTHER one, hence the swapped
+// indices. An ESTIMATE: the packets are not single modes.
+function chiEstimate(sigmaPerp, sigmaZ, ampP, ampM) {
+  const k = sigmaZ / sigmaPerp;
+  return [ampM * k, ampP * k];
+}
+
+// ---------------------------------------------------------------------------
 // custom ("drawn") IC: the gaussian-blob editor
 // ---------------------------------------------------------------------------
-// Everything here is CPU-only. The editor keeps the two Elsasser stream functions
-// z+ and z- at the live grid size, paints periodic gaussian blobs into them, previews
-// them on an ordinary 2D canvas, and hands (phi, psi) = ((z+ + z-)/2, (z+ - z-)/2) to
-// setICFromReal on "apply" -- the same convention icLetterField's callers use. No GPU
-// work happens while editing.
+// Everything here is CPU-only. The editor keeps the two Elsasser POTENTIALS zeta+ and
+// zeta- at the live grid size, paints periodic gaussian blobs into them, previews them
+// on an ordinary 2D canvas, and hands them to icZetaFields on save -- the same path the
+// letters take. No GPU work happens while editing.
 //
-// AMPLITUDE. As everywhere else in the IC code the knob is the amplitude of the
-// DISPLAYED field, max |zhat x grad f| = max |grad f|. For f = P exp(-r^2/2 s^2),
+// AMPLITUDE. Blobs are deposited at UNIT amplitude (REFINE_PLAN G.3): the sliders scale
+// the finished drawing in icZetaFields, so changing one and pressing Reset genuinely
+// rescales instead of adding a differently-scaled blob. For f = P exp(-r^2/2 s^2),
 // |grad f| = P (r/s^2) exp(-r^2/2 s^2) peaks at r = s with the value P/(s sqrt(e)), so
-// the stream-function peak that realizes an amplitude `a` is P = a s sqrt(e).
+// the potential peak that realizes an amplitude `a` is P = a s sqrt(e) -- with a = 1
+// here, which keeps a wide blob and a narrow one comparable in the stored drawing.
 function icBlobPeak(amp, sigma) { return amp * sigma * Math.sqrt(Math.E); }
 
 // minimum-image separation on a periodic axis of length L
@@ -1380,12 +1580,15 @@ function icBlobAdd3D(f, g, x0, y0, z0, sigma, sigmaZ, peak) {
 }
 
 // ---- editor state ---------------------------------------------------------
-// zp / zm are the accumulated Elsasser stream functions at the CURRENT grid; they are
-// dropped (and the drawing is lost) whenever the grid changes, which is exactly when
-// their layout stops meaning anything. `cfg` is the per-app hook set (icDrawWire).
+// zp / zm are the accumulated Elsasser POTENTIALS at the CURRENT grid; they are dropped
+// (and the drawing is lost) whenever the grid changes, which is exactly when their
+// layout stops meaning anything. `cfg` is the per-app hook set (icDrawWire); `snap` is
+// the copy taken on entering the editor, which "cancel" restores; `plane` is the z plane
+// being painted (3D, the editor's own slider -- no display card is involved).
 const icDraw = {
-  on: false, zp: null, zm: null, key: "", n: 0, has: false,
-  cfg: null, wired: false, cv: null, down: false, neg: false, last: null, pending: false
+  on: false, zp: null, zm: null, key: "", n: 0, has: false, snap: null, plane: 0,
+  cfg: null, wired: false, down: false, neg: false, last: null, pending: false,
+  cv: null, cap: null, plSl: null          // the editor view's elements (icEditBuild)
 };
 function icDrawKey(q) { return q.nx + "x" + q.ny + "x" + (q.nz || 1); }
 // (re)allocate for the live grid; returns the geometry the rest of the editor uses
@@ -1404,20 +1607,12 @@ function icDrawClear() {
   if (icDraw.zp) { icDraw.zp.fill(0); icDraw.zm.fill(0); }
   icDraw.has = false; icDraw.last = null;
 }
-// z+- -> the evolved variables, the same map icLetterField's callers use
-function icDrawFields(q) {
-  icDrawGrid(q);
-  const n = icDraw.n, phi = new Float32Array(n), psi = new Float32Array(n);
-  const zp = icDraw.zp, zm = icDraw.zm;
-  for (let i = 0; i < n; i++) { phi[i] = 0.5 * (zp[i] + zm[i]); psi[i] = 0.5 * (zp[i] - zm[i]); }
-  return { phi: phi, psi: psi };
-}
-// a blob in the TARGET field, expressed in z+- : "phi" is a blob in both, "psi" one of
-// each sign, "zp"/"zm" just themselves.
+// a blob in the TARGET field, expressed in zeta+- : "phi" is a blob in both, "psi" one
+// of each sign, "zp"/"zm" just themselves.
 const IC_TARGETS = { zp: [1, 0], zm: [0, 1], phi: [1, 1], psi: [1, -1] };
-function icDrawBlob(q, target, x0, y0, iz, sigma, sigmaZ, amp) {
+function icDrawBlob(q, target, x0, y0, iz, sigma, sigmaZ, sign) {
   const g = icDrawGrid(q), w = IC_TARGETS[target] || IC_TARGETS.zp;
-  const peak = icBlobPeak(amp, sigma);
+  const peak = (sign === undefined ? 1 : sign) * icBlobPeak(1, sigma);   // UNIT amplitude
   const z0 = g.nz > 1 ? Math.max(0, Math.min(g.nz - 1, iz | 0)) * g.Lz / g.nz : 0;
   for (const [f, c] of [[icDraw.zp, w[0]], [icDraw.zm, w[1]]]) {
     if (c === 0) continue;
@@ -1441,15 +1636,15 @@ function icDrawPlane(q, target, iz) {
 function icDrawSigma(frac, L, n) { return Math.max(frac * L, 2 * L / n); }
 
 // ---- preview --------------------------------------------------------------
-// #cvEdit is a plain 2D canvas laid over #cv (same box, same orientation): grid point
-// (ix, iy) is image pixel (ix, iy), i.e. row iy=0 at the TOP, matching the render pass's
-// v = 1 - uv.y flip and the arrow overlay. The nx-by-ny image is drawn through an
-// offscreen canvas and scaled up by drawImage, so the smoothing matches the GPU path's
-// linear sampler.
+// icDraw.cv is the editor view's own plain 2D canvas, laid out exactly like a display
+// card's: grid point (ix, iy) is image pixel (ix, iy), i.e. row iy=0 at the TOP, matching
+// the render pass's v = 1 - uv.y flip and the arrow overlay. The nx-by-ny image is drawn
+// through an offscreen canvas and scaled up by drawImage, so the smoothing matches the
+// GPU path's linear sampler.
 const icPrev = { cx: null, off: null, ox: null, w: 0, h: 0 };
 function icDrawCtx() {
   if (icPrev.cx) return icPrev.cx;
-  const cv = el("cvEdit");
+  const cv = icDraw.cv;
   if (!cv || !cv.getContext) return null;
   const dpr = Math.min(2, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
   icPrev.w = cv.width || 512; icPrev.h = cv.height || 512;
@@ -1467,7 +1662,7 @@ function icDrawPreview() {
   const q = cfg.params && cfg.params();
   if (!q) return;
   const g = icDrawGrid(q);
-  const v = icDrawPlane(q, cfg.target(), cfg.plane ? cfg.plane() : 0);
+  const v = icDrawPlane(q, cfg.target(), icDraw.plane);
   let mx = 0;
   for (let i = 0; i < v.length; i++) { const a = Math.abs(v[i]); if (a > mx) mx = a; }
   if (!icPrev.off) {
@@ -1483,7 +1678,7 @@ function icDrawPreview() {
   const im = icPrev.ox.createImageData(g.nx, g.ny), d = im.data;
   const inv = mx > 0 ? 1 / mx : 0;
   // exactly the colorize kernel's signed mapping, through the same colormap table,
-  // in the colormap the card being drawn on is using
+  // in the first display card's colormap (so the preview matches what Run will show)
   const pc = primaryCard(), which = pc ? pc.cmap() : 0;
   for (let ix = 0; ix < g.nx; ix++) {
     for (let iy = 0; iy < g.ny; iy++) {
@@ -1513,7 +1708,7 @@ function icDrawPreviewSoon() {
 // so the continuous grid coordinate under the cursor is u*n - 0.5 and the nearest grid
 // point is round(u*n - 0.5) = floor(u*n) inside the canvas.
 function icDrawPos(ev, q) {
-  const cv = el("cvEdit");
+  const cv = icDraw.cv;
   if (!cv || !cv.getBoundingClientRect) return null;
   const r = cv.getBoundingClientRect();
   if (!(r.width > 0) || !(r.height > 0)) return null;
@@ -1533,51 +1728,115 @@ function icDrawStroke(ev) {
   if (!q) return;
   const p = icDrawPos(ev, q);
   if (!p) return;
-  const sigma = icDrawSigma(cfg.sigmaFrac(), q.Lx, q.nx);
+  const sigma = icSigmaPerp();
   if (icDraw.last) {
     const dx = icWrapDelta(p.x0 - icDraw.last.x, q.Lx), dy = icWrapDelta(p.y0 - icDraw.last.y, q.Ly);
     if (Math.hypot(dx, dy) < 0.5 * sigma) return;
   }
   icDraw.last = { x: p.x0, y: p.y0 };
-  const nz = q.nz || 1;
-  const sz = nz > 1 ? icDrawSigma(cfg.sigmaZFrac(), q.Lz, nz) : 0;
-  // sign: the checkbox XOR the right button
+  const sz = (q.nz || 1) > 1 ? icSigmaZ() : 0;
+  // sign: the checkbox XOR the right button. The MAGNITUDE is 1 -- the amplitude
+  // sliders scale the finished drawing (REFINE_PLAN G.3).
   const s = ((cfg.neg && cfg.neg()) !== icDraw.neg) ? -1 : 1;
-  icDrawBlob(q, cfg.target(), p.x0, p.y0, cfg.plane ? cfg.plane() : 0, sigma, sz, s * cfg.amp());
+  icDrawBlob(q, cfg.target(), p.x0, p.y0, icDraw.plane, sigma, sz, s);
   icDrawPreviewSoon();
 }
 
-// enter / leave edit mode. Entering pauses the run (the sim must not advance under the
-// preview) and shows the overlay; the app's onMode hook syncs its own buttons.
-function icDrawSetMode(on) {
-  const cfg = icDraw.cfg;
-  if (!cfg) return;
-  if (on && cfg.enabled && !cfg.enabled()) {
-    showStatus("Switch the first display out of cube-face mode to draw an initial condition.", "info");
-    return;
+// ---- the editor VIEW (REFINE_PLAN G.7) -------------------------------------
+// "edit IC" replaces the whole display area with a dedicated editor canvas; the sim is
+// hidden and paused, and nothing is ever painted over a live display. Leaving is one of
+//   save    keep the drawing as the Reset target (and stay paused)
+//   run     save, apply it, resume
+//   cancel  restore the snapshot taken on entry
+// Because the editor owns its canvas, display card 0 is an ordinary card again.
+//
+// The view is BUILT here, exactly like a display card, so each app's markup carries only
+// the empty <div id="editview">: one implementation, both apps, and the 3D z-plane
+// slider is a flag rather than a second copy of the header.
+function icEditBuild(cfg) {
+  const card = _mk("div", "card disp", el("editview"));
+  const head = _mk("div", "cardhead", card);
+  _mk("b", null, head).textContent = "IC editor";
+  if (cfg.zplane) {
+    _mk("label", null, head).textContent = "z plane";
+    const s = _mk("input", "zslider", head);
+    s.type = "range"; s.min = "0"; s.max = "0"; s.step = "1"; s.value = "0";
+    s.oninput = () => {
+      icDraw.plane = parseInt(s.value, 10) | 0;
+      icEditCaption(); icDrawPreviewSoon();
+    };
+    icDraw.plSl = s;
   }
-  icDraw.on = !!on;
-  icDraw.down = false; icDraw.last = null;
-  const w = el("cvwrap");
-  if (w && w.classList) w.classList.toggle("editing", icDraw.on);
-  if (icDraw.on) {
-    running = false;
-    icDrawPreview();
+  for (const b of [["save &amp; run", "save, apply and resume", () => icEditLeave("run")],
+                   ["save", "store this drawing as the Reset target", () => icEditLeave("save")],
+                   ["clear", "erase the drawing (there is no undo stack)",
+                    () => { icDrawClear(); icDrawPreview(); }],
+                   ["cancel", "discard everything drawn since \"edit IC\"",
+                    () => icEditLeave("cancel")]]) {
+    const e = _mk("button", null, head);
+    e.innerHTML = b[0]; e.title = b[1]; e.onclick = b[2];
   }
-  if (cfg.onMode) cfg.onMode(icDraw.on);
+  const wrap = _mk("div", "cvwrap", card);
+  icDraw.cv = _mk("canvas", "cvedit", wrap);
+  icDraw.cv.width = 512; icDraw.cv.height = 512;
+  icDraw.cap = _mk("div", "viewcap", card);
+}
+function icEditShow(on) {
+  el("display").style.display = on ? "none" : "";
+  el("editview").style.display = on ? "" : "none";
+}
+function icEditCaption() {
+  const cfg = icDraw.cfg, q = cfg && cfg.params && cfg.params();
+  if (!q || !icDraw.cap) return;
+  const t = el("selPaint").options[el("selPaint").selectedIndex];
+  icDraw.cap.innerHTML = "painting " + (t ? t.innerHTML : "") +
+    "  &sigma;&perp; = " + icSigmaPerp().toPrecision(3) +
+    ((q.nz || 1) > 1 ? "  &sigma;<sub>z</sub> = " + icSigmaZ().toPrecision(3) +
+                       "  on iz = " + icDraw.plane : "");
+}
+function icEditEnter() {
+  const cfg = icDraw.cfg, q = cfg && cfg.params && cfg.params();
+  if (icDraw.on || !q) { if (!q) showStatus("no solver yet", "info"); return; }
+  icDrawGrid(q);
+  icDraw.snap = { zp: Float32Array.from(icDraw.zp), zm: Float32Array.from(icDraw.zm),
+                  has: icDraw.has };
+  icDraw.on = true; icDraw.down = false; icDraw.last = null;
+  running = false; el("btnRun").textContent = "Run";
+  el("btnRun").disabled = true; el("btnEdit").disabled = true;
+  // the editor's OWN z plane: seeded from the first display card, then its slider's
+  if (icDraw.plSl) {
+    icDraw.plane = Math.max(0, Math.min((q.nz || 1) - 1, cfg.plane0 ? cfg.plane0() : 0));
+    icDraw.plSl.max = String(Math.max(0, (q.nz || 1) - 1));
+    icDraw.plSl.value = String(icDraw.plane);
+  } else icDraw.plane = 0;
+  icEditShow(true);
+  icEditCaption();
+  icDrawPreview();
+}
+// mode: "save" | "run" | "cancel"
+function icEditLeave(mode) {
+  if (!icDraw.on) return;
+  if (mode === "cancel" && icDraw.snap) {
+    icDraw.zp.set(icDraw.snap.zp); icDraw.zm.set(icDraw.snap.zm);
+    icDraw.has = icDraw.snap.has;
+  }
+  icDraw.snap = null;
+  icDraw.on = false; icDraw.down = false; icDraw.last = null;
+  icEditShow(false);
+  el("btnRun").disabled = false; el("btnEdit").disabled = false;
+  if (mode === "run") {
+    applyIC();
+    running = true; el("btnRun").textContent = "Pause";
+  } else if (mode === "save") {
+    showStatus("drawing saved — Reset applies it", "info");
+  }
 }
 
-// (re)bind the pointer handlers to the CURRENT #cvEdit. The overlay canvas belongs to
-// the first display card, so it is a different element after every card-layout change
-// (a preset switch rebuilds the cards) -- binding once at boot would leave the editor
-// wired to a detached canvas. Called from the DisplayCard constructor.
+// bind the pointer handlers to the editor canvas icEditBuild just made. The editor view
+// is built once, so this runs once.
 function icDrawAttach() {
-  const cv = el("cvEdit");
-  if (!cv || !cv.addEventListener || icDraw.cv === cv) return;
-  if (icDraw.cv) icDraw.on = false;          // the old overlay went away with its card
-  icDraw.cv = cv;
-  icDraw.down = false; icDraw.last = null;
-  icPrev.cx = null;                          // the cached 2D context was that canvas's
+  const cv = icDraw.cv;
+  if (!cv || !cv.addEventListener) return;
   cv.addEventListener("contextmenu", e => e.preventDefault());
   cv.addEventListener("pointerdown", e => {
     if (!icDraw.on) return;
@@ -1600,33 +1859,68 @@ function icDrawAttach() {
 
 // wire the editor. cfg supplies the app's knobs:
 //   params()      the live solver's parameter object (nx, ny, nz, Lx, Ly, Lz) or null
-//   target()      "zp" | "zm" | "phi" | "psi"
-//   sigmaFrac()   sigma_perp as a fraction of Lx      sigmaZFrac()  sigma_z / Lz (3D)
-//   amp()         amplitude knob (max |grad| of the blob)
-//   neg()         negative-sign toggle                plane()       target z plane (3D)
-//   enabled()     false where drawing makes no sense (3D cube mode)
+//   target()      "zp" | "zm" | "phi" | "psi"     neg()   negative-sign toggle
+//   zplane        3D: build the editor's OWN z-plane slider (absent in 2D)
+//   plane0()      3D: the plane to open the editor on (the first display card's)
+//   icRows        extra control-row ids that only apply to the letters / custom presets
 //   sliders       the app's sigma slider ids (["rSigP"] in 2D, + "rSigZ" in 3D)
-// The buttons, the edit-mode UI sync and the slider labels are identical in both apps
-// and live here; only the knobs above are per-app.
+// The view, the buttons and the slider labels are identical in both apps and live here;
+// only the knobs above are per-app.
 function icDrawWire(cfg) {
   icDraw.cfg = cfg;
-  cfg.onMode = on => {
-    el("btnEdit").textContent = on ? "stop editing" : "edit IC";
-    el("btnRun").disabled = on;
-    if (on) el("btnRun").textContent = "Run";        // icDrawSetMode paused the run
-  };
-  icDrawAttach();
   if (icDraw.wired) return;
   icDraw.wired = true;
-  el("btnEdit").onclick = () => icDrawSetMode(!icDraw.on);
-  el("btnClear").onclick = () => { icDrawClear(); icDrawPreview(); };
-  el("btnApply").onclick = () => {
-    icDrawSetMode(false);
-    applyIC();                                       // uploads the drawing
-    running = true; el("btnRun").textContent = "Pause";
-  };
-  el("selPaint").onchange = () => { if (icDraw.on) icDrawPreview(); };
-  for (const id of (cfg.sliders || [])) el(id).oninput = syncLabels;
+  icEditBuild(cfg);
+  icDrawAttach();
+  el("btnEdit").onclick = icEditEnter;
+  el("selPaint").onchange = () => { if (icDraw.on) { icEditCaption(); icDrawPreview(); } };
+  for (const id of (cfg.sliders || [])) {
+    el(id).oninput = () => { syncLabels(); if (icDraw.on) icEditCaption(); };
+  }
+}
+
+// which IC rows apply to the selected preset -- the same rule in both apps (the app
+// names its own extra rows through cfg.icRows, so nothing here guesses at ids).
+function icSyncRows() {
+  const p = el("selIC").value, isL = p === "letters", isC = p === "custom";
+  for (const id of ["rAmpP", "rAmpM", "cbAmpLock"]) el(id).disabled = !isL && !isC;
+  el("rowDraw").style.display = isC ? "" : "none";
+  for (const id of ((icDraw.cfg && icDraw.cfg.icRows) || [])) {
+    el(id).style.display = (isL || isC) ? "" : "none";
+  }
+  if (!isC && icDraw.on) icEditLeave("save");
+}
+
+// ---------------------------------------------------------------------------
+// z-plane trackers (3D display cards; REFINE_PLAN G.8 / note [7])
+// ---------------------------------------------------------------------------
+// `e` is readPlaneEnergy's 2*nz output, `off` the field's offset (0 for E+, nz for E-).
+//
+// CENTROID (the default). A plain argmax hops between planes as the discrete peak moves,
+// which is what made the collision displays jitter. The CIRCULAR first moment
+//   zbar = arg( sum_k E_k exp(2 pi i k / nz) ) * nz / 2pi
+// is periodic by construction and moves smoothly: for a packet translating at v_A it is
+// linear in t (node check 5). Returns a CONTINUOUS plane coordinate in [0, nz), or -1
+// when there is no signal at all.
+function trackCentroid(e, off, nz) {
+  let cr = 0, ci = 0;
+  for (let k = 0; k < nz; k++) {
+    const w = Math.max(0, e[off + k]), th = 2 * Math.PI * k / nz;
+    cr += w * Math.cos(th); ci += w * Math.sin(th);
+  }
+  if (!(cr * cr + ci * ci > 0)) return -1;
+  let z = Math.atan2(ci, cr) * nz / (2 * Math.PI);
+  z -= nz * Math.floor(z / nz);
+  return z;
+}
+// ARGMAX with hysteresis: only leave the current plane when another one beats it by
+// TRACK_HYST-1, so a peak wandering between two nearly equal planes stays put.
+const TRACK_HYST = 1.1;
+function trackArgmax(e, off, nz, cur) {
+  let best = 0;
+  for (let k = 1; k < nz; k++) if (e[off + k] > e[off + best]) best = k;
+  const c = (cur >= 0 && cur < nz) ? cur : best;
+  return e[off + best] > TRACK_HYST * e[off + c] ? best : c;
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,8 +1948,9 @@ async function loop() {
       n = stepsPerFrame;
       for (let i = 0; i < n; i++) solver.step(ce);
     }
-    // one display chain run per card per rendered frame: same state, own quantity
-    for (const d of cards.disp) d.render();
+    // one display chain run per card per rendered frame: same state, own quantity.
+    // (the editor view hides them all -- do not render into detached canvases)
+    if (!icDraw.on) for (const d of cards.disp) d.render();
     await device.queue.onSubmittedWorkDone();
     const ms = performance.now() - t0;
     if (running) {

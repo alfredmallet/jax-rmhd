@@ -98,8 +98,15 @@ audit; sonnet review.
 
 ## Phase H — diagnostics [15]
 
+0. **Carried-over from GATE G (MAJOR, ship-with-notes)**: dedupe the identical
+   forcing-controls `<details>` markup block (and the smaller pre-existing per-app
+   control-row twins: topbar, cfl row, diss/hyper row) via a `controlsBuild(spec)`
+   helper in common.js, updating layout.js/bootstub.js to consume the spec. Checked
+   at GATE H.
 1. Spectrum chart card options: E_u/E_b (current), E⁺/E⁻ (same bin kernel on φk±ψk —
-   one template, parameterized weight), both, and (3D) ∥/⊥ selection.
+   one template, parameterized weight), both, and (3D) ∥/⊥ selection. Alfred
+   2026-08-06: the 3D spectrum chart's y-limits must be set by the PERP spectrum
+   alone — the dashed E(k∥) curves plot within those limits but don't stretch them.
 2. Energy-trace card options: (E_kin, E_mag, E_tot) or (E⁺, E⁻, E_tot) — E± = 2(E_kin +
    E_mag ± H_c)… compute from the existing reductions plus the H_c inner product (one
    small kernel or an extra accumulator in energyPartial — prefer the extra accumulator,

@@ -18,6 +18,7 @@
   <button id="btnRun">Run</button>
   <button id="btnReset">Reset</button>
   <label for="selPreset">preset</label><select id="selPreset"></select>
+  <button id="btnParams">hide params</button>
   <span id="steps"></span>
 </div>
 
@@ -51,11 +52,24 @@
   <details id="grpForce">
     <summary>forcing</summary>
     <div class="row">
-      <label>power &epsilon;</label>
       <input type="checkbox" id="cbForce" checked title="forcing on/off (unchecked: decaying turbulence)">
-      <input type="range" id="rEps" min="-3" max="1" step="0.05" value="-0.52"><span class="val" id="vEps"></span>
+      <label>&epsilon;&#8314;</label>
+      <input type="range" id="rEpsP" min="-3" max="1" step="0.05" value="-0.82"><span class="val" id="vEpsP"></span>
+      <label class="cbl"><input type="checkbox" id="cbEpsLock" checked
+        title="move the two injection rates together">lock</label>
+    </div>
+    <div class="row">
+      <label>&epsilon;&#8315;</label>
+      <input type="range" id="rEpsM" min="-3" max="1" step="0.05" value="-0.82"><span class="val" id="vEpsM"></span>
       <label>tau</label>
       <input type="range" id="rTau" min="0.05" max="5" step="0.05" value="1"><span class="val" id="vTau"></span>
+    </div>
+    <div class="row">
+      <label>band n</label>
+      <input type="range" id="rFmin" min="1" max="8" step="1" value="1"
+        title="forcing shell: lower edge, in units of the box wavenumber">
+      <input type="range" id="rFmax" min="2" max="12" step="1" value="3"
+        title="forcing shell: upper edge (exclusive)"><span class="val" id="vFshell"></span>
     </div>
   </details>
   <details id="grpIC">
@@ -64,29 +78,33 @@
       <label>preset</label>
       <select id="selIC">
         <option value="modes">large-scale modes</option>
-        <option value="letters">letters A / B (packets)</option>
+        <option value="letters">letters A / B</option>
         <option value="custom">custom (drawn blobs)</option>
         <option value="quiescent">quiescent (zero)</option>
       </select>
     </div>
     <div class="row">
-      <label>amplitude</label>
-      <input type="range" id="rAmp" min="-2" max="1" step="0.05" value="0"><span class="val" id="vAmp"></span>
+      <label>&zeta;&#8314; amp</label>
+      <input type="range" id="rAmpP" min="-2" max="1" step="0.05" value="0"><span class="val" id="vAmpP"></span>
+      <label class="cbl"><input type="checkbox" id="cbAmpLock" checked
+        title="move the two potential amplitudes together">lock</label>
+    </div>
+    <div class="row">
+      <label>&zeta;&#8315; amp</label>
+      <input type="range" id="rAmpM" min="-2" max="1" step="0.05" value="0"><span class="val" id="vAmpM"></span>
     </div>
     <div class="row" id="rowDraw" style="display:none">
-      <button id="btnEdit" title="pause and paint gaussian blobs on the first display">edit IC</button>
+      <button id="btnEdit" title="pause the run and open the IC editor">edit IC</button>
       <label>paint</label>
       <select id="selPaint">
-        <option value="zp">z&#8314;</option>
-        <option value="zm">z&#8315;</option>
+        <option value="zp">&zeta;&#8314;</option>
+        <option value="zm">&zeta;&#8315;</option>
         <option value="phi">&phi;</option>
         <option value="psi">&psi;</option>
       </select>
       <label>&sigma;&perp;</label>
-      <input type="range" id="rSigP" min="0.01" max="0.3" step="0.005" value="0.08"><span class="val" id="vSigP"></span>
+      <input type="range" id="rSigP"><span class="val" id="vSigP"></span>
       <label>negative</label><input type="checkbox" id="cbNeg" title="deposit with a minus sign (or drag with the right button)">
-      <button id="btnApply">apply &amp; run</button>
-      <button id="btnClear" title="erase the drawing (there is no undo stack)">clear</button>
     </div>
   </details>
   <details id="grpDisp" data-keep-open>
@@ -98,6 +116,9 @@
   </details>
 </div>
 <div id="status"></div>
+
+<!-- the IC editor's view: common.js (icEditBuild) fills it, exactly as it builds cards -->
+<div id="editview" style="display:none"></div>
 
 <div id="display">
   <div id="displaycol">
@@ -883,85 +904,52 @@ class Solver {
 // UI
 // ---------------------------------------------------------------------------
 function uiParams() {
+  const eps = uiEps();
   return {
     nx: parseInt(el("selRes").value, 10), ny: parseInt(el("selRes").value, 10),
     Lx: 2 * Math.PI, Ly: 2 * Math.PI,
     diss: Math.pow(10, parseFloat(el("rDiss").value)),
     hyper: parseInt(el("selHyper").value, 10),
-    epsP: el("cbForce").checked ? 0.5 * Math.pow(10, parseFloat(el("rEps").value)) : 0.0,
-    epsM: el("cbForce").checked ? 0.5 * Math.pow(10, parseFloat(el("rEps").value)) : 0.0,
+    epsP: eps[0], epsM: eps[1],
     tau: parseFloat(el("rTau").value),
     cfl: parseFloat(el("rCfl").value),
-    fshell: [1, 3], smax: 1.0,
+    fshell: uiFshell(), smax: 1.0,
     seed: parseInt(el("nSeed").value, 10) | 0
   };
 }
-function syncLabels() {
-  el("vDiss").textContent = Math.pow(10, parseFloat(el("rDiss").value)).toExponential(1);
-  el("vEps").textContent = el("cbForce").checked
-    ? Math.pow(10, parseFloat(el("rEps").value)).toExponential(1) : "off";
-  el("vTau").textContent = parseFloat(el("rTau").value).toFixed(2);
-  el("vCfl").textContent = parseFloat(el("rCfl").value).toFixed(2);
-  el("vCflEvery").textContent = el("rCflEvery").value;
-  el("vAmp").textContent = icParams().amp.toPrecision(3);
-  el("vSigP").textContent = drawSigma().toPrecision(3);
-}
+// the 2D page has no knob the shared readouts do not already cover
+function syncLabels() { syncCommonLabels(); }
 
 // ---------------------------------------------------------------------------
 // initial-condition presets
 // ---------------------------------------------------------------------------
 // A preset is a UI concept only: the solver knows the built-in pair (setIC / setIC(true))
-// and "here is a real-space (phi, psi)" (setICFromReal). "letters" rasterizes one glyph
-// per Elsasser field (common.js: icLetterField), each normalized so that
-// max |zhat x grad z+-| = the amplitude knob, and maps them to the evolved variables
-// with phi = (z+ + z-)/2, psi = (z+ - z-)/2.
-function icParams() {
-  return { preset: el("selIC").value, text: IC_LETTERS,
-           amp: Math.pow(10, parseFloat(el("rAmp").value)) };
-}
-function syncIC() {
-  const p = el("selIC").value, isL = p === "letters", isC = p === "custom";
-  el("rAmp").disabled = !isL && !isC;             // "custom" reuses it as the blob amplitude
-  el("rowDraw").style.display = isC ? "" : "none";
-  if (!isC && icDraw.on) icDrawSetMode(false);
-}
-// the effective blob width: the slider is a fraction of Lx, floored at 2 cells
-function drawSigma() {
-  const q = solver ? solver.p : uiParams();
-  return icDrawSigma(parseFloat(el("rSigP").value), q.Lx, q.nx);
-}
+// and "here is a real-space (phi, psi)" (setICFromReal). "letters" and "custom" both go
+// through common.js's icPresetFields: one glyph (or the drawing) per Elsasser POTENTIAL
+// zeta+-, each normalized at apply time so that max |zhat x grad zeta+-| is its own
+// amplitude slider, then phi = (zeta+ + zeta-)/2, psi = (zeta+ - zeta-)/2.
+function syncIC() { icSyncRows(); }
 // (re)apply the current preset to the live solver and restart the traces
 function applyIC() {
   if (!solver) return;
-  const q = solver.p, c = icParams();
-  if (c.preset === "quiescent") solver.setIC(true);
-  else if (c.preset === "custom") {
-    const f = icDrawFields(q);                     // zeros until something is painted
+  const q = solver.p, preset = el("selIC").value, amp = uiAmp();
+  if (preset === "quiescent") solver.setIC(true);
+  else if (preset === "modes") solver.setIC();
+  else {
+    const f = icPresetFields(q, preset, amp[0], amp[1], null);
     solver.setICFromReal(f.phi, f.psi);
-  } else if (c.preset === "letters") {
-    const n = q.nx * q.ny;
-    const zp = icLetterField(c.text.charAt(0), q.nx, q.ny, q.Lx, q.Ly, c.amp);
-    const zm = icLetterField(c.text.charAt(1) || c.text.charAt(0), q.nx, q.ny, q.Lx, q.Ly, c.amp);
-    const phi = new Float32Array(n), psi = new Float32Array(n);
-    for (let i = 0; i < n; i++) { phi[i] = 0.5 * (zp[i] + zm[i]); psi[i] = 0.5 * (zp[i] - zm[i]); }
-    solver.setICFromReal(phi, psi);
-  } else solver.setIC();
+  }
   spsSmooth = 0;
   chartsReset();
 }
 
-// the blob editor lives in common.js (buttons and all); this hands it the app's knobs.
-// In 2D there is no z, so the plane and sigma_z hooks are constants.
+// the blob editor lives in common.js (view, buttons and all); this hands it the app's
+// knobs. In 2D there is no z, so it needs no plane slider and no extra IC rows.
 function wireDrawEditor() {
   icDrawWire({
     params: () => solver && solver.p,
     target: () => el("selPaint").value,
-    sigmaFrac: () => parseFloat(el("rSigP").value),
-    sigmaZFrac: () => 0,
-    plane: () => 0,
-    amp: () => icParams().amp,
     neg: () => el("cbNeg").checked,
-    enabled: () => !!solver,
     sliders: ["rSigP"]
   });
 }
@@ -983,20 +971,24 @@ const DISP_FIELDS = [
 const PRESETS = {
   forced: {
     label: "forced turbulence (default)",
-    set: { selRes: "256", selHyper: "4", cbForce: true, rEps: "-0.52", rDiss: "-13",
-           selIC: "modes", rAmp: "0", rCflEvery: "4" },
+    set: { selRes: "256", selHyper: "4", cbForce: true, rEpsP: "-0.82", rEpsM: "-0.82",
+           cbEpsLock: true, rFmin: "1", rFmax: "3", rDiss: "-13",
+           selIC: "modes", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 0 }], charts: ["energy", "spectrum", "cut"] },
     hint: ""
   },
   decay: {
     label: "decaying A / B packets",
-    set: { selRes: "512", selHyper: "4", cbForce: false, selIC: "letters", rAmp: "0",
-           rCflEvery: "4" },
+    set: { selRes: "512", selHyper: "4", cbForce: false, selIC: "letters",
+           rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     prep: () => autoDiss(),          // marginally-resolved diss for 512^2, hyper=4
     layout: { disp: [{ sel: 6 }, { sel: 7 }], charts: ["energy", "spectrum"] },
-    hint: "Decaying 2D turbulence: A-shaped z<sup>+</sup> and B-shaped z<sup>-</sup> packets "
-      + "at 512&sup2;, forcing off &mdash; press <b>Run</b> and switch a display to "
-      + "&sigma;_c to watch dynamic alignment shut the cascade down."
+    hint: "Decaying 2D turbulence: A-shaped &zeta;<sup>+</sup> and B-shaped &zeta;<sup>&minus;</sup> "
+      + "potentials at 512&sup2;, forcing off &mdash; press <b>Run</b> and switch a display to "
+      + "&sigma;_c to watch dynamic alignment shut the cascade down. "
+      + "Ideal 2D RMHD is self-similar in amplitude ((a,t) &rarr; (a/&lambda;, &lambda;t)), and "
+      + "dt is adaptive, so the per-frame dynamics look the same at any amplitude &mdash; "
+      + "amplitude only matters against the fixed dissipation (in 3D it is &chi;)."
   }
 };
 
@@ -1005,7 +997,7 @@ function rebuild() {
   // on the old solver's buffers. Retire it and free it at the top of a later frame.
   if (solver) { graveyard.push(solver); solver = null; }
   // a new grid means a new (empty) drawing: the editor's arrays are per-resolution
-  if (icDraw.on) icDrawSetMode(false);
+  if (icDraw.on) icEditLeave("save");
   solver = new Solver(device, uiParams());
   cardsSync();
   stepsPerFrame = 1;
@@ -1149,6 +1141,9 @@ async function runSelfTest() {
 // ---------------------------------------------------------------------------
 async function boot() {
   groupsInit();
+  // sigma sliders take their range and default from the shared IC constants, BEFORE a
+  // preset gets a chance to set them (REFINE_PLAN G.2)
+  icSigmaSliderInit("rSigP", IC_SIGMA_PERP_FRAC, 0.25);
   // the preset (dropdown default, or ?demo=NAME as a deep link) rewrites the controls
   // and runs its "auto" prep BEFORE the first rebuild, so the solver is constructed
   // with its grid and dissipation. Done ahead of initGPU so the hint is on the page
@@ -1163,8 +1158,9 @@ async function boot() {
     zsliceOf: () => 0,
     onLayout: syncLabels
   });
-  bootApply(pre);
+  // wire first: bootApply's syncIC asks the editor config which rows a preset owns
   wireCommonControls({ presets: PRESETS });
+  bootApply(pre);
   loop();
 }
 boot();

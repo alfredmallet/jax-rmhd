@@ -147,12 +147,14 @@ spin-up per-step recompute: as in 2D.
 - Energy trace + spectrum panels, self-test panel, acknowledgements: as in 2D.
 - Outside this contract (display/IC features, no physics): Lz as a UI parameter with the
   added `64²×128` / `64²×256` presets (every kz-derived quantity already reads `p.Lz`),
-  the letter-packet IC via `setICFromReal` (and the `custom` gaussian-blob editor, which
-  deposits on the z plane the FIRST display card is showing and uploads through the same
-  path), the per-real-z-plane Elsasser energy reduction that drives the per-card
-  "track z± peak" slice sources, the display/chart card system (every chain carries the
-  cube path, so any card may show faces), and the `collision` preset / `?demo=collision`
-  URL configuration. See README.md.
+  the letter-packet IC via `setICFromReal` (Elsasser POTENTIALS ζ± times a gaussian
+  z-envelope whose width σ_z is a slider capped at Lz/12, with the packet placement
+  derived from it; and the `custom` gaussian-blob editor, which lives in its own view,
+  paints on its own z-plane slider and uploads through the same path), the
+  per-real-z-plane Elsasser energy reduction that drives the per-card "track z±" slice
+  sources (centroid or hysteretic argmax), the display/chart card system (every chain
+  carries the cube path, so any card may show faces), and the `collision` preset /
+  `?demo=collision` URL configuration. See README.md.
 - Add a small cross-link: 2D page ↔ 3D page (one <a> in each header).
 
 ## 6. Self-test (refvectors3d.json, 16²×8, inlined)

@@ -53,13 +53,14 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 .cvmain { width: 100%; height: 100%; background: #000; image-rendering: auto; display: block; }
 .cvvec { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
          display: block; pointer-events: none; }
-/* IC blob editor: an opaque 2D preview over the first card's canvas (and over its
-   arrows), shown and made clickable only while its .cvwrap carries .editing. Sits
-   after .cvvec in the DOM, so it paints on top. touch-action: none keeps a drag
-   from scrolling the page. */
-.cvedit { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-          display: none; background: #000; cursor: crosshair; touch-action: none; }
-.cvwrap.editing .cvedit { display: block; }
+/* IC blob editor: its own VIEW (#editview replaces #display while editing), so the
+   canvas is an ordinary card canvas and nothing is ever painted over a live display.
+   touch-action: none keeps a drag from scrolling the page. */
+.cvedit { width: 100%; height: 100%; display: block; background: #000;
+          cursor: crosshair; touch-action: none; }
+#editview { margin-bottom: 12px; }
+#editview .card.disp { max-width: 540px; }
+#editview .cardhead b { color: #a9c7e8; font-weight: 600; }
 
 canvas.chart { display: block; width: 100%; height: auto; background: #0f1115;
                border: 1px solid #2b303a; }

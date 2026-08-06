@@ -19,6 +19,7 @@
   <button id="btnRun">Run</button>
   <button id="btnReset">Reset</button>
   <label for="selPreset">preset</label><select id="selPreset"></select>
+  <button id="btnParams">hide params</button>
   <span id="steps"></span>
 </div>
 
@@ -71,11 +72,24 @@
   <details id="grpForce">
     <summary>forcing</summary>
     <div class="row">
-      <label>power &epsilon;</label>
       <input type="checkbox" id="cbForce" checked title="forcing on/off (unchecked: decaying turbulence)">
-      <input type="range" id="rEps" min="-3" max="1" step="0.05" value="-0.52"><span class="val" id="vEps"></span>
+      <label>&epsilon;&#8314;</label>
+      <input type="range" id="rEpsP" min="-3" max="1" step="0.05" value="-0.82"><span class="val" id="vEpsP"></span>
+      <label class="cbl"><input type="checkbox" id="cbEpsLock" checked
+        title="move the two injection rates together">lock</label>
+    </div>
+    <div class="row">
+      <label>&epsilon;&#8315;</label>
+      <input type="range" id="rEpsM" min="-3" max="1" step="0.05" value="-0.82"><span class="val" id="vEpsM"></span>
       <label>tau</label>
       <input type="range" id="rTau" min="0.05" max="5" step="0.05" value="1"><span class="val" id="vTau"></span>
+    </div>
+    <div class="row">
+      <label>band n</label>
+      <input type="range" id="rFmin" min="1" max="8" step="1" value="1"
+        title="forcing shell: lower edge, in units of the box wavenumber">
+      <input type="range" id="rFmax" min="2" max="12" step="1" value="3"
+        title="forcing shell: upper edge (exclusive)"><span class="val" id="vFshell"></span>
     </div>
   </details>
   <details id="grpIC">
@@ -90,27 +104,34 @@
       </select>
     </div>
     <div class="row">
-      <label>amplitude</label>
-      <input type="range" id="rAmp" min="-2" max="1" step="0.05" value="-0.7"><span class="val" id="vAmp"></span>
-      <span class="val" id="vChi" style="width:96px"
-        title="nonlinearity parameter of the packet collision (estimate)"></span>
+      <label>&zeta;&#8314; amp</label>
+      <input type="range" id="rAmpP" min="-2" max="1" step="0.05" value="-0.7"><span class="val" id="vAmpP"></span>
+      <label class="cbl"><input type="checkbox" id="cbAmpLock" checked
+        title="move the two potential amplitudes together">lock</label>
     </div>
+    <div class="row">
+      <label>&zeta;&#8315; amp</label>
+      <input type="range" id="rAmpM" min="-2" max="1" step="0.05" value="-0.7"><span class="val" id="vAmpM"></span>
+    </div>
+    <div class="row" id="rowSigZ" style="display:none">
+      <label>&sigma;<sub>z</sub></label>
+      <input type="range" id="rSigZ"
+        title="packet length along z (letters) / blob length (custom)"><span class="val" id="vSigZ"></span>
+      <span class="hint" id="sigzcap" style="display:none">at the cap &mdash; increase L<sub>z</sub> for longer packets</span>
+    </div>
+    <div class="hint" id="icinfo"></div>
     <div class="row" id="rowDraw" style="display:none">
-      <button id="btnEdit" title="pause and paint gaussian blobs on the first display">edit IC</button>
+      <button id="btnEdit" title="pause the run and open the IC editor">edit IC</button>
       <label>paint</label>
       <select id="selPaint">
-        <option value="zp">z&#8314;</option>
-        <option value="zm">z&#8315;</option>
+        <option value="zp">&zeta;&#8314;</option>
+        <option value="zm">&zeta;&#8315;</option>
         <option value="phi">&phi;</option>
         <option value="psi">&psi;</option>
       </select>
       <label>&sigma;&perp;</label>
-      <input type="range" id="rSigP" min="0.01" max="0.3" step="0.005" value="0.08"><span class="val" id="vSigP"></span>
-      <label>&sigma;<sub>z</sub></label>
-      <input type="range" id="rSigZ" min="0.01" max="0.3" step="0.005" value="0.0625"><span class="val" id="vSigZ"></span>
+      <input type="range" id="rSigP"><span class="val" id="vSigP"></span>
       <label>negative</label><input type="checkbox" id="cbNeg" title="deposit with a minus sign (or drag with the right button)">
-      <button id="btnApply">apply &amp; run</button>
-      <button id="btnClear" title="erase the drawing (there is no undo stack)">clear</button>
     </div>
   </details>
   <details id="grpDisp" data-keep-open>
@@ -118,10 +139,18 @@
     <div class="row">
       <button id="btnAddDisp">+ display</button>
       <button id="btnAddChart">+ chart</button>
+      <label>tracking</label>
+      <select id="selTrack" title="how a card's &quot;track z&#8314;/z&#8315;&quot; slice source follows its packet">
+        <option value="centroid" selected>energy centroid</option>
+        <option value="argmax">peak plane (10% hysteresis)</option>
+      </select>
     </div>
   </details>
 </div>
 <div id="status"></div>
+
+<!-- the IC editor's view: common.js (icEditBuild) fills it, exactly as it builds cards -->
+<div id="editview" style="display:none"></div>
 
 <div id="display">
   <div id="displaycol">
@@ -1495,133 +1524,107 @@ function uiZDiss() {
 // unit cube regardless of aspect ratio.
 function uiLz() { return parseFloat(el("selLz").value) * Math.PI; }
 function uiParams() {
-  const [np, nz] = uiRes();
+  const [np, nz] = uiRes(), eps = uiEps();
   return {
     nx: np, ny: np, nz: nz,
     Lx: 2 * Math.PI, Ly: 2 * Math.PI, Lz: uiLz(),
     diss: Math.pow(10, parseFloat(el("rDiss").value)),
     hyper: parseInt(el("selHyper").value, 10),
     zdiss: uiZDiss(),
-    epsP: el("cbForce").checked ? 0.5 * Math.pow(10, parseFloat(el("rEps").value)) : 0.0,
-    epsM: el("cbForce").checked ? 0.5 * Math.pow(10, parseFloat(el("rEps").value)) : 0.0,
+    epsP: eps[0], epsM: eps[1],
     tau: parseFloat(el("rTau").value),
     cfl: parseFloat(el("rCfl").value),
-    fshell: [1, 3], smax: 1.0,
+    fshell: uiFshell(), smax: 1.0,
     seed: parseInt(el("nSeed").value, 10) | 0
   };
 }
 function syncLabels() {
-  el("vDiss").textContent = Math.pow(10, parseFloat(el("rDiss").value)).toExponential(1);
+  syncCommonLabels();
   const zd = uiZDiss();
   el("vZDiss").textContent = zd === 0 ? "0" : zd.toExponential(1);
-  el("vEps").textContent = el("cbForce").checked
-    ? Math.pow(10, parseFloat(el("rEps").value)).toExponential(1) : "off";
-  el("vTau").textContent = parseFloat(el("rTau").value).toFixed(2);
-  el("vCfl").textContent = parseFloat(el("rCfl").value).toFixed(2);
-  el("vCflEvery").textContent = el("rCflEvery").value;
-  const c = icParams();
-  el("vAmp").textContent = c.amp.toPrecision(3);
-  el("vChi").textContent = c.preset === "letters" ? "χ ≈ " + chiEstimate().toPrecision(2) : "";
-  el("vSigP").textContent = drawSigma().toPrecision(3);
-  el("vSigZ").textContent = drawSigmaZ().toPrecision(3);
-  // the editor draws (and deposits on) whatever plane the first display card is
-  // showing, so every path that can move that plane -- slider, tracker -- refreshes
-  // the preview here
+  const sz = icSigmaZ();
+  el("vSigZ").textContent = sz.toPrecision(3);
+  // the Lz/12 cap: the slider simply cannot go past it, so the note is a statement of
+  // fact, not a warning (REFINE_PLAN G.6)
+  const atCap = parseFloat(el("rSigZ").value) >= parseFloat(el("rSigZ").max) - 1e-9;
+  el("sigzcap").style.display = atCap ? "" : "none";
+  el("icinfo").innerHTML = icInfoLine(sz);
+  // the editor's preview follows its own plane slider and these widths
   if (icDraw.on) icDrawPreviewSoon();
+}
+// the packet line under the IC controls: the chi definition, its two values, and when
+// the packets meet. Empty unless a potential-based preset is selected.
+function icInfoLine(sz) {
+  const p = el("selIC").value;
+  if (p !== "letters" && p !== "custom") return "";
+  const q = liveParams(), a = uiAmp();
+  // the perpendicular scale is the structure's own: sigma_letter for the glyphs, the
+  // blob-width slider for a drawing (they share a default -- REFINE_PLAN G.2)
+  const sp = p === "custom" ? icSigmaPerp() : icSigmaLetter(q.Lx);
+  const chi = chiEstimate(sp, sz, a[0], a[1]);
+  const g = packetGeom(q.Lz, sz);
+  const fmt = v => (v < 100 ? v.toPrecision(2) : v.toExponential(1));
+  return "&chi;<sup>&plusmn;</sup> = a<sup>&mp;</sup>&middot;k&#772;&perp;&middot;&sigma;<sub>z</sub>/v<sub>A</sub>"
+    + " with k&#772;&perp; = 1/&sigma;&perp; = " + (1 / sp).toPrecision(3)
+    + " &rarr; &chi;<sup>+</sup> " + fmt(chi[0]) + ", &chi;<sup>&minus;</sup> " + fmt(chi[1])
+    + (p === "letters"
+        ? "; packets " + g.sep.toPrecision(3) + " apart (&ge; 5&sigma;<sub>z</sub>), meeting at t = "
+          + g.tColl.toPrecision(3)
+        : "");
 }
 
 // ---------------------------------------------------------------------------
 // initial-condition presets
 // ---------------------------------------------------------------------------
 // A preset is a UI concept only: the solver knows the built-in pair (setIC / setIC(true))
-// and "here is a real-space (phi, psi)" (setICFromReal). "letters" builds one Elsasser
-// WAVE PACKET per field: a rasterized, gaussian-smoothed glyph in the perpendicular
-// plane (common.js: icLetterField, normalized to max |zhat x grad z+-| = the amplitude
-// knob) times a gaussian z-envelope of peak 1, then phi = (z+ + z-)/2, psi = (z+ - z-)/2.
+// and "here is a real-space (phi, psi)" (setICFromReal). "letters" and "custom" both go
+// through common.js's icPresetFields: one Elsasser POTENTIAL zeta+- per field -- a
+// rasterized, gaussian-smoothed glyph (or the drawing) times a gaussian z-envelope of
+// peak 1 -- normalized at apply time to max |zhat x grad zeta+-| = its own amplitude
+// slider, then phi = (zeta+ + zeta-)/2, psi = (zeta+ - zeta-)/2.
 //
-// PACKET GEOMETRY (fractions of Lz; also read by the node unit checks). The propagation
-// direction comes from the implemented propagator: the stage kernel applies
-// exp(L*tau) with L = [[d, i*kzd], [i*kzd, d]] to (phi, psi), whose eigenvectors are
-// z+- = phi +- psi with eigenvalues d +- i*kzd. So d/dt z+- = +-i*kz*z+- , and with the
-// inverse transform's e^{+i kz z} convention that is z+-(z, t) = z+-(z -+ t, 0):
-//   z+ travels toward SMALLER z, z- toward LARGER z, both at v_A = 1.
-// Placing z+ ABOVE the midplane and z- BELOW it therefore makes them approach each
-// other and collide near z = Lz/2 (at t = 3Lz/16). The offsets are 3Lz/16, not Lz/4, so
-// that the head-on collision at Lz/2 happens strictly before the wrap-around one at
-// z = 0 (t = 5Lz/16), and 6 sigma_z apart so the packets start well separated.
-const PACKET = { sigma: 1 / 16, zPlus: 11 / 16, zMinus: 5 / 16 };
-
-function icParams() {
-  return { preset: el("selIC").value, text: IC_LETTERS,
-           amp: Math.pow(10, parseFloat(el("rAmp").value)) };
-}
-// chi ~ a*kperp/(kpar*v_A), the collision's nonlinearity parameter: kperp from the
-// letter scale (the glyph spans ~0.6*Lx, so its gradient scale is ~2pi/(0.3*Lx)),
-// kpar = 1/sigma_z, v_A = 1. An ESTIMATE -- the packets are not single modes.
-function chiEstimate() {
-  const q = solver ? solver.p : uiParams();
-  return icParams().amp * (2 * Math.PI / (0.3 * q.Lx)) * (PACKET.sigma * q.Lz);
-}
-function syncIC() {
-  const p = el("selIC").value, isL = p === "letters", isC = p === "custom";
-  el("rAmp").disabled = !isL && !isC;             // "custom" reuses it as the blob amplitude
-  el("rowDraw").style.display = isC ? "" : "none";
-  if (!isC && icDraw.on) icDrawSetMode(false);
-}
-// effective blob widths: the sliders are fractions of Lx / Lz, floored at 2 cells
-function drawSigma() {
-  const q = solver ? solver.p : uiParams();
-  return icDrawSigma(parseFloat(el("rSigP").value), q.Lx, q.nx);
-}
-function drawSigmaZ() {
-  const q = solver ? solver.p : uiParams();
-  return icDrawSigma(parseFloat(el("rSigZ").value), q.Lz, q.nz);
-}
+// PACKET GEOMETRY lives in common.js (packetGeom, also read by the node unit checks).
+// The propagation direction comes from the implemented propagator: the stage kernel
+// applies exp(L*tau) with L = [[d, i*kzd], [i*kzd, d]] to (phi, psi), whose eigenvectors
+// are zeta+- = phi +- psi with eigenvalues d +- i*kzd. So d/dt zeta+- = +-i*kz*zeta+- ,
+// and with the inverse transform's e^{+i kz z} convention that is
+// zeta+-(z, t) = zeta+-(z -+ t, 0):
+//   zeta+ travels toward SMALLER z, zeta- toward LARGER z, both at v_A = 1.
+// Placing zeta+ ABOVE the midplane and zeta- BELOW it therefore makes them approach each
+// other and collide at z = Lz/2, strictly before the wrap-around collision at z = 0.
+function syncIC() { icSyncRows(); }
 // (re)apply the current preset to the live solver and restart the traces
 function applyIC() {
   if (!solver) return;
-  const q = solver.p, c = icParams();
-  if (c.preset === "quiescent") solver.setIC(true);
-  else if (c.preset === "custom") {
-    const f = icDrawFields(q);                     // zeros until something is painted
-    solver.setICFromReal(f.phi, f.psi);
-  } else if (c.preset === "letters") {
-    const nx = q.nx, ny = q.ny, nz = q.nz, nrs = nx * ny, n = nz * nrs;
-    const zp2 = icLetterField(c.text.charAt(0), nx, ny, q.Lx, q.Ly, c.amp);
-    const zm2 = icLetterField(c.text.charAt(1) || c.text.charAt(0), nx, ny, q.Lx, q.Ly, c.amp);
-    const sz = PACKET.sigma * q.Lz;
-    const ep = icGaussZ(nz, q.Lz, PACKET.zPlus * q.Lz, sz);
-    const em = icGaussZ(nz, q.Lz, PACKET.zMinus * q.Lz, sz);
-    const phi = new Float32Array(n), psi = new Float32Array(n);
-    for (let k = 0; k < nz; k++) {
-      const o = k * nrs, a = ep[k], b = em[k];
-      for (let i = 0; i < nrs; i++) {
-        const zp = a * zp2[i], zm = b * zm2[i];
-        phi[o + i] = 0.5 * (zp + zm);
-        psi[o + i] = 0.5 * (zp - zm);
-      }
+  const q = solver.p, preset = el("selIC").value, amp = uiAmp();
+  if (preset === "quiescent") solver.setIC(true);
+  else if (preset === "modes") solver.setIC();
+  else {
+    // the two counter-propagating packet envelopes (peak exactly 1 on the grid)
+    let env = null;
+    if (preset === "letters") {
+      const sz = icSigmaZ(), g = packetGeom(q.Lz, sz);
+      env = [icGaussZ(q.nz, q.Lz, g.zPlus, sz), icGaussZ(q.nz, q.Lz, g.zMinus, sz)];
     }
-    solver.setICFromReal(phi, psi);
-  } else solver.setIC();
+    const f = icPresetFields(q, preset, amp[0], amp[1], env);
+    solver.setICFromReal(f.phi, f.psi);
+  }
   spsSmooth = 0;
   chartsReset();
   planeE = null; planeAt = 0;
 }
 
-// the blob editor lives in common.js (buttons and all); this hands it the app's knobs.
-// The blobs go on the z plane the FIRST display card is showing (slider or tracked
-// peak, whichever is driving it), which is also the plane the preview draws.
+// the blob editor lives in common.js (view, buttons and all); this hands it the app's
+// knobs. The editor owns its z plane (its own slider), opened on whatever plane the
+// first display card happens to be showing.
 function wireDrawEditor() {
   icDrawWire({
     params: () => solver && solver.p,
     target: () => el("selPaint").value,
-    sigmaFrac: () => parseFloat(el("rSigP").value),
-    sigmaZFrac: () => parseFloat(el("rSigZ").value),
-    plane: () => sliceOfCard(primaryCard()),
-    amp: () => icParams().amp,
     neg: () => el("cbNeg").checked,
-    // no slice to draw on in cube mode
-    enabled: () => !!solver && !!primaryCard() && !solver.cubeOf(primaryCard().ci),
+    zplane: true,
+    plane0: () => sliceOfCard(primaryCard()),
+    icRows: ["rowSigZ"],
     sliders: ["rSigP", "rSigZ"]
   });
 }
@@ -1629,12 +1632,17 @@ function wireDrawEditor() {
 // ---------------------------------------------------------------------------
 // max-energy plane tracking
 // ---------------------------------------------------------------------------
-// Every display card's z slice comes either from its own slider or from the argmax of
+// Every display card's z slice comes either from its own slider or from a TRACKER over
 // the per-plane Elsasser energy (solver.readPlaneEnergy), refreshed at ~10 Hz from the
-// frame loop. The tracked indices are cached here so cardsSync -- which any slider can
-// trigger -- keeps using them instead of fighting the tracker.
+// frame loop. Two trackers, both in common.js and selected page-wide by #selTrack:
+//   centroid  the circular energy centroid (default) -- smooth, moves at v_A
+//   argmax    the peak plane, with 10% hysteresis
+// A raw per-readback argmax is what made the collision displays jitter (REFINE_PLAN
+// G.8 / note [7]). The tracked indices are cached here so cardsSync -- which any slider
+// can trigger -- keeps using them instead of fighting the tracker.
 let planeE = null, planeAt = 0;
-const trackIdx = [0, 0];                    // argmax plane of E+ , of E-
+const trackIdx = [0, 0];                    // tracked plane of E+ , of E-
+const trackPos = [-1, -1];                  // ... and its continuous coordinate (centroid)
 // the plane one card is on: its tracker, or its slider
 function sliceOfCard(c) {
   if (!c) return 0;
@@ -1652,25 +1660,31 @@ async function planeTrackHook(sv) {
   const e = await sv.readPlaneEnergy();
   if (sv !== solver) return;                // retired mid-readback
   planeE = e;
-  const nz = sv.g.nz;
-  let ip = 0, im = 0;
-  for (let k = 1; k < nz; k++) {
-    if (e[k] > e[ip]) ip = k;
-    if (e[nz + k] > e[nz + im]) im = k;
+  const nz = sv.g.nz, centroid = el("selTrack").value === "centroid";
+  const idx = [0, 0];
+  for (let f = 0; f < 2; f++) {
+    if (centroid) {
+      const z = trackCentroid(e, f * nz, nz);
+      trackPos[f] = z;
+      idx[f] = z < 0 ? trackIdx[f] : (Math.round(z) % nz);
+    } else {
+      idx[f] = trackArgmax(e, f * nz, nz, trackIdx[f]);
+      trackPos[f] = idx[f];
+    }
   }
   const stale = cards.disp.some(c => sv.zsliceOf(c.ci) !== sliceOfCard(c));
-  if (ip !== trackIdx[0] || im !== trackIdx[1] || stale) {
-    trackIdx[0] = ip; trackIdx[1] = im;
+  if (idx[0] !== trackIdx[0] || idx[1] !== trackIdx[1] || stale) {
+    trackIdx[0] = idx[0]; trackIdx[1] = idx[1];
     cardsSync();
   }
 }
-// extra readout lines: where the tracked peaks are
+// extra readout lines: where the trackers are (continuous, so a smooth centroid reads
+// as smooth even while the displayed plane is quantized)
 function planeReadout() {
   if (!solver || !planeE) return "";
   const nz = solver.g.nz, Lz = solver.p.Lz;
-  const zc = k => (k * Lz / nz).toFixed(2);
-  return "peak  z+ : iz " + trackIdx[0] + " (z = " + zc(trackIdx[0]) + ")" +
-         "   z- : iz " + trackIdx[1] + " (z = " + zc(trackIdx[1]) + ")";
+  const one = f => trackIdx[f] + " (z = " + (trackPos[f] * Lz / nz).toFixed(2) + ")";
+  return el("selTrack").value + "  z+ : iz " + one(0) + "   z- : iz " + one(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,22 +1707,27 @@ const DISP_FIELDS = [
 const PRESETS = {
   forced: {
     label: "forced turbulence (default)",
-    set: { selRes: "128,64", selLz: "2", selHyper: "4", cbForce: true, rEps: "-0.52",
-           rDiss: "-10.65", rZDiss: "-3.51", selIC: "modes", rAmp: "-0.7", rCflEvery: "4" },
+    set: { selRes: "128,64", selLz: "2", selHyper: "4", cbForce: true,
+           rEpsP: "-0.82", rEpsM: "-0.82", cbEpsLock: true, rFmin: "1", rFmax: "3",
+           rDiss: "-10.65", rZDiss: "-3.51", selIC: "modes",
+           rAmpP: "-0.7", rAmpM: "-0.7", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 0 }], charts: ["energy", "spectrum", "cut"] },
     hint: ""
   },
   collision: {
     label: "Alfven-wave collision",
     set: { selRes: "64,256", selLz: "8", selHyper: "4", cbForce: false,
-           selIC: "letters", rAmp: "-0.7", rCflEvery: "4" },
+           selIC: "letters", rAmpP: "-0.7", rAmpM: "-0.7", cbAmpLock: true,
+           rSigZ: String(IC_SIGMA_Z_FRAC), selTrack: "centroid", rCflEvery: "4" },
     prep: () => { autoZDiss(); autoDiss(); },
-    // two displays, each riding the peak plane of one packet
+    // two displays, each riding the energy centroid of one packet
     layout: { disp: [{ sel: 6, zsrc: "zp" }, { sel: 7, zsrc: "zm" }],
               charts: ["energy", "spectrum"] },
     hint: "Counter-propagating A / B Elsasser packets at 64&sup2;&times;256, L<sub>z</sub> = 8&pi;: "
-      + "they meet at z = L<sub>z</sub>/2 near t &asymp; 4.7, each display riding one packet. "
-      + "&chi; (next to the amplitude slider) says weak (&lt;&lt;1) or strong (&gtrsim;1) collision."
+      + "they meet head-on at z = L<sub>z</sub>/2, each display riding one packet. "
+      + "&sigma;<sub>z</sub> sets the packet length and hence &chi; &mdash; the line under the IC "
+      + "controls gives &chi;<sup>&plusmn;</sup> (weak collision &lt;&lt;1, strong &gtrsim;1) and "
+      + "the meeting time."
   }
 };
 
@@ -1717,7 +1736,7 @@ function rebuild() {
   // on the old solver's buffers. Retire it and free it at the top of a later frame.
   if (solver) { graveyard.push(solver); solver = null; }
   // a new grid (or Lz) means a new (empty) drawing: the editor's arrays are per-grid
-  if (icDraw.on) icDrawSetMode(false);
+  if (icDraw.on) icEditLeave("save");
   const q = uiParams();
   // every card's z slider follows nz (cardsSync re-clamps .max; this clamps the value)
   for (const c of cards.disp) {
@@ -1938,6 +1957,11 @@ async function runSelfTest() {
 // ---------------------------------------------------------------------------
 async function boot() {
   groupsInit();
+  // sigma sliders take their range and default from the shared IC constants, BEFORE a
+  // preset gets a chance to set them. sigma_z's max IS the Lz/12 packet cap, so the
+  // >= 5 sigma_z separation of packetGeom always fits (REFINE_PLAN G.2, G.6).
+  icSigmaSliderInit("rSigP", IC_SIGMA_PERP_FRAC, 0.25);
+  icSigmaSliderInit("rSigZ", IC_SIGMA_Z_FRAC, IC_SIGMA_Z_MAX_FRAC);
   // the preset (dropdown default, or ?demo=NAME as a deep link) rewrites the controls
   // and runs its "auto" prep BEFORE the first rebuild, so the solver is constructed
   // with its grid and dissipation. Done ahead of initGPU so the hint is on the page
@@ -1957,15 +1981,14 @@ async function boot() {
     caption: c => (solver && solver.cubeOf(c.ci)) ? "  (cube faces)" : "  (iz " + sliceOfCard(c) + ")",
     onLayout: () => {
       planeAt = 0;                                    // re-track on the next frame
-      // no slice to draw on if the editor's card went to cube faces
-      const pc = primaryCard();
-      if (icDraw.on && (!pc || solver.cubeOf(pc.ci))) icDrawSetMode(false);
       syncLabels();
     }
   });
-  bootApply(pre);
+  // wire first: bootApply's syncIC asks the editor config which rows a preset owns
   wireCommonControls({ presets: PRESETS, sliders: ["rZDiss"], rebuildOn: ["selLz"] });
   el("btnAutoZDiss").onclick = autoZDiss;
+  el("selTrack").onchange = () => { planeAt = 0; };    // re-track on the next frame
+  bootApply(pre);
   loop();
 }
 boot();

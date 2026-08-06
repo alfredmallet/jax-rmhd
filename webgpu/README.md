@@ -62,10 +62,12 @@ programmatically; do not try to hand-edit a 180 kB line).
   trace, spectra, cut trace, arrows), the **card system** (`DisplayCard`, `ChartCard`,
   `cardsInit`/`cardsLayout`/`cardsSync`), the preset machinery (`presetBoot`,
   `presetWrite`) and the boot wiring both apps share (`bootApply`,
-  `wireCommonControls`), the CPU-side IC construction (glyph raster, periodic box blur,
-  gradient-amplitude normalization, gaussian z-envelope, and the whole `custom` blob
-  editor — deposit math, preview, pointer→grid mapping, driven by one per-app hook object
-  through `icDrawWire`), the self-test table and the frame loop (with two per-app hooks,
+  `wireCommonControls`, the locked slider pairs, `syncCommonLabels`), the CPU-side IC
+  construction (glyph raster, periodic gaussian blur, the ζ± → (φ,ψ) normalization
+  `icZetaFields`, gaussian z-envelope, packet placement + χ, and the whole `custom` blob
+  editor — deposit math, its own **view**, preview, pointer→grid mapping, driven by one
+  per-app hook object through `icDrawWire`), the z-plane trackers (`trackCentroid`,
+  `trackArgmax`), the self-test table and the frame loop (with two per-app hooks,
   `frameHook` and `readoutExtra`).
 - `physics.js` — the shared RMHD kernels and the whole slice display chain, as
   templates over one constants object per app (`{pre, hasZ, wgReal, nDisp, arrow, ns,
@@ -95,8 +97,8 @@ quantity selector, colormap, arrows checkbox and — in 3D — its own z slice (
 slider or `track z⁺ / z⁻ peak`); "+ display" adds one (up to three), the × on its header
 closes it. Card index *is* the solver's display-chain index, so N cards cost exactly N
 chains (scratch, bind groups, gather targets, textures), each built lazily on first use.
-The first card cannot be closed: it anchors the IC editor's overlay canvas. A *chart
-card* is one 2D canvas with a type selector — energy trace / spectra / cut — and "+ chart"
+*Any* card can be closed down to the last one (whose × goes disabled) — the IC editor has
+its own view and anchors nothing. A *chart card* is one 2D canvas with a type selector — energy trace / spectra / cut — and "+ chart"
 adds another; several cards of the same type are allowed and share one throttled
 readback per frame. Nothing here is a special case of anything else: there is no
 dual-view flag and no fixed chart stack.
@@ -154,45 +156,81 @@ constructor does (unmasked beyond-cutoff IC energy would persist and alias). The
 selector then offers `large-scale modes`, `quiescent`, `letters` and `custom`; **Reset**
 re-applies the current one.
 
-The **letters** preset builds one Elsasser stream function per field from a rasterized
-glyph (A → z⁺, B → z⁻; fixed, `common.js: IC_LETTERS` — the free-text input was dropped
-in the mobile pass): the glyph is drawn on an
-offscreen canvas at 60% of the box, gaussian-smoothed (`ctx.filter="blur(Npx)"` where the
-engine supports it, otherwise a 3-pass periodic box blur), zero-meaned, and scaled so
-that **max |ẑ×∇z±| equals the amplitude knob**; then φ = (z⁺+z⁻)/2, ψ = (z⁺−z⁻)/2. In 3D
-each field is additionally multiplied by a gaussian z-envelope of peak exactly 1
-(σ_z = Lz/16) to make a *wave packet*. The smoothing is not cosmetic: the spectral
-gradient the GPU takes of an unsmoothed glyph edge overshoots the finite-difference one
-used for the normalization by ~19%, and at σ ≥ 2 px they agree to ~0.1%, which is what
-makes the amplitude a statement about the displayed field. (The dealias at upload still
-trims it slightly, so the knob is approximate.)
+### ζ±, amplitudes, and where the normalization happens
+
+What the letter and blob ICs build is the Elsasser **potential** ζ±; the Elsasser
+*fields* are z± = ẑ×∇ζ±, and the evolved variables are φ = (ζ⁺+ζ⁻)/2, ψ = (ζ⁺−ζ⁻)/2.
+The UI says ζ± wherever a potential is meant (paint target, amplitude sliders) and z±
+wherever a field is (display modes, tracking). Identifiers stay `zp`/`zm`.
+
+Stored ICs are kept at their natural scale and normalized **only at apply time**, by
+`common.js: icZetaFields`: each potential is zero-meaned plane by plane (a pure gauge for
+a perpendicular gradient) and scaled so that max |ẑ×∇ζ±| over the volume equals **its
+own amplitude slider** — ζ⁺ and ζ⁻ have separate sliders, linked by a lock checkbox that
+is on by default. Because the stored arrays are never mutated, pause → move a slider →
+**Reset** genuinely rescales the same drawing, any number of times (before Phase G the
+amplitude was baked in per blob at deposit, and Reset re-uploaded the old one).
+Consequences worth knowing: the amplitude is a property of the whole drawing, not of one
+blob, so overlapping strokes redistribute instead of stacking past it; and a ζ⁺ drawing
+and a ζ⁻ drawing are normalized independently, so their *relative* size is set by the two
+sliders, not by how hard you scribbled.
+
+The **letters** preset builds one potential per field from a rasterized glyph
+(A → ζ⁺, B → ζ⁻; fixed, `common.js: IC_LETTERS` — the free-text input was dropped in the
+mobile pass): the glyph is drawn on an offscreen canvas at 60% of the box and
+gaussian-smoothed at a **physical length σ_letter = Lx/32** (`IC_SIGMA_PERP_FRAC`, the
+single constant that is also the blob-width slider's default), via
+`ctx.filter="blur(Npx)"` with N = σ_letter/dx where the engine supports it and an exact
+separable periodic gaussian otherwise. Specifying the blur as a length, not a pixel
+count, is what makes the letters resolution-independent: identical k⊥ content, hence
+identical χ, at 128² and 512² (node check: normalized E(k) agrees to 3% rel L2, k̄ to
+0.2%). In 3D each field is additionally multiplied by a gaussian z-envelope of peak
+exactly 1 to make a *wave packet* (σ_z from its own slider, see below). The smoothing is
+not cosmetic: the spectral gradient the GPU takes of an unsmoothed glyph edge overshoots
+the finite-difference one used for the normalization by ~19%, and at σ ≥ 2 px they agree
+to ~0.1%, which is what makes the amplitude a statement about the displayed field. (The
+dealias at upload still trims it slightly, so the knob is approximate.)
 
 ## Drawn ICs: the blob editor (`custom`)
 
-Selecting **custom** shows one extra row of controls; **edit IC** pauses the run and puts
-an opaque 2D canvas (`#cvEdit`) over the display. Click or drag on it and each sample
-deposits a **periodic gaussian blob** into the chosen target field — `z⁺`, `z⁻`, `φ` or
-`ψ`. The editor keeps only the two Elsasser stream functions on the CPU: a φ blob is one
-blob in *both* z±, a ψ blob one of each sign, and **apply & run** converts once with
-φ = (z⁺+z⁻)/2, ψ = (z⁺−z⁻)/2 and uploads through `setICFromReal`. Nothing touches the GPU
-while editing — the canvas is redrawn from the CPU arrays (the signed-afmhot mapping of
-the `colorize` kernel, autoscaled) at most once per animation frame. **clear** is the
-undo (there is no undo stack), **Reset** re-applies the same drawing, and the drawing is
-dropped when the grid changes (resolution, or Lz in 3D) because its layout is per-grid.
+Selecting **custom** shows one extra row of controls; **edit IC** pauses the run and
+switches the main area to a **dedicated editor view** (`#editview` replaces `#display`).
+The view is one empty host div per app, filled by `common.js: icEditBuild` exactly as the
+card system builds its cards — so its canvas is an ordinary card canvas, nothing is ever
+painted over a live display, and no display card is special because of it (the 3D z-plane
+slider is a flag on the hook object, not a second copy of the header). Click or drag and
+each sample
+deposits a **periodic gaussian blob** into the chosen target potential — `ζ⁺`, `ζ⁻`, `φ`
+or `ψ`. The editor keeps only the two potentials on the CPU: a φ blob is one blob in
+*both* ζ±, a ψ blob one of each sign. Leaving the view is one of
 
-- **Amplitude** keeps the same meaning as everywhere else in the IC code: the peak
-  |ẑ×∇| of the blob. For f = P·exp(−r²/2σ²) that peak is P/(σ√e), so the editor deposits
-  a stream-function peak P = a·σ·√e. Overlapping strokes add, so a scribble goes higher.
+- **save & run** — keep the drawing, apply it (`icZetaFields` → `setICFromReal`), resume;
+- **save** — keep it as the **Reset** target and stay paused;
+- **cancel** — restore the snapshot taken when the editor opened (everything drawn since
+  is discarded);
+
+and **clear** empties the drawing without leaving (there is no undo stack). Nothing
+touches the GPU while editing — the canvas is redrawn from the CPU arrays (the signed
+mapping of the `colorize` kernel, in the first display card's colormap, autoscaled) at
+most once per animation frame. The drawing is dropped when the grid changes (resolution,
+or Lz in 3D) because its layout is per-grid.
+
+- **Amplitude** is NOT a deposit knob: blobs go in at unit amplitude (peak P = 1·σ·√e for
+  f = P·exp(−r²/2σ²), whose |∇f| peaks at P/(σ√e)) and the ζ± sliders scale the finished
+  drawing — see the normalization section above.
 - **σ⊥** (and **σ_z** in 3D) are fractions of the box, floored at 2 cells — anything
-  narrower is eaten by the 2/3 dealias at upload.
+  narrower is eaten by the 2/3 dealias at upload. Their sliders' range, step and default
+  come from the shared constants (`icSigmaSliderInit`), so σ⊥ defaults to exactly
+  σ_letter and σ_z cannot exceed the packet cap Lz/12.
 - **Sign**: the "negative" checkbox XOR the right mouse button, so a right-drag is a
   negative stroke without touching the controls.
 - Blobs are truncated at 5σ (keeping 1−4·10⁻⁶ of the gaussian) and wrapped with the
   minimum-image convention `icGaussZ` already used, so a blob painted on the box edge is
   exactly a translate of one painted in the middle.
 - **3D**: each blob is a perpendicular gaussian times a z-envelope of peak 1 centred on
-  the z plane display 1 is currently showing (slider or tracked peak — the preview shows
-  that plane too). Cube-face modes have no plane to draw on, so editing is refused there.
+  the plane the editor's **own z-plane slider** selects (opened on whatever plane the
+  first display card was showing). Cube-face modes are irrelevant now — the editor no
+  longer borrows a card's slice, so editing is never refused.
 
 Mouse → grid: `getBoundingClientRect` is in CSS pixels, so the responsive canvas width and
 the device pixel ratio both divide out. The display puts grid point i at screen fraction
@@ -214,40 +252,79 @@ Everything stays adjustable afterwards. There are no separate demo pages.
 - **2D `decaying A / B packets`** (`rmhd2d.html?demo=decay`) — letters A/B at 512²,
   forcing off, hyper=4 with auto diss, two displays showing |z⁺| and |z⁻|. Watch the
   spectrum settle onto the quasi-universal decaying slope, and switch a display to σ_c
-  for dynamic alignment.
+  for dynamic alignment. Its hint states the one thing the amplitude slider does *not*
+  do here: ideal 2D RMHD is self-similar in amplitude ((a,t) → (a/λ, λt)), and dt is
+  adaptive, so the per-frame dynamics are amplitude-independent — amplitude only matters
+  against the fixed dissipation. (In 3D it matters through χ.)
 - **3D `Alfven-wave collision`** (`rmhd3d.html?demo=collision`) — 64²×256, Lz = 8π,
-  forcing off, two counter-propagating letter packets, each display card tracking the
-  peak plane of one of them.
+  forcing off, two counter-propagating letter packets, each display card riding the
+  energy centroid of one of them.
+
+## Forcing controls
+
+ε⁺ and ε⁻ are separate log sliders with a lock checkbox (on by default); they are in the
+same units — each is a contribution to dE/dt, so the total injection rate is their sum
+(`rmhd._forcing_scale_from`'s convention). Unlocking them drives an imbalanced cascade.
+The **band n** pair of handles sets the forcing shell [n_min, n_max) in units of the box
+wavenumber; they cannot cross. The band is baked into the grid (`fmask`) *and* into the
+OU kernel's `NS`, so changing it triggers the ordinary rebuild path on handle release —
+which is why it is an `onchange`, not an `oninput`. Nothing about the generated WGSL
+changes except the `NS` constant, exactly as a resolution change does.
 
 ## Alfvén-wave collision: directions, placement, χ
 
 The propagation direction is read off the *implemented* propagator, not assumed. The 3D
 stage kernel applies exp(L·τ) with L = [[d, i·kzd], [i·kzd, d]] to (φ, ψ); its
-eigenvectors are z± = φ±ψ with eigenvalues d ± i·kz, so dz±/dt = ±i·kz·z±, and with the
-inverse transform's e^{+i kz z} convention that is **z±(z,t) = z±(z±t, 0)**: z⁺ travels
-toward *smaller* z, z⁻ toward *larger* z, both at v_A = 1. (Same statement as RMHD's
-∂_t z± ∓ v_A ∂_z z± = …, with B₀ = ẑ.) The packets are therefore placed at
-z₀⁺ = 11Lz/16 and z₀⁻ = 5Lz/16 — 6 σ_z apart, so they start well separated — and meet
-head-on at **z = Lz/2 at t = 3Lz/16 ≈ 4.7** for Lz = 8π; the next (wrap-around)
-collision at z = 0 comes a full half-box later (t = 11Lz/16 — the closure speed is
-2·v_A, so collisions repeat every Lz/2 in time), which is why the offsets are 3Lz/16
-and not Lz/4.
+eigenvectors are ζ± = φ±ψ with eigenvalues d ± i·kz, so dζ±/dt = ±i·kz·ζ±, and with the
+inverse transform's e^{+i kz z} convention that is **ζ±(z,t) = ζ±(z±t, 0)**: ζ⁺ travels
+toward *smaller* z, ζ⁻ toward *larger* z, both at v_A = 1. (Same statement as RMHD's
+∂_t z± ∓ v_A ∂_z z± = …, with B₀ = ẑ.)
 
-Next to the amplitude slider the page shows **χ ≈ a·k̄⊥/(k̄∥·v_A)** with k̄⊥ = 2π/(0.3·Lx)
-(the letter scale), k̄∥ = 1/σ_z and v_A = 1 — an *estimate*, the packets are not single
-modes. χ ≪ 1 is the weak regime: the packets pass through each other nearly unchanged
-and distortion accumulates over many transits (the box is periodic, so they collide again
-and again); χ ≳ 1 is strong, a single collision already shreds them. The demo starts at
-a ≈ 0.2, χ ≈ 1.
+**Placement** (`common.js: packetGeom`) is symmetric about the midplane with separation
+s = clamp(5·σ_z, 3Lz/8, Lz/2), i.e. z₀± = (Lz ± s)/2. That is ≥ 5 σ_z on the direct side
+by construction and on the wrap-around side too, because s ≤ Lz/2 ≤ Lz − s — which is
+what the **σ_z slider's Lz/12 cap** buys (5·Lz/12 ≤ Lz/2; the slider shows "increase Lz
+for longer packets" when it is sitting on the cap). Overlap is therefore impossible: at
+the cap the two envelopes cross at 4.4% = exp(−25/8). At the default σ_z = Lz/16 the
+3Lz/8 floor binds and the placement is the historical z₀⁺ = 11Lz/16, z₀⁻ = 5Lz/16; the
+head-on collision is at z = Lz/2 at **t = s/2** (= 3Lz/16 ≈ 4.7 for Lz = 8π), strictly
+before the wrap-around one at z = 0 (the closure speed is 2·v_A, so collisions repeat
+every Lz/2 in time). The live line under the IC controls prints s and t.
 
-**Max-energy plane tracking.** Because z is spectral, "the energy in plane iz" is not a
-k-space partial sum: `readPlaneEnergy` forms z± = φ±ψ, inverse-transforms *along z only*
+**χ.** σ_z is the knob that sets the nonlinearity: the same line shows
+**χ± = a∓·k̄⊥·σ_z/v_A** with k̄⊥ = 1/σ⊥ (σ_letter = Lx/32 for the letters, the blob-width
+slider for a drawing — they share a default) and v_A = 1. Two values because the
+nonlinearity one packet feels is set by the *other* one's amplitude (χ⁺ ∝ z⁻), which now
+matters — the ζ± amplitudes are separate sliders. k̄⊥ comes from the shared smoothing
+length because the smoothing width *is* the gradient scale of a smoothed glyph, so it is
+the perpendicular wavenumber of the field z± = ẑ×∇ζ±; it is an *estimate*, the packets
+are not single modes (an energy-weighted k̄ of the actual glyph runs lower). χ ≪ 1 is the
+weak regime: the packets pass through each other nearly unchanged and distortion
+accumulates over many transits (the box is periodic, so they collide again and again);
+χ ≳ 1 is strong, a single collision already shreds them. The demo starts at a ≈ 0.2,
+σ_z = Lz/16, χ ≈ 1.6, and reaches χ ≈ 2.1 at the σ_z cap.
+
+**Plane tracking.** Because z is spectral, "the energy in plane iz" is not a k-space
+partial sum: `readPlaneEnergy` forms z± = φ±ψ, inverse-transforms *along z only*
 (borrowing the gradient stack as scratch — a separate submit, and submits execute in
 order), and reduces one workgroup per plane with the usual perpendicular-energy weight
 minus the nz² Parseval factor, so the plane values average to E±. The frame loop reads
 back 2·nz floats at ~10 Hz; every display card's z-slice source can be `manual`,
-`track z⁺ peak` or `track z⁻ peak`, and the tracked plane indices and their z coordinates
-are printed in the readout.
+`track z⁺` or `track z⁻`, and the tracked planes and their (continuous) z coordinates are
+printed in the readout. How a tracker follows its packet is one page-wide choice:
+
+- **energy centroid** (default) — the *circular* first moment
+  z̄ = arg(Σ_k E_k e^{2πik/nz})·nz/2π. Periodic by construction, smooth, and exactly
+  linear in t for a packet translating at v_A (node check: max residual 1.7e-13 planes
+  over 400 readbacks, implied speed 1.000000, displayed plane never steps by more than 1).
+- **peak plane** — the argmax, with **10% hysteresis**: it only leaves the current plane
+  when another beats it by more than that. A raw per-readback argmax is what made the
+  collision displays jitter; a 5% rival now never steals the plane, a 15% one does.
+
+Both still cost one readback per ~100 ms and that readback is a `mapAsync` round trip
+inside the frame loop, so a slow device pays a pipeline stall per tracked frame
+regardless of the tracker — worth checking on-device if the collision preset still feels
+uneven with the centroid.
 
 **Lz** is a free parameter of the 3D grid (selector: 2π/4π/8π/16π), with `64²×128` and
 `64²×256` added to the resolution presets. Everything kz-derived already read `p.Lz` —
