@@ -40,11 +40,13 @@
 //               domain), "NRS" in 3D (one z slice)
 //   arrow       arrowDims() result for the arrow-overlay subsample
 //   ns          forcing-shell size (NS)
-//   modeStruct  the app's `struct Mode` declaration (2D pads what 3D uses for
-//               the z slice)
 //   envFn       3D only: the `envelope()` helper, prepended to `scale` (the app
 //               uses the same text for its own forcingAdd / envExpand)
 // ===========================================================================
+
+// The display uniform, one declaration for both apps (2D never writes `zslice`,
+// which stays 0). `cmap` is the per-display-card colormap index (see CMAP_WGSL).
+const MODE_STRUCT = `struct Mode { mode: u32, zslice: u32, cmap: u32, pad: u32 };`;
 
 // ---------------------------------------------------------------------------
 // index helpers: everything the 3D app needs to say about m = iz*NMP + mp
@@ -332,7 +334,7 @@ const dispTwoComp = m => dispIsVector(m) || dispIsSigma(m);
 // three boundary faces are (faceExtract, the cube modes).
 function prepDispWGSL(C) {
   return C.pre + `
-${C.modeStruct}
+${MODE_STRUCT}
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> outk: array<vec2<f32>>;
@@ -481,21 +483,47 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-// afmhot colorize of the displayed slice into the render texture
+// ---------------------------------------------------------------------------
+// colormaps: ONE WGSL implementation, selected per display card by md.cmap
+// ---------------------------------------------------------------------------
+// The coefficients live in common.js (CMAP_COEF) so the WGSL here and the CPU
+// mirror the IC editor's preview uses (cmapRGB) can never drift apart; this is
+// the emit-time expansion of the same table. Index order is CMAP_NAMES:
+//   0 afmhot (the exact matplotlib closed form -- NOT a fit)
+//   1 viridis   2 RdBu   3 grayscale
+const _cvec = c => `vec3<f32>(${c[0]}, ${c[1]}, ${c[2]})`;
+const _cpoly = name => CMAP_COEF[name].map(_cvec).join(",\n                 ");
+const CMAP_WGSL = `
+// Horner in t, then clamp: a degree-6 fit overshoots [0,1] slightly at the ends.
+fn cpoly6(t: f32, a: vec3<f32>, b: vec3<f32>, c: vec3<f32>, d: vec3<f32>,
+          e: vec3<f32>, f: vec3<f32>, g: vec3<f32>) -> vec3<f32> {
+  let v: vec3<f32> = a + t * (b + t * (c + t * (d + t * (e + t * (f + t * g)))));
+  return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+fn cmap(x: f32, which: u32) -> vec3<f32> {
+  let t: f32 = clamp(x, 0.0, 1.0);
+  if (which == 1u) {                       // viridis (degree-6 fit)
+    return cpoly6(t, ${_cpoly("viridis")});
+  }
+  if (which == 2u) {                       // RdBu (degree-6 fit)
+    return cpoly6(t, ${_cpoly("rdbu")});
+  }
+  if (which == 3u) { return vec3<f32>(t, t, t); }              // grayscale
+  // matplotlib "afmhot": black -> red -> orange -> white, exact, no LUT needed
+  return vec3<f32>(clamp(2.0 * t, 0.0, 1.0),
+                   clamp(2.0 * t - 0.5, 0.0, 1.0),
+                   clamp(2.0 * t - 1.0, 0.0, 1.0));
+}`;
+
+// colorize the displayed slice into the render texture
 function colorizeWGSL(C) {
   return C.pre + `
-${C.modeStruct}
+${MODE_STRUCT}
 @group(0) @binding(0) var<storage, read> f: array<f32>;
 @group(0) @binding(1) var<storage, read> mx: array<f32>;
 @group(0) @binding(2) var tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var<uniform> md: Mode;
-// matplotlib "afmhot": black -> red -> orange -> white, no LUT needed
-fn cmap(x: f32) -> vec3<f32> {
-  let t: f32 = clamp(x, 0.0, 1.0);
-  return vec3<f32>(clamp(2.0 * t, 0.0, 1.0),
-                   clamp(2.0 * t - 0.5, 0.0, 1.0),
-                   clamp(2.0 * t - 1.0, 0.0, 1.0));
-}
+${CMAP_WGSL}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= NX || gid.y >= NY) { return; }
@@ -508,7 +536,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (md.mode == ${DISP_SIGMA}u) { x = 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
   else if (md.mode >= ${DISP_VEC0}u) { x = v; }
   else { x = 0.5 * (clamp(v, -1.0, 1.0) + 1.0); }
-  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(x), 1.0));
+  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(x, md.cmap), 1.0));
 }`;
 }
 

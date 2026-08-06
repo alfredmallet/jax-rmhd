@@ -8,158 +8,110 @@
 </head>
 <body>
 <h1>2D forced reduced-MHD — WebGPU pseudospectral solver</h1>
-<div class="sub">rfft2 spectral (numpy layout) &middot; LSRK33 integrating factor &middot; Elsasser Ornstein&ndash;Uhlenbeck forcing &middot; fp32
-  &middot; <a href="rmhd3d.html">3D (spectral z) version &rarr;</a>
-  &middot; <a href="index.html">overview</a></div>
+<div class="sub">rfft2 spectral &middot; LSRK33 integrating factor &middot; Elsasser OU forcing &middot; fp32
+  &middot; <a href="rmhd3d.html">3D (spectral z) &rarr;</a>
+  &middot; <a href="index.html">overview</a>
+  &middot; <a href="https://github.com/alfredmallet/jax_rmhd/blob/main/webgpu/README.md"
+       target="_blank" rel="noopener">about / README</a></div>
+
+<div id="topbar">
+  <button id="btnRun">Run</button>
+  <button id="btnReset">Reset</button>
+  <label for="selPreset">preset</label><select id="selPreset"></select>
+  <span id="steps"></span>
+</div>
 
 <div id="controls">
   <div class="hint" id="demohint" style="display:none"></div>
-  <div class="row">
-    <button id="btnRun">Run</button>
-    <button id="btnReset">Reset</button>
-    <label>show</label>
-    <select id="selField">
-      <option value="0">vorticity</option>
-      <option value="1">current</option>
-      <option value="2">phi</option>
-      <option value="3">psi</option>
-      <option value="4">velocity |u| + vectors</option>
-      <option value="5">magnetic |b| + vectors</option>
-      <option value="6">Elsasser |z+| + vectors</option>
-      <option value="7">Elsasser |z-| + vectors</option>
-      <option value="8">cross helicity &sigma;_c</option>
-    </select>
-  </div>
-  <div class="row">
-    <label>dual view</label><input type="checkbox" id="cbDual"
-      title="show a second display of the same state, with its own quantity">
-    <label>show 2</label>
-    <select id="selField2" disabled>
-      <option value="0">vorticity</option>
-      <option value="1">current</option>
-      <option value="2">phi</option>
-      <option value="3">psi</option>
-      <option value="4">velocity |u|</option>
-      <option value="5">magnetic |b|</option>
-      <option value="6" selected>Elsasser |z+|</option>
-      <option value="7">Elsasser |z-|</option>
-      <option value="8">cross helicity &sigma;_c</option>
-    </select>
-  </div>
-  <div class="row">
-    <label>resolution</label>
-    <select id="selRes"><option>128</option><option selected>256</option><option>512</option></select>
-    <label>hyper</label>
-    <select id="selHyper"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option></select>
-  </div>
-  <div class="row">
-    <label>initial condition</label>
-    <select id="selIC">
-      <option value="modes">large-scale modes</option>
-      <option value="letters">letters (Elsasser packets)</option>
-      <option value="custom">custom (drawn blobs)</option>
-      <option value="quiescent">quiescent (zero)</option>
-    </select>
-    <label>letters</label>
-    <input type="text" id="tLetters" value="AB" maxlength="2" style="width:46px"
-      title="first character -> z+, second -> z-">
-    <label>amplitude</label>
-    <input type="range" id="rAmp" min="-2" max="1" step="0.05" value="0"><span class="val" id="vAmp"></span>
-  </div>
-  <div class="row" id="rowDraw" style="display:none">
-    <button id="btnEdit" title="pause and paint gaussian blobs on the display canvas">edit IC</button>
-    <label>paint</label>
-    <select id="selPaint">
-      <option value="zp">z&#8314;</option>
-      <option value="zm">z&#8315;</option>
-      <option value="phi">&phi;</option>
-      <option value="psi">&psi;</option>
-    </select>
-    <label>&sigma;&perp;</label>
-    <input type="range" id="rSigP" min="0.01" max="0.3" step="0.005" value="0.08"><span class="val" id="vSigP"></span>
-    <label>negative</label><input type="checkbox" id="cbNeg" title="deposit with a minus sign (or just drag with the right button)">
-    <button id="btnApply">apply &amp; run</button>
-    <button id="btnClear" title="erase the drawing (there is no undo stack)">clear</button>
-  </div>
-  <div class="row"><label>power &epsilon;</label><input type="checkbox" id="cbForce" checked title="forcing on/off (unchecked: decaying turbulence)"><input type="range" id="rEps" min="-3" max="1" step="0.05" value="-0.52"><span class="val" id="vEps"></span></div>
-  <div class="row"><label>diss</label><input type="range" id="rDiss" min="-20" max="-1" step="0.05" value="-13"><span class="val" id="vDiss"></span><button id="btnAutoDiss" title="set a marginally-resolved diss for the current hyper / resolution / power">auto</button></div>
-  <div class="row"><label>tau</label><input type="range" id="rTau" min="0.05" max="5" step="0.05" value="1"><span class="val" id="vTau"></span></div>
-  <div class="row"><label>cfl_safety</label><input type="range" id="rCfl" min="0.05" max="0.9" step="0.01" value="0.4"><span class="val" id="vCfl"></span></div>
-  <div class="row"><label>cfl_every</label><input type="range" id="rCflEvery" min="1" max="16" step="1" value="4"><span class="val" id="vCflEvery"></span></div>
-  <div class="row"><label>seed</label><input type="number" id="nSeed" value="7" style="width:80px"></div>
-  <div class="hint">The <b>initial condition</b> selector picks what Reset loads:
-    the built-in large-scale modes, an exactly quiescent state, or &ldquo;letters&rdquo;
-    &mdash; one rasterized, gaussian-smoothed glyph per Elsasser field
-    (z&#8314; = &phi;+&psi; from the first character, z&#8315; = &phi;&minus;&psi; from the
-    second), each scaled so that max |&zcaron;&times;&nabla;z&plusmn;| equals the amplitude
-    knob (approximately: the 2/3 dealias trims it slightly). Try it with forcing off for
-    decaying turbulence, or open <a href="?demo=decay">the decay demo</a>.
-    &ldquo;custom&rdquo; opens the <b>blob editor</b>: press <b>edit IC</b> (this pauses
-    the run), then click or drag on the display to deposit periodic gaussian blobs into
-    the chosen field &mdash; z&plusmn; are the Elsasser stream functions, &phi;/&psi; the
-    evolved ones (&phi; = a blob in both z&plusmn;, &psi; one of each sign). &sigma;&perp;
-    is the blob width (floored at 2 cells), the amplitude slider its peak
-    |&zcaron;&times;&nabla;| and the &ldquo;negative&rdquo; box &mdash; or dragging with
-    the RIGHT button &mdash; flips its sign. The canvas shows the drawn STREAM FUNCTION
-    of the painted field on the CPU (no GPU round trip while editing);
-    <b>apply &amp; run</b> uploads it and starts stepping, <b>clear</b> erases (there is
-    no undo stack), and Reset re-applies the same drawing until you change preset or
-    resolution.
-    &ldquo;dual view&rdquo; adds a second canvas showing the same state as a
-    different quantity. |z&plusmn;| are the Elsasser fields z&plusmn; = &phi;&plusmn;&psi;
-    (shown as |&zcaron;&times;&nabla;z&plusmn;|); &sigma;_c = (|z&#8314;|&sup2;&minus;|z&#8315;|&sup2;)/(|z&#8314;|&sup2;+|z&#8315;|&sup2;)
-    is drawn on a FIXED &plusmn;1 range (no autoscale, so colours are comparable between
-    frames) and is set to 0 wherever the local Elsasser energy is below 10&#8315;&#8308; of its
-    maximum &mdash; there the ratio is noise. Arrows and the cut trace follow display 1.
-    dt is recomputed every cfl_every steps (forced to every step for the
-    first 200 steps of a run &mdash; a frozen dt from a quiescent start blows up).
-    hyper=1 needs MUCH larger diss to resolve &mdash; k_diss &asymp; (&epsilon;/diss&sup3;)<sup>1/4</sup>
-    must stay below the dealias cutoff nx/3, i.e. diss &gtrsim; 1.5e-3 at 512&sup2; &mdash; and
-    &ldquo;auto&rdquo; picks a resolved diss for the current hyper, resolution and injected power.
-    NB long runs pile magnetic energy up at the box scale (2D inverse cascade of
-    &lang;&psi;&sup2;&rang;) &mdash; large coherent structures at late times are physics,
-    not a bug; there is no large-scale friction term.</div>
+  <details id="grpSim">
+    <summary>simulation</summary>
+    <div class="row">
+      <label>resolution</label>
+      <select id="selRes"><option>128</option><option selected>256</option><option>512</option></select>
+      <label>seed</label>
+      <input type="number" id="nSeed" value="7" style="width:70px">
+    </div>
+    <div class="row">
+      <label>cfl_safety</label>
+      <input type="range" id="rCfl" min="0.05" max="0.9" step="0.01" value="0.4"><span class="val" id="vCfl"></span>
+      <label>cfl_every</label>
+      <input type="range" id="rCflEvery" min="1" max="16" step="1" value="4"><span class="val" id="vCflEvery"></span>
+    </div>
+  </details>
+  <details id="grpDiss">
+    <summary>dissipation</summary>
+    <div class="row">
+      <label>hyper</label>
+      <select id="selHyper"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option></select>
+      <label>diss</label>
+      <input type="range" id="rDiss" min="-20" max="-1" step="0.05" value="-13"><span class="val" id="vDiss"></span>
+      <button id="btnAutoDiss" title="a marginally-resolved diss for the current hyper / resolution / power">auto</button>
+    </div>
+  </details>
+  <details id="grpForce">
+    <summary>forcing</summary>
+    <div class="row">
+      <label>power &epsilon;</label>
+      <input type="checkbox" id="cbForce" checked title="forcing on/off (unchecked: decaying turbulence)">
+      <input type="range" id="rEps" min="-3" max="1" step="0.05" value="-0.52"><span class="val" id="vEps"></span>
+      <label>tau</label>
+      <input type="range" id="rTau" min="0.05" max="5" step="0.05" value="1"><span class="val" id="vTau"></span>
+    </div>
+  </details>
+  <details id="grpIC">
+    <summary>initial condition</summary>
+    <div class="row">
+      <label>preset</label>
+      <select id="selIC">
+        <option value="modes">large-scale modes</option>
+        <option value="letters">letters A / B (packets)</option>
+        <option value="custom">custom (drawn blobs)</option>
+        <option value="quiescent">quiescent (zero)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>amplitude</label>
+      <input type="range" id="rAmp" min="-2" max="1" step="0.05" value="0"><span class="val" id="vAmp"></span>
+    </div>
+    <div class="row" id="rowDraw" style="display:none">
+      <button id="btnEdit" title="pause and paint gaussian blobs on the first display">edit IC</button>
+      <label>paint</label>
+      <select id="selPaint">
+        <option value="zp">z&#8314;</option>
+        <option value="zm">z&#8315;</option>
+        <option value="phi">&phi;</option>
+        <option value="psi">&psi;</option>
+      </select>
+      <label>&sigma;&perp;</label>
+      <input type="range" id="rSigP" min="0.01" max="0.3" step="0.005" value="0.08"><span class="val" id="vSigP"></span>
+      <label>negative</label><input type="checkbox" id="cbNeg" title="deposit with a minus sign (or drag with the right button)">
+      <button id="btnApply">apply &amp; run</button>
+      <button id="btnClear" title="erase the drawing (there is no undo stack)">clear</button>
+    </div>
+  </details>
+  <details id="grpDisp" data-keep-open>
+    <summary>displays &amp; charts</summary>
+    <div class="row">
+      <button id="btnAddDisp">+ display</button>
+      <button id="btnAddChart">+ chart</button>
+    </div>
+  </details>
 </div>
 <div id="status"></div>
 
 <div id="display">
-  <div>
-    <div id="views">
-      <div>
-        <div id="cvwrap">
-          <canvas id="cv" width="512" height="512"></canvas>
-          <canvas id="cvVec" width="512" height="512"></canvas>
-          <canvas id="cvEdit" width="512" height="512"></canvas>
-        </div>
-        <div class="viewcap" id="cap1"></div>
-      </div>
-      <div id="view2">
-        <div id="cvwrap2">
-          <canvas id="cv2" width="512" height="512"></canvas>
-        </div>
-        <div class="viewcap" id="cap2"></div>
-      </div>
-    </div>
+  <div id="displaycol">
+    <div id="displays"></div>
     <div id="readout">initialising&hellip;</div>
   </div>
-  <div id="charts">
-    <canvas id="cvEnergy" class="chart" width="420" height="200"></canvas>
-    <canvas id="cvSpec" class="chart" width="420" height="240"></canvas>
-    <canvas id="cvCut" class="chart" width="420" height="140"></canvas>
-    <div class="hint">Energy trace: one sample per rendered frame (history capped at 2000
-      points, decimated 2:1 when full). Spectra: shell-binned E<sub>u</sub>(k), E<sub>b</sub>(k),
-      recomputed at most ~3&times;/s. Cut: the displayed field along y at x = L<sub>x</sub>/2,
-      ~10&times;/s.</div>
-  </div>
+  <div id="charts"></div>
 </div>
 
 <div class="panel" id="testpanel">
   <hr>
   <div class="row">
-    <button id="btnTest">Run self-test (32&sup2; reference vectors)</button>
+    <button id="btnTest">Run self-test (32&sup2; vectors)</button>
   </div>
-  <div class="hint">Runs the inlined fp64 reference vectors through the same GPU pipelines
-    as production, plus a statistical check of the OU forcing power.</div>
   <div id="tests"></div>
 </div>
 
@@ -231,9 +183,8 @@ function makeGrid(p) {
 // ---------------------------------------------------------------------------
 // WGSL (2D-specific kernels; the shared physics + display templates come from
 // physics.js, the generic reductions and the FFT template from common.js)
+// (`struct Mode`, the colormap table and the colorize kernel are shared: physics.js)
 // ---------------------------------------------------------------------------
-const MODE_STRUCT = `struct Mode { mode: u32, pad0: u32, pad1: u32, pad2: u32 };`;
-
 function buildShaders(g) {
   const nx = g.nx, ny = g.ny, nky = g.nky, nm = g.nm, nr = nx * ny;
   const WGF = fftWG(ny), WGC = fftWG(nx);
@@ -251,7 +202,7 @@ struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f
   // flat mode index, real-space kernels at 64 threads, the display buffer is the
   // whole domain.
   const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, modeStruct: MODE_STRUCT };
+              ns: g.shell.length };
 
   const S = {};
 
@@ -450,9 +401,7 @@ class Solver {
     const ad = arrowDims(q.nx, q.ny);
     this.nax = ad.nax; this.nay = ad.nay;
     this.narrow = this.nax * this.nay;
-    this.mode = 0;                 // display 1's mode (mirrored for the frame loop)
-    this.cube = 0;                 // the 2D app has no cube-face mode
-    this.disp = [];                // display chains; chain 1 is built on demand
+    this.disp = [];                // display chains, one per display card (built on demand)
     this.nsteps = 0;
     this.rng = new Gauss(q.seed);
     this._noise = new Float32Array(2 * this.ns * 2);
@@ -486,9 +435,6 @@ class Solver {
       cflPart: d.createBuffer({ size: this.nPartR * 8, usage: SQ }),
       enPart: d.createBuffer({ size: this.nPartM * 16, usage: SQ }),
       specBins: d.createBuffer({ size: 2 * this.nb * 4, usage: SQ }),
-      // arrow + cut gathers are display-1 only (see _makeChain)
-      arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
-      cut: d.createBuffer({ size: this.g.ny * 4, usage: SQ }),
       cfg: d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       stage: [0, 1, 2].map(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
@@ -499,10 +445,10 @@ class Solver {
   }
 
   // ---- display chains -----------------------------------------------------
-  // One chain = the scratch, bind groups, Mode uniforms and output texture of ONE
-  // canvas. Chain 0 is built with the solver and also owns the arrow / cut gathers
-  // (both are display-1 only); chain 1 is built on demand, the first time dual view
-  // is enabled, so a single-view session pays nothing for it.
+  // One chain = the scratch, bind groups, Mode uniforms, arrow / cut gather targets
+  // and output texture of ONE display card. Chain 0 is built with the solver; the
+  // others are built the first time a card claims them, so a one-card session pays
+  // nothing for them. There is NO chain-0 special case: every chain is complete.
   //
   // Buffer reuse inside a chain (dispK/dispTmp are pure scratch, so BOTH sigma_c
   // halves run through them):
@@ -511,7 +457,7 @@ class Solver {
   // after which magSqA collapses (dispR, dispR2) -> dispR = |z+|^2 and magSqB
   // collapses (dispR2, dispR3) -> dispR2 = |z-|^2. Dispatches inside one compute
   // pass are ordered, so the reuse is safe.
-  _makeChain(ci) {
+  _makeChain() {
     const d = this.device, nm = this.g.nm, nr = this.nr, cx = nm * 8;
     const B = {
       dispK: d.createBuffer({ size: cx, usage: SQ }),
@@ -525,6 +471,9 @@ class Solver {
       dispR3: d.createBuffer({ size: nr * 4, usage: SQ }),
       maxPart: d.createBuffer({ size: this.nPartR * 4, usage: SQ }),
       maxVal: d.createBuffer({ size: 4, usage: SQ }),
+      // per-card overlay gathers (8 kB + ny floats -- negligible next to dispR)
+      arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
+      cut: d.createBuffer({ size: this.g.ny * 4, usage: SQ }),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the z- vector: the second half of the sigma_c chain
       modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
@@ -556,6 +505,8 @@ class Solver {
       sigmaCombine: bgOf(this.pl.sigmaCombine, [B.dispR, B.dispR2, B.maxVal]),
       maxPartial: bgOf(this.pl.maxPartial, [B.dispR, B.maxPart]),
       maxFinal: bgOf(this.pl.maxFinal, [B.maxPart, B.maxVal]),
+      vecGather: bgOf(this.pl.vecGather, [B.dispR, B.dispR2, B.arrows]),
+      cutGather: bgOf(this.pl.cutGather, [B.dispR, B.cut]),
       colorize: d.createBindGroup({
         layout: this.pl.colorize.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: B.dispR } },
@@ -569,19 +520,19 @@ class Solver {
                   { binding: 1, resource: tex.createView() }]
       })
     };
-    if (ci === 0) {
-      bg.vecGather = bgOf(this.pl.vecGather, [B.dispR, B.dispR2, P.arrows]);
-      bg.cutGather = bgOf(this.pl.cutGather, [B.dispR, P.cut]);
-    }
-    return { mode: 0, buf: B, tex, bg };
+    return { mode: 0, cube: 0, zslice: 0, buf: B, tex, bg };
   }
 
   // chain ci, built on first use
   chain(ci) {
     const i = ci | 0;
-    if (!this.disp[i]) this.disp[i] = this._makeChain(i);
+    if (!this.disp[i]) this.disp[i] = this._makeChain();
     return this.disp[i];
   }
+  // per-card display state, for the card system and the overlays
+  modeOf(ci) { const D = this.disp[ci | 0]; return D ? D.mode : 0; }
+  cubeOf(ci) { return 0; }              // the 2D app has no cube-face mode
+  zsliceOf(ci) { return 0; }            // ... and no z axis
 
   _buildPipelines() {
     const d = this.device;
@@ -673,12 +624,15 @@ class Solver {
     this.device.queue.writeBuffer(this.buf.cfg, 0, new Float32Array([
       q.Lx / q.nx, q.Ly / q.ny, q.cfl, q.tau, q.epsP, q.epsM, q.smax, 0]));
   }
-  // ci = which display chain (0 = the main canvas, 1 = the dual-view canvas)
-  setDisplayMode(ci, mode) {
+  // ci = which display card / chain. `zslice` is accepted (and ignored) so both apps
+  // present the same signature to the shared card code; `cmap` indexes CMAP_NAMES.
+  setDisplayMode(ci, mode, zslice, cmap) {
     const D = this.chain(ci);
     D.mode = mode | 0;
-    if ((ci | 0) === 0) this.mode = D.mode;
-    this.device.queue.writeBuffer(D.buf.mode, 0, new Uint32Array([D.mode, 0, 0, 0]));
+    const u = new Uint32Array([D.mode, 0, (cmap | 0), 0]);
+    this.device.queue.writeBuffer(D.buf.mode, 0, u);
+    u[0] = DISP_ZMINUS;                     // the sigma_c second half, same colormap
+    this.device.queue.writeBuffer(D.buf.modeM, 0, u);
   }
 
   // ---- initial condition --------------------------------------------------
@@ -871,19 +825,15 @@ class Solver {
     } else if (dispIsVector(mode)) {
       // subsample the two components for the overlay, then collapse dispR to
       // |(ux,uy)| for the autoscale + colormap
-      if (D.bg.vecGather) {
-        p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
-        p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
-      }
+      p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
+      p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
       p.setPipeline(this.pl.vecMag); p.setBindGroup(0, D.bg.vecMag);
       p.dispatchWorkgroups(nrWG);
     }
-    // cut trace (display 1 only): NY values at ix = NX/2, after the magnitude
-    // collapse so the vector modes trace |u| like the colour field does
-    if (D.bg.cutGather) {
-      p.setPipeline(this.pl.cutGather); p.setBindGroup(0, D.bg.cutGather);
-      p.dispatchWorkgroups(Math.ceil(this.g.ny / 64));
-    }
+    // cut trace: NY values at ix = NX/2, after the magnitude collapse so the vector
+    // modes trace |u| like the colour field does
+    p.setPipeline(this.pl.cutGather); p.setBindGroup(0, D.bg.cutGather);
+    p.dispatchWorkgroups(Math.ceil(this.g.ny / 64));
     if (!dispIsSigma(mode)) {          // sigma_c has a FIXED +-1 range, no autoscale
       p.setPipeline(this.pl.maxPartial); p.setBindGroup(0, D.bg.maxPartial);
       p.dispatchWorkgroups(this.nPartR);
@@ -906,14 +856,14 @@ class Solver {
 
   async readStats() { return readBuf(this.device, this.buf.scalars, 32); }
 
-  // subsampled (ux,uy) pairs for the arrow overlay; filled by the last render() in a
-  // vector mode (<= 32*32*2 f32 = 8 kB). Throttled by the caller: one frame of lag is
-  // fine, and this must not turn into a per-step submit.
-  async readArrows() { return readBuf(this.device, this.buf.arrows, this.narrow * 8); }
+  // subsampled (ux,uy) pairs for one card's arrow overlay; filled by the last render()
+  // of that chain in a vector mode (<= 32*32*2 f32 = 8 kB). Throttled by the caller:
+  // one frame of lag is fine, and this must not turn into a per-step submit.
+  async readArrows(ci) { return readBuf(this.device, this.chain(ci).buf.arrows, this.narrow * 8); }
 
-  // NY values of the displayed field along y at x = Lx/2; gathered inside render()'s
-  // pass, so this is only a copy + map round trip. Throttled by the caller.
-  async readCut() { return readBuf(this.device, this.buf.cut, this.g.ny * 4); }
+  // NY values of one card's displayed field along y at x = Lx/2; gathered inside
+  // render()'s pass, so this is only a copy + map round trip. Throttled by the caller.
+  async readCut(ci) { return readBuf(this.device, this.chain(ci).buf.cut, this.g.ny * 4); }
 
   // recompute + read back the shell spectra: 2*NB floats ([E_u | E_b]). Throttled by
   // the caller (this is a full pass over the fields plus a mapAsync round trip).
@@ -966,12 +916,11 @@ function syncLabels() {
 // max |zhat x grad z+-| = the amplitude knob, and maps them to the evolved variables
 // with phi = (z+ + z-)/2, psi = (z+ - z-)/2.
 function icParams() {
-  const t = el("tLetters").value || "AB";
-  return { preset: el("selIC").value, text: t, amp: Math.pow(10, parseFloat(el("rAmp").value)) };
+  return { preset: el("selIC").value, text: IC_LETTERS,
+           amp: Math.pow(10, parseFloat(el("rAmp").value)) };
 }
 function syncIC() {
   const p = el("selIC").value, isL = p === "letters", isC = p === "custom";
-  el("tLetters").disabled = !isL;
   el("rAmp").disabled = !isL && !isC;             // "custom" reuses it as the blob amplitude
   el("rowDraw").style.display = isC ? "" : "none";
   if (!isC && icDraw.on) icDrawSetMode(false);
@@ -998,11 +947,11 @@ function applyIC() {
     solver.setICFromReal(phi, psi);
   } else solver.setIC();
   spsSmooth = 0;
-  histReset(); drawEnergy(); specAt = 0; clearCut();
+  chartsReset();
 }
 
-// the blob editor lives in common.js; this hands it the app's knobs and buttons. In 2D
-// there is no z, so the plane and sigma_z hooks are constants.
+// the blob editor lives in common.js (buttons and all); this hands it the app's knobs.
+// In 2D there is no z, so the plane and sigma_z hooks are constants.
 function wireDrawEditor() {
   icDrawWire({
     params: () => solver && solver.p,
@@ -1013,62 +962,43 @@ function wireDrawEditor() {
     amp: () => icParams().amp,
     neg: () => el("cbNeg").checked,
     enabled: () => !!solver,
-    onMode: on => {
-      el("btnEdit").textContent = on ? "stop editing" : "edit IC";
-      el("btnRun").disabled = on;
-      if (on) el("btnRun").textContent = "Run";      // icDrawSetMode paused the run
-    }
+    sliders: ["rSigP"]
   });
-  el("btnEdit").onclick = () => icDrawSetMode(!icDraw.on);
-  el("btnClear").onclick = () => { icDrawClear(); icDrawPreview(); };
-  el("btnApply").onclick = () => {
-    icDrawSetMode(false);
-    applyIC();                                       // uploads the drawing
-    running = true; el("btnRun").textContent = "Pause";
-  };
-  el("selPaint").onchange = () => { if (icDraw.on) icDrawPreview(); };
-  el("rSigP").oninput = syncLabels;
 }
 
 // ---------------------------------------------------------------------------
-// demos (?demo=NAME): configurations of the controls above, never new physics
+// display cards: the quantity list of this app (physics.js modes 0..8)
 // ---------------------------------------------------------------------------
-const DEMOS = {
+const DISP_FIELDS = [
+  { v: 0, t: "vorticity" }, { v: 1, t: "current" }, { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
+  { v: 4, t: "velocity |u|" }, { v: 5, t: "magnetic |b|" },
+  { v: 6, t: "Elsasser |z&#8314;|" }, { v: 7, t: "Elsasser |z&#8315;|" },
+  { v: 8, t: "cross helicity &sigma;_c" }
+];
+
+// ---------------------------------------------------------------------------
+// presets: configurations of the controls above (never new physics), also
+// reachable as ?demo=NAME deep links
+// ---------------------------------------------------------------------------
+const PRESETS = {
+  forced: {
+    label: "forced turbulence (default)",
+    set: { selRes: "256", selHyper: "4", cbForce: true, rEps: "-0.52", rDiss: "-13",
+           selIC: "modes", rAmp: "0", rCflEvery: "4" },
+    layout: { disp: [{ sel: 0 }], charts: ["energy", "spectrum", "cut"] },
+    hint: ""
+  },
   decay: {
-    set: { selRes: "512", selHyper: "4", cbForce: false, cbDual: true,
-           selField: "6", selField2: "7", selIC: "letters", tLetters: "AB", rAmp: "0",
+    label: "decaying A / B packets",
+    set: { selRes: "512", selHyper: "4", cbForce: false, selIC: "letters", rAmp: "0",
            rCflEvery: "4" },
     prep: () => autoDiss(),          // marginally-resolved diss for 512^2, hyper=4
-    hint: "<b>Demo: decaying 2D turbulence.</b> Two Elsasser packets shaped like the "
-      + "letters A (z<sup>+</sup>) and B (z<sup>-</sup>), no forcing, 512&sup2;, "
-      + "hyper=4 with an auto-resolved diss. Press <b>Run</b>. Watch the spectrum panel "
-      + "settle onto the quasi-universal decaying slope while the total energy falls, and "
-      + "switch a display to <b>cross helicity &sigma;_c</b> to see dynamic alignment: "
-      + "z<sup>+</sup> and z<sup>-</sup> segregate into patches of one sign, which is "
-      + "what shuts the cascade down. The amplitude slider sets max |&zcaron;&times;&nabla;z&plusmn;| "
-      + "of each packet (re-apply with Reset)."
+    layout: { disp: [{ sel: 6 }, { sel: 7 }], charts: ["energy", "spectrum"] },
+    hint: "Decaying 2D turbulence: A-shaped z<sup>+</sup> and B-shaped z<sup>-</sup> packets "
+      + "at 512&sup2;, forcing off &mdash; press <b>Run</b> and switch a display to "
+      + "&sigma;_c to watch dynamic alignment shut the cascade down."
   }
 };
-
-// dual view: the second canvas + its selector, shown only when the box is ticked
-// (chain 1 is built lazily on the first setDisplayMode / render for it)
-function syncDual() {
-  const on = el("cbDual").checked;
-  el("views").classList.toggle("dual", on);
-  el("selField2").disabled = !on;
-}
-// push both selectors into the solver and label the canvases with what they show
-function applyDisplayModes() {
-  if (!solver) return;
-  const on = el("cbDual").checked;
-  const s1 = el("selField"), s2 = el("selField2");
-  solver.setDisplayMode(0, parseInt(s1.value, 10));
-  el("cap1").textContent = "display 1 — " + s1.options[s1.selectedIndex].textContent;
-  if (on) {
-    solver.setDisplayMode(1, parseInt(s2.value, 10));
-    el("cap2").textContent = "display 2 — " + s2.options[s2.selectedIndex].textContent;
-  }
-}
 
 function rebuild() {
   // never destroy in an event handler: the frame loop may be awaiting a readback
@@ -1077,7 +1007,7 @@ function rebuild() {
   // a new grid means a new (empty) drawing: the editor's arrays are per-resolution
   if (icDraw.on) icDrawSetMode(false);
   solver = new Solver(device, uiParams());
-  applyDisplayModes();
+  cardsSync();
   stepsPerFrame = 1;
   applyIC();                 // the constructor's built-in IC, replaced by the preset
 }
@@ -1218,45 +1148,23 @@ async function runSelfTest() {
 // boot
 // ---------------------------------------------------------------------------
 async function boot() {
-  // charts first: they must render their frames even if WebGPU is unavailable
-  initCharts();
-  // ?demo=... rewrites the controls (and runs its "auto" prep) BEFORE the first
-  // rebuild, so the solver is constructed with the demo's grid and dissipation. Done
-  // ahead of initGPU so the demo hint is on the page even where WebGPU is missing.
-  applyDemoParams(DEMOS);
+  groupsInit();
+  // the preset (dropdown default, or ?demo=NAME as a deep link) rewrites the controls
+  // and runs its "auto" prep BEFORE the first rebuild, so the solver is constructed
+  // with its grid and dissipation. Done ahead of initGPU so the hint is on the page
+  // even where WebGPU is missing.
+  const pre = presetBoot(PRESETS);
   if (!await initGPU()) return;
 
-  syncLabels();
-  syncDual();
-  syncIC();
-  el("rEps").disabled = !el("cbForce").checked;
-  rebuild();
-
-  el("btnRun").onclick = () => { running = !running; el("btnRun").textContent = running ? "Pause" : "Run"; };
-  el("btnReset").onclick = () => {
-    const q = uiParams(); solver.p.seed = q.seed; applyIC();
-  };
-  el("selIC").onchange = () => { syncIC(); applyIC(); syncLabels(); };
-  el("tLetters").onchange = applyIC;
-  el("rAmp").oninput = syncLabels;      // takes effect on the next Reset / IC change
-  // in "custom" the amplitude is a per-blob knob: it must NOT re-upload the drawing
-  el("rAmp").onchange = () => { if (el("selIC").value !== "custom") applyIC(); };
-  el("selRes").onchange = rebuild;
-  wireDrawEditor();
-  el("selHyper").onchange = applyControls;
-  el("btnAutoDiss").onclick = autoDiss;
-  el("cbForce").onchange = () => { el("rEps").disabled = !el("cbForce").checked; applyControls(); };
-  el("selField").onchange = () => {
-    applyDisplayModes();
-    if (!dispIsVector(solver.mode)) clearArrows();
-  };
-  el("selField2").onchange = applyDisplayModes;
-  el("cbDual").onchange = () => { syncDual(); applyDisplayModes(); };
-  for (const id of ["rDiss", "rEps", "rTau", "rCfl", "rCflEvery"]) {
-    el(id).oninput = applyControls;
-  }
-  wireTestButton(runSelfTest);
-
+  cardsInit({
+    fields: DISP_FIELDS,
+    zslice: false,                  // no z axis in 2D
+    nz: () => 1,
+    zsliceOf: () => 0,
+    onLayout: syncLabels
+  });
+  bootApply(pre);
+  wireCommonControls({ presets: PRESETS });
   loop();
 }
 boot();

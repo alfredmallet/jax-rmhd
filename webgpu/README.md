@@ -5,7 +5,8 @@ spectral-z, the `z_spectral=True` path — Alfvén coupling applied exactly via 
 closed-form 2×2 wave propagator, no wave CFL; z-slice or three-face cube display,
 resolutions 64²×32 to 256²×64 plus the long-box 64²×128 / 64²×256, free Lz,
 `z_diss_k` kz⁴ dissipation with auto). `index.html` is a landing page linking the two
-apps and the two `?demo=` runs. The 3D contract is `SPEC3D.md`; its reference vectors are
+apps; the preconfigured runs are presets *inside* each app (dropdown, or `?demo=` as a
+deep link), not separate pages. The 3D contract is `SPEC3D.md`; its reference vectors are
 `refvectors3d.json` from `gen_refvectors3d.py` (16²×8, fp64, including a dedicated
 exp(L·τ) propagator vector). The rest of this README describes the 2D app; everything
 carries over to 3D except where SPEC3D.md says otherwise.
@@ -56,17 +57,23 @@ programmatically; do not try to hand-edit a 180 kB line).
   top of `<script src="common.js">` and `<script src="physics.js">` (in that order).
 - `common.js` — the shared pieces that carry no equation: RNG, reference-vector
   flatteners, the FFT kernel template, the generic reductions (CFL, energy tail,
-  max-reduce), device bring-up, the chart + overlay drawing (energy trace, spectra, cut
-  trace, arrows), the `?demo=` query parsing, the CPU-side IC construction (glyph raster,
-  periodic box blur, gradient-amplitude normalization, gaussian z-envelope, and the whole
-  `custom` blob editor — deposit math, preview, pointer→grid mapping, driven by one
-  per-app hook object through `icDrawWire`), the self-test table and the frame loop (with
-  two per-app hooks, `frameHook` and `readoutExtra`).
+  max-reduce), device bring-up, the **colormap table** (`CMAP_COEF` / `cmapRGB`, the one
+  source both the WGSL and the editor preview read), the chart + overlay drawing (energy
+  trace, spectra, cut trace, arrows), the **card system** (`DisplayCard`, `ChartCard`,
+  `cardsInit`/`cardsLayout`/`cardsSync`), the preset machinery (`presetBoot`,
+  `presetWrite`) and the boot wiring both apps share (`bootApply`,
+  `wireCommonControls`), the CPU-side IC construction (glyph raster, periodic box blur,
+  gradient-amplitude normalization, gaussian z-envelope, and the whole `custom` blob
+  editor — deposit math, preview, pointer→grid mapping, driven by one per-app hook object
+  through `icDrawWire`), the self-test table and the frame loop (with two per-app hooks,
+  `frameHook` and `readoutExtra`).
 - `physics.js` — the shared RMHD kernels and the whole slice display chain, as
   templates over one constants object per app (`{pre, hasZ, wgReal, nDisp, arrow, ns,
-  modeStruct, envFn}`): `prepGrads`, `bracket`, `nlAssemble`, `energyPartial`, `ou`,
+  envFn}`), plus the shared `struct Mode` and `CMAP_WGSL` (four colormaps, one
+  implementation, expanded from common.js's coefficient table at emit time):
+  `prepGrads`, `bracket`, `nlAssemble`, `energyPartial`, `ou`,
   `scale`, `icFinish`, `prepDisp`, `vecMag`/`vecMagSq`, `maxSumPartial`,
-  `sigmaCombine`, the arrow/cut gathers, the afmhot colorize and the blit (the 3D-only
+  `sigmaCombine`, the arrow/cut gathers, the colorize and the blit (the 3D-only
   `zpPrep`/`planeEnergy` tracking kernels stay in the 3D app). Every 2D/3D
   difference is derived inside the templates from the single flag `hasZ` (the 3D index
   split m = iz·NMP + mp, the kz dealias factor, the kz⁴ term in the linear diagonal),
@@ -81,35 +88,58 @@ programmatically; do not try to hand-edit a 180 kB line).
 - `gen_refvectors.py`, `refvectors.json`, `gen_refvectors3d.py`, `refvectors3d.json` —
   reference-vector generators and their output.
 
+## Cards: displays and charts
+
+The UI is built from **cards**. A *display card* is one WebGPU canvas plus its own
+quantity selector, colormap, arrows checkbox and — in 3D — its own z slice (manual
+slider or `track z⁺ / z⁻ peak`); "+ display" adds one (up to three), the × on its header
+closes it. Card index *is* the solver's display-chain index, so N cards cost exactly N
+chains (scratch, bind groups, gather targets, textures), each built lazily on first use.
+The first card cannot be closed: it anchors the IC editor's overlay canvas. A *chart
+card* is one 2D canvas with a type selector — energy trace / spectra / cut — and "+ chart"
+adds another; several cards of the same type are allowed and share one throttled
+readback per frame. Nothing here is a special case of anything else: there is no
+dual-view flag and no fixed chart stack.
+
+The **preset** dropdown in the sticky top bar (Run / Reset / t·step·dt·steps-per-second)
+picks a whole configuration — controls *and* card layout. `?demo=NAME` is the same thing
+as a deep link. Controls live in collapsible `<details>` groups (simulation /
+dissipation / forcing / initial condition / displays & charts), open by default on a wide
+viewport and collapsed on a narrow one; the state is deliberately not persisted.
+
 ## Display modes
 
-Both apps: vorticity / current / phi / psi as signed fields (afmhot, symmetric ±max),
-and the perpendicular vector magnitudes "velocity |u|", "magnetic |b|" and the two
-Elsasser fields "|z⁺|", "|z⁻|" (z± = φ±ψ, displayed as |ẑ×∇z±|), each with a ≤32×32
-arrow overlay. Grid row y=0 is drawn at the top of the canvas. Under the spectrum
-panel, a **cut trace** plots the displayed quantity along y at x = Lx/2 (the current z
-slice in 3D), autoscaled symmetrically for signed fields and to [0,max] for magnitudes.
+Both apps: vorticity / current / phi / psi as signed fields (symmetric ±max), and the
+perpendicular vector magnitudes "velocity |u|", "magnetic |b|" and the two Elsasser
+fields "|z⁺|", "|z⁻|" (z± = φ±ψ, displayed as |ẑ×∇z±|), each with an optional ≤32×32
+arrow overlay. Grid row y=0 is drawn at the top of the canvas. A **cut trace** chart card
+plots the *first* display card's quantity along y at x = Lx/2 (its current z slice in 3D),
+autoscaled symmetrically for signed fields and to [0,max] for magnitudes.
+
+**Colormaps** are per display card: `afmhot` (default), `viridis`, `RdBu`, `grayscale`.
+One WGSL `cmap(x, which)` serves the slice colorize and the 3D cube colorize; afmhot is
+matplotlib's exact closed form, viridis and RdBu are degree-6 least-squares fits of each
+channel to matplotlib 3.10's tables sampled at 256 points (max abs channel error 0.017
+and 0.040; both clamped, since a fit overshoots slightly at the ends). The coefficients
+live once, in `common.js: CMAP_COEF` — `physics.js` expands them into the WGSL at emit
+time and the IC editor's CPU preview reads the same table through `cmapRGB`, so the two
+cannot drift.
 
 **Cross helicity σ_c** = (|z⁺|²−|z⁻|²)/(|z⁺|²+|z⁻|²), pointwise, is the one mode with a
-**fixed** colour range (±1, afmhot symmetric — no autoscale, so colours are comparable
+**fixed** colour range (±1, symmetric — no autoscale, so colours are comparable
 between frames and between runs). Where the local Elsasser energy density |z⁺|²+|z⁻|²
 falls below 1e-4 × its maximum over the displayed field, σ_c is rendered as exactly 0:
 in quiet regions the ratio is pure noise. It costs four inverse transforms per frame
 (both components of both z±) instead of the vector modes' two — display cost only, no
 physics buffer is touched. Its cut trace is still autoscaled to the data.
 
-**Dual view** (checkbox, off by default) adds a second canvas showing the same state
-with its own quantity — and, in 3D, its own z slice. The display chain (scratch, bind
-groups, texture) is instantiated a second time on first use, and one extra chain run is
-encoded per rendered frame. The two views sit side by side above 1400px and stack below
-it. The arrow overlay, the cut trace and the 3D cube-face modes stay on display 1; if
-display 1 is in cube mode, display 2 still shows its own z slice.
-
 3D only: the **cube-face** modes draw the three visible boundary faces of the box
 (z = Lz, x = Lx, y = Ly) in the oblique view `examples/forced-turbulence-3D.ipynb` uses
 (matplotlib `view_init(elev=30, azim=45)`), colorized with one common ±max across the
-three faces and depth-cued by a per-face darkening of 1.0 / 0.85 / 0.7. Arrows, the cut
-trace and the z-slice slider are inactive there. The 3D spectrum panel also carries the
+three faces and depth-cued by a per-face darkening of 1.0 / 0.85 / 0.7. Any display card
+may select them (each chain owns its own face buffer and three face textures — a rounding
+error next to its nz·nx·ny scratch volume). Arrows, the cut trace and that card's z-slice
+slider are inactive there. The 3D spectrum panel also carries the
 parallel spectra E_u(k∥), E_b(k∥) as dashed curves (|kz| bins 1…nz/2, ±kz paired,
 kz = 0 omitted from the log axis).
 
@@ -125,7 +155,8 @@ selector then offers `large-scale modes`, `quiescent`, `letters` and `custom`; *
 re-applies the current one.
 
 The **letters** preset builds one Elsasser stream function per field from a rasterized
-glyph (first character → z⁺, second → z⁻, default "AB"): the glyph is drawn on an
+glyph (A → z⁺, B → z⁻; fixed, `common.js: IC_LETTERS` — the free-text input was dropped
+in the mobile pass): the glyph is drawn on an
 offscreen canvas at 60% of the box, gaussian-smoothed (`ctx.filter="blur(Npx)"` where the
 engine supports it, otherwise a 3-pass periodic box blur), zero-meaned, and scaled so
 that **max |ẑ×∇z±| equals the amplitude knob**; then φ = (z⁺+z⁻)/2, ψ = (z⁺−z⁻)/2. In 3D
@@ -171,21 +202,22 @@ samples v = 1−uv.y). So the continuous grid coordinate under the cursor is u·
 nearest grid point is round(u·n−0.5); the deposit uses the continuous position, wrapped
 into [0,L).
 
-## Demos (`?demo=`)
+## Presets (the dropdown, and `?demo=`)
 
-A demo is a **configuration**, never new physics: `applyDemoParams` (common.js) reads
-`?demo=NAME` from the URL and writes a registry entry's values into the page's own
-controls *before* the first solver is built, runs its `prep` (the "auto" buttons) and
-drops an explanatory paragraph into `#demohint`. Everything stays adjustable afterwards.
-Both are linked from `index.html`.
+A preset is a **configuration**, never new physics. A registry entry carries `set`
+(control id → value), `prep` (the "auto" buttons), `layout` (the display + chart cards it
+wants) and a one-line `hint`. `presetBoot` (common.js) fills the dropdown, preselects
+`?demo=NAME` if the URL carries one, and writes the controls *before* the first solver is
+built; picking another entry from the dropdown runs the same path plus a rebuild.
+Everything stays adjustable afterwards. There are no separate demo pages.
 
-- **`rmhd2d.html?demo=decay`** — decaying 2D turbulence: letters A/B at 512², forcing
-  off, hyper=4 with auto diss, dual view showing |z⁺| and |z⁻|. Watch the spectrum settle
-  onto the quasi-universal decaying slope, and switch a display to σ_c for dynamic
-  alignment.
-- **`rmhd3d.html?demo=collision`** — Alfvén-wave collision: 64²×256, Lz = 8π, forcing
-  off, two counter-propagating letter packets, each display tracking the peak plane of
-  one of them.
+- **2D `decaying A / B packets`** (`rmhd2d.html?demo=decay`) — letters A/B at 512²,
+  forcing off, hyper=4 with auto diss, two displays showing |z⁺| and |z⁻|. Watch the
+  spectrum settle onto the quasi-universal decaying slope, and switch a display to σ_c
+  for dynamic alignment.
+- **3D `Alfven-wave collision`** (`rmhd3d.html?demo=collision`) — 64²×256, Lz = 8π,
+  forcing off, two counter-propagating letter packets, each display card tracking the
+  peak plane of one of them.
 
 ## Alfvén-wave collision: directions, placement, χ
 
@@ -213,9 +245,9 @@ k-space partial sum: `readPlaneEnergy` forms z± = φ±ψ, inverse-transforms *a
 (borrowing the gradient stack as scratch — a separate submit, and submits execute in
 order), and reduces one workgroup per plane with the usual perpendicular-energy weight
 minus the nz² Parseval factor, so the plane values average to E±. The frame loop reads
-back 2·nz floats at ~10 Hz; either display's z-slice source can be `manual`,
-`track z⁺ peak` or `track z⁻ peak`, and the tracked plane index and its z coordinate are
-printed in the readout.
+back 2·nz floats at ~10 Hz; every display card's z-slice source can be `manual`,
+`track z⁺ peak` or `track z⁻ peak`, and the tracked plane indices and their z coordinates
+are printed in the readout.
 
 **Lz** is a free parameter of the 3D grid (selector: 2π/4π/8π/16π), with `64²×128` and
 `64²×256` added to the resolution presets. Everything kz-derived already read `p.Lz` —

@@ -10,17 +10,16 @@
 <h1>Forced reduced-MHD in the browser — WebGPU pseudospectral solvers</h1>
 <div class="sub">a browser port of the
   <a href="https://github.com/alfredmallet/jax_rmhd" target="_blank" rel="noopener">jax_rmhd</a>
-  solver &middot; fp32 &middot; no server, no build step</div>
+  solver &middot; fp32 &middot; no server, no build step
+  &middot; <a href="https://github.com/alfredmallet/jax_rmhd/blob/main/webgpu/README.md"
+       target="_blank" rel="noopener">about / README</a></div>
 
 <p class="lead">Two live pseudospectral solvers for forced reduced MHD, running entirely on
 your GPU through WebGPU: the same equations, dealiasing, LSRK33 integrating-factor stepper
-and Elsasser Ornstein&ndash;Uhlenbeck forcing as the JAX code they were ported from, with
-every kernel written in WGSL. Both pages ship the fp64 reference vectors generated from
-<code>jax_rmhd</code> itself and a <b>Self-test</b> button that runs them through the same
-GPU pipelines as production.</p>
-<p class="lead">They are demos, not science runs: WebGPU has no float64, so expect slow
-energy-budget drift over long runs. For anything quantitative use the repository's JAX
-solver.</p>
+and Elsasser Ornstein&ndash;Uhlenbeck forcing as the JAX code they were ported from. Both
+pages ship the fp64 reference vectors generated from <code>jax_rmhd</code> itself and a
+<b>Self-test</b> button that runs them through the same GPU pipelines as production. They
+are demos, not science runs: WebGPU has no float64.</p>
 
 <div class="cards">
   <a class="card" href="rmhd2d.html">
@@ -39,28 +38,11 @@ solver.</p>
   </a>
 </div>
 
-<h2 style="font-size:15px;font-weight:600;margin:22px 0 0">Demos</h2>
-<p class="lead" style="margin:4px 0 0">Preconfigured runs: the same two solvers with the
-controls preset from the URL (<code>?demo=</code>), an initial condition rather than
-forcing, and the two Elsasser fields side by side. Everything stays adjustable &mdash;
-they are configurations, not separate programs.</p>
-
-<div class="cards">
-  <a class="card" href="rmhd2d.html?demo=decay">
-    <h2>Decaying 2D turbulence &rarr;</h2>
-    <p>Two Elsasser packets shaped like the letters A (z<sup>+</sup>) and B (z<sup>-</sup>)
-      at 512&sup2;, forcing off. Watch the spectrum settle onto the decaying slope, and
-      switch a display to cross helicity &sigma;_c to see dynamic alignment segregate
-      z<sup>+</sup> from z<sup>-</sup>.</p>
-  </a>
-  <a class="card" href="rmhd3d.html?demo=collision">
-    <h2>Alfv&eacute;n-wave collision &rarr;</h2>
-    <p>64&sup2;&times;256, L<sub>z</sub> = 8&pi;: counter-propagating z<sup>+</sup> and
-      z<sup>-</sup> wave packets meet at mid-box. Each display rides the peak plane of one
-      packet; the live &chi; readout says whether you are in the weak (&chi;&nbsp;&lt;&lt;&nbsp;1,
-      many transits) or strong (&chi;&nbsp;&gtrsim;&nbsp;1, one collision) regime.</p>
-  </a>
-</div>
+<p class="lead">Each app has a <b>preset</b> dropdown in its top bar &mdash; decaying A/B
+Elsasser packets in 2D, a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash;
+which sets the controls and opens the displays that go with them. Everything stays
+adjustable; presets are configurations, not separate programs
+(<code>?demo=decay</code> / <code>?demo=collision</code> are deep links to the same thing).</p>
 
 <div class="hint" style="margin-top:14px">
   Needs a WebGPU-capable browser (Chrome/Edge 113+, recent Firefox and Safari). Source,

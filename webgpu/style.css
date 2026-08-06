@@ -1,67 +1,81 @@
 /* Shared dark theme for the WebGPU RMHD pages (landing + 2D + 3D).
-   Plain <link rel="stylesheet">, so it works from file:// like the scripts do. */
+   Plain <link rel="stylesheet">, so it works from file:// like the scripts do.
+   Mobile-first: every control row wraps, and nothing has a fixed width that
+   cannot fit inside a 360 px viewport. */
 :root { color-scheme: dark; }
-body { margin: 0; padding: 16px 20px 40px; background: #14161a; color: #d8dee6;
+body { margin: 0; padding: 12px 14px 40px; background: #14161a; color: #d8dee6;
        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
 h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
-.sub { color: #8a94a3; font-size: 12px; margin-bottom: 14px; }
-/* controls live in a compact wrapping bar ABOVE the display row */
-#controls { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 18px;
-            background: #181b21; border: 1px solid #252a33; border-radius: 6px;
-            padding: 8px 14px; margin-bottom: 14px; }
-#controls .hint { flex-basis: 100%; margin-top: 4px; }
-/* the ?demo= callout: same hint type, set off from the ordinary help text */
-#demohint { border-left: 2px solid #3d5a7a; padding: 2px 0 2px 9px; margin-bottom: 4px;
+.sub { color: #8a94a3; font-size: 12px; margin-bottom: 10px; }
+
+/* ---- sticky bar: Run / Reset / preset / steps readout, always visible ---- */
+#topbar { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap;
+          align-items: center; gap: 8px; padding: 7px 10px; margin-bottom: 10px;
+          background: #181b21; border: 1px solid #252a33; border-radius: 6px; }
+#topbar label { color: #9aa5b4; }
+#steps { margin-left: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         font-size: 11.5px; color: #b8c2d0; font-variant-numeric: tabular-nums; }
+
+/* ---- collapsible control groups ---- */
+#controls { background: #181b21; border: 1px solid #252a33; border-radius: 6px;
+            padding: 4px 12px 8px; margin-bottom: 12px; }
+#controls details { border-top: 1px solid #232833; padding: 2px 0; }
+#controls details:first-of-type { border-top: none; }
+#controls summary { cursor: pointer; color: #9fb3c8; font-size: 12px; padding: 5px 0;
+                    list-style-position: outside; }
+#controls summary:hover { color: #cfd8e3; }
+/* the ?demo= / preset callout: one line, set off from the controls */
+#demohint { border-left: 2px solid #3d5a7a; padding: 2px 0 2px 9px; margin: 6px 0;
             color: #9fb3c8; font-size: 12px; }
-#display { display: flex; gap: 20px; align-items: flex-start; flex-wrap: nowrap; }
-#charts { display: flex; flex-direction: column; gap: 12px; }
-/* narrow window (phone / half-screen): stack the charts under the sim display and
-   let every canvas scale to the viewport width (intrinsic aspect ratio preserved) */
-@media (max-width: 1000px) {
-  #display { flex-direction: column; }
-  #cvwrap { width: 100%; max-width: 514px; }
-  #cv { width: 100%; max-width: 512px; height: auto; }
-  #charts { width: 100%; max-width: 512px; }
-  canvas.chart { width: 100%; height: auto; }
-}
-/* the border lives on the wrapper, so the absolutely-positioned vector overlay
-   (inset 0 of the padding box) lines up with #cv exactly at every scale */
-#cvwrap, #cvwrap2 { position: relative; display: block; width: max-content; max-width: 100%;
-          border: 1px solid #2b303a; box-sizing: border-box; }
-#cv, #cv2 { width: 512px; height: 512px; background: #000;
-      image-rendering: auto; display: block; }
-#cvVec { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+
+/* ---- display + chart columns ---- */
+#display { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+#displaycol { flex: 3 1 340px; min-width: 0; }
+#displays { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+#charts { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- cards ---- */
+.card.disp, .card.chart { background: #181b21; border: 1px solid #252a33; border-radius: 6px;
+                          padding: 6px 8px 8px; box-sizing: border-box; }
+.card.disp { flex: 1 1 300px; min-width: 0; max-width: 540px; }
+.card.chart { width: 100%; }
+.cardhead { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 6px; }
+.cardhead select { padding: 2px 5px; font-size: 12px; max-width: 100%; }
+.cardhead .cbl { display: inline-flex; align-items: center; gap: 3px; color: #9aa5b4; font-size: 12px; }
+.cardhead .zslider { flex: 1 1 70px; min-width: 60px; width: auto; }
+.cardhead button.x { margin-left: auto; padding: 1px 7px; line-height: 1.2; color: #9aa5b4; }
+.viewcap { color: #7a8494; font-size: 11.5px; margin-top: 5px; }
+
+/* the border lives on the wrapper, so the absolutely-positioned overlays
+   (inset 0 of the padding box) line up with the WebGPU canvas exactly at every scale */
+.cvwrap { position: relative; display: block; width: 100%;
+          border: 1px solid #2b303a; box-sizing: border-box; aspect-ratio: 1 / 1; }
+.cvmain { width: 100%; height: 100%; background: #000; image-rendering: auto; display: block; }
+.cvvec { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
          display: block; pointer-events: none; }
-/* IC blob editor: an opaque 2D preview over #cv (and over the arrows), shown and made
-   clickable only while #cvwrap carries .editing. Sits after #cvVec in the DOM, so it
-   paints on top of it. touch-action: none keeps a drag from scrolling the page. */
-#cvEdit { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+/* IC blob editor: an opaque 2D preview over the first card's canvas (and over its
+   arrows), shown and made clickable only while its .cvwrap carries .editing. Sits
+   after .cvvec in the DOM, so it paints on top. touch-action: none keeps a drag
+   from scrolling the page. */
+.cvedit { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
           display: none; background: #000; cursor: crosshair; touch-action: none; }
-#cvwrap.editing #cvEdit { display: block; }
-/* dual view: the second canvas + both captions appear only when #views has .dual.
-   Side by side while there is room (>= 1400px), stacked below it; in either case
-   each canvas may shrink to share the width, keeping its 1:1 aspect ratio. */
-#views { display: flex; gap: 14px; align-items: flex-start; }
-#view2, .viewcap { display: none; }
-#views.dual #view2 { display: block; }
-#views.dual .viewcap { display: block; color: #7a8494; font-size: 11.5px; margin-top: 5px; }
-#views.dual > div { flex: 1 1 0; min-width: 0; }
-#views.dual #cvwrap, #views.dual #cvwrap2 { width: 100%; max-width: 514px; }
-#views.dual #cv, #views.dual #cv2 { width: 100%; max-width: 512px; height: auto; }
-@media (max-width: 1400px) { #views { flex-direction: column; } }
-canvas.chart { display: block; background: #0f1115; border: 1px solid #2b303a; }
-.panel { min-width: 300px; max-width: 980px; }
-.row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.cvwrap.editing .cvedit { display: block; }
+
+canvas.chart { display: block; width: 100%; height: auto; background: #0f1115;
+               border: 1px solid #2b303a; }
+.panel { min-width: 260px; max-width: 980px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 5px 0; }
 .row label { width: auto; color: #9aa5b4; flex: none; }
-.row input[type=range] { flex: none; width: 122px; }
-.row .val { width: 70px; text-align: right; font-variant-numeric: tabular-nums; color: #cfd8e3; }
+.row input[type=range] { flex: 1 1 110px; min-width: 90px; max-width: 160px; }
+.row .val { width: 64px; text-align: right; font-variant-numeric: tabular-nums; color: #cfd8e3; }
 select, input[type=number], button { background: #1d2129; color: #d8dee6;
-    border: 1px solid #333a45; border-radius: 4px; padding: 4px 8px; font: inherit; }
+    border: 1px solid #333a45; border-radius: 4px; padding: 4px 8px; font: inherit;
+    max-width: 100%; }
 button { cursor: pointer; }
 button:hover { background: #262c36; }
 button:disabled { opacity: 0.5; cursor: default; }
 #readout { margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-           font-size: 12px; color: #b8c2d0; white-space: pre; }
+           font-size: 11.5px; color: #b8c2d0; white-space: pre-wrap; }
 #status { margin-top: 10px; padding: 8px 10px; border-radius: 4px; font-size: 12px; display: none; }
 #status.err { display: block; background: #3a1d1d; color: #ffb4b4; border: 1px solid #6b2a2a; }
 #status.info { display: block; background: #1b2430; color: #a9c7e8; border: 1px solid #2c3d52; }
@@ -74,12 +88,21 @@ hr { border: none; border-top: 1px solid #262b34; margin: 16px 0 10px; }
 .hint { color: #7a8494; font-size: 11.5px; margin-top: 6px; }
 a { color: #7aa7d8; } a:hover { color: #a9c7e8; }
 
+/* narrow window (phone / half-screen): one column, cards full width */
+@media (max-width: 700px) {
+  body { padding: 10px 10px 32px; }
+  #display { flex-direction: column; }
+  #displaycol, #charts { width: 100%; flex: none; }
+  .card.disp { flex: 1 1 100%; max-width: none; }
+  .row .val { width: 58px; }
+}
+
 /* ---- landing page ---- */
 .cards { display: flex; flex-wrap: wrap; gap: 16px; margin: 18px 0 6px; }
-.card { display: block; flex: 1 1 320px; max-width: 460px; text-decoration: none;
+.card { display: block; flex: 1 1 300px; max-width: 460px; text-decoration: none;
         background: #181b21; border: 1px solid #252a33; border-radius: 8px;
         padding: 14px 16px; color: #d8dee6; }
-.card:hover { background: #1d2129; border-color: #39404d; color: #d8dee6; }
+a.card:hover { background: #1d2129; border-color: #39404d; color: #d8dee6; }
 .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 6px; color: #a9c7e8; }
 .card p { margin: 0; color: #8a94a3; font-size: 12px; }
 .lead { max-width: 780px; }

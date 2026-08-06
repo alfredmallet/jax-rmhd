@@ -184,18 +184,21 @@ spin-up).
   current / φ / ψ / |u| / |b| to canvas each animation frame (one extra ifft of the
   selected field — two for the vector modes, whose components are u = ẑ×∇φ and
   b = ẑ×∇ψ; render at most once per rAF, stepping multiple times per frame if fast).
-  matplotlib afmhot colormap: signed fields map x = (v/vmax + 1)/2 over a symmetric
-  autoscaled range, the non-negative magnitude modes map x = v/vmax. The two vector
-  modes also overlay a subsampled (≤32×32) arrow field on a transparent 2D canvas,
+  Colormap (matplotlib afmhot by default): signed fields map x = (v/vmax + 1)/2 over a
+  symmetric autoscaled range, the non-negative magnitude modes map x = v/vmax. The two
+  vector modes also overlay a subsampled (≤32×32) arrow field on a transparent 2D canvas,
   gathered on the GPU and read back at ~10 Hz (one frame of lag is fine).
 - Controls: run/pause, reset, resolution (128/256/512), diss, hyper (1/2), eps⁺=eps⁻
   (total power), tau, cfl_safety, cfl_every, seed. Changing resolution/hyper rebuilds;
   sliders take effect live.
 - Status line for WebGPU init failures (no adapter → clear message).
 - Outside this contract (display/IC features, no physics): the Elsasser and σ_c display
-  modes, the dual view, the CPU-built IC presets uploaded through `setICFromReal`
+  modes, the display/chart CARD system (N ≤ 3 display chains, per-card quantity, colormap
+  — afmhot / viridis / RdBu / grayscale, one shared WGSL `cmap(x, which)` — and arrows;
+  addable chart cards), the CPU-built IC presets uploaded through `setICFromReal`
   (including the `custom` gaussian-blob editor, which is CPU-only and paints into the
-  same upload path), and the `?demo=` URL configurations. See README.md.
+  same upload path), and the preset dropdown / `?demo=` URL configurations. See
+  README.md.
 
 ## 8. FFT requirements (the hard part)
 

@@ -134,7 +134,8 @@ spin-up per-step recompute: as in 2D.
   displayed frame is acceptable — it's 1/10th of one step's transforms; alternatively
   ifft only in perp after selecting... no: z is spectral, the full 3D ifft is required
   and fine). All display modes of the 2D app (vorticity, current, phi, psi, |u|+arrows,
-  |b|+arrows — vectors are the PERPENDICULAR components on the slice) carry over, afmhot.
+  |b|+arrows — vectors are the PERPENDICULAR components on the slice) carry over, with the
+  same colormap set.
 - Controls: those of the 2D app, plus: resolution presets `64²×32`, `128²×32`,
   `128²×64` (default), `256²×64` (warn "needs a good GPU" in the hint); z-slice slider;
   `z_diss_k` slider (log10, default `3/kz_c³` with kz_c = (nz/3)·(2π/Lz) — sets the
@@ -147,9 +148,11 @@ spin-up per-step recompute: as in 2D.
 - Outside this contract (display/IC features, no physics): Lz as a UI parameter with the
   added `64²×128` / `64²×256` presets (every kz-derived quantity already reads `p.Lz`),
   the letter-packet IC via `setICFromReal` (and the `custom` gaussian-blob editor, which
-  deposits on the z plane display 1 is showing and uploads through the same path), the
-  per-real-z-plane Elsasser energy reduction that drives the "track z± peak" slice
-  sources, and the `?demo=collision` URL configuration. See README.md.
+  deposits on the z plane the FIRST display card is showing and uploads through the same
+  path), the per-real-z-plane Elsasser energy reduction that drives the per-card
+  "track z± peak" slice sources, the display/chart card system (every chain carries the
+  cube path, so any card may show faces), and the `collision` preset / `?demo=collision`
+  URL configuration. See README.md.
 - Add a small cross-link: 2D page ↔ 3D page (one <a> in each header).
 
 ## 6. Self-test (refvectors3d.json, 16²×8, inlined)
