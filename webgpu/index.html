@@ -24,10 +24,11 @@ are demos, not science runs: WebGPU has no float64.</p>
 <div class="cards">
   <a class="card" href="rmhd2d.html">
     <h2>2D forced RMHD &rarr;</h2>
-    <p>rfft2 spectral in (x,y), 128&sup2;&ndash;512&sup2;. Vorticity / current / potentials /
-      velocity and magnetic field with an arrow overlay, energy trace, shell-binned spectra,
-      cut trace. Long runs show the 2D inverse cascade piling magnetic energy up at the
-      box scale.</p>
+    <p>rfft2 spectral in (x,y), 128&sup2;&ndash;512&sup2; or a wide 4&pi;&times;2&pi; box.
+      Vorticity / current / potentials / velocity and magnetic field with arrow and
+      field-line overlays, energy trace, shell-binned spectra, cut trace. Long runs show
+      the 2D inverse cascade piling magnetic energy up at the box scale; the equilibrium
+      presets show shear-flow roll-up and magnetic reconnection instead.</p>
   </a>
   <a class="card" href="rmhd3d.html">
     <h2>3D forced RMHD, spectral z &rarr;</h2>
@@ -39,10 +40,12 @@ are demos, not science runs: WebGPU has no float64.</p>
 </div>
 
 <p class="lead">Each app has a <b>preset</b> dropdown in its top bar &mdash; decaying A/B
-Elsasser packets in 2D, a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash;
+Elsasser packets, Kelvin&ndash;Helmholtz shear layers and a tearing mode growing magnetic
+islands in 2D, a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash;
 which sets the controls and opens the displays that go with them. Everything stays
 adjustable; presets are configurations, not separate programs
-(<code>?demo=decay</code> / <code>?demo=collision</code> are deep links to the same thing).</p>
+(<code>?demo=decay</code> / <code>?demo=kh</code> / <code>?demo=tearing</code> /
+<code>?demo=collision</code> are deep links to the same thing).</p>
 
 <div class="hint" style="margin-top:14px">
   Needs a WebGPU-capable browser (Chrome/Edge 113+, recent Firefox and Safari). Source,

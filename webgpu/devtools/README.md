@@ -9,14 +9,19 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   evaluating in the page's context. `require("./stubenv")(dir, page, demo)`. Since
   Phase H.0 the control panel is BUILT from a spec, so every tool that needs to see a
   control has to boot the page — hence one stub, three consumers.
-- `dumpwgsl2.js <dir> <page> "" <out.txt>` — emit every generated WGSL kernel to text
-  for byte-diffing against a pre-phase baseline (capture the baseline from clean git
-  HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel.
+- `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
+  kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
+  clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
+  overrides every parameter set (`pm` = eta/nu, `ny`/`Lx`/`Ly` = a rectangular 2D box),
+  which is how a knob's kernel footprint is shown: dump twice, diff the two.
 - `wgslparse.mjs` — parse all emitted kernels with wgsl_reflect (closest available
   compile check; npm i wgsl_reflect first).
 - `bootstub.js <dir> <page> [demo]` — stub-GPU boot of a real app page; exercises
   cards (add/close/reuse/retype), every chart card's option selects with a frame drawn
-  per value, the cut card's own z source, presets, ?demo= links, colormaps, editor view
+  per value, the cut card's own z source, presets, ?demo= links, colormaps, the 3D cube
+  VIEW (five fields × manual / track ζ±, top-face plane, arrow frame, cut card exclusion,
+  add/remove with a cube card live — I2.1-I2.3), the contour overlay (ψ / φ / off × two
+  level counts × slice and cube — I2.4), the editor view
   (enter/paint/save/cancel/save&run), eps± lock, band rebuild, amplitude rescale, and
   the self-test path end to end. Validates dispatch sizes, bind groups, writeBuffer
   extents.
@@ -29,6 +34,17 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   each compared against a direct fp64 inverse DFT, not against itself. Also drives the
   REAL chart series (ENERGY_MODES / SPEC_SETS / CUT_PAIRS) and checks that a 1e6×
   louder E(k∥) does not move the spectrum chart's y axis.
+- `checkj.js [dir]` — GATE J physics checks: the equilibrium ICs built by the REAL app
+  code (booted on the stub) against their analytic profiles, the island-width machinery
+  on an analytic island, per-field nu/eta decay rates, and the tearing / KH linear
+  GROWTH rates from a small fp64 pseudospectral 2D RMHD solver written in the file
+  (plain complex FFTs + RK4, same 2/3 dealias) — compared against `eqlinear.py`, not
+  against itself.
+- `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
+  solve of the linearized RMHD system on Fourier differentiation matrices at
+  k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's
+  REF block quotes (regenerate it there from this output), then eta- and b0-survey
+  tables. `n` = Fourier modes, default 384; 768 reproduces every printed digit.
 - `dup.py` — token-normalized >=10-line clone detector over common.js/physics.js +
   extracted app scripts (the standing-rule duplication audit). Run it over the extracted
   HTML *bodies* too: markup twins are what H.0 was about.

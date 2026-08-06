@@ -14,8 +14,10 @@
 // SHARED (here): every kernel whose only 2D/3D difference is how a flat mode
 // index is decomposed -- prepGrads, bracket, nlAssemble, energyPartial, ou,
 // scale, icFinish -- plus the whole slice display chain (prepDisp, vecMag,
-// vecMagSq, maxSumPartial, sigmaCombine, vecGather, cutPrep, colorize, the
-// blit) and the display-mode predicates the apps and the frame loop branch on.
+// vecMagSq, maxSumPartial, sigmaCombine, vecGather, cutPrep, colorize,
+// contLevel, the blit) and the display-mode predicates the apps and the frame
+// loop branch on. The shading itself (dispX + the contour overlay) is one WGSL
+// fragment, DISP_SHADE_WGSL, so the 3D cube faces shade exactly like a slice.
 // The 3D index convention is m = iz*NMP + mp; every template below
 // derives ITS OWN text for both dimensions from the single flag `C.hasZ`, so
 // the apps hand over sizes, not code. Where a body genuinely restructures
@@ -37,7 +39,9 @@
 //               damping in the linear diagonal, and the m -> (iz, mp) split
 //   wgReal      workgroup size of the real-space kernels (64 in 2D, 256 in 3D)
 //   nDisp       element count of the DISPLAYED buffer: "NR" in 2D (the whole
-//               domain), "NRS" in 3D (one z slice)
+//               domain), "NRS" in 3D (one z slice). The 3D app also instantiates
+//               the elementwise display templates at "NFACE" (the three cube
+//               faces, packed back to back) -- same kernels, other length.
 //   arrow       arrowDims() result for the arrow-overlay subsample
 //   ns          forcing-shell size (NS)
 //   envFn       3D only: the `envelope()` helper, prepended to `scale` (the app
@@ -136,11 +140,30 @@ ${_mpDecl(C)}  let de: f32 = ${_dealias(C)};
 }
 
 // ---------------------------------------------------------------------------
+// per-field dissipation (REFINE_PLAN J.1)
+// ---------------------------------------------------------------------------
+// `C.dissRatio` is eta/nu (inverse magnetic Prandtl number). The linear diagonal stored
+// in gridB.y is NU's (-nu ksq^hyper), so psi's rate is that times the ratio -- one
+// emit-time factor, never a forked kernel. It is a COMPILE-TIME constant on purpose: at
+// the default ratio of 1 every template below emits the pre-J text character for
+// character (the byte-diff gate), and changing the ratio rebuilds the solver exactly as
+// changing the resolution or the forcing band does. 3D never sets it: its 2x2 Alfven
+// propagator needs an equal diagonal, so nu = eta there is a constraint, not a default.
+const _f32lit = v => (v === Math.round(v) ? v.toFixed(1) : String(v));
+const _dissRatio = C => (C.dissRatio && C.dissRatio !== 1 ? C.dissRatio : 0);
+// the em term of the dissipation-rate accumulator, and the psi factor of a linear
+// diagonal read at flat stack index `idx` (idx >= NM is psi)
+const _dissEm = C => (_dissRatio(C) ? `${_f32lit(C.dissRatio)} * em` : "em");
+const _dissLin = (C, expr) => (_dissRatio(C)
+  ? `(${expr} * select(1.0, ${_f32lit(C.dissRatio)}, idx >= NM))` : expr);
+
+// ---------------------------------------------------------------------------
 // energy + dissipation rate (first stage; energyFinal is the generic tail)
 // ---------------------------------------------------------------------------
 // The dissipation rate uses only the DIAGONAL d of the linear operator: in 3D the
 // off-diagonal i*kzd Alfven coupling is energy-conserving, so d picks up the kz^4
-// damping and nothing else.
+// damping and nothing else. With eta != nu (2D only) the magnetic half of the rate
+// carries the ratio -- one substituted factor, see _dissEm above.
 //
 // The FOURTH accumulator lane (REFINE_PLAN H.2) is the cross helicity
 //   H_c = <u.b> = sum ksq_perp * Re(phi conj(psi)) * yfac * INVN2,
@@ -172,7 +195,7 @@ ${dcoefLine}      let phi: vec2<f32> = fields[m];
       let psi: vec2<f32> = fields[NM + m];
       let ek: f32 = A.z * dot(phi, phi) * B.w;
       let em: f32 = A.z * dot(psi, psi) * B.w;
-      acc = acc + vec4<f32>(ek, em, -${dcoef} * (ek + em), A.z * dot(phi, psi) * B.w);
+      acc = acc + vec4<f32>(ek, em, -${dcoef} * (ek + ${_dissEm(C)}), A.z * dot(phi, psi) * B.w);
     }
     m = m + 256u;
   }
@@ -325,6 +348,10 @@ ${body}
 const DISP_VEC0 = 4;        // first vector-magnitude mode
 const DISP_ZMINUS = 7;      // z- vector: also the pinned mode of the sigma_c 2nd half
 const DISP_SIGMA = 8;       // sigma_c
+// the two POTENTIALS, as display modes: the contour overlay (REFINE_PLAN I2.4) prepares
+// one of them through the same prepDisp kernel, so its selector value IS its mode.
+const DISP_PHI = 2;         // phi -> streamlines
+const DISP_PSI = 3;         // psi -> B_perp field lines
 const dispIsVector = m => m >= DISP_VEC0 && m <= DISP_ZMINUS;  // magnitude + arrows
 const dispIsSigma = m => m === DISP_SIGMA;
 // (the colour range is decided in the colorize kernel, which branches on the mode
@@ -581,6 +608,67 @@ fn cmap(x: f32, which: u32) -> vec3<f32> {
                    clamp(2.0 * t - 1.0, 0.0, 1.0));
 }`;
 
+// ---------------------------------------------------------------------------
+// display shading: value -> colour, and the contour overlay. ONE implementation
+// ---------------------------------------------------------------------------
+// Every displayed texel goes through the same two steps whether it lands in the z-slice
+// texture (colorize, below) or on a cube face (the 3D app's colorizeCube), so both live
+// here and neither kernel carries a copy. The two bindings they must declare for the
+// overlay are `cp` (the potential on the SAME plane as the texel) and `cd` (the level
+// table [range, delta, nlev, -]).
+//
+// dispX: signed fields (modes 0..3) are symmetric about the autoscale
+// (imshow(..., vmin=-s, vmax=+s)); magnitude modes (4..7) are already non-negative and
+// map straight onto [0,1]; sigma_c is signed on a FIXED +-1 range and ignores the
+// autoscale entirely.
+//
+// contInk: in-plane field lines (REFINE_PLAN I2.4) -- psi contours are the B_perp field
+// lines, phi contours the streamlines. A texel is on a contour when the level index
+// floor(pot/delta) differs from that of its +x or +y neighbour (both periodic): a
+// two-neighbour crossing test, so no derivatives and no fwidth -- this is a compute
+// shader. delta is UNIFORM, so line density goes as |grad pot| = |B_perp| (or |u_perp|),
+// which is the physically honest picture; delta <= 0 means the overlay is off. The ink is
+// black over a light background and white over a dark one, so the lines stay visible in
+// every colormap.
+const DISP_SHADE_WGSL = `
+fn dispX(raw: f32, s: f32, mode: u32) -> f32 {
+  if (mode == ${DISP_SIGMA}u) { return 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
+  let v: f32 = raw / max(s, 1e-30);
+  if (mode >= ${DISP_VEC0}u) { return v; }
+  return 0.5 * (clamp(v, -1.0, 1.0) + 1.0);
+}
+fn contInk(col: vec3<f32>, ix: u32, iy: u32) -> vec3<f32> {
+  let dl: f32 = cd[1];
+  if (!(dl > 0.0)) { return col; }
+  let n0: f32 = floor(cp[ix * NY + iy] / dl);
+  let nu: f32 = floor(cp[((ix + 1u) % NX) * NY + iy] / dl);
+  let nv: f32 = floor(cp[ix * NY + ((iy + 1u) % NY)] / dl);
+  if (n0 == nu && n0 == nv) { return col; }
+  let lum: f32 = dot(col, vec3<f32>(0.299, 0.587, 0.114));
+  return mix(col, select(vec3<f32>(1.0), vec3<f32>(0.0), lum > 0.5), 0.8);
+}`;
+
+// the contour level table, one thread: max |pot| over the displayed plane -> a slowly
+// adapting range -> the uniform spacing delta = 2*range/nlev. Adapting on the GPU (rather
+// than reading the max back) keeps the overlay off the CPU frame path entirely; the range
+// rises at once and falls by 5% of the gap per frame, so the lines do not flicker as the
+// plane's extremum wanders. st = [range, delta, nlev (written by the CPU), unused], and
+// delta = 0 is what turns contInk off.
+const CONT_RELAX = 0.05;
+function contLevelWGSL(C) {
+  return C.pre + `
+@group(0) @binding(0) var<storage, read> mx: array<f32>;
+@group(0) @binding(1) var<storage, read_write> st: array<f32>;
+@compute @workgroup_size(1)
+fn main() {
+  let m: f32 = mx[0];
+  var r: f32 = st[0];
+  if (!(r > 0.0) || m > r) { r = m; } else { r = r + ${CONT_RELAX} * (m - r); }
+  st[0] = r;
+  st[1] = 2.0 * r / max(st[2], 1.0);
+}`;
+}
+
 // colorize the displayed slice into the render texture
 function colorizeWGSL(C) {
   return C.pre + `
@@ -589,20 +677,16 @@ ${MODE_STRUCT}
 @group(0) @binding(1) var<storage, read> mx: array<f32>;
 @group(0) @binding(2) var tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var<uniform> md: Mode;
+@group(0) @binding(4) var<storage, read> cp: array<f32>;
+@group(0) @binding(5) var<storage, read> cd: array<f32>;
 ${CMAP_WGSL}
+${DISP_SHADE_WGSL}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= NX || gid.y >= NY) { return; }
-  let raw: f32 = f[gid.x * NY + gid.y];
-  let v: f32 = raw / max(mx[0], 1e-30);
-  // signed fields: vmin=-vmax, vmax=+vmax (imshow(..., cmap="afmhot", vmin=-s, vmax=s));
-  // magnitude modes are already non-negative and map straight onto [0,1];
-  // sigma_c is signed on a FIXED +-1 range, so it skips the autoscale entirely.
-  var x: f32;
-  if (md.mode == ${DISP_SIGMA}u) { x = 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
-  else if (md.mode >= ${DISP_VEC0}u) { x = v; }
-  else { x = 0.5 * (clamp(v, -1.0, 1.0) + 1.0); }
-  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(x, md.cmap), 1.0));
+  let x: f32 = dispX(f[gid.x * NY + gid.y], mx[0], md.mode);
+  let col: vec3<f32> = contInk(cmap(x, md.cmap), gid.x, gid.y);
+  textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(col, 1.0));
 }`;
 }
 

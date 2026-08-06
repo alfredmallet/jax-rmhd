@@ -173,6 +173,17 @@ class Parameters():
         self.comm=_NullComm() if self.comm_backend=="serial" else MPI.COMM_WORLD
         self.rank=self.comm.Get_rank()
         self.size=self.comm.Get_size()
+        if self.size > 1:
+            # All ranks must read the same RMHD_PRECISION, or halo exchanges and
+            # allreduces mix float32/float64 buffers and fail far from the cause
+            # (PRECISION_PLAN "Risks"). One host-side collective is fine here:
+            # Parameters construction is already collective under MPI.
+            precs = self.comm.allgather(_precision.precision)
+            if len(set(precs)) != 1:
+                raise RuntimeError(
+                    f"RMHD_PRECISION differs across ranks: rank {self.rank} sees "
+                    f"{_precision.precision!r}, gathered {precs!r} — export the same "
+                    "RMHD_PRECISION in every rank's environment")
         if self.comm_backend=="jax" and self.spatial_dimensions!=3:
             raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
         if self.spatial_dimensions==3:

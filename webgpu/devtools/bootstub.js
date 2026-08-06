@@ -19,7 +19,11 @@ const frame = () => run(`async function(){
     if (c.type() === "energy") c.draw(null);
     else if (c.type() === "spectrum") { const sp = await solver.readSpectrum();
       c.draw({ perp: sp.perp, nb: solver.nb, fshell: solver.p.fshell, par: sp.par, parKfac: sp.parKfac }); }
-    else { c.draw({ vals: await solver.readCutLine(cards.cfg.zsliceOf(c)), Ly: solver.p.Ly }); }
+    else {
+      const vals = await solver.readCutLine(cards.cfg.zsliceOf(c));
+      if (c.type() === "island") islandPush(solver.nsteps * 1e-3, vals, solver.p.ny, solver.p.Ly);
+      c.draw({ vals: vals, Ly: solver.p.Ly });
+    }
   }
   for (const d of cards.disp) {
     if (!d.showArrows()) { d.clearArrows(); continue; }
@@ -29,7 +33,9 @@ const frame = () => run(`async function(){
 const state = () => run(`function(){
   return { chains: solver.disp.filter(Boolean).length,
            disp: cards.disp.map(d => ({ ci: d.ci, sel: d.sel(), cmap: d.cmap(), zsrc: d.zsrc(),
+                                        view: d.selZSrc ? d.selZSrc.value : "-",
                                         mode: solver.modeOf(d.ci), cube: solver.cubeOf(d.ci),
+                                        cont: d.cont(), nlev: d.nlev(),
                                         zslice: solver.zsliceOf(d.ci), cap: d.cap.innerHTML,
                                         arrows: d.showArrows() })),
            charts: cards.chart.map(c => c.type()),
@@ -108,15 +114,78 @@ setTimeout(async () => {
                                                                     cards.disp[0].apply(); } }`);
     await frame();
 
-    // --- cube modes (3D only): every card may show faces ----------------------
+    // --- cube faces as a VIEW (3D only, REFINE_PLAN I2.1-I2.3) ----------------
+    // any field renders as a cube, with the top face on the card's own plane (manual
+    // slider or tracker) and -- on the vector modes -- arrows on that top face.
     if (page.indexOf("3d") >= 0) {
-      run(`function(){ cards.disp[1].selField.value = String(CUBE_SEL0); cards.disp[1].apply(); }`);
+      for (const [fld, view] of [["0", "cube"], ["3", "cubezp"], ["6", "cubezm"],
+                                 ["8", "cube"], ["4", "cube"]]) {
+        run(`function(f, v){ const c = cards.disp[1];
+                             c.selField.value = f; c.selZSrc.value = v; c.apply(); }`, fld, view);
+        st = state();
+        const D = st.disp[1];
+        if (!D.cube) fail("field " + fld + " / " + view + " did not enter the cube view");
+        if (D.mode !== parseInt(fld, 10)) fail("the cube view changed the field: " + JSON.stringify(D));
+        if (D.cap.indexOf("cube faces") < 0) fail("cube caption missing: " + D.cap);
+        if (fld === "4" && !D.arrows) fail("arrows are not offered on the cube top face");
+        await frame();
+      }
+      // the top plane follows the slider in manual mode, and a tracker otherwise
+      run(`function(){ const c = cards.disp[1]; c.selField.value = "0";
+                       c.selZSrc.value = "cube"; c.rSlice.value = "3"; c.apply(); }`);
       st = state();
-      if (!st.disp[1].cube) fail("a non-first card could not enter cube-face mode");
+      if (st.disp[1].zslice !== 3 || st.disp[1].cap.indexOf("top iz 3") < 0)
+        fail("the cube top face did not follow the manual slider: " + JSON.stringify(st.disp[1]));
+      if (run("function(){ return cards.disp[1].rSlice.disabled; }"))
+        fail("the cube view disabled its own plane slider");
+      run(`function(){ const c = cards.disp[1]; c.selZSrc.value = "cubezp"; c.apply(); }`);
+      if (!run("function(){ return trackingOn() && cards.disp[1].rSlice.disabled; }"))
+        fail("cube + track did not hand the plane to the tracker");
+      console.log(tag + " cube view: 5 fields x {manual, track z+, track z-} " +
+                  JSON.stringify(state().disp[1]));
+      // the arrow overlay's cube frame is the projection of the top face itself
+      const fr = run("function(){ return cards.disp[1].arrowFrame() || null; }");
+      if (!fr || !isFinite(fr.ax + fr.by + fr.ox) || Math.abs(fr.ay) < 1e-6)
+        fail("the cube arrow frame is not a sheared projection: " + JSON.stringify(fr));
+      // ... and the cut chart must NOT offer the view at all
+      if (run(`function(){ const c = cards.chart.filter(x => x.type() === "cut")[0];
+                           return !c || c.selZSrc.options.some(o => o.value.indexOf("cube") === 0); }`))
+        fail("the cut card offers the cube view");
+      // card add/remove with a cube card live (the card count is at the cap here, so
+      // free a slot first and hand it back afterwards)
+      run(`function(){ cardClose(cards.disp[cards.disp.length - 1]);
+                       addDisplayCard({ sel: 1, zsrc: "cube" }); cardsSync(); }`);
+      st = state();
+      if (!st.disp[st.disp.length - 1].cube) fail("a re-added card did not restore the cube view");
       await frame();
-      run(`function(){ cards.disp[1].selField.value = "7"; cards.disp[1].apply();
-                       cards.disp[1].selZSrc.value = "zm"; cards.disp[1].apply(); }`);
+      run(`function(){ cardClose(cards.disp[cards.disp.length - 1]);
+                       addDisplayCard({ sel: 4 }); cardsSync(); }`);
       await frame();
+      run(`function(){ cards.disp[1].selZSrc.value = "manual"; cards.disp[1].apply(); }`);
+      await frame();
+    }
+
+    // --- contour overlay (both apps, REFINE_PLAN I2.4) ------------------------
+    // psi / phi contours at two level counts, on a slice card and (3D) a cube card
+    {
+      const views = page.indexOf("3d") >= 0 ? ["manual", "cube"] : [null];
+      for (const v of views) {
+        for (const cont of ["3", "2", "0"]) {
+          for (const nl of ["8", "32"]) {
+            run(`function(v, c, n){ const d = cards.disp[0];
+              if (v && d.selZSrc) d.selZSrc.value = v;
+              d.selCont.value = c; d.selLev.value = n; d.apply(); }`, v, cont, nl);
+            const d0 = state().disp[0];
+            if (d0.cont !== parseInt(cont, 10)) fail("contour selection did not take");
+            const shown = run("function(){ return cards.disp[0].selLev.style.display; }");
+            if ((cont === "0") !== (shown === "none"))
+              fail("the level select is not tied to the contour toggle: " + cont + " / " + shown);
+            await frame();
+          }
+        }
+      }
+      console.log(tag + " contours: {psi, phi, off} x {8, 32} levels" +
+                  (views.length > 1 ? " x {slice, cube}" : "") + " OK");
     }
 
     // --- close: every chart card, then EVERY display but the last -------------
@@ -152,6 +221,86 @@ setTimeout(async () => {
       console.log(tag + " preset " + k + ": " + JSON.stringify({ disp: s2.disp.map(d => d.sel + "/" + d.zsrc),
         charts: s2.charts, nx: s2.nx, nz: s2.nz, ic: s2.ic, eps: s2.eps, hint: s2.hint }));
       await frame(); await frame();
+    }
+
+    // --- Phase J: rectangular boxes, equilibria, island card, hyper lock -------
+    // 2D only; the 3D app is square-perp by construction and offers none of this.
+    if (page.indexOf("3d") < 0) {
+      const geom = () => run(`function(){
+        const d = cards.disp[0], f = d.arrowFrame();
+        return { nx: solver.p.nx, ny: solver.p.ny, Lx: solver.p.Lx, Ly: solver.p.Ly,
+                 nb: solver.nb, gw: d.gw, gh: d.gh, ar: d.wrap.style.aspectRatio || "",
+                 cw: d.cv.width, ch: d.cv.height, vw: d.vcx.__w, vh: d.vcx.__h,
+                 fr: f && [f.ax, f.by, f.d.ax, f.d.by],
+                 hyper: document.getElementById("selHyper").value,
+                 hyperLock: document.getElementById("selHyper").disabled,
+                 pm: solver.p.pm };
+      }`);
+      for (const k of ["tearing", "kh"]) {
+        run(`function(k){ const s = document.getElementById("selPreset"); s.value = k; s.onchange(); }`, k);
+        const g = geom();
+        if (g.nx !== 512 || g.ny !== 128) fail(k + ": expected a 512x128 grid, got " + g.nx + "x" + g.ny);
+        if (Math.abs(g.Lx / g.Ly - 2) > 1e-12) fail(k + ": expected Lx/Ly = 2, got " + g.Lx / g.Ly);
+        if (g.nb !== 85) fail(k + ": expected 85 shell bins on the wide box, got " + g.nb);
+        // aspect-correct card: equal pixels per unit LENGTH, so 2:1 here
+        if (g.gw !== 512 || g.gh !== 256) fail(k + ": card geometry " + g.gw + "x" + g.gh + " is not aspect-correct");
+        if (g.ar !== "512 / 256") fail(k + ": wrapper aspect-ratio not set: '" + g.ar + "'");
+        if (g.cw !== 512 || g.ch !== 256 || g.vw !== 512 || g.vh !== 256)
+          fail(k + ": canvases did not follow the card geometry: " + JSON.stringify(g));
+        // the arrow frame: rectangular anchors, ISOTROPIC directions
+        if (!g.fr || g.fr[0] !== 512 || g.fr[1] !== 256 || g.fr[2] !== g.fr[3])
+          fail(k + ": arrow frame is not {rect anchors, isotropic directions}: " + JSON.stringify(g.fr));
+        // hyper is LOCKED to 1 by these presets, in the UI and in the solver
+        if (g.hyper !== "1" || !g.hyperLock) fail(k + ": hyper is not locked to 1: " + JSON.stringify(g));
+        if (run("function(){ return solver.p.hyper; }") !== 1) fail(k + ": the solver kept a hyper != 1");
+        await frame();
+        // add / close a display card on the rectangular grid
+        run(`function(){ addDisplayCard({ sel: 5 }); cardsSync(); }`);
+        if (state().disp.length !== 2) fail(k + ": could not add a card on a rectangular grid");
+        const g2 = run("function(){ const d = cards.disp[1]; return [d.gw, d.gh]; }");
+        if (g2[0] !== 512 || g2[1] !== 256) fail(k + ": a new card is not aspect-correct: " + JSON.stringify(g2));
+        await frame();
+        run(`function(){ cardClose(cards.disp[1]); }`);
+        await frame();
+        console.log(tag + " " + k + ": " + JSON.stringify(g));
+      }
+      // the island card: add, feed it real cut readbacks, close
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "tearing"; s.onchange();
+                       addChartCard("island"); cardsSync(); }`);
+      await frame(); await frame();
+      const isl = run(`function(){ return { n: islandHist.t.length, w: islandHist.w.slice(-1)[0],
+                                            eq: icEq.on, curv: icEq.curv, w0: icEq.w0, a: icEq.a }; }`);
+      if (!isl.eq || !(isl.curv > 0)) fail("the tearing preset left no equilibrium record: " + JSON.stringify(isl));
+      if (!(isl.n >= 1) || !isFinite(isl.w)) fail("the island card collected no W(t): " + JSON.stringify(isl));
+      console.log(tag + " island card: " + JSON.stringify(isl));
+      run(`function(){ let c; while ((c = cards.chart.filter(x => x.type() === "island")[0])) cardClose(c); }`);
+      if (run(`function(){ return cards.chart.some(c => c.type() === "island"); }`))
+        fail("the island card would not close");
+      // ... and it must not be offered at all in 3D (checked from this side by its absence
+      // from chartTypeKeys when cfg.zslice is on -- see the 3D run's own assertion below)
+      if (run(`function(){ return chartTypeKeys().indexOf("island") < 0; }`))
+        fail("the 2D page does not offer the island chart");
+      // eta/nu: a rebuild knob, and it must reach BOTH the solver and the stage kernel
+      run(`function(){ const e = document.getElementById("nPm"); e.value = "4"; e.onchange(); }`);
+      if (run("function(){ return solver.p.pm; }") !== 4) fail("the eta/nu ratio did not reach the solver");
+      const wg = run(`function(){ const S = buildShaders(solver.g);
+                                  return [S.stage, S.energyPartial].join("\\n"); }`);
+      if (wg.indexOf("select(1.0, 4.0, idx >= NM)") < 0 || wg.indexOf("4.0 * em") < 0)
+        fail("the eta/nu ratio is not in the emitted stage / energyPartial WGSL");
+      run(`function(){ const e = document.getElementById("nPm"); e.value = "1"; e.onchange(); }`);
+      const wg1 = run(`function(){ const S = buildShaders(solver.g);
+                                   return [S.stage, S.energyPartial].join("\\n"); }`);
+      if (wg1.indexOf("select(1.0,") >= 0 || wg1.indexOf("* em") >= 0 ||
+          wg1.indexOf("gridB[m].y * dt") < 0 || wg1.indexOf("(ek + em)") < 0)
+        fail("ratio 1 did not restore the scalar-dissipation kernel text");
+      console.log(tag + " eta/nu ratio: solver + WGSL round trip OK");
+      // hyper is free again once a non-equilibrium preset is chosen
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "forced"; s.onchange(); }`);
+      if (run(`function(){ return document.getElementById("selHyper").disabled; }`))
+        fail("hyper stayed locked after leaving the equilibrium preset");
+      await frame();
+    } else if (run(`function(){ return chartTypeKeys().indexOf("island") >= 0; }`)) {
+      fail("the 3D page offers the 2D-only island chart");
     }
 
     // --- eps+- and the forcing band (Phase G.5) --------------------------------

@@ -606,23 +606,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // The three visible boundary slices of the real-space volume, packed back to back
   // into one buffer so a single autoscale reduction covers all of them (the notebook
   // colours all three faces with ONE symmetric vscale):
-  //   face 0 "top"  z = NZ-1, indices (ix,iy), NX*NY values at offset 0
+  //   face 0 "top"  z = md.zslice, indices (ix,iy), NX*NY values at offset 0
   //   face 1 "side" x = NX-1, indices (iz,iy), NZ*NY values at offset OFF1
   //   face 2 "side" y = NY-1, indices (iz,ix), NZ*NX values at offset OFF2
+  // The top face is the card's OWN plane (REFINE_PLAN I2.2), so a cube card that tracks
+  // a packet puts the collision front on top; the sides stay boundary slices.
   const off1 = nrs, off2 = nrs + nz * ny, nface = nrs + nz * ny + nz * nx;
   const faceConsts = `
 const OFF1: u32 = ${off1}u;
 const OFF2: u32 = ${off2}u;
 const NFACE: u32 = ${nface}u;`;
   S.faceExtract = pre + faceConsts + `
+${MODE_STRUCT}
 @group(0) @binding(0) var<storage, read> f: array<f32>;
 @group(0) @binding(1) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(2) var<uniform> md: Mode;
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i: u32 = gid.x;
   if (i >= NFACE) { return; }
   if (i < OFF1) {
-    dst[i] = f[(NZ - 1u) * NRS + i];
+    dst[i] = f[min(md.zslice, NZ - 1u) * NRS + i];
   } else if (i < OFF2) {
     let k: u32 = i - OFF1;
     dst[i] = f[((k / NY) * NX + (NX - 1u)) * NY + (k % NY)];
@@ -632,8 +636,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }`;
   // colorize each face into its own texture, all three sharing the one autoscale and
-  // the card's colormap (the same shared cmap() the slice path uses -- physics.js).
-  // Cube modes are signed scalars only, so the mapping is the symmetric +-max one.
+  // the card's colormap. The shading is the SHARED one (physics.js dispX + cmap), so a
+  // cube renders any field the slice view can -- signed scalars symmetric about the
+  // autoscale, magnitudes straight onto [0,1], sigma_c on its fixed +-1 range
+  // (REFINE_PLAN I2.1). Contours are drawn on the TOP face only: it is the one face
+  // whose in-plane potential the display chain already has (I2.4).
   S.colorizeCube = pre + faceConsts + `
 ${MODE_STRUCT}
 @group(0) @binding(0) var<storage, read> f: array<f32>;
@@ -642,24 +649,36 @@ ${MODE_STRUCT}
 @group(0) @binding(3) var texX: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var texY: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var<uniform> md: Mode;
+@group(0) @binding(6) var<storage, read> cp: array<f32>;
+@group(0) @binding(7) var<storage, read> cd: array<f32>;
 ${CMAP_WGSL}
-fn sgn(v: f32) -> f32 { return 0.5 * (clamp(v, -1.0, 1.0) + 1.0); }
+${DISP_SHADE_WGSL}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let s: f32 = max(mx[0], 1e-30);
+  let s: f32 = mx[0];
   if (gid.x < NX && gid.y < NY) {
-    let v: f32 = f[gid.x * NY + gid.y] / s;
-    textureStore(texZ, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(sgn(v), md.cmap), 1.0));
+    let c: vec3<f32> = cmap(dispX(f[gid.x * NY + gid.y], s, md.mode), md.cmap);
+    textureStore(texZ, vec2<i32>(i32(gid.x), i32(gid.y)),
+                 vec4<f32>(contInk(c, gid.x, gid.y), 1.0));
   }
   if (gid.x < NZ && gid.y < NY) {
-    let v: f32 = f[OFF1 + gid.x * NY + gid.y] / s;
-    textureStore(texX, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(sgn(v), md.cmap), 1.0));
+    let c: vec3<f32> = cmap(dispX(f[OFF1 + gid.x * NY + gid.y], s, md.mode), md.cmap);
+    textureStore(texX, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(c, 1.0));
   }
   if (gid.x < NZ && gid.y < NX) {
-    let v: f32 = f[OFF2 + gid.x * NX + gid.y] / s;
-    textureStore(texY, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(cmap(sgn(v), md.cmap), 1.0));
+    let c: vec3<f32> = cmap(dispX(f[OFF2 + gid.x * NX + gid.y], s, md.mode), md.cmap);
+    textureStore(texY, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(c, 1.0));
   }
 }`;
+  // the face-sized instances of the display templates: the cube runs the SAME mode work
+  // as a slice (vector magnitude, |z+-|^2, the sigma_c floor and ratio) on the three
+  // packed faces instead of on one plane -- same kernels, other length, so there is one
+  // implementation of each and _dispPass drives both targets (REFINE_PLAN I2.1).
+  const CF = Object.assign({}, C, { pre: pre + faceConsts, nDisp: "NFACE" });
+  S.vecMagFace = vecMagWGSL(CF);
+  S.vecMagSqFace = vecMagSqWGSL(CF);
+  S.maxSumPartialFace = maxSumPartialWGSL(CF);
+  S.sigmaCombineFace = sigmaCombineWGSL(CF);
   S.maxPartialFace = maxPartialWGSL(pre, `${nface}u`);
   S.maxFinalFace = maxFinalWGSL(pre, Math.ceil(nface / 1024));
   // three affine quads, one draw call, 3 instances. The corner positions (already in
@@ -708,6 +727,9 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
   S.vecGather = vecGatherWGSL(C);
   S.cutPrep = cutPrepWGSL(C);
   S.colorize = colorizeWGSL(C);
+  // the contour overlay's level table (physics.js); the potential plane itself rides the
+  // display chain's own kernels, only its adapting level spacing needs one of its own
+  S.contLevel = contLevelWGSL(C);
   S.render = RENDER_WGSL;
   // sigma_c extras: |z+-|^2 on the slice, the floor's max reduction, and the ratio
   S.vecMagSq = vecMagSqWGSL(C);
@@ -733,9 +755,8 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
 //   face 1 (x = L, "side"): u -> box z (iz), v -> box y (iy)
 //   face 2 (y = L, "side"): u -> box z (iz), v -> box x (ix)
 // ---------------------------------------------------------------------------
-// the "show" selector's cube-face options start here (below it are the slice modes
-// physics.js defines, 0..8)
-const CUBE_SEL0 = 10;
+// Cube faces are a VIEW of whatever field the card selects (REFINE_PLAN I2.1), chosen in
+// the card's z-source select -- there are no cube entries in the field list any more.
 const CUBE_SHADE = [1.0, 0.85, 0.7];
 function cubeQuads() {
   const az = Math.PI / 4, ev = Math.PI / 6;
@@ -762,6 +783,19 @@ function cubeQuads() {
     out[o + 8] = CUBE_SHADE[k];
   }
   return out;
+}
+// The top face's map from face texture coordinates -- u along ix, v along iy, exactly
+// what colorizeCube wrote into texZ -- to the arrow overlay's canvas, for the arrows a
+// cube card draws on its visible top face (REFINE_PLAN I2.3). The face is an affine
+// parallelogram, so its origin and two edge vectors are all drawArrows needs, and they
+// come out of the SAME cubeQuads array the render pass is fed: one projection, not two.
+// Clip space (x right, y up) -> canvas (x right, y down) over the square overlay.
+function cubeTopXform() {
+  const q = cubeQuads(), S = VEC_SIZE;
+  const px = i => [(q[i] + 1) * 0.5 * S, (1 - q[i + 1]) * 0.5 * S];
+  const o = px(0), a = px(2), b = px(4);      // p00, p10 (u edge), p01 (v edge)
+  return { ox: o[0], oy: o[1], ax: a[0] - o[0], ay: a[1] - o[1],
+           bx: b[0] - o[0], by: b[1] - o[1] };
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +917,12 @@ class Solver {
       vecMag: cp(S.vecMag, "vecMag"), vecGather: cp(S.vecGather, "vecGather"),
       cutPrep: cp(S.cutPrep, "cutPrep"), vecMagSq: cp(S.vecMagSq, "vecMagSq"),
       maxSumPartial: cp(S.maxSumPartial, "maxSumPartial"),
-      sigmaCombine: cp(S.sigmaCombine, "sigmaCombine")
+      sigmaCombine: cp(S.sigmaCombine, "sigmaCombine"),
+      // the face-sized instances of the same four templates (the cube target)
+      vecMagFace: cp(S.vecMagFace, "vecMagFace"), vecMagSqFace: cp(S.vecMagSqFace, "vecMagSqFace"),
+      maxSumPartialFace: cp(S.maxSumPartialFace, "maxSumPartialFace"),
+      sigmaCombineFace: cp(S.sigmaCombineFace, "sigmaCombineFace"),
+      contLevel: cp(S.contLevel, "contLevel")
     };
     const rmod = mod(S.render, "render");
     this.plRender = d.createRenderPipeline({
@@ -961,6 +1000,17 @@ class Solver {
   // then magSqA collapses (sliceA, sliceB) -> sliceA = |z+|^2 and magSqB collapses
   // (sliceB, sliceC) -> sliceB = |z-|^2. Dispatches inside one compute pass are
   // ordered, so the reuse is safe.
+  //
+  // The cube view is the SAME mode work on a different TARGET (REFINE_PLAN I2.1): the
+  // three packed boundary faces, facesA/B/C, extracted by faceExtract instead of
+  // sliceExtract and collapsed by the face-sized instances of the same templates. Both
+  // targets are described by the `tg` entries below and driven by one _dispPass.
+  //
+  // The contour overlay (I2.4) extends the reuse discipline instead of allocating: it
+  // runs LAST in the frame, when dispK2 / dispR2 / sliceB are dead in every mode, so
+  // the potential plane lands in sliceB -- which is both what colorize reads and, since
+  // the top face IS that plane, what the cube's top face reads. Its only new state is
+  // the tiny level table (contMx, contB).
   _makeChain() {
     const d = this.device, nm = this.g.nm, nr = this.nr, nrs = this.nrs, cx = nm * 8;
     const B = {
@@ -975,17 +1025,26 @@ class Solver {
       sliceC: d.createBuffer({ size: nrs * 4, usage: SQ }),
       maxPart: d.createBuffer({ size: this.nPartS * 4, usage: SQ }),
       maxVal: d.createBuffer({ size: 4, usage: SQ }),
-      // per-card arrow gather (8 kB) and cube-face path
+      // per-card arrow gather (8 kB) and cube-face path (facesA/B/C mirror sliceA/B/C:
+      // ~1.5 * nrs floats each, a rounding error next to the nz * nrs volumes)
       arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
       maxPartF: d.createBuffer({ size: this.nPartF * 4, usage: SQ }),
-      faces: d.createBuffer({ size: this.nface * 4, usage: SQ }),
+      facesA: d.createBuffer({ size: this.nface * 4, usage: SQ }),
+      facesB: d.createBuffer({ size: this.nface * 4, usage: SQ }),
+      facesC: d.createBuffer({ size: this.nface * 4, usage: SQ }),
+      // contour overlay: the plane's max, and [range, delta, nlev, -] (contLevel owns
+      // range/delta, the CPU owns nlev -- and delta = 0 is how the overlay is switched off)
+      contMx: d.createBuffer({ size: 4, usage: SQ }),
+      contB: d.createBuffer({ size: 16, usage: SQ }),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the z- vector: the second half of the sigma_c chain. Only its `mode`
       // field is ever read (by prepDisp): sliceExtract runs off the chain's main Mode
       // uniform for BOTH halves, so modeM.zslice is dead weight. setDisplayMode keeps it
       // in step with the main uniform anyway, so the two never disagree if some future
       // kernel does start reading it.
-      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // pinned to the contour overlay's potential (phi or psi), same plane
+      modeC: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     };
     const ftex = (w, h) => d.createTexture({
       size: [w, h], format: "rgba8unorm",
@@ -1026,7 +1085,9 @@ class Solver {
         entries: [{ binding: 0, resource: { buffer: B.sliceA } },
                   { binding: 1, resource: { buffer: B.maxVal } },
                   { binding: 2, resource: tex.createView() },
-                  { binding: 3, resource: { buffer: B.mode } }]
+                  { binding: 3, resource: { buffer: B.mode } },
+                  { binding: 4, resource: { buffer: B.sliceB } },
+                  { binding: 5, resource: { buffer: B.contB } }]
       }),
       render: d.createBindGroup({
         layout: this.plRender.getBindGroupLayout(0),
@@ -1034,19 +1095,36 @@ class Solver {
                   { binding: 1, resource: tex.createView() }]
       }),
       vecGather: bgOf(this.pl.vecGather, [B.sliceA, B.sliceB, B.arrows]),
-      // cube path: the three boundary faces of THIS chain's volume, their own
-      // autoscale, and their own three face textures
-      faceDisp: bgOf(this.pl.faceExtract, [B.dispR, B.faces]),
-      maxPartialFace: bgOf(this.pl.maxPartialFace, [B.faces, B.maxPartF]),
+      // cube target: the three boundary faces of THIS chain's volume (the top one being
+      // the card's own plane), their own autoscale, and their own three face textures
+      faceDisp: bgOf(this.pl.faceExtract, [B.dispR, B.facesA, B.mode]),
+      faceDisp2: bgOf(this.pl.faceExtract, [B.dispR2, B.facesB, B.mode]),
+      faceDispH1: bgOf(this.pl.faceExtract, [B.dispR, B.facesB, B.mode]),
+      faceDisp2H1: bgOf(this.pl.faceExtract, [B.dispR2, B.facesC, B.mode]),
+      vecMagFace: bgOf(this.pl.vecMagFace, [B.facesA, B.facesB]),
+      magSqFA: bgOf(this.pl.vecMagSqFace, [B.facesA, B.facesB]),
+      magSqFB: bgOf(this.pl.vecMagSqFace, [B.facesB, B.facesC]),
+      maxSumPartialFace: bgOf(this.pl.maxSumPartialFace, [B.facesA, B.facesB, B.maxPartF]),
+      sigmaCombineFace: bgOf(this.pl.sigmaCombineFace, [B.facesA, B.facesB, B.maxVal]),
+      maxPartialFace: bgOf(this.pl.maxPartialFace, [B.facesA, B.maxPartF]),
       maxFinalFace: bgOf(this.pl.maxFinalFace, [B.maxPartF, B.maxVal]),
+      // contour prep: the potential through the SAME prepDisp + inverse transform + slice
+      // extraction the display modes use (its own Mode uniform, the first component's
+      // dead k scratch as the throwaway outk2), then the shared max into its level table
+      prepDispC: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeC, B.dispK]),
+      maxPartialCont: bgOf(this.pl.maxPartial, [B.sliceB, B.maxPart]),
+      maxFinalCont: bgOf(this.pl.maxFinal, [B.maxPart, B.contMx]),
+      contLevel: bgOf(this.pl.contLevel, [B.contMx, B.contB]),
       colorizeCube: d.createBindGroup({
         layout: this.pl.colorizeCube.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: B.faces } },
+        entries: [{ binding: 0, resource: { buffer: B.facesA } },
                   { binding: 1, resource: { buffer: B.maxVal } },
                   { binding: 2, resource: texZ.createView() },
                   { binding: 3, resource: texX.createView() },
                   { binding: 4, resource: texY.createView() },
-                  { binding: 5, resource: { buffer: B.mode } }]
+                  { binding: 5, resource: { buffer: B.mode } },
+                  { binding: 6, resource: { buffer: B.sliceB } },
+                  { binding: 7, resource: { buffer: B.contB } }]
       }),
       renderCube: d.createBindGroup({
         layout: this.plCube.getBindGroupLayout(0),
@@ -1057,7 +1135,31 @@ class Solver {
                   { binding: 4, resource: { buffer: P.cubeU } }]
       })
     };
-    return { mode: 0, cube: 0, zslice: 0, buf: B, tex, texZ, texX, texY, bg };
+    // the two display TARGETS: identical kernel sequences at different lengths, so
+    // _dispPass is written once and the cube costs no second copy of the mode logic.
+    // `ex` / `exH1` are the extractions of components 1,2 for the two sigma_c halves.
+    const tg = {
+      slice: {
+        n: Math.ceil(this.nrs / 256), np: this.nPartS, arrows: bg.vecGather,
+        pl: { ex: this.pl.sliceExtract, mag: this.pl.vecMag, magsq: this.pl.vecMagSq,
+              msum: this.pl.maxSumPartial, sig: this.pl.sigmaCombine,
+              mpart: this.pl.maxPartial, mfin: this.pl.maxFinal },
+        bg: { ex: [bg.sliceDisp, bg.sliceDisp2], exH1: [bg.sliceDispH1, bg.sliceDisp2H1],
+              mag: bg.vecMag, magsqA: bg.magSqA, magsqB: bg.magSqB, msum: bg.maxSumPartial,
+              sig: bg.sigmaCombine, mpart: bg.maxPartial, mfin: bg.maxFinal }
+      },
+      cube: {
+        n: Math.ceil(this.nface / 256), np: this.nPartF, arrows: null,
+        pl: { ex: this.pl.faceExtract, mag: this.pl.vecMagFace, magsq: this.pl.vecMagSqFace,
+              msum: this.pl.maxSumPartialFace, sig: this.pl.sigmaCombineFace,
+              mpart: this.pl.maxPartialFace, mfin: this.pl.maxFinalFace },
+        bg: { ex: [bg.faceDisp, bg.faceDisp2], exH1: [bg.faceDispH1, bg.faceDisp2H1],
+              mag: bg.vecMagFace, magsqA: bg.magSqFA, magsqB: bg.magSqFB,
+              msum: bg.maxSumPartialFace, sig: bg.sigmaCombineFace,
+              mpart: bg.maxPartialFace, mfin: bg.maxFinalFace }
+      }
+    };
+    return { mode: 0, cube: 0, cont: 0, zslice: 0, buf: B, tex, texZ, texX, texY, bg, tg };
   }
 
   // chain ci, built on first use
@@ -1106,19 +1208,26 @@ class Solver {
     this.device.queue.writeBuffer(this.buf.cfg, 0, new Float32Array([
       q.Lx / q.nx, q.Ly / q.ny, q.cfl, q.tau, q.epsP, q.epsM, q.smax, 0]));
   }
-  // sel 0..8 are the slice modes (0..3 scalars, 4..7 vector magnitudes + arrows,
-  // 8 sigma_c); sel CUBE_SEL0.. are the cube-face modes of scalar quantity
-  // sel - CUBE_SEL0. ci selects the display card / chain; every chain carries the
-  // whole cube path, so any card may show faces. `cmap` indexes CMAP_NAMES.
-  setDisplayMode(ci, sel, zslice, cmap) {
-    const D = this.chain(ci), s = sel | 0;
-    D.mode = s >= CUBE_SEL0 ? s - CUBE_SEL0 : s;
-    D.cube = s >= CUBE_SEL0 ? 1 : 0;
+  // sel 0..8 is the displayed quantity (0..3 scalars, 4..7 vector magnitudes + arrows,
+  // 8 sigma_c) and is orthogonal to the VIEW: `opt.cube` draws the three boundary faces
+  // of that same quantity instead of one plane, and the plane it resolves to is then the
+  // cube's TOP face (REFINE_PLAN I2.1/I2.2). `opt.cont` is the contour overlay's
+  // potential as a display mode (0 = off, 2 = phi, 3 = psi), `opt.nlev` its level count.
+  // ci selects the display card / chain; every chain carries the whole cube and contour
+  // path, so any card may use either. `cmap` indexes CMAP_NAMES.
+  setDisplayMode(ci, sel, zslice, cmap, opt) {
+    const D = this.chain(ci), o = opt || {};
+    D.mode = sel | 0;
+    D.cube = o.cube ? 1 : 0;
+    D.cont = o.cont | 0;
     if (zslice !== undefined) D.zslice = Math.max(0, Math.min(this.g.nz - 1, zslice | 0));
     const u = new Uint32Array([D.mode, D.zslice, (cmap | 0), 0]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = DISP_ZMINUS;                     // the sigma_c second half, same z slice
     this.device.queue.writeBuffer(D.buf.modeM, 0, u);
+    u[0] = D.cont || DISP_PHI;              // the contour potential's own prep
+    this.device.queue.writeBuffer(D.buf.modeC, 0, u);
+    setContLevels(this.device, D, o.nlev);
   }
 
   // ---- initial condition --------------------------------------------------
@@ -1292,84 +1401,94 @@ class Solver {
   // ---- display ------------------------------------------------------------
   // one half of a chain: prepDisp (through the chain's Mode uniform, or its pinned
   // z- one for half 1), the full 3D inverse transform of the first component and the
-  // extraction of one z plane -- and, for the two-component modes, the same for the
-  // second component. half 0 -> (sliceA, sliceB), half 1 -> (sliceB, sliceC).
-  _dispHalf(p, D, half, twoComp) {
-    const nsWG = Math.ceil(this.nrs / 256);
+  // extraction of the TARGET out of the real-space volume -- and, for the two-component
+  // modes, the same for the second component. Target = one z plane (sliceA, sliceB /
+  // sliceB, sliceC for the second sigma_c half) or the three cube faces (facesA, facesB /
+  // facesB, facesC): the two differ only in the extraction kernel and the length.
+  _dispHalf(p, D, half, twoComp, T) {
     p.setPipeline(this.pl.prepDisp);
     p.setBindGroup(0, half ? D.bg.prepDispM : D.bg.prepDisp);
     p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
     this.encodeInv3D(p, 1, D.bg.zInvDisp, D.bg.colsInvDisp, D.bg.rowsC2RDisp);
-    if (D.cube) return;                    // the cube path wants the whole volume
-    p.setPipeline(this.pl.sliceExtract);
-    p.setBindGroup(0, half ? D.bg.sliceDispH1 : D.bg.sliceDisp);
-    p.dispatchWorkgroups(nsWG);
+    p.setPipeline(T.pl.ex);
+    p.setBindGroup(0, (half ? T.bg.exH1 : T.bg.ex)[0]);
+    p.dispatchWorkgroups(T.n);
     if (!twoComp) return;
     this.encodeInv3D(p, 1, D.bg.zInvDisp2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2);
-    p.setPipeline(this.pl.sliceExtract);
-    p.setBindGroup(0, half ? D.bg.sliceDisp2H1 : D.bg.sliceDisp2);
-    p.dispatchWorkgroups(nsWG);
+    p.setPipeline(T.pl.ex);
+    p.setBindGroup(0, (half ? T.bg.exH1 : T.bg.ex)[1]);
+    p.dispatchWorkgroups(T.n);
+  }
+
+  // the whole mode chain on one target: extraction, the vector / sigma_c collapse and
+  // the autoscale. Written ONCE for the z slice and the cube faces (REFINE_PLAN I2.1).
+  _dispPass(p, D, mode, T) {
+    this._dispHalf(p, D, 0, dispTwoComp(mode), T);
+    if (dispIsSigma(mode)) {
+      // |z+|^2 -> A, then the z- half -> |z-|^2 in B; the floor uses the max of their
+      // sum, and the colorize kernel renders the ratio on the fixed +-1 range.
+      p.setPipeline(T.pl.magsq); p.setBindGroup(0, T.bg.magsqA); p.dispatchWorkgroups(T.n);
+      this._dispHalf(p, D, 1, true, T);
+      p.setPipeline(T.pl.magsq); p.setBindGroup(0, T.bg.magsqB); p.dispatchWorkgroups(T.n);
+      p.setPipeline(T.pl.msum); p.setBindGroup(0, T.bg.msum); p.dispatchWorkgroups(T.np);
+      p.setPipeline(T.pl.mfin); p.setBindGroup(0, T.bg.mfin); p.dispatchWorkgroups(1);
+      p.setPipeline(T.pl.sig); p.setBindGroup(0, T.bg.sig); p.dispatchWorkgroups(T.n);
+      return;                          // sigma_c has a FIXED +-1 range, no autoscale
+    }
+    if (dispIsVector(mode)) {
+      // subsample the two components for the overlay (the slice target only -- a cube
+      // gathers its top plane separately, below), then collapse to |(ux,uy)|
+      if (T.arrows) {
+        p.setPipeline(this.pl.vecGather); p.setBindGroup(0, T.arrows);
+        p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
+      }
+      p.setPipeline(T.pl.mag); p.setBindGroup(0, T.bg.mag); p.dispatchWorkgroups(T.n);
+    }
+    p.setPipeline(T.pl.mpart); p.setBindGroup(0, T.bg.mpart); p.dispatchWorkgroups(T.np);
+    p.setPipeline(T.pl.mfin); p.setBindGroup(0, T.bg.mfin); p.dispatchWorkgroups(1);
+  }
+
+  // the contour overlay's potential (REFINE_PLAN I2.4): ONE extra volume transform per
+  // card frame, through the second component's now-dead scratch, extracted on the card's
+  // plane into sliceB -- which colorize reads, and which IS the cube's top face -- plus
+  // the max reduction that feeds the adapting level spacing. Runs LAST, after every mode
+  // (and the cube's arrow gather) has finished with that scratch.
+  _dispCont(p, D) {
+    p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, D.bg.prepDispC);
+    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+    this.encodeInv3D(p, 1, D.bg.zInvDisp2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2);
+    p.setPipeline(this.pl.sliceExtract); p.setBindGroup(0, D.bg.sliceDisp2);
+    p.dispatchWorkgroups(Math.ceil(this.nrs / 256));
+    contLevelEncode(p, this, D, this.nPartS);
   }
 
   render(ctx, ci) {
     const d = this.device, D = this.chain(ci || 0), mode = D.mode;
-    const nsWG = Math.ceil(this.nrs / 256);
+    const cube = !!D.cube;
     const enc = d.createCommandEncoder();
     const p = enc.beginComputePass();
-    this._dispHalf(p, D, 0, dispTwoComp(mode) && !D.cube);
-    if (D.cube) {
-      // the three boundary faces of the volume, one shared symmetric autoscale
-      p.setPipeline(this.pl.faceExtract); p.setBindGroup(0, D.bg.faceDisp);
-      p.dispatchWorkgroups(Math.ceil(this.nface / 256));
-      p.setPipeline(this.pl.maxPartialFace); p.setBindGroup(0, D.bg.maxPartialFace);
-      p.dispatchWorkgroups(this.nPartF);
-      p.setPipeline(this.pl.maxFinalFace); p.setBindGroup(0, D.bg.maxFinalFace);
-      p.dispatchWorkgroups(1);
+    this._dispPass(p, D, mode, cube ? D.tg.cube : D.tg.slice);
+    if (cube && dispIsVector(mode)) {
+      // arrows on the visible TOP face (REFINE_PLAN I2.3): the same two components on
+      // the same plane that face shows, gathered through the slice kernels -- the
+      // volumes are still intact, the faces having been collapsed, not the volumes
+      const nsWG = Math.ceil(this.nrs / 256);
+      p.setPipeline(this.pl.sliceExtract); p.setBindGroup(0, D.bg.sliceDisp);
+      p.dispatchWorkgroups(nsWG);
+      p.setPipeline(this.pl.sliceExtract); p.setBindGroup(0, D.bg.sliceDisp2);
+      p.dispatchWorkgroups(nsWG);
+      p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
+      p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
+    }
+    if (D.cont) this._dispCont(p, D);
+    if (cube) {
       p.setPipeline(this.pl.colorizeCube); p.setBindGroup(0, D.bg.colorizeCube);
       p.dispatchWorkgroups(Math.ceil(Math.max(this.g.nx, this.g.nz) / 8),
                            Math.ceil(Math.max(this.g.ny, this.g.nx) / 8));
-      p.end();
-      const rp = enc.beginRenderPass({
-        colorAttachments: [{
-          view: ctx.getCurrentTexture().createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store"
-        }]
-      });
-      rp.setPipeline(this.plCube); rp.setBindGroup(0, D.bg.renderCube); rp.draw(6, 3);
-      rp.end();
-      d.queue.submit([enc.finish()]);
-      return;
+    } else {
+      p.setPipeline(this.pl.colorize); p.setBindGroup(0, D.bg.colorize);
+      p.dispatchWorkgroups(Math.ceil(this.g.nx / 8), Math.ceil(this.g.ny / 8));
     }
-    if (dispIsSigma(mode)) {
-      // |z+|^2 -> sliceA, then the z- half -> |z-|^2 in sliceB; the floor uses the
-      // max of their sum, and colorize renders the ratio on the fixed +-1 range.
-      p.setPipeline(this.pl.vecMagSq); p.setBindGroup(0, D.bg.magSqA);
-      p.dispatchWorkgroups(nsWG);
-      this._dispHalf(p, D, 1, true);
-      p.setPipeline(this.pl.vecMagSq); p.setBindGroup(0, D.bg.magSqB);
-      p.dispatchWorkgroups(nsWG);
-      p.setPipeline(this.pl.maxSumPartial); p.setBindGroup(0, D.bg.maxSumPartial);
-      p.dispatchWorkgroups(this.nPartS);
-      p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
-      p.dispatchWorkgroups(1);
-      p.setPipeline(this.pl.sigmaCombine); p.setBindGroup(0, D.bg.sigmaCombine);
-      p.dispatchWorkgroups(nsWG);
-    } else if (dispIsVector(mode)) {
-      // subsample the two components for the overlay, then collapse sliceA to
-      // |(ux,uy)| for the autoscale + colormap
-      p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
-      p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
-      p.setPipeline(this.pl.vecMag); p.setBindGroup(0, D.bg.vecMag);
-      p.dispatchWorkgroups(nsWG);
-    }
-    if (!dispIsSigma(mode)) {          // sigma_c has a FIXED +-1 range, no autoscale
-      p.setPipeline(this.pl.maxPartial); p.setBindGroup(0, D.bg.maxPartial);
-      p.dispatchWorkgroups(this.nPartS);
-      p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
-      p.dispatchWorkgroups(1);
-    }
-    p.setPipeline(this.pl.colorize); p.setBindGroup(0, D.bg.colorize);
-    p.dispatchWorkgroups(Math.ceil(this.g.nx / 8), Math.ceil(this.g.ny / 8));
     p.end();
     const rp = enc.beginRenderPass({
       colorAttachments: [{
@@ -1377,7 +1496,8 @@ class Solver {
         clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store"
       }]
     });
-    rp.setPipeline(this.plRender); rp.setBindGroup(0, D.bg.render); rp.draw(3);
+    if (cube) { rp.setPipeline(this.plCube); rp.setBindGroup(0, D.bg.renderCube); rp.draw(6, 3); }
+    else { rp.setPipeline(this.plRender); rp.setBindGroup(0, D.bg.render); rp.draw(3); }
     rp.end();
     d.queue.submit([enc.finish()]);
   }
@@ -1621,16 +1741,15 @@ function planeReadout() {
 }
 
 // ---------------------------------------------------------------------------
-// display cards: this app's quantity list (physics.js slice modes 0..8 plus the
-// cube-face modes, which any card may select)
+// display cards: this app's quantity list (physics.js modes 0..8). The cube faces are
+// a VIEW in the card's z-source select (REFINE_PLAN I2.1), orthogonal to this list --
+// every quantity here renders as a cube -- so there are no cube entries in it.
 // ---------------------------------------------------------------------------
 const DISP_FIELDS = [
   { v: 0, t: "vorticity" }, { v: 1, t: "current" }, { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
   { v: 4, t: "velocity |u|" }, { v: 5, t: "magnetic |b|" },
   { v: 6, t: "Elsasser |z&#8314;|" }, { v: 7, t: "Elsasser |z&#8315;|" },
-  { v: 8, t: "cross helicity &sigma;_c" },
-  { v: CUBE_SEL0, t: "cube faces: vorticity" }, { v: CUBE_SEL0 + 1, t: "cube faces: current" },
-  { v: CUBE_SEL0 + 2, t: "cube faces: &phi;" }, { v: CUBE_SEL0 + 3, t: "cube faces: &psi;" }
+  { v: 8, t: "cross helicity &sigma;_c" }
 ];
 
 // ---------------------------------------------------------------------------
@@ -1909,9 +2028,12 @@ async function boot() {
   cardsInit({
     fields: DISP_FIELDS,
     zslice: true,                                     // per-card z slice / peak tracker
+    cube: true,                                       // ... which also carries the view
     nz: () => (solver ? solver.g.nz : uiRes()[1]),
     zsliceOf: sliceOfCard,
-    caption: c => (solver && solver.cubeOf(c.ci)) ? "  (cube faces)" : "  (iz " + sliceOfCard(c) + ")",
+    arrowXform: cubeTopXform,
+    caption: c => (solver && solver.cubeOf(c.ci) ? "  (cube faces, top iz " : "  (iz ")
+      + sliceOfCard(c) + ")",
     onLayout: () => {
       planeAt = 0;                                    // re-track on the next frame
       syncLabels();

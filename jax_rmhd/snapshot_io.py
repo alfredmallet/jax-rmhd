@@ -188,9 +188,11 @@ def _stored_t_dtype(snap_path, isnap, default=T_DTYPE):
     # to float64 in ONE explicit place, instead of leaning on an implicit cast inside
     # orbax's type handler.
     # Barrier-free like every other read here: a bare StandardCheckpointHandler, never
-    # a CheckpointManager (docs/checkpointing.md). Any failure (missing/older-orbax
-    # metadata) falls back to `default` -- orbax's own widening cast then handles it,
-    # which is what this code did before the fallback existed.
+    # a CheckpointManager (docs/checkpointing.md). An absent/unreadable metadata tree
+    # (older orbax, missing key) falls back to `default` -- orbax's own widening cast
+    # then handles it, which is what this code did before the fallback existed. The
+    # except list is deliberately NARROW: a wrong directory should surface at restore,
+    # not be silently absorbed into "float64" here.
     d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), _ITEM)
     handler = ocp.StandardCheckpointHandler()
     try:
@@ -198,7 +200,7 @@ def _stored_t_dtype(snap_path, isnap, default=T_DTYPE):
         tree = getattr(md, "tree", md)
         dt = tree["t"].dtype
         return default if dt is None else jnp.dtype(dt)
-    except Exception:
+    except (KeyError, TypeError, ValueError, FileNotFoundError):
         return default
     finally:
         getattr(handler, "close", lambda: None)()

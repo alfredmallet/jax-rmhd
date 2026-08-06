@@ -63,16 +63,33 @@ const REFVEC = JSON.parse(String.raw`{"nx": 32, "ny": 32, "Lx": 6.28318530717958
 // Only the genuinely 2D-specific bits are here; everything else is a shared
 // fragment. Built at script-eval time, before anything reads a control.
 // ---------------------------------------------------------------------------
+// Box shapes (REFINE_PLAN J.2). nx comes from the resolution select; ny and both box
+// lengths come from here, so "resolution" keeps meaning n_x. Rectangular boxes are what
+// the equilibrium demos need: a long x to hold the layer's far field inside the periodic
+// box, a short y carrying one unstable wavelength. (fy must keep ny a power of two --
+// the FFT is radix-2 -- which 1 and 1/4 do at every offered resolution.)
+const BOXES = {
+  sq:   { t: "square 2&pi; &times; 2&pi;", fy: 1, Lx: 2 * Math.PI, Ly: 2 * Math.PI },
+  wide: { t: "wide 4&pi; &times; 2&pi;", fy: 1 / 4, Lx: 4 * Math.PI, Ly: 2 * Math.PI }
+};
+const boxOf = () => BOXES[el("selBox").value] || BOXES.sq;
+
 controlsBuild({
   groups: [
     { id: "grpSim", summary: "simulation", rows: [
-      [{ k: "lab", t: "resolution" },
-       { k: "sel", id: "selRes", o: [[128, "128"], [256, "256"], [512, "512"]], v: 256 }].concat(CTRL_SEED),
+      [{ k: "lab", t: "resolution n<sub>x</sub>" },
+       { k: "sel", id: "selRes", o: [[128, "128"], [256, "256"], [512, "512"]], v: 256 },
+       { k: "lab", t: "box" },
+       { k: "sel", id: "selBox", o: Object.keys(BOXES).map(k => [k, BOXES[k].t]),
+         ti: "perpendicular box shape; n_y and L_y follow it" },
+       { k: "val", id: "vBox" }].concat(CTRL_SEED),
       CTRL_CFL
     ] },
-    { id: "grpDiss", summary: "dissipation", rows: [ctrlDissRow(-13)] },
+    { id: "grpDiss", summary: "dissipation", rows: [ctrlDissRow(-13, { ratio: true })] },
     CTRL_GRP_FORCE,
-    ctrlGrpIC({ letters: "letters A / B", amp: 0 }),
+    ctrlGrpIC({ letters: "letters A / B", amp: 0, extra: CTRL_ROWS_EQ,
+                presets: [["kh", "Kelvin–Helmholtz shear layers"],
+                          ["tearing", "tearing mode (magnetic islands)"]] }),
     ctrlGrpDisp()
   ]
 });
@@ -147,7 +164,7 @@ struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f
   // flat mode index, real-space kernels at 64 threads, the display buffer is the
   // whole domain.
   const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
-              ns: g.shell.length };
+              ns: g.shell.length, dissRatio: g.pm };
 
   const S = {};
 
@@ -225,6 +242,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 
   // ---- LSRK33 stage update (integrating factor) ---------------------------
+  // The 2D linear operator is DIAGONAL per field, so phi and psi may carry different
+  // dissipation (REFINE_PLAN J.1): _dissLin substitutes the eta/nu factor into the
+  // exponent for the psi half of the stack. At ratio 1 the expression is the bare
+  // gridB[m].y this kernel has always had -- byte for byte.
   S.stage = pre + `
 struct Stage { alpha: f32, beta: f32, gamma: f32, pad: f32 };
 @group(0) @binding(0) var<storage, read_write> fields: array<vec2<f32>>;
@@ -239,7 +260,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (idx >= 2u * NM) { return; }
   let m: u32 = select(idx, idx - NM, idx >= NM);
   let dt: f32 = sc[0];
-  let E: f32 = exp((gridB[m].y * dt) * st.gamma);
+  let E: f32 = exp((${_dissLin(C, "gridB[m].y")} * dt) * st.gamma);
   let d: vec2<f32> = st.alpha * delta[idx] + dt * rhs[idx];
   let dn: vec2<f32> = E * d;
   delta[idx] = dn;
@@ -266,7 +287,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // kernel rather than a forked one, exactly as in energyPartial, and summing over k
   // reproduces sc[2]+sc[3]+-sc[8]. The accumulator is a vec4 (16-byte stride either
   // way) with the last lane unused.
-  const nb = nbins(nx, ny);
+  const nb = nbins(nx, ny, g.Lx, g.Ly);
   S.spectrum = pre + `
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
@@ -318,6 +339,9 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   S.vecMag = vecMagWGSL(C);
   S.vecGather = vecGatherWGSL(C);
   S.colorize = colorizeWGSL(C);
+  // the contour overlay's level table (physics.js): the potential plane itself rides the
+  // display chain's own kernels, only its adapting level spacing needs one of its own
+  S.contLevel = contLevelWGSL(C);
   // the cut chart's own prep (physics.js): (u_x, u_y, b_x, b_y) along x = Lx/2,
   // still in ky -- rowsC2R turns the four rows into real lines
   S.cutPrep = cutPrepWGSL(C);
@@ -339,18 +363,20 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
 class Solver {
   constructor(device, p) {
     this.device = device;
+    // `pm` is eta/nu (REFINE_PLAN J.1); 1 -- the default every pre-J caller gets, the
+    // self-test included -- is the historical scalar-dissipation code path exactly.
     this.p = Object.assign({
-      nx: 256, ny: 256, Lx: 2 * Math.PI, Ly: 2 * Math.PI, diss: 1e-13, hyper: 4,
+      nx: 256, ny: 256, Lx: 2 * Math.PI, Ly: 2 * Math.PI, diss: 1e-13, hyper: 4, pm: 1,
       epsP: 0.15, epsM: 0.15, tau: 1.0, fshell: [1, 3], cfl: 0.4, smax: 1.0, seed: 7
     }, p || {});
     const q = this.p;
     const grid = makeGrid(q);
-    this.g = Object.assign({ nx: q.nx, ny: q.ny }, grid);
+    this.g = Object.assign({ nx: q.nx, ny: q.ny, Lx: q.Lx, Ly: q.Ly, pm: q.pm }, grid);
     this.nr = q.nx * q.ny;
     this.ns = grid.shell.length;
     this.nPartR = Math.ceil(this.nr / 1024);
     this.nPartM = Math.ceil(this.g.nm / 1024);
-    this.nb = nbins(q.nx, q.ny);
+    this.nb = nbins(q.nx, q.ny, q.Lx, q.Ly);
     const ad = arrowDims(q.nx, q.ny);
     this.nax = ad.nax; this.nay = ad.nay;
     this.narrow = this.nax * this.nay;
@@ -414,6 +440,11 @@ class Solver {
   // after which magSqA collapses (dispR, dispR2) -> dispR = |z+|^2 and magSqB
   // collapses (dispR2, dispR3) -> dispR2 = |z-|^2. Dispatches inside one compute
   // pass are ordered, so the reuse is safe.
+  //
+  // The contour overlay (REFINE_PLAN I2.4) extends that discipline instead of
+  // allocating: it runs LAST in the frame, when dispK2/dispTmp2/dispR2 are dead in
+  // every mode, so the potential plane lands in dispR2 and colorize reads it from
+  // there. Its only new state is the tiny level table (contMx, contB).
   _makeChain() {
     const d = this.device, nm = this.g.nm, nr = this.nr, cx = nm * 8;
     const B = {
@@ -430,9 +461,15 @@ class Solver {
       maxVal: d.createBuffer({ size: 4, usage: SQ }),
       // per-card overlay gathers (8 kB + ny floats -- negligible next to dispR)
       arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
+      // contour overlay: the plane's max, and [range, delta, nlev, -] (contLevel owns
+      // range/delta, the CPU owns nlev -- and delta = 0 is how the overlay is switched off)
+      contMx: d.createBuffer({ size: 4, usage: SQ }),
+      contB: d.createBuffer({ size: 16, usage: SQ }),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the z- vector: the second half of the sigma_c chain
-      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // pinned to the contour overlay's potential (phi or psi)
+      modeC: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     };
     d.queue.writeBuffer(B.modeM, 0, new Uint32Array([DISP_ZMINUS, 0, 0, 0]));
     const tex = d.createTexture({
@@ -462,12 +499,21 @@ class Solver {
       maxPartial: bgOf(this.pl.maxPartial, [B.dispR, B.maxPart]),
       maxFinal: bgOf(this.pl.maxFinal, [B.maxPart, B.maxVal]),
       vecGather: bgOf(this.pl.vecGather, [B.dispR, B.dispR2, B.arrows]),
+      // contour prep: the potential through the SAME prepDisp + inverse transform the
+      // display modes use (its own Mode uniform, the second component's dead scratch as
+      // the throwaway outk2), then the shared max reduction into its level table
+      prepDispC: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeC, B.dispK]),
+      maxPartialCont: bgOf(this.pl.maxPartial, [B.dispR2, B.maxPart]),
+      maxFinalCont: bgOf(this.pl.maxFinal, [B.maxPart, B.contMx]),
+      contLevel: bgOf(this.pl.contLevel, [B.contMx, B.contB]),
       colorize: d.createBindGroup({
         layout: this.pl.colorize.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: B.dispR } },
                   { binding: 1, resource: { buffer: B.maxVal } },
                   { binding: 2, resource: tex.createView() },
-                  { binding: 3, resource: { buffer: B.mode } }]
+                  { binding: 3, resource: { buffer: B.mode } },
+                  { binding: 4, resource: { buffer: B.dispR2 } },
+                  { binding: 5, resource: { buffer: B.contB } }]
       }),
       render: d.createBindGroup({
         layout: this.plRender.getBindGroupLayout(0),
@@ -475,7 +521,7 @@ class Solver {
                   { binding: 1, resource: tex.createView() }]
       })
     };
-    return { mode: 0, cube: 0, zslice: 0, buf: B, tex, bg };
+    return { mode: 0, cube: 0, cont: 0, zslice: 0, buf: B, tex, bg };
   }
 
   // chain ci, built on first use
@@ -486,7 +532,7 @@ class Solver {
   }
   // per-card display state, for the card system and the overlays
   modeOf(ci) { const D = this.disp[ci | 0]; return D ? D.mode : 0; }
-  cubeOf(ci) { return 0; }              // the 2D app has no cube-face mode
+  cubeOf(ci) { return 0; }              // the 2D app has no cube view
   zsliceOf(ci) { return 0; }            // ... and no z axis
 
   _buildPipelines() {
@@ -511,7 +557,7 @@ class Solver {
       vecMag: cp(S.vecMag, "vecMag"), vecGather: cp(S.vecGather, "vecGather"),
       cutPrep: cp(S.cutPrep, "cutPrep"), vecMagSq: cp(S.vecMagSq, "vecMagSq"),
       maxSumPartial: cp(S.maxSumPartial, "maxSumPartial"),
-      sigmaCombine: cp(S.sigmaCombine, "sigmaCombine")
+      sigmaCombine: cp(S.sigmaCombine, "sigmaCombine"), contLevel: cp(S.contLevel, "contLevel")
     };
     const rmod = mod(S.render, "render");
     this.plRender = d.createRenderPipeline({
@@ -583,13 +629,19 @@ class Solver {
   }
   // ci = which display card / chain. `zslice` is accepted (and ignored) so both apps
   // present the same signature to the shared card code; `cmap` indexes CMAP_NAMES.
-  setDisplayMode(ci, mode, zslice, cmap) {
-    const D = this.chain(ci);
+  // `opt.cont` is the contour overlay's potential as a display mode (0 = off, 2 = phi,
+  // 3 = psi) and `opt.nlev` its level count; `opt.cube` is 3D-only and ignored here.
+  setDisplayMode(ci, mode, zslice, cmap, opt) {
+    const D = this.chain(ci), o = opt || {};
     D.mode = mode | 0;
+    D.cont = o.cont | 0;
     const u = new Uint32Array([D.mode, 0, (cmap | 0), 0]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = DISP_ZMINUS;                     // the sigma_c second half, same colormap
     this.device.queue.writeBuffer(D.buf.modeM, 0, u);
+    u[0] = D.cont || DISP_PHI;              // the contour potential's own prep
+    this.device.queue.writeBuffer(D.buf.modeC, 0, u);
+    setContLevels(this.device, D, o.nlev);
   }
 
   // ---- initial condition --------------------------------------------------
@@ -759,6 +811,20 @@ class Solver {
     p.dispatchWorkgroups(this.g.nx);
   }
 
+  // the contour overlay's potential (REFINE_PLAN I2.4): ONE extra inverse transform per
+  // card frame, into the second component's now-dead scratch (dispR2, which is where
+  // colorize reads it), plus the max reduction that feeds the adapting level spacing.
+  // Runs LAST, after every mode has finished with that scratch.
+  _dispCont(p, D) {
+    p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, D.bg.prepDispC);
+    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+    p.setPipeline(this.pl.colsInv); p.setBindGroup(0, D.bg.colsInvDisp2);
+    p.dispatchWorkgroups(this.g.nky);
+    p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, D.bg.rowsC2RDisp2);
+    p.dispatchWorkgroups(this.g.nx);
+    contLevelEncode(p, this, D, this.nPartR);
+  }
+
   render(ctx, ci) {
     const d = this.device, D = this.chain(ci || 0), mode = D.mode;
     const nrWG = Math.ceil(this.nr / 64);
@@ -793,6 +859,7 @@ class Solver {
       p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
       p.dispatchWorkgroups(1);
     }
+    if (D.cont) this._dispCont(p, D);
     p.setPipeline(this.pl.colorize); p.setBindGroup(0, D.bg.colorize);
     p.dispatchWorkgroups(Math.ceil(this.g.nx / 8), Math.ceil(this.g.ny / 8));
     p.end();
@@ -837,13 +904,19 @@ class Solver {
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
+// eta/nu, from the ratio box: a positive finite number, 1 (the scalar-dissipation path)
+// on anything else. A compile-time constant of the stage kernel, hence a rebuild knob.
+function uiPm() {
+  const v = parseFloat(el("nPm").value);
+  return (isFinite(v) && v > 0) ? v : 1;
+}
 function uiParams() {
-  const eps = uiEps();
+  const eps = uiEps(), b = boxOf(), nx = parseInt(el("selRes").value, 10);
   return {
-    nx: parseInt(el("selRes").value, 10), ny: parseInt(el("selRes").value, 10),
-    Lx: 2 * Math.PI, Ly: 2 * Math.PI,
+    nx: nx, ny: Math.max(32, Math.round(nx * b.fy)),
+    Lx: b.Lx, Ly: b.Ly,
     diss: Math.pow(10, parseFloat(el("rDiss").value)),
-    hyper: parseInt(el("selHyper").value, 10),
+    hyper: parseInt(el("selHyper").value, 10), pm: uiPm(),
     epsP: eps[0], epsM: eps[1],
     tau: parseFloat(el("rTau").value),
     cfl: parseFloat(el("rCfl").value),
@@ -851,8 +924,21 @@ function uiParams() {
     seed: parseInt(el("nSeed").value, 10) | 0
   };
 }
-// the 2D page has no knob the shared readouts do not already cover
-function syncLabels() { syncCommonLabels(); }
+// display cards get an aspect-correct canvas (REFINE_PLAN J.2): equal pixels per unit
+// LENGTH on both axes, so contours and arrows are not sheared. The longer physical axis
+// gets the historical 512 px, and a square box reproduces 512x512 exactly.
+function cardAspect() {
+  const q = liveParams(), r = q.Lx / q.Ly;
+  return r >= 1 ? { w: 512, h: Math.max(64, Math.round(512 / r)) }
+                : { w: Math.max(64, Math.round(512 * r)), h: 512 };
+}
+// the 2D-only readouts: the resolved box, and the equilibrium-preset knobs
+function syncLabels() {
+  syncCommonLabels();
+  const q = uiParams();
+  el("vBox").textContent = q.nx + "×" + q.ny;
+  syncEqLabels();
+}
 
 // ---------------------------------------------------------------------------
 // initial-condition presets
@@ -905,7 +991,8 @@ const DISP_FIELDS = [
 const PRESETS = {
   forced: {
     label: "forced turbulence (default)",
-    set: { selRes: "256", selHyper: "4", cbForce: true, rEpsP: "-0.82", rEpsM: "-0.82",
+    set: { selRes: "256", selBox: "sq", selHyper: "4", nPm: "1", cbForce: true,
+           rEpsP: "-0.82", rEpsM: "-0.82",
            cbEpsLock: true, rFmin: "1", rFmax: "3", rDiss: "-13",
            selIC: "modes", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 0 }], charts: ["energy", "spectrum", "cut"] },
@@ -913,8 +1000,8 @@ const PRESETS = {
   },
   decay: {
     label: "decaying A / B packets",
-    set: { selRes: "512", selHyper: "4", cbForce: false, selIC: "letters",
-           rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
+    set: { selRes: "512", selBox: "sq", selHyper: "4", nPm: "1", cbForce: false,
+           selIC: "letters", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     prep: () => autoDiss(),          // marginally-resolved diss for 512^2, hyper=4
     layout: { disp: [{ sel: 6 }, { sel: 7 }], charts: ["energy", "spectrum"] },
     hint: "Decaying 2D turbulence: A-shaped &zeta;<sup>+</sup> and B-shaped &zeta;<sup>&minus;</sup> "
@@ -923,6 +1010,42 @@ const PRESETS = {
       + "Ideal 2D RMHD is self-similar in amplitude ((a,t) &rarr; (a/&lambda;, &lambda;t)), and "
       + "dt is adaptive, so the per-frame dynamics look the same at any amplitude &mdash; "
       + "amplitude only matters against the fixed dissipation (in 3D it is &chi;)."
+  },
+  // ---- the two equilibrium demos (REFINE_PLAN J.3 / J.5) --------------------
+  // Both run in the 4pi x 2pi box at 512 x 128, with hyper LOCKED to 1 by the IC preset
+  // (see icSyncRows): a hyper-dissipative "resistivity" has no resistive layer and no
+  // Rutherford stage, so it would falsify exactly what these demos are for.
+  kh: {
+    label: "Kelvin–Helmholtz shear layers",
+    set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
+           rDiss: "-3.5", selIC: "kh", rEqA: "0.05", rEqPert: "-3",
+           rEqU0: "1", rEqB0: "0", rCflEvery: "4" },
+    layout: { disp: [{ sel: 0 }], charts: ["energy", "cut"] },
+    hint: "Two opposite shear layers (periodicity needs a pair) at x = L<sub>x</sub>/4 and "
+      + "3L<sub>x</sub>/4, independent while a &Lt; L<sub>x</sub>/2. With b&#8320; = 0 the "
+      + "k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed rolls up into vortices; raise <b>b&#8320;</b> "
+      + "past <b>U&#8320;</b> and the tension of the in-plane field suppresses it "
+      + "(ideal threshold b&#8320; = U&#8320; for this geometry &mdash; resistivity softens it, "
+      + "it does not remove it). Linear reference &gamma; &asymp; 0.267 U&#8320;k<sub>y</sub> "
+      + "(k<sub>y</sub> = 2&pi;/L<sub>y</sub>) at a = 0.05L<sub>x</sub>, b&#8320; = 0."
+  },
+  tearing: {
+    label: "tearing mode (magnetic islands)",
+    set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
+           rDiss: "-3", selIC: "tearing", rEqA: "0.1", rEqPert: "-3", rEqPsi0: "1.65",
+           rCflEvery: "4" },
+    layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }], charts: ["island", "energy"] },
+    hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "
+      + "&phi;<sub>eq</sub> = 0: b<sub>y</sub> vanishes on x = L<sub>x</sub>/2, so that is the "
+      + "resonant surface of the k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed. Watch the &psi; "
+      + "contours (= B<sub>&perp;</sub> field lines) over the current sheet reconnect into an "
+      + "island chain; the <b>island width</b> chart is log&nbsp;W(t), so the linear stage is a "
+      + "straight line and the Rutherford stage bends over. &eta; = &nu; here &mdash; use the "
+      + "<b>&eta;/&nu;</b> box for other magnetic Prandtl numbers. Linear reference "
+      + "&gamma; &asymp; 0.0287 at &eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4, "
+      + "&gamma; &prop; &eta;<sup>3/5</sup>) &mdash; for a FROZEN equilibrium; here "
+      + "&psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, so the measured slope runs "
+      + "some 30&ndash;40% below it."
   }
 };
 
@@ -1090,10 +1213,12 @@ async function boot() {
     zslice: false,                  // no z axis in 2D
     nz: () => 1,
     zsliceOf: () => 0,
+    aspect: cardAspect,             // rectangular boxes get rectangular cards (J.2)
     onLayout: syncLabels
   });
   // wire first: bootApply's syncIC asks the editor config which rows a preset owns
-  wireCommonControls({ presets: PRESETS });
+  wireCommonControls({ presets: PRESETS, rebuildOn: ["selBox", "nPm"],
+                       icSliders: EQ_SLIDERS });
   bootApply(pre);
   loop();
 }

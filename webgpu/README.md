@@ -79,7 +79,9 @@ programmatically; do not try to hand-edit a 180 kB line).
   implementation, expanded from common.js's coefficient table at emit time):
   `prepGrads`, `bracket`, `nlAssemble`, `energyPartial`, `ou`,
   `scale`, `icFinish`, `prepDisp`, `vecMag`/`vecMagSq`, `maxSumPartial`,
-  `sigmaCombine`, the arrow gather, the cut card's `cutPrep`, the colorize and the blit (the 3D-only
+  `sigmaCombine`, the arrow gather, the cut card's `cutPrep`, the colorize (whose shading
+  — value→colour plus the contour overlay — is one fragment the 3D cube faces share),
+  the contour level table and the blit (the 3D-only
   `zpPrep`/`planeEnergy` tracking kernels stay in the 3D app). Every 2D/3D
   difference is derived inside the templates from the single flag `hasZ` (the 3D index
   split m = iz·NMP + mp, the kz dealias factor, the kz⁴ term in the linear diagonal),
@@ -97,8 +99,9 @@ programmatically; do not try to hand-edit a 180 kB line).
 ## Cards: displays and charts
 
 The UI is built from **cards**. A *display card* is one WebGPU canvas plus its own
-quantity selector, colormap, arrows checkbox and — in 3D — its own z slice (manual
-slider or `track z⁺ / z⁻ peak`); "+ display" adds one (up to three), the × on its header
+quantity selector, colormap, arrows checkbox, contour-overlay selectors and — in 3D — its
+own z slice / view select (manual slider, `track z⁺ / z⁻`, or the same three with the
+cube-faces view); "+ display" adds one (up to three), the × on its header
 closes it. Card index *is* the solver's display-chain index, so N cards cost exactly N
 chains (scratch, bind groups, gather targets, textures), each built lazily on first use.
 *Any* card can be closed down to the last one (whose × goes disabled) — the IC editor has
@@ -117,6 +120,7 @@ is the default and is what the chart drew before they existed):
 | spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
+| island width (2D) | — | log W(t); needs the tearing IC (see below) |
 
 The Elsasser energies are E<sup>±</sup> = E_kin + E_mag ± H_c with the cross helicity
 H_c = ⟨u·b⟩, i.e. E<sup>±</sup> = ½⟨|z<sup>±</sup>|²⟩ and E_tot = (E⁺+E⁻)/2 — the
@@ -158,6 +162,20 @@ live once, in `common.js: CMAP_COEF` — `physics.js` expands them into the WGSL
 time and the IC editor's CPU preview reads the same table through `cmapRGB`, so the two
 cannot drift.
 
+**Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
+field lines) or φ contours (= the streamlines), at 8 / 16 / 32 levels, over whatever
+field the card displays. They are drawn inside the shared colorize kernel, not as a
+second pass: the potential on the card's plane reaches the display scratch through ONE
+extra inverse transform per card frame (reusing the second component's scratch, which is
+dead by then), and a texel is inked when `floor(pot/Δ)` differs from that of its +x or +y
+neighbour — a crossing test, so no derivatives and nothing a compute shader cannot do.
+Δ is **uniform**, so the line density is proportional to |B⊥| (or |u⊥|), which is the
+honest picture rather than a prettier equal-area one. Δ = 2·range/nlev with the range
+adapted on the GPU (up at once, down by 5% of the gap per frame) so the lines do not
+flicker from frame to frame; the ink is black over a light background and white over a
+dark one, so it survives every colormap. On the cube view the contours are drawn on the
+**top face only** — that is the one face whose in-plane potential the chain already has.
+
 **Cross helicity σ_c** = (|z⁺|²−|z⁻|²)/(|z⁺|²+|z⁻|²), pointwise, is the one mode with a
 **fixed** colour range (±1, symmetric — no autoscale, so colours are comparable
 between frames and between runs). Where the local Elsasser energy density |z⁺|²+|z⁻|²
@@ -166,13 +184,21 @@ in quiet regions the ratio is pure noise. It costs four inverse transforms per f
 (both components of both z±) instead of the vector modes' two — display cost only, no
 physics buffer is touched.
 
-3D only: the **cube-face** modes draw the three visible boundary faces of the box
-(z = Lz, x = Lx, y = Ly) in the oblique view `examples/forced-turbulence-3D.ipynb` uses
-(matplotlib `view_init(elev=30, azim=45)`), colorized with one common ±max across the
-three faces and depth-cued by a per-face darkening of 1.0 / 0.85 / 0.7. Any display card
-may select them (each chain owns its own face buffer and three face textures — a rounding
-error next to its nz·nx·ny scratch volume). Arrows and that card's z-slice slider are
-inactive there (the cut chart is unaffected — it has its own plane). The 3D spectrum
+3D only: **cube faces** are a *view*, not a field — the last three entries of a display
+card's z-source select ("cube faces", "cube + track z⁺", "cube + track z⁻"), orthogonal
+to the field selector, so **any** quantity (σ_c and the vector magnitudes included) can
+be drawn as a cube. It draws the three visible boundary faces of the box in the oblique
+view `examples/forced-turbulence-3D.ipynb` uses (matplotlib `view_init(elev=30,
+azim=45)`), colorized through the same shared shading as a slice (so each mode keeps its
+own colour range) with one common autoscale across the three faces, depth-cued by a
+per-face darkening of 1.0 / 0.85 / 0.7. The **top face is the card's own plane** — its
+slider in manual mode, its tracker otherwise, so a cube card riding a packet puts the
+collision front on top; the two side faces stay x = Lx and y = Ly boundary slices. On the
+vector modes the arrow overlay is drawn on the top face, the same anchors and directions
+put through that face's affine projection (CPU-side, on the overlay canvas; side faces
+get none — u⊥/b⊥ is not tangent to them). Any display card may take the view (each chain
+owns its own three face buffers and three face textures — a rounding error next to its
+nz·nx·ny scratch volume); the cut chart does not offer it. The 3D spectrum
 card also carries the parallel spectra as dashed curves (|kz| bins 1…nz/2, ±kz paired,
 kz = 0 omitted from the log axis); **the y limits are set by the perpendicular spectra
 alone**, so the dashed curves are plotted inside that range and never stretch it (unless
@@ -262,7 +288,7 @@ or Lz in 3D) because its layout is per-grid.
   exactly a translate of one painted in the middle.
 - **3D**: each blob is a perpendicular gaussian times a z-envelope of peak 1 centred on
   the plane the editor's **own z-plane slider** selects (opened on whatever plane the
-  first display card was showing). Cube-face modes are irrelevant now — the editor no
+  first display card was showing). The cube view is irrelevant now — the editor no
   longer borrows a card's slice, so editing is never refused.
 
 Mouse → grid: `getBoundingClientRect` is in CSS pixels, so the responsive canvas width and
@@ -289,9 +315,91 @@ Everything stays adjustable afterwards. There are no separate demo pages.
   do here: ideal 2D RMHD is self-similar in amplitude ((a,t) → (a/λ, λt)), and dt is
   adaptive, so the per-frame dynamics are amplitude-independent — amplitude only matters
   against the fixed dissipation. (In 3D it matters through χ.)
+- **2D `Kelvin–Helmholtz shear layers`** (`rmhd2d.html?demo=kh`) and
+  **2D `tearing mode`** (`rmhd2d.html?demo=tearing`) — the two equilibrium demos; see
+  the next section.
 - **3D `Alfven-wave collision`** (`rmhd3d.html?demo=collision`) — 64²×256, Lz = 8π,
   forcing off, two counter-propagating letter packets, each display card riding the
   energy centroid of one of them.
+
+## Equilibrium demos: Kelvin–Helmholtz and tearing (2D)
+
+Unlike every other IC these two are **equilibria plus a seed**, so their knobs are
+physical (U₀, b₀, ψ₀, the layer width a, the seed amplitude) and they skip the ζ±
+normalization entirely — rescaling an equilibrium to a fixed max |∇ζ| would not be the
+equilibrium anyone asked for. They are registered exactly like the letters and the
+drawing (`icRegister` in common.js: `rows` = the control rows the preset shows, `hyper` =
+the exponent it locks, `fields(g)` = the (φ, ψ) pair), so adding a third costs one record.
+
+Both run in a **rectangular box**: 512 × 128 on 4π × 2π, chosen by the `box` select next
+to the resolution (which now means n_x — n_y and both box lengths follow the box). A long
+x holds the layer's far field inside the periodic box, a short y carries exactly one
+unstable wavelength k_y = 2π/L_y. Rectangular boxes are 2D-only; everything downstream
+that used to assume a square perpendicular plane is now min-based or aspect-aware
+(the shell-bin count `nbins`, the arrow subsample, the display and editor canvases,
+which get equal pixels per unit *length* so that contours and arrows are not sheared).
+
+- **KH**: u_y(x) = U₀[tanh((x−L_x/4)/a) − tanh((x−3L_x/4)/a) − 1] — two layers of
+  opposite sign, which is what periodicity forces, and independent of each other while
+  a ≪ |x₂−x₁| = L_x/2 (the preset's default is L_x/2 = 10a). ψ_eq is the same profile
+  scaled by b₀, i.e. an in-plane field along ŷ. The potentials are the analytic
+  antiderivative, a·ln cosh(·) written overflow-safe, so u_y and b_y are exact to
+  round-off. Ideal 2D MHD stabilizes the layer at **b₀ ≥ U₀** (the shear is then slower
+  than the Alfvén speed tying the field lines together); resistivity softens that
+  threshold rather than removing it.
+- **Tearing**: ψ_eq = ψ₀ sech²((x−L_x/2)/a) (Numata/Loureiro-style — net-flux free, and
+  periodic to O(e^{−L_x/2a})), φ_eq = 0. b_y = ψ_eq′ **vanishes on x = L_x/2**, so that
+  line is the resonant surface of every k_y mode; the seed perturbs ψ there with the same
+  even-in-x envelope, so ψ̃(x_s) is exactly the seed slider. L_y/a sets Δ′a (8.40 at the
+  defaults, from a shooting solve of the outer equation — `devtools/eqlinear.py`).
+
+**hyper is LOCKED to 1** by both presets (the select goes disabled and shows why):
+hyper-dissipation has no resistive layer and no Rutherford stage, so it would falsify
+exactly the physics these demos exist to show.
+
+**Per-field dissipation.** The 2D linear operator is diagonal per field, so ν (on φ) and
+η (on ψ) need not be equal: the `η/ν` box next to the diss slider is the inverse magnetic
+Prandtl number, default 1. It is a compile-time constant of the stage kernel — at 1 the
+emitted WGSL is character-for-character the pre-J scalar-dissipation text, and changing
+it rebuilds the solver like a resolution change. Exactly two kernels carry it: `stage`
+(the ψ half of the integrating factor) and `energyPartial` (the magnetic half of the
+dissipation-rate lane). 3D keeps ν = η — its 2×2 Alfvén propagator needs an equal
+diagonal.
+
+**Island width.** The `island width` chart card (2D only) plots W(t) on a log axis, so
+the linear tearing stage is a straight line, the Rutherford stage bends over, and
+saturation flattens. Near the resonant surface
+ψ ≈ ψ_s + ½ψ″(x−x_s)² + ψ̃ cos(k_y y), so the separatrix half-width obeys
+½|ψ″|w² = 2ψ̃ and
+
+> **W = 2w = 4·√(ψ̃/|ψ″|) = 4·√((ψ_X−ψ_O)/2|ψ″|)**
+
+with ψ_X−ψ_O the peak-to-peak of ψ along x = L_x/2 and ψ″ **measured** on the
+equilibrium profile (a 4th-order second difference at x_s, on the grid the run actually
+uses — not the analytic 2ψ₀/a²). The card costs no kernel and no extra round trip: the
+cut chart already reads b_x = −∂_yψ on that line at ~10 Hz, and ψ along it is one
+spectral integration of that line (`icLineIntegrate`, exact for a band-limited periodic
+line where a quadrature rule would be second order; the k = 0 gauge drops out because
+only max − min is used).
+
+**Linear-theory references** (`devtools/eqlinear.py`: a 1D generalized eigenvalue solve
+of the linearized system on Fourier differentiation matrices, at k_y = 2π/L_y, converged
+in the mode count; `devtools/checkj.js` reproduces each with an independent fp64
+pseudospectral 2D run of the app's own ICs):
+
+| case | parameters | γ (eigenvalue) | γ (2D run) |
+| --- | --- | --- | --- |
+| tearing | η = ν = 10⁻³, ψ₀ = 1.65, a = 0.1L_x | 0.028716 | 0.028609 |
+| tearing | η = ν = 10^−2.5 | 0.051395 | 0.051300 |
+| tearing | ν = 10⁻³, η = 10⁻² (η/ν = 10) | 0.114636 | 0.11401 |
+| KH | b₀ = 0, U₀ = 1, a = 0.05L_x, ν = 10^−3.5 | 0.266260 | 0.26657 |
+| KH | b₀ = 0.5 U₀ | 0.206229 | 0.20377 |
+| KH | b₀ = 1.2 U₀ | 0.003646 (resistive residue) | decaying |
+
+Those rates are for a **frozen equilibrium**, which is what an eigenvalue problem assumes.
+The demo free-runs, so ψ_eq also diffuses at ~η/a² and slowly lowers Δ′: over t = 30…80
+at η = 10⁻³ the measured tearing rate is ≈ 0.018, some 37 % below the frozen-equilibrium
+value. KH is unaffected in practice (ν/a² ≪ γ there: 3.6 %).
 
 ## Forcing controls
 
@@ -343,7 +451,8 @@ partial sum: `readPlaneEnergy` forms z± = φ±ψ, inverse-transforms *along z o
 order), and reduces one workgroup per plane with the usual perpendicular-energy weight
 minus the nz² Parseval factor, so the plane values average to E±. The frame loop reads
 back 2·nz floats at ~10 Hz; every display card's z-slice source can be `manual`,
-`track z⁺` or `track z⁻`, and the tracked planes and their (continuous) z coordinates are
+`track z⁺` or `track z⁻` (in the cube view they pick the TOP face's plane instead), and
+the cut chart has its own. The tracked planes and their (continuous) z coordinates are
 printed in the readout. How a tracker follows its packet is one page-wide choice:
 
 - **energy centroid** (default) — the *circular* first moment
@@ -383,10 +492,12 @@ diss to resolve (k_η ≈ (ε/diss³)^¼ must stay below nx/3, e.g. diss ≳ 1.5
 
 - fp32: fine for eyeballs and demos, expect slow energy-budget drift over long runs;
   not a substitute for the JAX solver for science runs.
-- Resolutions 128/256/512 (1024 would hit the WebGPU minimum workgroup-storage limit
-  exactly; see SPEC §8).
+- Resolutions 128/256/512 — n_x, since 2D also offers the wide 4π × 2π box, where n_y is
+  n_x/4 (1024 would hit the WebGPU minimum workgroup-storage limit exactly; see SPEC §8).
+  Only 2D boxes are rectangular; the 3D perpendicular plane stays square.
 - Elsasser forcing only, no snapshots.
-- The perpendicular spectrum dispatches `floor(min(nx,ny)/3)` bins, but
+- The perpendicular spectrum dispatches `nbins` = the smaller of the two axis dealias
+  cutoffs in units of kunit = min(2π/L_x, 2π/L_y) (`floor(min(nx,ny)/3)` on a square box), but
   `round(|k|/kunit)` reaches that value in the corners of the dealias ellipse, so those
   few modes are binned nowhere: `sum(bins)` is a hair below the total energy (1.5% at
   16², far less at production resolutions). Long-standing, cosmetic.

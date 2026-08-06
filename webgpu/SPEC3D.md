@@ -153,8 +153,9 @@ spin-up per-step recompute: as in 2D.
   paints on its own z-plane slider and uploads through the same path), the
   per-real-z-plane Elsasser energy reduction that drives the per-card "track z±" slice
   sources (centroid or hysteretic argmax) and, since Phase H, the cut chart's own plane,
-  the display/chart card system (every chain carries the cube path, so any card may show
-  faces; each chart card carries its own options, including the 3D spectrum card's
+  the display/chart card system (every chain carries the cube path, so any card may take
+  the cube VIEW of any field, with its top face on that card's own plane; each chart card
+  carries its own options, including the 3D spectrum card's
   perpendicular / parallel selection — whose y limits always follow the perpendicular
   spectra), and the `collision` preset / `?demo=collision` URL configuration. See
   README.md.

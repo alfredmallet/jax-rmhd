@@ -57,6 +57,14 @@ Baseline, 32 ranks, 128²×256, lsrk54 + elsasser forcing + adaptive dt, product
 One allreduce costs ~4 ms at 32 ranks and ~22 ms at 128 — which is why the
 communication knobs below only pay at high rank counts.
 
+Benchmark caveat (found during the 2026-08 precision work): before fp64-t landed,
+`initialize` returned a weak-typed `t`, so the SECOND jitted `block_of_steps` call
+retraced (weak → strong scalar), and `bench_phase1.py`'s single warmup call left that
+retrace inside the timed region — historical numbers taken with small `nrep` include
+one recompile (measured up to ~2× at 64²×16 serial/CPU with `nrep=4`). Post-fp64-t the
+carry is stable from the first call (steady-state per-step time is unchanged). When
+comparing against pre-2026-08 numbers, warm up twice or use a large `nrep`.
+
 Scaling, 256²×256 strong: 1331 / 1363 / 762 / 434 ms/step at 16 / 32 / 64 / 128 ranks.
 Within a node the cores saturate memory bandwidth by about 16 (32 ranks is no faster than
 16); across nodes it holds ~88% per doubling. Weak scaling at 256²×4 per rank: 370 / 750 /

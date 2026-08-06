@@ -1,7 +1,8 @@
 # Refinement plan (from Alfred's phone-testing notes, 2026-08-06)
 
-Successor to DEMOS_PLAN.md (phases A–E, complete). Phases F → G(+I) → H → J, in order,
-each gated by a review before the next. Numbers in [brackets] refer to Alfred's notes.
+Successor to DEMOS_PLAN.md (phases A–E, complete). Phases F → G(+I) → H → I2 → J → K, in
+order, each gated by a review before the next. Numbers in [brackets] refer to Alfred's
+notes; I2 and K added 2026-08-06 from Alfred's post-H requests.
 
 ## Standing rule: maintainability [21]
 
@@ -119,6 +120,35 @@ audit; sonnet review.
 GATE H: fp64 node checks of E± and the pairwise cuts against the inlined refvectors' A
 states; node --check; duplication audit; brief sonnet review (can combine with Phase J's).
 
+## Phase I2 — cube view for all fields + contour overlays (pre-J, display-only)
+
+Added 2026-08-06 (Alfred). Physics WGSL stays byte-identical throughout — this is all
+display chain.
+
+1. **Cube faces become a VIEW, not a field**: fourth entry in the per-card z-slice/track
+   dropdown (manual z / track ζ⁺ / track ζ⁻ / cube faces), flagged OUT of the cut card
+   (meaningless there). The field selector stays orthogonal — any field renders as cube
+   (3 boundary-plane preps through the shared colorize path). The special cube entries
+   in the field dropdown are DELETED, not kept alongside.
+2. **Top face follows the card's tracked plane** (cube + track ζ± puts the collision
+   front on top); side faces remain boundary slices.
+3. **Arrows on the visible top face**: CPU-side only — apply the cube's existing 2D
+   affine projection to arrow anchors AND directions on the overlay canvas. Top face
+   only (side faces are x/y-planes; u⊥/b⊥ are not tangent to them).
+4. **Contour overlay (in-plane field lines)**: per-display-card toggle — ψ contours
+   (= B⊥ field lines) and φ contours (= streamlines) — implemented in the shared
+   colorize kernel via fract(ψ/Δψ) bands with a neighbor-texel crossing test (compute
+   shader, no fwidth). Uniform Δψ, so line density ∝ |B⊥| (physically honest). Level
+   spacing: small level-count select with a slowly-adapting range (no per-frame
+   flicker). The potential plane must reach the display scratch whatever field is
+   shown — at most one extra iFFT per card frame.
+
+GATE I2: physics WGSL byte-identical (display diffs = the intended colorize/cube ones
+only); stub boot exercising cube view on ≥3 fields × tracked/manual, contours on/off,
+arrows-on-cube; duplication audit (cube field-dropdown special cases gone, ONE colorize
+implementation); node --check; sonnet review folded into GATE J's (I2 is small and
+display-only; the coordinator still runs the mechanical checks before J builds on it).
+
 ## Phase J — equilibrium demos: KH and tearing [19, 20]
 
 Shared infrastructure first (this is most of the phase):
@@ -166,11 +196,36 @@ GATE J: the above physics checks; byte-diff on all non-equilibrium paths (ratio=
 path bitwise-identical); self-tests; duplication audit (per-field diss must not fork the
 stage kernel — parameterize); sonnet review.
 
+## Phase K — 3D field lines + true k∥ spectrum (post-J)
+
+Added 2026-08-06 (Alfred). This is the GPU-touching half of the field-line idea, split
+out of I2 because it is a real project: new WGSL, volume pass, interpolation.
+
+1. **GPU field-line integration**: b⊥ = ẑ×∇ψ volume pass (spectral gradient + iFFT —
+   REUSE the existing gradient/FFT templates, do not fork) at the field-line update
+   rate (~2 Hz, NOT per step), then a small integration kernel marching
+   dx⊥/dz = b⊥/B0: RK2 (midpoint), bilinear in-plane interpolation, uniform dz steps,
+   periodic ⊥ wrap. Seeds: N_lines grid on the bottom face. Readback = polylines ONLY
+   (N_lines × nz × 2 floats, kilobytes) — never the b⊥ volume.
+2. **Rendering**: polylines through the existing oblique cube projection on the overlay
+   canvas. No WebGL, no occlusion handling.
+3. **True k∥ spectrum**: sample z± along each line during the march (the interpolation
+   is already in hand). Samples are uniform in z and arc length ≈ z to leading order in
+   RMHD, but the signal is NOT periodic (lines exit ⊥-displaced) — Hann window before
+   the FFT and/or second-order structure functions vs parallel lag (the more standard
+   object); average over the line ensemble. Chart option beside the coordinate E(k∥):
+   "k∥ (field line)". Same y-limit rule as H.1: the perp spectrum sets the limits.
+
+GATE K: fp64 node check of the integrator against an analytic b⊥ (single-mode ψ →
+known sinusoidal line displacement) and of the along-line sampler; window/SF
+correctness on a synthetic signal; physics WGSL byte-identical outside the volume
+gradient pass; stub boot; duplication audit; sonnet review.
+
 ## Execution notes for the coordinator
 
 - One opus agent per phase (continue the previous agent when its context is directly
-  relevant); sonnet gate review after F, G(+I), and a combined H+J review; relay review
-  fixes before proceeding.
+  relevant); sonnet gate review after F, G(+I), H (done solo 2026-08-06), a combined
+  I2+J review, and K; relay review fixes before proceeding.
 - The coordinator personally enforces the maintainability rule at each gate: read the
   builder's line-count/duplication report critically; if a phase grew the code more than
   its new logic justifies, send it back before review.

@@ -83,7 +83,15 @@ function flatC(o) {
 
 // integer-shell spectrum: bin b = round(|k|/kunit), b = 0 .. NB-1. NB is tied to the
 // dealias cutoff (min(nx,ny)/3), so every retained mode lands in a bin.
-function nbins(nx, ny) { return Math.floor(Math.min(nx, ny) / 3); }
+// Number of perpendicular shell bins. The bin unit is kunit = min(2pi/Lx, 2pi/Ly) (what
+// makeGrid and the spectrum kernel use), and the shells are counted out to the SMALLER of
+// the two AXIS dealias cutoffs measured in that unit. Called with the box lengths since
+// REFINE_PLAN J.2 (rectangular 2D boxes); with Lx == Ly -- and with the two-argument form
+// the 3D app still uses -- it collapses to the pre-J floor(min(nx,ny)/3) exactly.
+function nbins(nx, ny, Lx, Ly) {
+  const a = Lx || 1, b = Ly || 1, Lm = Math.max(a, b);
+  return Math.floor(Math.min((nx / 3) * (Lm / a), (ny / 3) * (Lm / b)));
+}
 
 // arrow-overlay subsampling: at most 32x32 arrows. stride = max(1, n/32), so nx=32
 // gives stride 1 (the full grid) and 128/256/512 give exactly 32 arrows per axis.
@@ -386,6 +394,26 @@ async function cutLineRead(s, iz) {
   return readBuf(d, s.buf.cutR, 4 * s.g.ny * 4);
 }
 
+// One display chain's contour level table (REFINE_PLAN I2.4). The CPU owns nlev, the
+// GPU (contLevel) owns the adapting range and the spacing, and a ZERO spacing is what
+// switches the overlay off inside the shared shader -- so turning contours off is one
+// 4-byte write, not a pipeline or bind-group change. Identical in both apps.
+function setContLevels(device, D, nlev) {
+  device.queue.writeBuffer(D.buf.contB, 8, new Float32Array([Math.max(1, nlev | 0)]));
+  if (!D.cont) device.queue.writeBuffer(D.buf.contB, 4, new Float32Array([0]));
+}
+// ... and the tail of its per-frame prep, once the app's own inverse transform has put
+// the potential plane where colorize reads it: max |pot| over that plane (the shared
+// reduction) -> the level table. Identical in both apps.
+function contLevelEncode(p, s, D, nPart) {
+  p.setPipeline(s.pl.maxPartial); p.setBindGroup(0, D.bg.maxPartialCont);
+  p.dispatchWorkgroups(nPart);
+  p.setPipeline(s.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinalCont);
+  p.dispatchWorkgroups(1);
+  p.setPipeline(s.pl.contLevel); p.setBindGroup(0, D.bg.contLevel);
+  p.dispatchWorkgroups(1);
+}
+
 // shader-module factory with on-page compile diagnostics (WGSL errors are otherwise
 // silent until the first dispatch)
 function shaderModuleFactory(device) {
@@ -494,34 +522,55 @@ function chartCtx(cv, w, h) {
 // canvas dy = +uy. Relative to a y-up plotting convention that is a sign flip of uy;
 // here it is exactly what keeps the arrows consistent with the colour field.
 const VEC_SIZE = 512;
-// the overlay context of ONE display card (all drawing in a logical 512x512 space)
-function vecCtx(cv) {
+// the overlay context of ONE display card. All drawing is in a logical w-by-h space
+// (VEC_SIZE square unless the card is aspect-correct for a rectangular box -- J.2); the
+// logical size rides on the context so drawArrows / clearArrows need no extra argument.
+function vecCtx(cv, w, h) {
   const dpr = Math.min(2, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
-  cv.width = Math.round(VEC_SIZE * dpr); cv.height = Math.round(VEC_SIZE * dpr);
+  const W = w || VEC_SIZE, H = h || VEC_SIZE;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
   const c = cv.getContext("2d");
-  if (c) c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (c) { c.setTransform(dpr, 0, 0, dpr, 0, 0); c.__w = W; c.__h = H; }
   return c;
 }
-function drawArrows(c, a, nax, nay) {
-  const W = VEC_SIZE, H = VEC_SIZE;
+// `X` is the overlay's affine frame: (u,v) in [0,1]^2 -> canvas pixels, applied to the
+// arrow ANCHORS and -- unless the frame carries its own `d` sub-frame -- to their
+// DIRECTIONS. The default frame is the plane view (u right, v down, the whole square
+// canvas) and reproduces the pre-I2 pixels exactly; a cube card passes the projection of
+// its visible top face (REFINE_PLAN I2.3), which is an affine parallelogram -- so one
+// implementation draws both views.
+//
+// `d` exists for the RECTANGULAR boxes of REFINE_PLAN J.2. Anchors are grid FRACTIONS, so
+// they must go through the (non-square) anchor frame; the gathered vectors are PHYSICAL,
+// so on an aspect-correct card (pixels/length equal on both axes) they must go through an
+// ISOTROPIC map instead -- otherwise a 4:1 box would shear every arrow. `sc` renormalizes
+// to the longest arrow, so only the SHAPE of `d` matters, not its overall scale.
+const ARROW_FRAME = { ox: 0, oy: 0, ax: VEC_SIZE, ay: 0, bx: 0, by: VEC_SIZE };
+function drawArrows(c, a, nax, nay, X) {
+  const W = c.__w || VEC_SIZE, H = c.__h || VEC_SIZE;
   c.clearRect(0, 0, W, H);
+  const F = X || ARROW_FRAME, Dm = F.d || F;
   let mx = 0;
   for (let i = 0; i < nax * nay; i++) {
     const m = Math.hypot(a[2 * i], a[2 * i + 1]);
     if (m > mx) mx = m;
   }
   if (!isFinite(mx) || mx <= 0) return;
-  const cw = W / nax, ch = H / nay;
-  const sc = 0.9 * Math.min(cw, ch) / mx;     // longest arrow ~ 0.9 * subsample cell
+  // longest arrow ~ 0.9 * subsample cell (in cell fractions of the frame, so the
+  // square default gives 0.9 * min(W/nax, H/nay) px exactly as before)
+  const sc = 0.9 * Math.min(1 / nax, 1 / nay) / mx;
   const ca = Math.cos(2.6), sa = Math.sin(2.6);
   const path = new Path2D();
   for (let ix = 0; ix < nax; ix++) {
     for (let iy = 0; iy < nay; iy++) {
       const i = ix * nay + iy;
-      const dx = a[2 * i] * sc, dy = a[2 * i + 1] * sc;
+      const dx = sc * (a[2 * i] * Dm.ax + a[2 * i + 1] * Dm.bx);
+      const dy = sc * (a[2 * i] * Dm.ay + a[2 * i + 1] * Dm.by);
       const len = Math.hypot(dx, dy);
       if (!(len > 0.6)) continue;             // sub-pixel (or NaN) -> skip
-      const x0 = (ix + 0.5) * cw - 0.5 * dx, y0 = (iy + 0.5) * ch - 0.5 * dy;
+      const u = (ix + 0.5) / nax, v = (iy + 0.5) / nay;
+      const x0 = F.ox + u * F.ax + v * F.bx - 0.5 * dx;
+      const y0 = F.oy + u * F.ay + v * F.by - 0.5 * dy;
       const x1 = x0 + dx, y1 = y0 + dy;
       const ex = dx / len, ey = dy / len, hl = Math.min(0.4 * len, 4);
       path.moveTo(x0, y0); path.lineTo(x1, y1);
@@ -585,14 +634,20 @@ const ENERGY_MODES = {
         ["E-", COL.zm, i => hist.ek[i] + hist.em[i] - hist.hc[i]],
         ["E_tot", COL.et, i => hist.ek[i] + hist.em[i]]]
 };
-function drawEnergy(c, o) {
+// ONE time-series chart drawer, shared by the energy trace and the island-width trace
+// (REFINE_PLAN J.4): both are "n series over a common t axis with an automatic log / linear
+// y". `ts` is the time column, `series` is [[label, colour, i -> value], ...] and
+//   o.empty   the placeholder line while there is nothing to draw
+//   o.log     true forces a log y axis (the island trace, where the straight linear-stage
+//             line IS the point); otherwise log is chosen when every value is positive and
+//             the dynamic range is at least 3x -- the pre-J energy-chart rule.
+function drawTimeSeries(c, W, H, P, ts, series, o) {
   if (!c) return;
-  const P = PADE, x0 = P.l, x1 = EW - P.r, y0 = P.t, y1 = EH - P.b;
-  chartFrame(c, EW, EH, P);
-  const n = hist.t.length;
+  const x0 = P.l, x1 = W - P.r, y0 = P.t, y1 = H - P.b;
+  chartFrame(c, W, H, P);
+  const n = ts.length;
   c.textAlign = "left"; c.fillStyle = COL.txt;
-  if (n < 2) { c.fillText("energy vs t — collecting…", x0 + 6, y0 + 13); return; }
-  const series = ENERGY_MODES[(o && o.emode)] || ENERGY_MODES.kmt;
+  if (n < 2) { c.fillText(o.empty, x0 + 6, y0 + 13); return; }
   let lo = Infinity, hi = -Infinity, allPos = true;
   for (let i = 0; i < n; i++) {
     for (const sr of series) {
@@ -602,14 +657,14 @@ function drawEnergy(c, o) {
     }
   }
   if (!isFinite(lo) || !isFinite(hi)) return;
-  const useLog = allPos && hi / lo >= 3;
+  const useLog = allPos && (o.log || hi / lo >= 3);
   let vlo, vhi;
   if (useLog) { vlo = Math.log10(lo); vhi = Math.log10(hi); }
   else { vlo = Math.min(0, lo); vhi = hi; }
   if (!(vhi > vlo)) vhi = vlo + (useLog ? 1 : Math.max(1e-30, Math.abs(vlo)));
   const pad = 0.07 * (vhi - vlo); vlo -= pad; vhi += pad;
-  const t0 = hist.t[0], t1 = hist.t[n - 1], ts = (t1 - t0) || 1;
-  const X = t => x0 + (t - t0) / ts * (x1 - x0);
+  const t0 = ts[0], t1 = ts[n - 1], tspan = (t1 - t0) || 1;
+  const X = t => x0 + (t - t0) / tspan * (x1 - x0);
   const Y = v => px(y1 - ((useLog ? Math.log10(Math.max(v, 1e-300)) : v) - vlo) / (vhi - vlo) * (y1 - y0));
 
   c.strokeStyle = COL.grid; c.fillStyle = COL.txt; c.textAlign = "right"; c.lineWidth = 1;
@@ -628,9 +683,9 @@ function drawEnergy(c, o) {
       c.fillText(v.toExponential(1), x0 - 5, y + 3);
     }
   }
-  c.fillText(t1.toFixed(2), x1, EH - 6);
+  c.fillText(t1.toFixed(2), x1, H - 6);
   c.textAlign = "left";
-  c.fillText("t = " + t0.toFixed(2), x0, EH - 6);
+  c.fillText("t = " + t0.toFixed(2), x0, H - 6);
 
   c.save();
   c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
@@ -638,7 +693,7 @@ function drawEnergy(c, o) {
   for (const sr of series) {
     c.strokeStyle = sr[1]; c.beginPath();
     for (let i = 0; i < n; i++) {
-      const x = X(hist.t[i]), y = Y(sr[2](i));
+      const x = X(ts[i]), y = Y(sr[2](i));
       if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
     }
     c.stroke();
@@ -648,6 +703,33 @@ function drawEnergy(c, o) {
   c.fillStyle = COL.txt; c.textAlign = "right";
   c.fillText(useLog ? "log y" : "lin y", x1 - 5, y0 + 12);
   c.textAlign = "left";
+}
+function drawEnergy(c, o) {
+  drawTimeSeries(c, EW, EH, PADE, hist.t,
+                 ENERGY_MODES[(o && o.emode)] || ENERGY_MODES.kmt,
+                 { empty: "energy vs t — collecting…" });
+}
+
+// ---------------------------------------------------------------------------
+// island width W(t) (REFINE_PLAN J.4)
+// ---------------------------------------------------------------------------
+// Same history discipline as the energy trace, filled from the CUT readback (islandPush
+// in the frame loop) rather than from the stats one, because W is measured on the
+// resonant line. Log y is forced: the linear tearing stage is then a straight line, the
+// Rutherford stage bends over to algebraic, and saturation flattens.
+const islandHist = { t: [], w: [] };
+function islandReset() { islandHist.t.length = 0; islandHist.w.length = 0; }
+const ISLAND_SERIES = [["W", COL.zp, i => islandHist.w[i]]];
+function drawIsland(c) {
+  if (!c) return;
+  if (!icEq.on) {
+    chartFrame(c, CW, EH, PADC);
+    c.textAlign = "left"; c.fillStyle = COL.txt;
+    c.fillText("island width — needs the tearing IC preset", PADC.l + 6, PADC.t + 13);
+    return;
+  }
+  drawTimeSeries(c, CW, EH, PADC, islandHist.t, ISLAND_SERIES,
+                 { log: true, empty: "island width W(t) — collecting…" });
 }
 
 // The binned data is THREE quantities per bin, [E_u | E_b | H_c] (the spectra kernels'
@@ -860,10 +942,12 @@ function drawCut(c, d, o) {
 // window and hands the result to every card of that type.
 //
 // The app supplies the parts that are genuinely per-app through cardsInit(cfg):
-//   fields      [{v, t}] the quantity <option> list (3D adds its cube modes)
+//   fields      [{v, t}] the quantity <option> list
 //   zslice      true in 3D: build the per-card z-source select + slice slider
+//   cube        true in 3D: that select also offers the cube-faces VIEW (I2.1)
 //   nz()        current nz, for the slider range
 //   zsliceOf(c) resolved plane index of card c (slider or tracked peak)
+//   arrowXform() 3D only: the cube top face's (u,v) -> canvas affine, for the arrows
 //   caption(c)  optional text appended to the card's caption
 //   onLayout()  called after any add/remove/close, for app-side label syncing
 // Everything else -- DOM, wiring, render order, throttles -- is shared.
@@ -901,8 +985,20 @@ const CHART_TYPES = {
                    o: [["u", "u_x, u_y"], ["b", "b_x, b_y"], ["z", "|z&#8314;|, |z&#8315;|"]] }],
     draw: (c, d, o) => drawCut(c, d, o),
     hint: "its own line along y at x = L<sub>x</sub>/2, ~10&times;/s (independent of the displays)"
+  },
+  // REFINE_PLAN J.4. `src: "cut"` says it feeds off the cut readback -- the X and O points
+  // live on the resonant surface x = Lx/2, which is the line cutPrep already prepares, so
+  // this card adds no kernel, no buffer and no round trip. 2D only: the equilibria are.
+  island: {
+    label: "island width", w: CW, h: EH, src: "cut", avail: cfg => !cfg.zslice,
+    draw: c => drawIsland(c),
+    hint: "W = 4&radic;(&Delta;&psi;/2|&psi;&Prime;|) from the &psi; extrema on x = L<sub>x</sub>/2, "
+      + "with &psi;&Prime; measured on the equilibrium; log y, so the linear stage is a straight line"
   }
 };
+// which chart types this app offers (the equilibrium ones are 2D-only)
+const chartTypeKeys = () => Object.keys(CHART_TYPES)
+  .filter(k => !CHART_TYPES[k].avail || CHART_TYPES[k].avail(cards.cfg || {}));
 
 const cards = { cfg: null, disp: [], chart: [], hostD: null, hostC: null };
 
@@ -927,15 +1023,36 @@ function _sel(parent, opts, title) {
 // two packet trackers. BOTH card kinds have one -- a display card picks the plane it
 // renders, the cut chart the plane it cuts -- so it is written once. Returns the
 // elements on `card`, which is all the app's zsliceOf() needs.
-function _zSliceControls(card, head) {
+//
+// Since REFINE_PLAN I2.1 the same select also carries the display card's VIEW: cube
+// faces are a view, not a field, so its entries are the cross product of the view
+// (slice / cube) with the plane source -- "cube" prefixing the three source values.
+// The plane a cube card resolves to is its TOP face (I2.2), which is why the two are one
+// control and not two: every combination is meaningful and the header stays one select
+// wide on a phone. `cube` is false for the cut chart, where faces mean nothing.
+const ZSRC_OPTS = [{ v: "manual", t: "z slice" }, { v: "zp", t: "track z&#8314;" },
+                   { v: "zm", t: "track z&#8315;" }];
+const ZSRC_CUBE = [{ v: "cube", t: "cube faces" }, { v: "cubezp", t: "cube + track z&#8314;" },
+                   { v: "cubezm", t: "cube + track z&#8315;" }];
+function _zSliceControls(card, head, cube) {
   const cfg = cards.cfg;
   if (!cfg.zslice) return;
-  card.selZSrc = _sel(head, [{ v: "manual", t: "z slice" }, { v: "zp", t: "track z&#8314;" },
-                             { v: "zm", t: "track z&#8315;" }], "which z plane this card uses");
+  card.selZSrc = _sel(head, cube ? ZSRC_OPTS.concat(ZSRC_CUBE) : ZSRC_OPTS,
+                      "which z plane this card uses" + (cube ? ", and whether it draws the cube faces" : ""));
   card.rSlice = _mk("input", "zslider", head);
   card.rSlice.type = "range"; card.rSlice.min = "0"; card.rSlice.step = "1"; card.rSlice.value = "0";
   card.rSlice.max = String(Math.max(0, cfg.nz() - 1));
 }
+// the plane source of a card, with the view prefix stripped: every caller that resolves
+// a plane (the app's zsliceOf / trackingOn) sees exactly the three pre-I2 values
+function _zSrcPlane(v) { return v.indexOf("cube") === 0 ? (v.slice(4) || "manual") : v; }
+// the contour overlay's per-card selectors (REFINE_PLAN I2.4), in BOTH apps: in-plane
+// field lines of psi (B_perp) or streamlines of phi, on the plane the card displays.
+// The value IS the potential's display mode, so the solver needs no second mapping.
+// (a function, not a const: physics.js -- where DISP_PSI lives -- loads after this file)
+const _contOpts = () => [{ v: "0", t: "no contours" }, { v: String(DISP_PSI), t: "&psi; contours" },
+                         { v: String(DISP_PHI), t: "&phi; contours" }];
+const CONT_LEVELS = [8, 16, 32];
 
 class DisplayCard {
   constructor(ci) {
@@ -945,12 +1062,15 @@ class DisplayCard {
     this.root = root;
     const head = _mk("div", "cardhead", root);
     this.selField = _sel(head, cfg.fields, "displayed quantity");
-    _zSliceControls(this, head);
+    _zSliceControls(this, head, !!cfg.cube);
     const al = _mk("label", "cbl", head);
     this.cbArrow = _mk("input", null, al);
     this.cbArrow.type = "checkbox"; this.cbArrow.checked = true;
     al.appendChild(document.createTextNode("arrows"));
-    al.title = "vector overlay on the |u| / |b| / |z±| modes";
+    al.title = "vector overlay on the |u| / |b| / |z±| modes (on the cube: its top face)";
+    this.selCont = _sel(head, _contOpts(), "in-plane field lines: psi -> B_perp, phi -> streamlines");
+    this.selLev = _sel(head, CONT_LEVELS.map(n => ({ v: n, t: n + " levels" })), "contour level count");
+    this.selLev.style.display = "none";               // only meaningful with contours on
     this.selCmap = _sel(head, CMAP_NAMES.map((n, i) => ({ v: i, t: n })), "colormap");
     this.btnClose = _mk("button", "x", head);
     this.btnClose.innerHTML = "&times;";
@@ -959,44 +1079,82 @@ class DisplayCard {
     const wrap = _mk("div", "cvwrap", root);
     this.wrap = wrap;
     this.cv = _mk("canvas", "cvmain", wrap);
-    this.cv.width = 512; this.cv.height = 512;
     this.cvVec = _mk("canvas", "cvvec", wrap);
     this.cap = _mk("div", "viewcap", root);
+    this.gw = 0; this.gh = 0;
+    this._resize();                       // sizes both canvases BEFORE the GPU context
     this.ctx = gpuCanvasCtx(this.cv);
-    this.vcx = vecCtx(this.cvVec);
     this.vecDrawn = false;
     this.arrowAt = 0;
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
     this.selField.onchange = apply;
     this.selCmap.onchange = apply;
+    this.selCont.onchange = apply;
+    this.selLev.onchange = apply;
     this.cbArrow.onchange = () => { if (!this.cbArrow.checked) this.clearArrows(); apply(); };
-    if (this.selZSrc) this.selZSrc.onchange = apply;
+    if (this.selZSrc) this.selZSrc.onchange = () => { this.clearArrows(); apply(); };
     if (this.rSlice) this.rSlice.oninput = apply;
     this.btnClose.onclick = () => cardClose(this);
   }
   sel() { return parseInt(this.selField.value, 10) | 0; }
   cmap() { return parseInt(this.selCmap.value, 10) | 0; }
-  zsrc() { return this.selZSrc ? this.selZSrc.value : "manual"; }
+  // the PLANE source, view prefix stripped (the app's zsliceOf / trackingOn use this)
+  zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
+  // ... and the view the same select carries: cube faces instead of the one plane
+  cubeView() { return !!this.selZSrc && this.selZSrc.value.indexOf("cube") === 0; }
+  cont() { return parseInt(this.selCont.value, 10) | 0; }
+  nlev() { return parseInt(this.selLev.value, 10) | 0; }
+  // Aspect-correct card geometry (REFINE_PLAN J.2): ONE place decides the card's pixel
+  // box, and the wrapper's CSS ratio, the WebGPU canvas backing store, the overlay canvas
+  // and the arrow frame all follow it. Apps with square boxes supply no cfg.aspect and
+  // get the historical 512x512 with no inline style at all.
+  _resize() {
+    const f = cards.cfg && cards.cfg.aspect, g = (f && f()) || null;
+    const w = (g && g.w) || VEC_SIZE, h = (g && g.h) || VEC_SIZE;
+    if (w === this.gw && h === this.gh) return;
+    this.gw = w; this.gh = h;
+    this.wrap.style.aspectRatio = (w === h) ? "" : (w + " / " + h);   // "" = the CSS 1/1
+    this.cv.width = w; this.cv.height = h;
+    this.vcx = vecCtx(this.cvVec, w, h);
+    this.vecDrawn = false;
+  }
   // push this card's state into the live solver and relabel it
   apply() {
     if (!solver) return;
     const cfg = cards.cfg;
+    this._resize();
     if (this.rSlice) this.rSlice.max = String(Math.max(0, cfg.nz() - 1));
-    solver.setDisplayMode(this.ci, this.sel(), cfg.zsliceOf(this), this.cmap());
-    if (this.rSlice) this.rSlice.disabled = this.zsrc() !== "manual" || !!solver.cubeOf(this.ci);
+    solver.setDisplayMode(this.ci, this.sel(), cfg.zsliceOf(this), this.cmap(),
+                          { cube: this.cubeView(), cont: this.cont(), nlev: this.nlev() });
+    // the slider drives the displayed plane in the slice view and the TOP face in the
+    // cube view, so it is live in both -- and dead whenever a tracker owns the plane
+    if (this.rSlice) this.rSlice.disabled = this.zsrc() !== "manual";
+    this.selLev.style.display = this.cont() ? "" : "none";
     const o = this.selField.options[this.selField.selectedIndex];
     this.cap.innerHTML = (o ? o.innerHTML : "") + (cfg.caption ? cfg.caption(this) : "");
     if (!this.showArrows()) this.clearArrows();
   }
   showArrows() {
-    return !!(this.cbArrow.checked && solver && dispIsVector(solver.modeOf(this.ci))
-              && !solver.cubeOf(this.ci));
+    return !!(this.cbArrow.checked && solver && dispIsVector(solver.modeOf(this.ci)));
+  }
+  // the cube view draws its arrows on the projected top face; a square plane view uses the
+  // default frame (identical pixels to pre-J); a rectangular one needs the aspect-correct
+  // anchor frame with an ISOTROPIC direction sub-frame (see drawArrows).
+  arrowFrame() {
+    const f = cards.cfg && cards.cfg.arrowXform;
+    if (f && this.cubeView()) return f();
+    if (this.gw === this.gh) return null;
+    const s = Math.min(this.gw, this.gh);
+    return { ox: 0, oy: 0, ax: this.gw, ay: 0, bx: 0, by: this.gh,
+             d: { ox: 0, oy: 0, ax: s, ay: 0, bx: 0, by: s } };
   }
   render() { if (this.ctx && solver) solver.render(this.ctx, this.ci); }
-  drawArrows(a, nax, nay) { if (this.vcx) { drawArrows(this.vcx, a, nax, nay); this.vecDrawn = true; } }
+  drawArrows(a, nax, nay) {
+    if (this.vcx) { drawArrows(this.vcx, a, nax, nay, this.arrowFrame()); this.vecDrawn = true; }
+  }
   clearArrows() {
-    if (this.vcx && this.vecDrawn) { this.vcx.clearRect(0, 0, VEC_SIZE, VEC_SIZE); this.vecDrawn = false; }
+    if (this.vcx && this.vecDrawn) { this.vcx.clearRect(0, 0, this.gw, this.gh); this.vecDrawn = false; }
   }
   destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
 }
@@ -1007,7 +1165,7 @@ class ChartCard {
     this.root = root;
     const head = _mk("div", "cardhead", root);
     this.head = head;
-    this.selType = _sel(head, Object.keys(CHART_TYPES).map(k => ({ v: k, t: CHART_TYPES[k].label })),
+    this.selType = _sel(head, chartTypeKeys().map(k => ({ v: k, t: CHART_TYPES[k].label })),
                         "what this chart shows");
     this.selType.value = type;
     this.btnClose = _mk("button", "x", head);
@@ -1026,7 +1184,7 @@ class ChartCard {
     this.btnClose.onclick = () => cardClose(this);
   }
   type() { return this.selType.value; }
-  zsrc() { return this.selZSrc ? this.selZSrc.value : "manual"; }
+  zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
   // the option selects, as { id: value } -- what the type's draw() branches on
   optVals() {
     const o = {};
@@ -1097,11 +1255,13 @@ function addDisplayCard(state) {
     if (state.arrows !== undefined) c.cbArrow.checked = !!state.arrows;
     if (state.zsrc !== undefined && c.selZSrc) c.selZSrc.value = state.zsrc;
     if (state.zslice !== undefined && c.rSlice) c.rSlice.value = String(state.zslice);
+    if (state.cont !== undefined) c.selCont.value = String(state.cont);
+    if (state.nlev !== undefined) c.selLev.value = String(state.nlev);
   }
   return c;
 }
 function addChartCard(type) {
-  const c = new ChartCard(CHART_TYPES[type] ? type : "energy");
+  const c = new ChartCard(chartTypeKeys().indexOf(type) >= 0 ? type : "energy");
   cards.chart.push(c);
   return c;
 }
@@ -1140,7 +1300,7 @@ function cardsLayout(L) {
 function primaryCard() { return cards.disp.length ? cards.disp[0] : null; }
 // clear the traces after an IC change / rebuild (one call, both apps)
 function chartsReset() {
-  histReset();
+  histReset(); islandReset();
   cardsThrottle.spec = 0; cardsThrottle.cut = 0;
   for (const c of cards.chart) c.draw(null);
 }
@@ -1238,15 +1398,22 @@ const CTRL_CFL = [
   { k: "lab", t: "cfl_every" },
   { k: "rng", id: "rCflEvery", min: 1, max: 16, step: 1, v: 4 }, { k: "val", id: "vCflEvery" }
 ];
-// the hyper / diss row: only the slider's default differs between the pages
-const ctrlDissRow = dflt => [
+// the hyper / diss row: the slider's default differs between the pages, and only 2D
+// offers the eta/nu ratio (REFINE_PLAN J.1 -- the 2D propagator is diagonal per field,
+// so nu and eta can differ; the 3D 2x2 Alfven propagator needs an equal diagonal).
+const ctrlDissRow = (dflt, o) => [
   { k: "lab", t: "hyper" },
   { k: "sel", id: "selHyper", o: [[1, "1"], [2, "2"], [3, "3"], [4, "4"]], v: 4 },
   { k: "lab", t: "diss" },
   { k: "rng", id: "rDiss", min: -20, max: -1, step: 0.05, v: dflt }, { k: "val", id: "vDiss" },
   { k: "btn", id: "btnAutoDiss", t: "auto",
     ti: "a marginally-resolved diss for the current hyper / resolution / power" }
-];
+].concat((o && o.ratio) ? [
+  { k: "lab", t: "&eta;/&nu;" },
+  { k: "num", id: "nPm", v: 1, w: 62,
+    ti: "inverse magnetic Prandtl number: nu multiplies phi, eta = ratio*nu multiplies psi. "
+      + "1 is the historical scalar dissipation; changing it rebuilds the solver." }
+] : []);
 // the forcing group is IDENTICAL on both pages (this block was the GATE-G MAJOR)
 const CTRL_GRP_FORCE = {
   id: "grpForce", summary: "forcing", rows: [
@@ -1271,7 +1438,8 @@ const ctrlGrpIC = o => ({
   id: "grpIC", summary: "initial condition", rows: [
     [{ k: "lab", t: "preset" },
      { k: "sel", id: "selIC", o: [["modes", "large-scale modes"], ["letters", o.letters],
-                                  ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]] }],
+                                  ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]]
+                                 .concat(o.presets || []) }],
     [{ k: "lab", t: "&zeta;&#8314; amp" },
      { k: "rng", id: "rAmpP", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpP" },
      { k: "cbl", id: "cbAmpLock", t: "lock", v: true, ti: "move the two potential amplitudes together" }],
@@ -1489,6 +1657,13 @@ function wireCommonControls(opts) {
   for (const id of ["selRes"].concat(opts.rebuildOn || [])) el(id).onchange = rebuild;
   for (const id of ["rDiss", "rTau", "rCfl", "rCflEvery"].concat(opts.sliders || [])) {
     el(id).oninput = applyControls;
+  }
+  // IC-shape sliders (the equilibrium knobs, REFINE_PLAN J.3): a live readout while
+  // dragging, a re-apply on release -- the same contract as the zeta amplitudes, since
+  // they change the initial condition and not the run.
+  for (const id of (opts.icSliders || [])) {
+    el(id).oninput = syncLabels;
+    el(id).onchange = () => { syncLabels(); applyIC(); };
   }
   // the forcing band changes the fmask AND the shell mode list, which are baked into
   // the grid and into the OU kernel's NS -- a rebuild, not an upload. On release only.
@@ -1761,8 +1936,227 @@ function icLetterZeta(g, env) {
 //   env              3D letter z-envelopes (see icLetterZeta), null in 2D
 function icPresetFields(q, preset, ampP, ampM, env) {
   const g = icDrawGrid(q);            // also the geometry record for the letter path
+  icEq.on = false;                    // only an equilibrium builder turns this back on
+  const B = IC_BUILDERS[preset];
+  if (B) return B.fields(g);
   const z = preset === "custom" ? { zp: icDraw.zp, zm: icDraw.zm } : icLetterZeta(g, env);
   return icZetaFields(z.zp, z.zm, g, ampP, ampM);
+}
+
+// ---------------------------------------------------------------------------
+// equilibrium IC presets: Kelvin-Helmholtz and tearing (REFINE_PLAN J.3)
+// ---------------------------------------------------------------------------
+// These are NOT potential-amplitude presets. Their knobs are PHYSICAL (U0, b0, psi0, the
+// layer width a, the seed amplitude), so they build (phi, psi) directly and skip
+// icZetaFields' normalization -- an equilibrium whose amplitude was rescaled to a fixed
+// max |grad zeta| would not be the equilibrium anyone asked for. They register exactly
+// like the letters and the drawing do, one record per preset:
+//   rows    the control-row ids only this preset shows
+//   hyper   the hyper exponent it LOCKS the UI to (undefined = the user's choice)
+//   fields  (g) -> {phi, psi}, on the geometry record icDrawGrid returns
+// 2D only: the equilibria are 2D objects and the 3D page never lists them in #selIC.
+const IC_BUILDERS = {};
+function icRegister(name, rec) { IC_BUILDERS[name] = rec; }
+// What the island-width chart needs to know about the LIVE equilibrium. `on` and `curv`
+// are what islandWidth reads; `a` and `w0` (the initial width) are the record the node
+// checks assert the builders against. An equilibrium builder that leaves `on` false --
+// KH -- keeps the island chart on its "needs the tearing IC" placeholder.
+const icEq = { on: false, a: 0, curv: 0, w0: 0 };
+// a live equilibrium slider (only the page that builds the rows ever calls a builder)
+function icEqNum(id, dflt) { const v = parseFloat(el(id).value); return isFinite(v) ? v : dflt; }
+// does #selIC offer this preset? -- the ONE test for "this page builds that preset's
+// rows", so nothing here ever asks getElementById for an id the page does not have.
+// (options is an HTMLOptionsCollection in a browser: index it, do not Array-method it.)
+function icHasPreset(name) {
+  const o = el("selIC").options;
+  for (let i = 0; i < o.length; i++) if (o[i].value === name) return true;
+  return false;
+}
+const icEqPert = () => Math.pow(10, icEqNum("rEqPert", -3));
+// 4th-order second derivative of a periodic 1D profile at index i
+function icD2(f, i, h) {
+  const n = f.length, w = k => f[(((i + k) % n) + n) % n];
+  return (-w(-2) + 16 * w(-1) - 30 * w(0) + 16 * w(1) - w(2)) / (12 * h * h);
+}
+// ln cosh without the overflow: cosh z = e^|z| (1 + e^-2|z|) / 2
+function icLogCosh(u) { const z = Math.abs(u); return z + Math.log1p(Math.exp(-2 * z)) - Math.LN2; }
+// The DOUBLE shear layer both equilibria build on:
+//   f'(x) = A [tanh((x-x1)/a) - tanh((x-x2)/a) - 1],   x1 = Lx/4,  x2 = 3Lx/4
+// -- two layers of OPPOSITE sign, which is what periodicity forces, and independent of
+// each other while a << |x2 - x1| = Lx/2. What this returns is the POTENTIAL (u_y = d_x phi
+// and b_y = d_x psi are both x-derivatives of one), i.e. the analytic antiderivative
+//   f(x) = A a [ln cosh((x-x1)/a) - ln cosh((x-x2)/a)] - A (x - Lx/2),
+// periodic to O(a e^{-Lx/4a}): the -A x term is exactly what the -A in f' pays for.
+function icShearPot(x, Lx, A, a) {
+  const x1 = 0.25 * Lx, x2 = 0.75 * Lx;
+  return A * a * (icLogCosh((x - x1) / a) - icLogCosh((x - x2) / a)) - A * (x - 0.5 * Lx);
+}
+// broadcast a 1D x profile (plus an optional k_y seed) into a plane
+function icPlaneFromX(prof, seed, g) {
+  const nx = g.nx, ny = g.ny, out = new Float32Array(nx * ny), ky = 2 * Math.PI / g.Ly;
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      out[i * ny + j] = prof[i] + (seed ? seed[i] * Math.cos(ky * j * g.Ly / ny) : 0);
+    }
+  }
+  return out;
+}
+
+// KH [20]: u_y is the double-tanh above; B is the same profile scaled by b0, so B lies
+// in plane along y. Ideal 2D MHD stabilizes the layer once b0 >= U0 (the shear is then
+// slower than the Alfven speed tying the field lines together); resistivity softens that
+// threshold rather than removing it. The seed sits on BOTH layers -- they are independent.
+icRegister("kh", {
+  rows: ["rowEq", "rowKH"], hyper: 1,
+  fields: g => {
+    const U0 = icEqNum("rEqU0", 1), b0 = icEqNum("rEqB0", 0);
+    const a = icEqNum("rEqA", 0.05) * g.Lx, A = icEqPert();
+    // the 1D profiles stay fp64 (icPlaneFromX rounds to fp32 on the way into the plane):
+    // a second difference of an fp32 profile loses 4 digits to cancellation, and the
+    // tearing curvature below is measured off exactly such a profile
+    const nx = g.nx, ph = new Float64Array(nx), ps = new Float64Array(nx), sd = new Float64Array(nx);
+    const x1 = 0.25 * g.Lx, x2 = 0.75 * g.Lx;
+    for (let i = 0; i < nx; i++) {
+      const x = i * g.Lx / nx, e1 = (x - x1) / a, e2 = (x - x2) / a;
+      ph[i] = icShearPot(x, g.Lx, U0, a);
+      ps[i] = icShearPot(x, g.Lx, b0, a);
+      sd[i] = A * (Math.exp(-e1 * e1) + Math.exp(-e2 * e2));
+    }
+    // no resonant surface at x = Lx/2 here (b_y is extremal, not zero), so the island
+    // chart stays off for KH (icEq.on stays false) -- its mixing-layer analogue was left
+    // out of Phase J.
+    icEq.a = a;
+    return { phi: icPlaneFromX(ph, sd, g), psi: icPlaneFromX(ps, null, g) };
+  }
+});
+
+// Tearing [19]: psi_eq = psi0 sech^2((x - Lx/2)/a) (Numata / Loureiro style -- net-flux
+// free and exponentially periodic for a << Lx), phi_eq = 0. b_y = psi_eq' vanishes at
+// x = Lx/2, so that is the resonant surface of EVERY k_y mode and the line the island
+// chart reads. The seed perturbs psi at k_y = 2pi/Ly with the same even-in-x envelope, so
+// its value AT the surface is exactly the slider: psitilde(x_s) = A, and the initial
+// island width is 4 sqrt(A/|psi_eq''|).
+icRegister("tearing", {
+  rows: ["rowEq", "rowTear"], hyper: 1,
+  fields: g => {
+    const psi0 = icEqNum("rEqPsi0", 1.65);
+    const a = icEqNum("rEqA", 0.1) * g.Lx, A = icEqPert();
+    const nx = g.nx, ps = new Float64Array(nx), sd = new Float64Array(nx);
+    for (let i = 0; i < nx; i++) {
+      const s2 = 1 / Math.pow(Math.cosh((i * g.Lx / nx - 0.5 * g.Lx) / a), 2);
+      ps[i] = psi0 * s2;
+      sd[i] = A * s2;
+    }
+    // MEASURED curvature on the resonant surface: a 4th-order second difference of the
+    // equilibrium profile ON THE GRID THE RUN USES, not the analytic -2 psi0/a^2, so the
+    // chart divides by the number the discretization actually has. (fp64 on the profile:
+    // a second difference cancels four digits, which fp32 storage would not survive.)
+    icEq.on = true; icEq.a = a;
+    icEq.curv = Math.abs(icD2(ps, Math.round(0.5 * nx), g.Lx / nx));
+    icEq.w0 = icEq.curv > 0 ? 4 * Math.sqrt(A / icEq.curv) : 0;
+    return { phi: new Float32Array(nx * g.ny), psi: icPlaneFromX(ps, sd, g) };
+  }
+});
+
+// ---- island width (REFINE_PLAN J.4) ---------------------------------------
+// psi along the resonant line, from the b_x = -d_y psi line the CUT kernel already
+// produces: one spectral integration. The line is periodic and band-limited, so the DFT
+// inversion is exact where a quadrature rule would be second order; the k = 0 gauge is
+// dropped because only max - min is used. O(ny^2 / 2) and only while an island card
+// exists, at the cut throttle (~10 Hz).
+function icLineIntegrate(bx, n, Ly) {
+  const out = new Float64Array(n), k0 = 2 * Math.PI / Ly, half = n >> 1;
+  for (let m = 1; m < half; m++) {           // the Nyquist mode of b_x cannot be integrated
+    let cr = 0, ci = 0;                      // consistently (and the dealias has killed it)
+    for (let j = 0; j < n; j++) {
+      const th = 2 * Math.PI * m * j / n;
+      cr += bx[j] * Math.cos(th); ci -= bx[j] * Math.sin(th);
+    }
+    const k = m * k0, pr = -ci / (n * k), pi = cr / (n * k);      // psihat = i bhat / k
+    for (let j = 0; j < n; j++) {
+      const th = 2 * Math.PI * m * j / n;
+      out[j] += 2 * (pr * Math.cos(th) - pi * Math.sin(th));      // + its conjugate partner
+    }
+  }
+  return out;
+}
+// THE island-width formula. Near the resonant surface
+//   psi ~ psi_s + 1/2 psi'' (x - x_s)^2 + psitilde cos(k y),
+// so the separatrix half-width w obeys 1/2 |psi''| w^2 = 2 psitilde and the full width is
+//   W = 2w = 4 sqrt(psitilde / |psi''|),   with  2 psitilde = psi_X - psi_O on the line.
+function islandWidth(vals, ny, Ly) {
+  if (!icEq.on || !(icEq.curv > 0)) return NaN;
+  const psi = icLineIntegrate(vals.subarray(2 * ny, 3 * ny), ny, Ly);
+  let lo = Infinity, hi = -Infinity;
+  for (let j = 0; j < ny; j++) { const v = psi[j]; if (v < lo) lo = v; if (v > hi) hi = v; }
+  const d = hi - lo;
+  return d > 0 ? 4 * Math.sqrt(0.5 * d / icEq.curv) : 0;
+}
+function islandPush(t, vals, ny, Ly) {
+  const w = islandWidth(vals, ny, Ly), H = islandHist;
+  if (!isFinite(w)) return;
+  if (H.t.length && !(t > H.t[H.t.length - 1])) return;       // paused: no duplicate t
+  if (H.t.length >= HIST_MAX) {
+    for (const a of [H.t, H.w]) { let k = 0; for (let i = 0; i < a.length; i += 2) a[k++] = a[i]; a.length = k; }
+  }
+  H.t.push(t); H.w.push(w);
+}
+
+// The equilibrium presets' own control rows, as controlsBuild spec fragments -- next to
+// the builders that read them. The 2D page passes them through ctrlGrpIC({extra: ...});
+// the 3D page passes neither these nor the presets, so its #selIC never offers them.
+const CTRL_ROWS_EQ = [
+  { id: "rowEq", hide: true, items: [
+    { k: "lab", t: "a / L<sub>x</sub>" },
+    { k: "rng", id: "rEqA", min: 0.02, max: 0.2, step: 0.005, v: 0.1,
+      ti: "equilibrium layer width, as a fraction of Lx" }, { k: "val", id: "vEqA" },
+    { k: "lab", t: "seed" },
+    { k: "rng", id: "rEqPert", min: -6, max: -1, step: 0.1, v: -3,
+      ti: "amplitude of the k_y = 2pi/Ly perturbation (log10)" }, { k: "val", id: "vEqPert" }
+  ] },
+  { id: "rowKH", hide: true, items: [
+    { k: "lab", t: "U&#8320;" },
+    { k: "rng", id: "rEqU0", min: 0, max: 2, step: 0.05, v: 1, ti: "shear-flow amplitude" },
+    { k: "val", id: "vEqU0" },
+    { k: "lab", t: "b&#8320;" },
+    { k: "rng", id: "rEqB0", min: 0, max: 2, step: 0.05, v: 0,
+      ti: "in-plane field amplitude; KH is ideally suppressed once b0 >= U0" },
+    { k: "val", id: "vEqB0" }
+  ] },
+  { id: "rowTear", hide: true, items: [
+    { k: "lab", t: "&psi;&#8320;" },
+    { k: "rng", id: "rEqPsi0", min: 0.1, max: 4, step: 0.05, v: 1.65,
+      ti: "flux-function amplitude: psi_eq = psi0 sech^2((x - Lx/2)/a)" },
+    { k: "val", id: "vEqPsi0" }
+  ] },
+  { k: "hintdiv", id: "vEqInfo" }
+];
+// the sliders above, in the order wireCommonControls should wire them (each re-applies
+// the IC on release, exactly like the zeta amplitudes)
+const EQ_SLIDERS = ["rEqA", "rEqPert", "rEqU0", "rEqB0", "rEqPsi0"];
+// their readouts, plus the one-line derived summary (max |b|, the initial island width)
+function syncEqLabels() {
+  if (!icHasPreset("tearing")) return;
+  el("vEqA").textContent = icEqNum("rEqA", 0.1).toFixed(3);
+  el("vEqPert").textContent = icEqPert().toExponential(1);
+  el("vEqU0").textContent = icEqNum("rEqU0", 1).toFixed(2);
+  el("vEqB0").textContent = icEqNum("rEqB0", 0).toFixed(2);
+  el("vEqPsi0").textContent = icEqNum("rEqPsi0", 1.65).toFixed(2);
+  const p = el("selIC").value, q = liveParams(), a = icEqNum("rEqA", 0.1) * q.Lx;
+  let s = "";
+  if (p === "tearing") {
+    const c = 2 * icEqNum("rEqPsi0", 1.65) / (a * a);
+    s = "a = " + a.toPrecision(3) + "  max|b| = " + (0.7698 * icEqNum("rEqPsi0", 1.65) / a).toPrecision(3) +
+        "  k_y a = " + (2 * Math.PI / q.Ly * a).toPrecision(3) +
+        "  W(0) &asymp; " + (4 * Math.sqrt(icEqPert() / c)).toPrecision(3);
+  } else if (p === "kh") {
+    const U0 = icEqNum("rEqU0", 1), b0 = icEqNum("rEqB0", 0);
+    s = "a = " + a.toPrecision(3) + "  k_y a = " + (2 * Math.PI / q.Ly * a).toPrecision(3) +
+        "  b&#8320;/U&#8320; = " + (U0 > 0 ? (b0 / U0).toFixed(2) : "&infin;") +
+        (U0 > 0 && b0 >= U0 ? " &mdash; ideally suppressed" : "");
+  }
+  const e = el("vEqInfo");
+  e.innerHTML = s; e.style.display = s ? "" : "none";
 }
 
 // periodic gaussian z-envelope, peak normalized to exactly 1 ON THE GRID (so a packet
@@ -2100,9 +2494,22 @@ function icEditCaption() {
     ((q.nz || 1) > 1 ? "  &sigma;<sub>z</sub> = " + icSigmaZ().toPrecision(3) +
                        "  on iz = " + icDraw.plane : "");
 }
+// the editor canvas follows the display cards' aspect rule (REFINE_PLAN J.2), so a
+// rectangular box is painted on a rectangular canvas and icDrawPos' u,v mapping stays
+// right. Invalidating icPrev.cx is what makes icDrawCtx re-read the size.
+function icEditResize() {
+  const f = cards.cfg && cards.cfg.aspect, g = (f && f()) || null;
+  const w = (g && g.w) || VEC_SIZE, h = (g && g.h) || VEC_SIZE;
+  const cv = icDraw.cv;
+  if (!cv || (icPrev.cx && icPrev.w === w && icPrev.h === h)) return;
+  if (cv.parentNode) cv.parentNode.style.aspectRatio = (w === h) ? "" : (w + " / " + h);
+  cv.width = w; cv.height = h;
+  icPrev.cx = null;
+}
 function icEditEnter() {
   const cfg = icDraw.cfg, q = cfg && cfg.params && cfg.params();
   if (icDraw.on || !q) { if (!q) showStatus("no solver yet", "info"); return; }
+  icEditResize();
   icDrawGrid(q);
   icDraw.snap = { zp: Float32Array.from(icDraw.zp), zm: Float32Array.from(icDraw.zm),
                   has: icDraw.has };
@@ -2194,6 +2601,29 @@ function icSyncRows() {
   for (const id of ((icDraw.cfg && icDraw.cfg.icRows) || [])) {
     el(id).style.display = (isL || isC) ? "" : "none";
   }
+  // the registered equilibrium builders (REFINE_PLAN J.3): hide every row any of the
+  // presets THIS PAGE offers owns, THEN show the selected one's -- two passes, because
+  // rowEq belongs to both of them
+  const B = (icHasPreset(p) && IC_BUILDERS[p]) || null;
+  for (const k in IC_BUILDERS) {
+    if (icHasPreset(k)) for (const id of IC_BUILDERS[k].rows || []) el(id).style.display = "none";
+  }
+  if (B) for (const id of B.rows || []) el(id).style.display = "";
+  // hyper LOCK: hyper-dissipation falsifies the tearing / Rutherford physics these
+  // presets exist to show, so they PIN the exponent instead of trusting the user to know.
+  const want = B && B.hyper;
+  const hs = el("selHyper");
+  if (want && !hs.disabled) icSyncRows._hyperPrev = hs.value; // remember the user's hyper
+  hs.disabled = !!want;
+  hs.title = want ? "locked to " + want + " by the " + p + " preset (hyper-dissipation "
+                    + "falsifies the resistive-layer physics)" : "";
+  if (want && hs.value !== String(want)) { hs.value = String(want); applyControls(); }
+  // review I2+J finding 2: leaving a locking preset restores the remembered hyper
+  // (demo-preset switches set selHyper explicitly afterwards, so this never fights them)
+  if (!want && icSyncRows._hyperPrev !== undefined) {
+    if (hs.value !== icSyncRows._hyperPrev) { hs.value = icSyncRows._hyperPrev; applyControls(); }
+    icSyncRows._hyperPrev = undefined;
+  }
   if (!isC && icDraw.on) icEditLeave("save");
 }
 
@@ -2240,6 +2670,9 @@ function trackArgmax(e, off, nz, cur) {
 let frameHook = null, readoutExtra = null;
 const cardsThrottle = { spec: 0, cut: 0 };
 const _chartsOf = t => cards.chart.filter(c => c.type() === t);
+// cards fed by one readback SOURCE: a type's `src` (island rides the cut line) or, by
+// default, its own name. One readback serves every card that consumes it.
+const _chartsBySrc = s => cards.chart.filter(c => (CHART_TYPES[c.type()].src || c.type()) === s);
 async function loop() {
   for (;;) {
     await new Promise(r => requestAnimationFrame(r));
@@ -2288,7 +2721,8 @@ async function loop() {
     }
     // arrow overlay, per display card: the gather already ran inside that card's
     // render() pass, so this is only a copy + map round trip. ~10 Hz per card, one
-    // frame of lag, and it never runs per step. Cube mode draws no slice -> cleared.
+    // frame of lag, and it never runs per step. A cube card gathers the plane its TOP
+    // face shows and draws through that face's projection (REFINE_PLAN I2.3).
     // (snapshot: a close button can splice cards.disp while we are awaiting)
     for (const d of cards.disp.slice()) {
       if (!d.showArrows()) { d.clearArrows(); continue; }
@@ -2303,7 +2737,7 @@ async function loop() {
     // cut trace: same throttle / guard idiom as the arrows. SELF-CONTAINED since
     // Phase H -- it runs its own line prep and depends on no display card, only on
     // its own z plane (2D: always 0), so one readback serves every card on that plane.
-    const cutCards = _chartsOf("cut");
+    const cutCards = _chartsBySrc("cut");
     if (cutCards.length && performance.now() - cardsThrottle.cut > 100) {
       cardsThrottle.cut = performance.now();
       const sv = solver, planes = new Map();
@@ -2313,11 +2747,19 @@ async function loop() {
         if (sv !== solver) break;                 // retired while we were awaiting
         planes.set(iz, { vals, Ly: sv.p.Ly });
       }
-      if (sv === solver) for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
+      if (sv === solver) {
+        // the island trace rides this readback (REFINE_PLAN J.4): psi on the resonant
+        // line is one spectral integration of the b_x line already in hand.
+        const d0 = planes.get(0);
+        if (d0 && cutCards.some(c => c.type() === "island")) {
+          islandPush(s[1], d0.vals, sv.p.ny, sv.p.Ly);
+        }
+        for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
+      }
     }
 
     // spectra: a full extra pass over the fields + a map round trip -> throttle hard
-    const specCards = _chartsOf("spectrum");
+    const specCards = _chartsBySrc("spectrum");
     const now = performance.now();
     if (specCards.length && now - cardsThrottle.spec > 300) {
       cardsThrottle.spec = now;

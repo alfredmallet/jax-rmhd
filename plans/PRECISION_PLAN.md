@@ -1,7 +1,17 @@
 # Precision decoupling plan — fp64 time (and scalars) under fp32 fields
 
-**Status: PLAN ONLY — not yet executed** (written 2026-08-06). Decide route before
-starting; the main plan is Route A. CLAUDE.md invariants are binding throughout.
+**Status: EXECUTED — Route A, branch `precision`** (written 2026-08-06; executed
+2026-08-06, commits 5e3cbaa..HEAD: reference, A1+A2, A3, A4, A5, A6 + review fixes).
+Adversarial review verdict: merge-with-notes; all pre-merge findings fixed (cross-rank
+RMHD_PRECISION assertion in `Parameters.__init__`, narrowed `_stored_t_dtype` except
+list, stale notebook line). fp32 before/after outcome (A5 one-off): fields /
+forcing_state / forcing_scale are BITWISE identical to pre-change when t is held fp32
+(all three reference configs, 10 forced steps) — every pin and the RNG bitstream exact;
+with the new fp64 t the differences are ≤4e-6 relative, entirely the exact-vs-quantized
+dt reaching `ou_update`. fp64 is bitwise-unchanged. Bonus: fp64-t removed a latent
+weak-type retrace on the second jitted call (~1.6-2× in short `bench_phase1` runs —
+caveat added to docs/performance.md). Still open: Appendix B (fp64 reductions) as its
+own reviewed change.
 
 ## Goal
 
@@ -98,6 +108,15 @@ t plumbing (all verified):
 - `while_loop`/`scan` carries: t dtype must be fp64 *consistently* from `initialize` /
   `load_snapshot` onward or the carry structure check fails at trace time — which is the
   desired loud failure, not a risk.
+
+## Execution setting
+
+Implementers are opus/sonnet subagents; the session's Fable oversees (dispatches,
+checks against this plan, does not implement); before merge, adversarial review by a
+freshly spawned SEPARATE Fable agent briefed with this plan + CLAUDE.md invariants and
+told to hunt for violations. Suggested assignment: A1 sonnet, A2 opus (promotion rules
+are subtle), A3 sonnet, A4 opus (checkpointing invariants), A5 opus, A6 sonnet.
+Before ANY code change: record the A5 RNG/step reference on the pre-change tree.
 
 ## Tasks
 

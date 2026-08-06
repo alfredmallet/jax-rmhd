@@ -1,17 +1,28 @@
 // Emit every generated WGSL kernel of an app page, at every resolution preset and at
 // the self-test grid, for byte-diffing against a pre-phase baseline.
-// Usage: node dumpwgsl2.js <dir> <page> "" <out.txt>   (kdiff.py diffs two dumps)
+// Usage: node dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10,...}']
+//   (kdiff.py diffs two dumps)
+//
+// The optional 5th argument is a JSON object merged into every parameter set, for
+// dumping a NON-default solver: the 2D per-field dissipation (`{"pm":10}`) and the
+// rectangular boxes (`{"ny":128,"Lx":12.566370614359172,"Ly":6.283185307179586}`) of
+// REFINE_PLAN J are compile-time constants, so they have their own kernel text. Diff two
+// such dumps against each other (the labels are the same) to see exactly which kernels a
+// knob reaches; leave it off for the phase baseline, which it does not change by a byte.
 "use strict";
 const fs = require("fs");
 const [dir, page, demo, out] = process.argv.slice(2);
+const ovr = process.argv[6] ? JSON.parse(process.argv[6]) : null;
 const env = require("./stubenv")(dir, page, demo);
 const is3d = env.is3d;
 const presets = is3d ? [[64, 32], [128, 32], [128, 64], [256, 64]] : [[128], [256], [512]];
 const chunks = [];
 function dump(label, P) {
+  if (ovr) Object.assign(P, ovr);
   const S = env.run(`function(P){
     const gr = makeGrid(P);
-    const g = Object.assign(${is3d ? "{ nx: P.nx, ny: P.ny, nz: P.nz }" : "{ nx: P.nx, ny: P.ny }"}, gr);
+    const g = Object.assign(${is3d ? "{ nx: P.nx, ny: P.ny, nz: P.nz }"
+                                   : "{ nx: P.nx, ny: P.ny, Lx: P.Lx, Ly: P.Ly, pm: P.pm }"}, gr);
     return buildShaders(g);
   }`, P);
   for (const k of Object.keys(S).sort()) chunks.push("########## " + label + " :: " + k + " ##########\n" + S[k] + "\n");
