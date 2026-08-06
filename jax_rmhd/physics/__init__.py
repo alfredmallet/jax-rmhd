@@ -1,6 +1,7 @@
 from typing import NamedTuple,Tuple,Callable,Optional
 from . import rmhd
 from . import gdi
+from .. import _precision
 
 class EquationRecipe(NamedTuple):
     set_timestep_func: Callable
@@ -35,6 +36,21 @@ def _halo_start_enabled(params):
 # NB: The dissipative terms are handled via integrating factor in timestepping.py
 def construct_rhs(recipe):
     def rhs(state,kgrid,params):
+        # Tripwire (plans/PRECISION_PLAN.md A3): dtype is static metadata on a traced array,
+        # so these are plain python asserts checked once per unique trace -- zero runtime
+        # overhead, not baked into the compiled graph. They catch a dtype leak (a strong
+        # float64/complex128 array multiplying fields under x64) right here instead of it
+        # surfacing later as a silent ~2x fp32 slowdown or a precision regression.
+        assert state.fields.dtype == _precision.ctype, (
+            f"state.fields dtype {state.fields.dtype} != expected field dtype "
+            f"{_precision.ctype} (RMHD_PRECISION={_precision.precision}) -- a strong-typed "
+            "array leaked into field math upstream; see plans/PRECISION_PLAN.md A2/A3."
+        )
+        assert state.forcing_state.dtype == _precision.ctype, (
+            f"state.forcing_state dtype {state.forcing_state.dtype} != expected field dtype "
+            f"{_precision.ctype} (RMHD_PRECISION={_precision.precision}) -- a strong-typed "
+            "array leaked into forcing math upstream; see plans/PRECISION_PLAN.md A2/A3."
+        )
         use_halo = recipe.halo_start_func is not None and _halo_start_enabled(params)
         halo = recipe.halo_start_func(state,kgrid,params) if use_halo else None
         grads=recipe.grad_func(state,kgrid,params)

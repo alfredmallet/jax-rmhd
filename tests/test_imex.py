@@ -222,8 +222,16 @@ def _toy_grad(state, kgrid, params):
 
 def _real_mode(params, f):
     """k-space representation of the real (1,1,nx,ny) field built by f(x,y)."""
-    x = jnp.linspace(0, params.Lx, params.nx, endpoint=False).reshape(1, 1, -1, 1)
-    y = jnp.linspace(0, params.Ly, params.ny, endpoint=False).reshape(1, 1, 1, -1)
+    # dtype=ftype (PRECISION_PLAN.md A2 pattern, e.g. run.py::initialize): x64 is
+    # unconditionally on, so an unpinned linspace is a STRONG float64 array that poisons
+    # f(x,y) and its fft -- the resulting Fh would be complex128 under RMHD_PRECISION=32,
+    # which is exactly the leak construct_rhs's dtype tripwire (A3) now catches when this
+    # helper's output gets _replace'd straight into state.fields, bypassing initialize's
+    # own choke-point .astype(ctype).
+    x = jnp.linspace(0, params.Lx, params.nx, endpoint=False,
+                     dtype=_precision.ftype).reshape(1, 1, -1, 1)
+    y = jnp.linspace(0, params.Ly, params.ny, endpoint=False,
+                     dtype=_precision.ftype).reshape(1, 1, 1, -1)
     return grids.fft(jnp.broadcast_to(f(x, y), (1, 1, params.nx, params.ny)), params)
 
 
@@ -247,7 +255,13 @@ def _mfg_N(fields, t, kgrid, params):
 
 
 def _mfg_term(state, grads, kgrid, params, halo=None):
-    return _mfg_N(state.fields, state.t, kgrid, params)
+    # PRECISION_PLAN.md A3: this manufactured term func is the second place (besides
+    # run.py::_advance_forcing) found to read state.t (float64, every precision) straight
+    # into field math -- _mfg_N mixes it with Fh (ftype/ctype-pinned) via jnp.sin/cos,
+    # which promotes the whole RHS to complex128 under RMHD_PRECISION=32 and trips
+    # construct_rhs's dtype tripwire one scan step later. Downcast before the field mix,
+    # exactly like _advance_forcing's dt.
+    return _mfg_N(state.fields, state.t.astype(_precision.ftype), kgrid, params)
 
 
 _MFG_RECIPE = EquationRecipe(set_timestep_func=_toy_set_timestep, term_funcs=(_mfg_term,),
@@ -282,7 +296,9 @@ def _stiff_term(state, grads, kgrid, params, halo=None):
     # nl is scaled outside as a fraction of gamma^2, so that at the quasi-static amplitude
     # |u| ~ |G|/gamma the nonlinear term is that fraction of the drive -- weak but present.
     nl = params.eqpars["nl"]
-    return (_stiff_drive(params, state.t)
+    # PRECISION_PLAN.md A3: same state.t-into-field-math leak as _mfg_term above --
+    # downcast before _stiff_drive multiplies it against G (ftype/ctype-pinned).
+    return (_stiff_drive(params, state.t.astype(_precision.ftype))
             + nl * grids.fft(grids.ifft(state.fields, params)**2, params))
 
 
