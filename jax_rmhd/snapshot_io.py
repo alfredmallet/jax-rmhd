@@ -173,18 +173,46 @@ def _restore_step(snap_path, isnap, state_like):
     finally:
         getattr(handler, "close", lambda: None)()
 
-def _state_template(params, nz, sharding=None, fields_sharding=None):
+T_DTYPE = jnp.float64
+# SimulationState.t is float64 at BOTH field precisions (PRECISION_PLAN.md A2/A4: an
+# fp32 t stops advancing after ~1.7e7 steps), so every snapshot written since that
+# change stores a float64 t and every state handed back by load_snapshot carries one.
+# Snapshots written BEFORE it store a float32 t -- see _stored_t_dtype / the explicit
+# cast in load_snapshot, and docs/checkpointing.md.
+
+
+def _stored_t_dtype(snap_path, isnap, default=T_DTYPE):
+    # dtype the `t` leaf was actually WRITTEN with, read from the checkpoint's own
+    # metadata. Old (pre-fp64-t) snapshots say float32, current ones float64; the
+    # restore template asks for whatever is on disk and load_snapshot then widens it
+    # to float64 in ONE explicit place, instead of leaning on an implicit cast inside
+    # orbax's type handler.
+    # Barrier-free like every other read here: a bare StandardCheckpointHandler, never
+    # a CheckpointManager (docs/checkpointing.md). Any failure (missing/older-orbax
+    # metadata) falls back to `default` -- orbax's own widening cast then handles it,
+    # which is what this code did before the fallback existed.
+    d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), _ITEM)
+    handler = ocp.StandardCheckpointHandler()
+    try:
+        md = handler.metadata(epath.Path(d))
+        tree = getattr(md, "tree", md)
+        dt = tree["t"].dtype
+        return default if dt is None else jnp.dtype(dt)
+    except Exception:
+        return default
+    finally:
+        getattr(handler, "close", lambda: None)()
+
+
+def _state_template(params, nz, sharding=None, fields_sharding=None, t_dtype=T_DTYPE):
     # SimulationState of ShapeDtypeStructs with `nz` z-planes; sharding=None lets orbax
-    # follow the checkpoint's own recorded sharding.
+    # follow the checkpoint's own recorded sharding. `t_dtype` is the STORED dtype of t
+    # (see _stored_t_dtype): float64 for current snapshots, float32 for pre-A4 ones.
     ftype, ctype = get_precision_types()
     nkx, nky = params.nx, params.ny // 2 + 1
     fs = sharding if fields_sharding is None else fields_sharding
     return SimulationState(
-        # t is float64 at BOTH precisions (PRECISION_PLAN.md A2: an fp32 t freezes after
-        # ~1.7e7 steps), so the restore template asks for float64 regardless of ftype.
-        # Snapshots written before that change store a float32 t; orbax casts it up on
-        # restore, which is value-preserving. A4 owns the explicit-repair story here.
-        t=jax.ShapeDtypeStruct((), jnp.float64, sharding=sharding),
+        t=jax.ShapeDtypeStruct((), t_dtype, sharding=sharding),
         fields=jax.ShapeDtypeStruct((params.nfields, nz, nkx, nky), ctype, sharding=fs),
         # forcing_state/key/scale have no z-axis and are identical on every rank
         forcing_state=jax.ShapeDtypeStruct((params.n_ou, 2, nkx, nky), ctype, sharding=sharding),
@@ -199,9 +227,14 @@ def _load_flat_global(isnap, snap_path, params):
     _pin_array_handler()
     mesh = comms.get_mesh()
     tmpl = _state_template(params, params.nz, sharding=NamedSharding(mesh, P()),
-                           fields_sharding=NamedSharding(mesh, P(None, comms.Z_AXIS)))
+                           fields_sharding=NamedSharding(mesh, P(None, comms.Z_AXIS)),
+                           t_dtype=_stored_t_dtype(snap_path, isnap))
     st = _restore_or_advise(snap_path, isnap, tmpl)
-    return st._replace(forcing_key=_wrap_key(st.forcing_key))
+    # same explicit widening as the process-local path below: t is float64 in every
+    # state this module returns, whatever the snapshot stored. Unconditional, so every
+    # process runs it (the global arrays here are collectively operated on).
+    return st._replace(t=jnp.asarray(st.t, dtype=T_DTYPE),
+                       forcing_key=_wrap_key(st.forcing_key))
 
 def load_snapshot(isnap,snap_path,params):
     snap_path = str(snap_path)
@@ -230,9 +263,15 @@ def load_snapshot(isnap,snap_path,params):
     z_start_l = params.rank * nz_load
     z_end_l = (params.rank + 1) * nz_load
 
+    # rank 0's dir is read below for the forcing leaves and is present in both layouts;
+    # every rank of one save was written by the same code, so its `t` dtype is the
+    # snapshot's t dtype (float32 for pre-A4 snapshots, float64 since).
+    path_0 = os.path.join(snap_path, "0") if layout == "per_rank" else snap_path
+
     # Expected tree for one saved rank's file, pinned to this process's own device.
     state_like_s = _state_template(params, nz_save if params.spatial_dimensions == 3 else 1,
-                                   sharding=_local_sharding())
+                                   sharding=_local_sharding(),
+                                   t_dtype=_stored_t_dtype(path_0, isnap))
 
     #iterate over saved ranks and extract overlapping z-slices (fields/t only)
     for rank_s in range(p_save):
@@ -261,9 +300,13 @@ def load_snapshot(isnap,snap_path,params):
 
     # forcing_state/forcing_key/forcing_scale: no z-axis, identical on all saved ranks by
     # construction -> restore once from rank 0
-    path_0 = os.path.join(snap_path, "0") if layout == "per_rank" else snap_path
     state_0 = _restore_or_advise(path_0, isnap, state_like_s)
-    restored = SimulationState(t=jnp.asarray(restored_t), fields=restored_fields,
+    # t is float64 in every state this module hands back, whatever the snapshot stored:
+    # a pre-A4 snapshot restores as float32 (its stored dtype) and is WIDENED here --
+    # exactly, float32 values are a subset of float64 -- so a restarted run cannot
+    # inherit a time variable that freezes (PRECISION_PLAN.md A4). The same explicit
+    # cast, not an implicit orbax one, in _load_flat_global.
+    restored = SimulationState(t=jnp.asarray(restored_t, dtype=T_DTYPE), fields=restored_fields,
                                forcing_state=jnp.asarray(state_0.forcing_state),
                                forcing_key=_wrap_key(state_0.forcing_key),
                                forcing_scale=jnp.asarray(state_0.forcing_scale))
@@ -322,7 +365,10 @@ def old_snapshot_repair(snap_path, params, ranks=None):
             p_save += 1
     nz_save = params.nz // p_save if params.spatial_dimensions == 3 else 1
 
-    t_like = jax.ShapeDtypeStruct((), ftype)
+    # t_like's dtype is replaced per step by the STORED one (_stored_t_dtype): legacy
+    # snapshots hold an fp32 or fp64 t depending on the precision they were written at,
+    # and the repaired copy is written with the current float64 t (T_DTYPE) below.
+    t_like = jax.ShapeDtypeStruct((), T_DTYPE)
     fields_like = jax.ShapeDtypeStruct((params.nfields, nz_save, nkx, nky), ctype)
     forcing_state_like = jax.ShapeDtypeStruct((params.n_ou, 2, nkx, nky), ctype)
     forcing_key_like = jax.ShapeDtypeStruct((), get_key_dtype())
@@ -339,20 +385,28 @@ def old_snapshot_repair(snap_path, params, ranks=None):
         _recover_interrupted_repair(path_r)
         mngr = ocp.CheckpointManager(path_r, options=options)
         for step in mngr.all_steps():
+            t_like_s = jax.ShapeDtypeStruct((), _stored_t_dtype(path_r, step))
+            legacy_s = legacy_like._replace(t=t_like_s)
+            ancient_s = ancient_like._replace(t=t_like_s)
+            current_s = current_like._replace(t=t_like_s)
             try:
-                old = mngr.restore(step, args=ocp.args.StandardRestore(legacy_like))
-                new = SimulationState(t=old.t, fields=old.fields, forcing_state=old.forcing_state,
+                old = mngr.restore(step, args=ocp.args.StandardRestore(legacy_s))
+                # widen t to float64 on the way out: the repaired step is a CURRENT
+                # snapshot and current snapshots carry an fp64 t (PRECISION_PLAN.md A4)
+                new = SimulationState(t=jnp.asarray(old.t, dtype=T_DTYPE), fields=old.fields,
+                                      forcing_state=old.forcing_state,
                                       forcing_key=old.forcing_key,
                                       forcing_scale=jnp.zeros((params.n_ou,), dtype=ftype))
             except ValueError:
                 try:
-                    mngr.restore(step, args=ocp.args.StandardRestore(current_like))
+                    mngr.restore(step, args=ocp.args.StandardRestore(current_s))
                     print(f"rank {rank_s} step {step}: already current, skipping")
                     continue
                 except ValueError:
                     try:
-                        old = mngr.restore(step, args=ocp.args.StandardRestore(ancient_like))
-                        new = SimulationState(t=old.t, fields=old.fields,
+                        old = mngr.restore(step, args=ocp.args.StandardRestore(ancient_s))
+                        new = SimulationState(t=jnp.asarray(old.t, dtype=T_DTYPE),
+                                              fields=old.fields,
                                               forcing_state=jnp.zeros((params.n_ou, 2, nkx, nky), dtype=ctype),
                                               forcing_key=jax.random.key(params.forcing_seed),
                                               forcing_scale=jnp.zeros((params.n_ou,), dtype=ftype))

@@ -108,7 +108,11 @@ last = max(mngr.all_steps())
 ftype, ctype = sn.get_precision_types()
 nz_local = params.nz // params.size
 state_like = SimulationState(
-    t=jax.ShapeDtypeStruct((), ftype),
+    # t is float64 at BOTH field precisions (PRECISION_PLAN.md A4), so a direct
+    # StandardRestore template must ask for sn.T_DTYPE, not ftype: orbax silently
+    # DOWNCASTS a stored float64 t into a float32 template slot -- no error, just a
+    # t that has quietly lost its low bits.
+    t=jax.ShapeDtypeStruct((), sn.T_DTYPE),
     fields=jax.ShapeDtypeStruct((params.nfields, nz_local, params.nx, params.ny // 2 + 1), ctype),
     forcing_state=jax.ShapeDtypeStruct((params.n_ou, 2, params.nx, params.ny // 2 + 1), ctype),
     forcing_key=jax.ShapeDtypeStruct((), sn.get_key_dtype()),

@@ -9,6 +9,8 @@
 #   - reads NEVER construct a CheckpointManager (manager restores barrier -> deadlock);
 #   - forcing_scale is always a concrete (n_ou,) array, never None;
 #   - nsnap == orbax max_to_keep, enumerated with get_saved_steps (never mngr.all_steps());
+#   - t comes back float64 whatever the snapshot stored: new saves hold an fp64 t, pre-A4
+#     ones an fp32 t that load_snapshot widens exactly (PRECISION_PLAN.md A4);
 #   - old_snapshot_repair upgrades both legacy layouts in place and is idempotent.
 #
 # pytest: `pytest tests/test_snapshot_roundtrip.py`.  Script: `python tests/...py`.
@@ -67,7 +69,9 @@ def _decorated_state(params, seed=0):
     nkx, nky = params.nx, params.ny // 2 + 1
     st = make_state(params, ic=multimode_ic)
     return st._replace(
-        t=jnp.asarray(0.375, dtype=ftype),
+        # t is float64 at both field precisions (PRECISION_PLAN.md A2/A4) -- what
+        # initialize/load_snapshot produce, so a hand-built state must match
+        t=jnp.asarray(0.375, dtype=jnp.float64),
         forcing_state=_rand_c((params.n_ou, 2, nkx, nky), rng, ctype),
         forcing_key=jax.random.split(jax.random.key(7))[1],
         forcing_scale=jnp.asarray(rng.standard_normal((params.n_ou,)), dtype=ftype))
@@ -244,6 +248,62 @@ def test_pruning_window_keeps_last_nsnap():
             except FileNotFoundError:
                 pruned_gone = True
             c.check("a pruned step raises FileNotFoundError", pruned_gone)
+
+
+def test_old_fp32_t_widens_to_float64():
+    # PRECISION_PLAN.md A4: SimulationState.t is float64 at both field precisions, but
+    # snapshots written before that change store a float32 t. load_snapshot must restore
+    # them with the dtype ON DISK and widen explicitly, so a restart can never inherit a
+    # time variable that stops advancing (t + dt == t after ~1.7e7 fp32 steps).
+    #
+    # The fp32-t snapshot is SYNTHESIZED here (a bare-handler save of a state whose t is
+    # float32) rather than generated with a pre-change checkout, so this runs in CI. It
+    # was cross-checked once against a REAL pre-change snapshot (forced fp32 16^3 run
+    # written by commit 5e3cbaa, stored t 0x1.921fb6p-2): restores with t float64 equal
+    # to the stored value bit for bit, complex64 fields, and continues stepping.
+    if _single_process_only("test_old_fp32_t_widens_to_float64"):
+        return
+    params, kgrid = ctx()
+    state = _decorated_state(params, seed=11)
+    old = state._replace(t=jnp.asarray(state.t, dtype=jnp.float32))  # pre-A4 on-disk dtype
+    t_stored = float(old.t)
+    with snap_dir() as d:
+        _write_raw_step(d, 0, old)
+        with checks() as c:
+            c.check(f"fixture really stores a float32 t (got "
+                    f"{sn._stored_t_dtype(d, 0)})",
+                    sn._stored_t_dtype(d, 0) == np.float32)
+            back = sn.load_snapshot(0, d, params)
+            c.check(f"restored t is float64 (got {back.t.dtype})",
+                    back.t.dtype == jnp.float64)
+            c.check(f"... with the stored value preserved exactly "
+                    f"({float(back.t)!r} vs {t_stored!r})", float(back.t) == t_stored)
+            c.check("the other leaves are untouched by the t repair",
+                    back.fields.dtype == state.fields.dtype
+                    and np.array_equal(np.asarray(back.fields), np.asarray(state.fields))
+                    and np.array_equal(np.asarray(back.forcing_state),
+                                       np.asarray(state.forcing_state))
+                    and back.forcing_scale.shape == (params.n_ou,)
+                    and np.array_equal(np.asarray(back.forcing_scale),
+                                       np.asarray(state.forcing_scale)))
+            # and it is a usable restart point: t stays float64 through the stepper
+            with snap_dir() as out, managed_manager(params, out, nsnap=2) as m:
+                end = jr.simulate(back, kgrid, params, t_snap=10.0,
+                                  t_end=t_stored + 0.02, mngr=m, save=False)
+            c.check(f"a run continued from it keeps t float64 (got {end.t.dtype}, "
+                    f"t {float(end.t):.4f})",
+                    end.t.dtype == jnp.float64 and float(end.t) >= t_stored + 0.02)
+
+    # the other half of A4: a snapshot written TODAY stores float64 t on disk, so
+    # nothing downstream (postprocessing, resharding templates) sees an fp32 t again.
+    with snap_dir() as d2:
+        with managed_manager(params, d2, nsnap=2) as m:
+            sn.save_snapshot(0, _decorated_state(params, seed=12), m, params)
+            m.wait_until_finished()
+        with checks() as c:
+            c.check(f"a newly written snapshot stores t as float64 "
+                    f"(got {sn._stored_t_dtype(d2, 0)})",
+                    sn._stored_t_dtype(d2, 0) == np.float64)
 
 
 # ------------------------------------------------- synthesized legacy checkpoints
