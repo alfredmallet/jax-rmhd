@@ -10,6 +10,7 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
+from jax_rmhd import _precision
 from jax_rmhd.grids import local_z_coords
 from jax_rmhd.physics.shared_physics import z_derivatives
 
@@ -42,7 +43,7 @@ def test_z_derivative_convergence_order():
     # the ~1e-7 fp32 noise floor to shave a few hundredths off the fitted slope
     # (observed order~3.80 exactly, vs >3.99 at fp64) -- loosen slightly rather
     # than drop the finest point (which would weaken the fp64 check).
-    order_tol_d1 = 3.8 if jax.config.jax_enable_x64 else 3.5
+    order_tol_d1 = 3.8 if _precision.precision == "64" else 3.5
     with checks() as c:
         c.check(f"d/dz fitted convergence order > {order_tol_d1} (nominally 4th order)",
                 order_d1 > order_tol_d1, f"order={order_d1:.3f}, errs={err_d1}")
@@ -61,7 +62,7 @@ def test_z_derivative_zero_on_constant():
     nz_local = local_z_coords(params).size
     f = 3.7 * jnp.ones((1, nz_local, 1, 1))
     df_dz, d4f_dz4 = z_derivatives(f, params)
-    tol = 1e-10 if jax.config.jax_enable_x64 else 1e-3
+    tol = 1e-10 if _precision.precision == "64" else 1e-3
     with checks() as c:
         c.check("d/dz of a constant field is zero to near machine precision",
                 float(jnp.max(jnp.abs(df_dz))) < tol,
@@ -93,7 +94,7 @@ def test_z_derivative_matches_modified_wavenumber():
     expected_d4 = k4 * f
     err1 = float(jnp.max(jnp.abs(df_dz - expected_d1))) / float(jnp.max(jnp.abs(expected_d1)))
     err4 = float(jnp.max(jnp.abs(d4f_dz4 - expected_d4))) / float(jnp.max(jnp.abs(expected_d4)))
-    tol = 1e-10 if jax.config.jax_enable_x64 else 1e-3
+    tol = 1e-10 if _precision.precision == "64" else 1e-3
     with checks() as c:
         c.check("periodic d/dz matches the stencil's known modified-wavenumber factor",
                 err1 < tol, f"rel_err={err1:.3e}, tol={tol:.1e}")

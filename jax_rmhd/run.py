@@ -10,28 +10,42 @@ from .physics.shared_physics import ou_update
 from .types import SimulationState
 from .grids import fft, local_z_coords, dealias_mask
 from . import comms
+from . import _precision
 
 def initialize(func,params):
     # use this to initialize with some known function.
     # func should be a function that sets ALL fields in the problem, in real space.
     @partial(jax.jit,static_argnums=(0,))
     def _init(f):
-        x = jnp.linspace(0, params.Lx, params.nx, endpoint=False).reshape(1,-1,1)
-        y = jnp.linspace(0, params.Ly, params.ny, endpoint=False).reshape(1,1,-1)
+        # x/y (and local_z_coords) are pinned to ftype so the user's IC function and its fft
+        # run at FIELD precision: x64 is unconditionally on, so unpinned linspaces would make
+        # the whole IC transform float64 and the .astype below a lossy afterthought rather
+        # than a no-op. See plans/PRECISION_PLAN.md A2.
+        x = jnp.linspace(0, params.Lx, params.nx, endpoint=False,
+                         dtype=_precision.ftype).reshape(1,-1,1)
+        y = jnp.linspace(0, params.Ly, params.ny, endpoint=False,
+                         dtype=_precision.ftype).reshape(1,1,-1)
         if params.spatial_dimensions==3:
             z_device = local_z_coords(params).reshape(-1,1,1)
             fields = fft(f(x,y,z_device),params) * dealias_mask(params)
         else:
             fields = fft(f(x,y),params) * dealias_mask(params)
+        # ONE cast, after the fft+mask: whatever dtype the caller's IC function returned
+        # (a bare jnp.zeros/jnp.array in an IC is float64 under x64), the state that leaves
+        # here is complex64/complex128 exactly as RMHD_PRECISION says.
+        fields = fields.astype(_precision.ctype)
         nkx, nky = params.nx, params.ny//2 + 1
         forcing_state = jnp.zeros((params.n_ou, 2, nkx, nky), dtype=fields.dtype)
         forcing_key = jax.random.key(params.forcing_seed)
         # forcing_scale is ALWAYS a concrete (n_ou,) array (zeros when unused) so every
         # SimulationState — and therefore every checkpoint — has one uniform pytree
         # structure regardless of forcing/forcing_norm_per_step settings.
-        forcing_scale = jnp.zeros((params.n_ou,))
-        return SimulationState(t=0.0,fields=fields,forcing_state=forcing_state,forcing_key=forcing_key,
-                               forcing_scale=forcing_scale)
+        forcing_scale = jnp.zeros((params.n_ou,), dtype=_precision.ftype)
+        # t is DELIBERATELY float64 at every precision (PRECISION_PLAN.md): at fp32,
+        # t + dt stops advancing once t/dt > 1/eps32 ~ 1.7e7 steps. It must never re-enter
+        # field math without an explicit downcast -- see _advance_forcing below.
+        return SimulationState(t=jnp.float64(0.0),fields=fields,forcing_state=forcing_state,
+                               forcing_key=forcing_key,forcing_scale=forcing_scale)
     state = _init(func)
     if params.comm_backend == "jax":
         state = comms.state_to_global(state, params)  # process-local -> z-sharded global arrays
@@ -40,7 +54,11 @@ def initialize(func,params):
 def _advance_forcing(new_state, prev_t, kgrid, params):
     # Per-full-step forcing update: OU advance plus, when forcing_norm_per_step, the
     # power-normalization scale reused across all sub-stages of the next step.
-    dt = new_state.t - prev_t
+    # THE one place a t-difference re-enters field math (ou_update's decay/diffusion factors
+    # multiply the complex forcing_state). t is float64 at every precision, so the downcast
+    # is mandatory: without it the forcing state -- and then the fields -- silently upcast.
+    # Any future time-dependent term func must do the same before mixing t into field math.
+    dt = (new_state.t - prev_t).astype(_precision.ftype)
     new_forcing_state, new_forcing_key = ou_update(
         new_state.forcing_state, new_state.forcing_key, dt, params, kgrid
     )

@@ -30,6 +30,7 @@ import warnings
 import jax
 
 import jax_rmhd as jr
+from jax_rmhd import _precision
 
 # A parameter set that exercises tuple-valued args (JSON lists on disk), the forcing
 # block and a couple of non-default scalars.
@@ -87,7 +88,9 @@ def _capture(fn):
 
 
 def _current_precision():
-    return "64" if jax.config.read("jax_enable_x64") else "32"
+    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on;
+    # this must match config.py's own record (jax_rmhd._precision.precision).
+    return _precision.precision
 
 
 def test_from_snapshot_roundtrips_ctor_args():

@@ -9,7 +9,7 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-from jax_rmhd import diagnostics, grids
+from jax_rmhd import _precision, diagnostics, grids
 from jax_rmhd.physics import rmhd, shared_physics
 from jax_rmhd.physics.shared_physics import bracket, gradk
 from jax_rmhd.run import block_of_steps
@@ -82,7 +82,7 @@ def test_bracket_matches_analytic_solution():
     analytic = _analytic_bracket_fg(x, y)
     scale = float(jnp.max(jnp.abs(analytic)))
     rel_err = float(jnp.max(jnp.abs(computed - analytic))) / scale
-    tol = 1e-12 if jax.config.jax_enable_x64 else 2e-5
+    tol = 1e-12 if _precision.precision == "64" else 2e-5
     with checks() as c:
         c.check("bracket matches hand-derived analytic solution (modes well below cutoff)",
                 rel_err < tol, f"rel_err={rel_err:.3e}, tol={tol:.1e}")
@@ -122,7 +122,7 @@ def test_bracket_conservation_identity():
     residual = float(jnp.abs(jnp.sum(integrand)))
     scale = float(jnp.sum(jnp.abs(integrand)))
     rel = residual / scale
-    tol = 1e-10 if jax.config.jax_enable_x64 else 1e-4
+    tol = 1e-10 if _precision.precision == "64" else 1e-4
     with checks() as c:
         c.check("sum(f * {f,g}) == 0 (conservation identity)", rel < tol,
                 f"rel={rel:.3e}, tol={tol:.1e}")
@@ -160,7 +160,7 @@ def test_ideal_run_conserves_energy_and_cross_helicity():
                 float(final_state.t) > 0.0 and bool(jnp.all(jnp.isfinite(final_state.fields))))
     E1 = sum(float(e) for e in diagnostics.energy(final_state, kgrid, params))
     H1 = float(shared_physics.perp_inner_product(final_state.fields[0], final_state.fields[1], kgrid, params))
-    tol = 1e-6 if jax.config.jax_enable_x64 else 1e-3
+    tol = 1e-6 if _precision.precision == "64" else 1e-3
     with checks() as c:
         c.check("ideal 20-step run conserves total energy",
                 abs(E1 - E0) / abs(E0) < tol, f"E0={E0:.10e}, E1={E1:.10e}")

@@ -26,7 +26,7 @@ import os
 import jax
 import numpy as np
 
-from jax_rmhd import diagnostics
+from jax_rmhd import _precision, diagnostics
 from jax_rmhd.run import block_of_steps
 from jax_rmhd.timestepping import get_scheme
 
@@ -111,7 +111,7 @@ def test_zero_dissipation_conserves_energy():
     # but only 8x above it, too tight against cross-machine fp32 fft variation
     # (same precedent as test_z_stencils: looser fp32 tolerance, values commented).
     e_start, e_end, _ = _decay_run(0.0)
-    tol = 1e-6 if jax.config.jax_enable_x64 else 1e-5
+    tol = 1e-6 if _precision.precision == "64" else 1e-5
     rel = abs(e_end - e_start) / abs(e_start)
     with checks() as c:
         c.check(f"diss=0 run conserves energy to {tol:.0e} (relative)",

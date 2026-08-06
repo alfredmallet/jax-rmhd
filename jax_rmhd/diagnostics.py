@@ -1,11 +1,21 @@
 import jax.numpy as jnp
 import jax.numpy.fft as ft
+from . import _precision
 from .physics.shared_physics import perp_gradsq, perp_reduce, perp_inner_product
 
 def _binned(kmag, energies, kunit, kmax, bin_factor):
     # radial binning shared by perpspec/parspec: (bin_centers, one spectrum per energy)
     dk = kunit*bin_factor
-    bin_edges = jnp.arange(0,kmax+dk,dk)
+    # A2 DECISION (plans/PRECISION_PLAN.md): bin_edges is pinned to ftype rather than left at
+    # the x64 default float64. It is reduction-side, so float64 here would not corrupt any
+    # field -- but it is not free either: jnp.histogram compares the float32 kmag against
+    # float64 edges, which can move a mode sitting on a bin boundary into a different bin, and
+    # it makes bin_centers float64 while every other energy-like diagnostic stays at field
+    # precision (CLAUDE.md's "keep new energy-like diagnostics on this convention"). Pinning
+    # keeps fp32 diagnostics bit-for-bit what they were before x64 and is a no-op at fp64.
+    # Deliberately accumulating reductions at float64 over fp32 fields is PRECISION_PLAN
+    # Appendix B -- a separate, reviewed change that regenerates recorded references.
+    bin_edges = jnp.arange(0,kmax+dk,dk,dtype=_precision.ftype)
     specs = tuple(jnp.histogram(kmag,bins=bin_edges,weights=e/dk)[0] for e in energies)
     return ((bin_edges[1:] + bin_edges[:-1]) / 2,) + specs
 
@@ -29,7 +39,10 @@ def parspec(state,kgrid,params,bin_factor=2.0):
         fkz = fk if params.z_spectral else ft.fft(fk,axis=0)
         full = jnp.sum(0.5*perp_gradsq(fkz,fkz,kgrid),axis=(1,2)) * norm
         return full[:half+1].at[1:half].add(full[half+1:][::-1])
-    kz = ft.rfftfreq(params.nz) * params.nz * 2 * jnp.pi / params.Lz
+    # dtype=ftype (same A2 decision as _binned's bin_edges): unpinned this is a strong
+    # float64 under x64, and jnp.histogram promotes the float32 spectra it weights up to
+    # float64 -- parspec would silently return a different dtype from perpspec/energy.
+    kz = ft.rfftfreq(params.nz, dtype=_precision.ftype) * params.nz * 2 * jnp.pi / params.Lz
     kunit = 2 * jnp.pi / params.Lz
     return _binned(kz,(spec(state.fields[0]),spec(state.fields[1])),kunit,half*kunit,bin_factor)
 

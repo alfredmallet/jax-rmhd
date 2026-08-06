@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jax_rmhd import _precision
 from jax_rmhd.run import block_of_steps
 from jax_rmhd.timestepping import get_scheme
 
@@ -65,7 +66,7 @@ def test_z_invariant_3d_matches_2d():
     # (z stencils on constants) that the 2D branch skips entirely, so this is
     # round-off, not bitwise. Observed rel ~1e-15 (fp64) / ~1e-7 (fp32) after 20
     # steps of O(1) nonlinear dynamics.
-    tol = 1e-14 if jax.config.jax_enable_x64 else 1e-5
+    tol = 1e-14 if _precision.precision == "64" else 1e-5
     rel = float(np.max(np.abs(f3 - f2[:, None])) / np.max(np.abs(f2)))
 
     with checks() as c:

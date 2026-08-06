@@ -22,6 +22,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from . import _precision
+
 # Taylor branch for sinh(z)/z at small |z| (z = s*tau): the closed form is 0/0 at a
 # defective mode (s=0). Thresholds are on |z^2| and are evaluated here at fp64, then used
 # as weak-typed python floats so an fp32 run compares in fp32. Truncating after z^6/5040
@@ -30,8 +32,9 @@ _TOL_Z2_FP64 = 1e-6   # |z| < 1e-3
 _TOL_Z2_FP32 = 1e-4   # |z| < 1e-2
 
 def _tol_z2():
-    # precision-dependent Taylor cutoff (RMHD_PRECISION is read once, at jax_rmhd import)
-    return _TOL_Z2_FP64 if jax.config.read("jax_enable_x64") else _TOL_Z2_FP32
+    # precision-dependent Taylor cutoff -- FIELD precision (RMHD_PRECISION), not the
+    # (now unconditionally-on) jax_enable_x64 flag; see jax_rmhd/_precision.py.
+    return _TOL_Z2_FP64 if _precision.precision == "64" else _TOL_Z2_FP32
 
 class IdentityPropagator:
     # L = 0: what an equation set with no linear_matrix_func gets. Both hooks are no-ops.

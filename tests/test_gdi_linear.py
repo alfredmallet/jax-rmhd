@@ -43,12 +43,13 @@ import jax.numpy as jnp
 import numpy as np
 
 import jax_rmhd as jr
-from jax_rmhd import propagators
+from jax_rmhd import _precision, propagators
 from jax_rmhd.physics import gdi
 
 
 def _fp64():
-    return bool(jax.config.read("jax_enable_x64"))
+    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    return _precision.precision == "64"
 
 
 def _gdi_params(nx=8, ny=8, Lx=2*np.pi, Ly=2*np.pi, Ln=2.0, nu_in=0.3, v0=1.0,

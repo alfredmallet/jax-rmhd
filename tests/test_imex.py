@@ -52,7 +52,7 @@ import numpy as np
 import pytest
 
 import jax_rmhd as jr
-from jax_rmhd import grids, timestepping
+from jax_rmhd import _precision, grids, timestepping
 from jax_rmhd.diagnostics import energy
 from jax_rmhd.physics import EquationRecipe, equation_registry
 from jax_rmhd.run import block_of_steps
@@ -65,7 +65,8 @@ _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
 
 
 def _fp64():
-    return bool(jax.config.read("jax_enable_x64"))
+    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    return _precision.precision == "64"
 
 
 def _run(state, kgrid, params, nsteps, schemestr):

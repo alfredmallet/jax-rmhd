@@ -12,7 +12,7 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-from jax_rmhd import comms, diagnostics, grids
+from jax_rmhd import _precision, comms, diagnostics, grids
 from jax_rmhd.physics.shared_physics import gradk, perp_inner_product
 
 
@@ -34,7 +34,7 @@ def test_parseval_spectral_vs_realspace():
     real_psi = _realspace_grad_meansq(state.fields[1], kgrid, params)
 
     # Same quantity, different fp path.
-    rtol = 1e-12 if jax.config.jax_enable_x64 else 2e-5
+    rtol = 1e-12 if _precision.precision == "64" else 2e-5
     with checks() as c:
         c.check("Parseval: spectral <|grad phi|^2> matches real-space path",
                 bool(jnp.allclose(spec[0], real_phi, rtol=rtol)),

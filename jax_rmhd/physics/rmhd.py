@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import numpy as np
 from .. import grids
+from .. import _precision
 from . import shared_physics
 from .shared_physics import gradk,bracket,z_derivatives
 from .. import comms
@@ -23,12 +24,17 @@ def linear_matrix(kgrid,params):
     diss_par, hyper = _diss_hyper(params)
     zdiss = _z_diss_k(params)   # validated in BOTH modes: it is meaningless without kz
     if not params.z_spectral:
-        diss = jnp.array(diss_par).reshape(-1,1,1,1)
+        # dtype=ftype: a bare jnp.array of python floats is a STRONG float64 under x64, and
+        # -diss*ksq**hyper evaluated at float64 and rounded to float32 afterwards is NOT the
+        # float32 product (diss values are not exactly float32-representable). Pin at the
+        # source; grids._attach_linear_operator's cast is only a backstop.
+        diss = jnp.array(diss_par, dtype=_precision.ftype).reshape(-1,1,1,1)
         return -diss*kgrid.ksq**hyper
     # phi/psi equations: dt phi = i*kz*psi + ..., dt psi = i*kz*phi + ... -- exactly the
     # spectral-z form of LinearTerm's d(psi)/dz in the (vorticity/-k_perp^2) equation and
     # d(phi)/dz in the psi equation. Eigenvalues +-i*kz: Alfven waves, phase speed 1.
-    diss = jnp.broadcast_to(jnp.array(diss_par).reshape(-1), (params.nfields,))
+    diss = jnp.broadcast_to(jnp.array(diss_par, dtype=_precision.ftype).reshape(-1),
+                            (params.nfields,))
     kz = _kz_deriv(kgrid,params)
     # (nz,1,1) kz against (nkx,nky) k_perp broadcasts every entry to (nz,nkx,nky)
     dphi = -diss[0]*kgrid.ksq**hyper - zdiss*kz**4
@@ -134,7 +140,10 @@ def _forcing_scale_from(fields, f_raw, kgrid, params):
     Ppm = shared_physics.perp_inner_product(za,f_raw,kgrid,params,batch=True)
     #factor 2: E_tot = (E+ + E-)/2, so this makes each forcing_power_elsasser entry a
     #contribution to the TOTAL energy injection rate, in the same units as forcing_power
-    eps = 2.0*jnp.asarray(params.forcing_power_elsasser)
+    # dtype=ftype: jnp.asarray of a python tuple is a strong float64 under x64, and this
+    # scale ends up multiplying the forcing envelope (and is stored in state.forcing_scale,
+    # which the dtype contract says is ftype).
+    eps = 2.0*jnp.asarray(params.forcing_power_elsasser, dtype=_precision.ftype)
     return shared_physics.safe_scale(eps,Ppm,params.forcing_scale_max)
 
 def forcing_scale(state,kgrid,params):

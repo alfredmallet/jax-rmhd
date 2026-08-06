@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from typing import NamedTuple,Tuple
 from .propagators import get_propagator
+from . import _precision
 
 # Standard RK4 with integrating factor.
 # Problem is it uses a lot of memory on k1-k4.
@@ -74,9 +75,12 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
 
 # used if params.lsrk_scan=True
 def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop):
-    alphas_arr = jnp.array(scheme.alphas)
-    betas_arr = jnp.array(scheme.betas)
-    gammas_arr = jnp.array(scheme.gammas)
+    # dtype=ftype: these are STRONG arrays (unlike the unrolled loop's python-float
+    # coefficients, which are weak and adopt the field dtype) and they multiply delta/fields
+    # inside the scan, so unpinned they would upcast the whole step under x64.
+    alphas_arr = jnp.array(scheme.alphas, dtype=_precision.ftype)
+    betas_arr = jnp.array(scheme.betas, dtype=_precision.ftype)
+    gammas_arr = jnp.array(scheme.gammas, dtype=_precision.ftype)
 
     init_delta = jnp.zeros_like(state.fields)
     init_carry = (state,init_delta)
@@ -197,11 +201,16 @@ def imex2r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=
 # the per-stage coefficient 5-tuple. Carry is exactly the 3 registers (x, y, z).
 def _imex2r_scan_stages(state, kgrid, params, rhs, prop, scheme, dt, x, y, z):
     a_im, a_ex, b, c, s = _scheme_entries(scheme)
-    stage_pars = (jnp.array([a_ex[k][k-1] - b[k-1] for k in range(1,s)]),
-                  jnp.array([a_im[k][k-1] - b[k-1] for k in range(1,s)]),
-                  jnp.array([a_im[k][k] for k in range(1,s)]),
-                  jnp.array([b[k] for k in range(1,s)]),
-                  jnp.array([c[k] for k in range(1,s)]))
+    # dtype=ftype for the same reason as _lsrk_scan_stages: the SCANNED tableau entries are
+    # strong arrays that multiply fields. (The unrolled loop above reads the same tableaus as
+    # python floats -- weak, no pin needed, and the differences a_ex[k][k-1]-b[k-1] are still
+    # formed in python/float64 exactly as before, then rounded once on the way into ftype.)
+    ft_ = _precision.ftype
+    stage_pars = (jnp.array([a_ex[k][k-1] - b[k-1] for k in range(1,s)], dtype=ft_),
+                  jnp.array([a_im[k][k-1] - b[k-1] for k in range(1,s)], dtype=ft_),
+                  jnp.array([a_im[k][k] for k in range(1,s)], dtype=ft_),
+                  jnp.array([b[k] for k in range(1,s)], dtype=ft_),
+                  jnp.array([c[k] for k in range(1,s)], dtype=ft_))
 
     def scan_stage_func(carry, stage_vals):
         xk, yk, zk = carry

@@ -31,6 +31,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import jax_rmhd as jr
+from jax_rmhd import _precision
 from jax_rmhd.run import block_of_steps
 from jax_rmhd.timestepping import get_scheme, lsrk_advance, rk_advance
 
@@ -48,7 +49,7 @@ def _run(params, kgrid, ic, nsteps, schemestr):
 def test_lsrk_scan_vs_unrolled_bitwise():
     # Two Parameters differing only in lsrk_scan -- each gets its OWN kgrid via ctx
     # (never reuse a kgrid across different Parameters).
-    tol = 1e-13 if jax.config.jax_enable_x64 else 1e-6
+    tol = 1e-13 if _precision.precision == "64" else 1e-6
     with checks() as c:
         for schemestr in ("lsrk33", "lsrk54"):
             p_scan, kg_scan = ctx(lsrk_scan=True)
@@ -87,7 +88,7 @@ def test_rk44_lsrk54_integrate_alfven_wave():
     # land near 1e-10 (fp64) and lsrk33 near 1e-8 -- tolerances carry >=100x margin.
     # fp32 sits on the round-off floor of the fft/initialize pipeline instead
     # (~1e-6), so all schemes share one loose fp32 tolerance.
-    x64 = jax.config.jax_enable_x64
+    x64 = _precision.precision == "64"
     tols = dict(rk44=1e-8 if x64 else 1e-4,
                 lsrk54=1e-8 if x64 else 1e-4,
                 lsrk33=1e-6 if x64 else 1e-4)

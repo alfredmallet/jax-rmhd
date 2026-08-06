@@ -22,13 +22,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_rmhd import diagnostics
+from jax_rmhd import _precision, diagnostics
 
 _TOL = None  # set per-test: 1e-12 fp64 / 1e-5 fp32 (fft round-off floor)
 
 
 def _tol():
-    return 1e-12 if jax.config.jax_enable_x64 else 1e-5
+    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    return 1e-12 if _precision.precision == "64" else 1e-5
 
 
 def test_perpspec_sums_to_energy():

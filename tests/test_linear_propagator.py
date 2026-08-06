@@ -31,12 +31,13 @@ import numpy as np
 import scipy.linalg
 
 import jax_rmhd as jr
-from jax_rmhd import propagators
+from jax_rmhd import _precision, propagators
 from jax_rmhd.physics import rmhd
 
 
 def _fp64():
-    return bool(jax.config.read("jax_enable_x64"))
+    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    return _precision.precision == "64"
 
 
 def _tols():
@@ -211,7 +212,9 @@ def test_rmhd_uses_the_diagonal_backend_with_eqpars_dissipation():
     # hdiss field itself is gone (the steppers only see the hook now).
     params, kgrid = ctx(dims=2, diss=(0.01, 0.02), hyper=2)
     prop = propagators.get_propagator(kgrid, params)
-    expected = -jnp.array((0.01, 0.02)).reshape(-1, 1, 1, 1)*kgrid.ksq**2
+    # dtype=ftype: kgrid.lin_L is built at FIELD precision (grids/rmhd pin it), so the
+    # reference has to be too -- a bare jnp.array is a strong float64 under x64.
+    expected = -jnp.array((0.01, 0.02), dtype=_precision.ftype).reshape(-1, 1, 1, 1)*kgrid.ksq**2
     arr = jnp.ones((params.nfields, 1, params.nx, params.ny//2 + 1),
                    dtype=jnp.result_type(float, complex))
     with checks() as c:

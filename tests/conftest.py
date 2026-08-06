@@ -36,8 +36,12 @@ def pytest_addoption(parser):
 
 def pytest_collection_modifyitems(config, items):
     import jax
+    from jax_rmhd import _precision
 
-    x64 = bool(jax.config.jax_enable_x64)
+    # FIELD precision (RMHD_PRECISION), not the jax_enable_x64 config flag: that flag
+    # is now unconditionally on (jax_rmhd/__init__.py), so it no longer distinguishes
+    # an "fp32 session" from an "fp64 session" -- only _precision knows that.
+    x64 = _precision.precision == "64"
     size = mpi_size()
     run_slow = config.getoption("--runslow")
     on_savio = os.environ.get("RMHD_SAVIO") == "1"

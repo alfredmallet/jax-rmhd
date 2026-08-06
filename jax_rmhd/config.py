@@ -1,6 +1,7 @@
 import jax
 import numpy as np
 from . import comms
+from . import _precision
 from ._mpi_compat import HAVE_MPI4JAX, HAVE_MPI4PY, MPI, _NullComm, launcher_world_size
 from .physics import equation_registry
 import os
@@ -259,7 +260,7 @@ class Parameters():
         if self.rank == 0:
             # round-trip through JSON up front
             rec = json.loads(json.dumps(self._init_args, default=_json_scalar))
-            rec["_precision"] = "64" if jax.config.read("jax_enable_x64") else "32"
+            rec["_precision"] = _precision.precision
             if os.path.exists(path):
                 with open(path) as f:
                     old = json.load(f)
@@ -315,7 +316,7 @@ class Parameters():
             rec = json.load(f)
         rec.pop("_created", None)
         prec = rec.pop("_precision", None)
-        current_prec = "64" if jax.config.read("jax_enable_x64") else "32"
+        current_prec = _precision.precision
         rank0 = MPI.COMM_WORLD.Get_rank() == 0 if HAVE_MPI4PY else True
         # legacy shim: diss/hyper were ctor args before 2026-08-01, they are equation
         # parameters now. Fold before the unknown-key check so they are not "unknown".

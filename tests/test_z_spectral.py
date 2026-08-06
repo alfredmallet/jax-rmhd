@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 
 import jax_rmhd as jr
+from jax_rmhd import _precision
 from jax_rmhd import diagnostics as dg
 from jax_rmhd.grids import fft, ifft
 from jax_rmhd.physics import rmhd, shared_physics
@@ -26,7 +27,8 @@ _BOX = dict(nx=16, ny=16, Lx=2.0 * np.pi, Ly=2.0 * np.pi, Lz=2.0 * np.pi, dims=3
 
 
 def _fp64():
-    return bool(jax.config.jax_enable_x64)
+    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    return _precision.precision == "64"
 
 
 def _have_mpi4py():

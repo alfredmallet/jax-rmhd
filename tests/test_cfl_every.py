@@ -21,6 +21,7 @@ bootstrap()
 import jax
 import numpy as np
 
+from jax_rmhd import _precision
 from jax_rmhd.run import block_of_steps
 from jax_rmhd.timestepping import get_scheme
 
@@ -45,9 +46,9 @@ def test_cfl_every_4_matches_every_1():
     p4, end4 = _run(8, adaptive_timestep=True, cfl_every=4)  # 2 blocks of 4
     f1, f4 = np.asarray(end1.fields), np.asarray(end4.fields)
     rel = float(np.max(np.abs(f4 - f1)) / np.max(np.abs(f1)))
-    tol = 1e-14 if jax.config.jax_enable_x64 else 1e-6
+    tol = 1e-14 if _precision.precision == "64" else 1e-6
     dt = _dt_expected(p1)
-    t_tol = 1e-12 if jax.config.jax_enable_x64 else 1e-4
+    t_tol = 1e-12 if _precision.precision == "64" else 1e-4
     with checks() as c:
         c.check(f"dt is pinned by the 1/dz term (t after 8 steps == 8*cfl_safety*dz, "
                 f"t={float(end1.t):.6f})",
@@ -77,7 +78,7 @@ def test_nblock_rounds_up_to_whole_blocks():
     p4, end = _run(10, adaptive_timestep=True, cfl_every=4)
     dt = _dt_expected(p4)
     t = float(end.t)
-    t_tol = 1e-10 if jax.config.jax_enable_x64 else 1e-3
+    t_tol = 1e-10 if _precision.precision == "64" else 1e-3
     with checks() as c:
         c.check(f"10 steps at cfl_every=4 run 12 steps (t={t:.6f} vs 12*dt={12*dt:.6f})",
                 abs(t - 12 * dt) < t_tol,

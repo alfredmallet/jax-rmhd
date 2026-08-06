@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 
 import jax_rmhd as jr
-from jax_rmhd import snapshot_io
+from jax_rmhd import _precision, snapshot_io
 from jax_rmhd.physics import shared_physics
 
 _FORCING = dict(nx=32, ny=32, dims=2, diss=(0.0, 0.0), forcing=True,
@@ -62,7 +62,7 @@ def test_shell_noise_symmetry_and_support():
     for _ in range(50):
         fs, key = shared_physics.ou_update(fs, key, 0.01, p, kg)
     mirror = (-jnp.arange(p.nx)) % p.nx
-    tol = 1e-12 if jax.config.jax_enable_x64 else 1e-4
+    tol = 1e-12 if _precision.precision == "64" else 1e-4
     with checks() as c:
         for ky_idx in (0, -1):
             col = fs[..., ky_idx]

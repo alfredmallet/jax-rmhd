@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from typing import NamedTuple, Any
 from .types import SimulationState
+from . import _precision
 
 class _LegacyCkptState(NamedTuple):
     # pre-forcing_scale checkpoint tree, used only by old_snapshot_repair to read
@@ -24,10 +25,9 @@ class _AncientCkptState(NamedTuple):
     fields: Any
 
 def get_precision_types():
-    if jax.config.read("jax_enable_x64"):
-        return jnp.float64, jnp.complex128
-    else:
-        return jnp.float32, jnp.complex64
+    # FIELD precision (RMHD_PRECISION), not the (now unconditionally-on)
+    # jax_enable_x64 flag -- a re-export of _precision.ftype/ctype.
+    return _precision.ftype, _precision.ctype
 
 def get_key_dtype():
     return jax.eval_shape(lambda: jax.random.key(0)).dtype
@@ -180,7 +180,11 @@ def _state_template(params, nz, sharding=None, fields_sharding=None):
     nkx, nky = params.nx, params.ny // 2 + 1
     fs = sharding if fields_sharding is None else fields_sharding
     return SimulationState(
-        t=jax.ShapeDtypeStruct((), ftype, sharding=sharding),
+        # t is float64 at BOTH precisions (PRECISION_PLAN.md A2: an fp32 t freezes after
+        # ~1.7e7 steps), so the restore template asks for float64 regardless of ftype.
+        # Snapshots written before that change store a float32 t; orbax casts it up on
+        # restore, which is value-preserving. A4 owns the explicit-repair story here.
+        t=jax.ShapeDtypeStruct((), jnp.float64, sharding=sharding),
         fields=jax.ShapeDtypeStruct((params.nfields, nz, nkx, nky), ctype, sharding=fs),
         # forcing_state/key/scale have no z-axis and are identical on every rank
         forcing_state=jax.ShapeDtypeStruct((params.n_ou, 2, nkx, nky), ctype, sharding=sharding),

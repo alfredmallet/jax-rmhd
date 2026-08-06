@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import jax_rmhd as jr
-from jax_rmhd import snapshot_io
+from jax_rmhd import _precision, snapshot_io
 from jax_rmhd.physics import rmhd, shared_physics
 
 _F = dict(nx=32, ny=32, dims=2, diss=(0.0, 0.0), forcing=True,
@@ -56,7 +56,7 @@ def test_elsasser_equal_envelopes_reduce_to_momentum():
     # z+/z- denominators come from perp_inner_product(batch=True) (row-wise sums) while
     # momentum uses the flat reduction: equal values, different
     # summation order -- so f_phi agreement is round-off, not bitwise.
-    tol = 1e-13 if jax.config.jax_enable_x64 else 1e-5
+    tol = 1e-13 if _precision.precision == "64" else 1e-5
     rel = float(np.max(np.abs(F_e[0] - F_m[0])) / np.max(np.abs(F_m[0])))
     with checks() as c:
         c.check("equal elsasser envelopes: f_psi is EXACTLY zero (bitwise)",

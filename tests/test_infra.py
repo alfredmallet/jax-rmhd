@@ -18,7 +18,9 @@ from jax_rmhd import snapshot_io
 @pytest.mark.fp64
 def test_fp64_session():
     import jax
-    assert jax.config.jax_enable_x64
+    from jax_rmhd import _precision
+    assert jax.config.jax_enable_x64  # unconditional since A1 (PRECISION_PLAN)
+    assert _precision.precision == "64"  # FIELD precision -- what actually varies
     rt, ct = snapshot_io.get_precision_types()
     assert rt == np.float64 and ct == np.complex128
 
@@ -26,7 +28,11 @@ def test_fp64_session():
 @pytest.mark.fp32
 def test_fp32_session():
     import jax
-    assert not jax.config.jax_enable_x64
+    from jax_rmhd import _precision
+    # x64 is unconditionally on since A1 -- RMHD_PRECISION only sets FIELD dtype now,
+    # it no longer toggles jax_enable_x64.
+    assert jax.config.jax_enable_x64
+    assert _precision.precision == "32"
     rt, ct = snapshot_io.get_precision_types()
     assert rt == np.float32 and ct == np.complex64
 

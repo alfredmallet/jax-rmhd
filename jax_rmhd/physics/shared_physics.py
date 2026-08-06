@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from .. import comms
+from .. import _precision
 
 # takes gradient in fourier space
 # expects the kx,ky axes to be the last two (-2,-1)
@@ -46,10 +47,17 @@ def _symmetrize_real_line(col):
     return (col + jnp.conj(col[..., mirror_idx])) / jnp.sqrt(2.0)
 
 def _draw_symmetrized_noise(key, shape, dtype, grid_norm):
+    # dtype=ftype on the draws is load-bearing, not cosmetic: with x64 unconditionally on, an
+    # unpinned jax.random.normal returns float64 AND a DIFFERENT bitstream from the float32
+    # draw, so pinning is what keeps the fp32 RNG stream identical to pre-x64 runs
+    # (plans/PRECISION_PLAN.md rule 3). The old trailing .astype(dtype) is gone with it --
+    # the arithmetic is now complex64/complex128 from the start. (jnp.sqrt(2.0) is a WEAK
+    # float64 scalar and adopts the array's precision, so it needs no pin.)
     key_real, key_imag = jax.random.split(key)
-    noise = (jax.random.normal(key_real, shape) + 1j * jax.random.normal(key_imag, shape)) / jnp.sqrt(2.0)
-    noise = noise * grid_norm
-    noise = noise.astype(dtype)
+    ftype = _precision.ftype
+    noise = (jax.random.normal(key_real, shape, dtype=ftype)
+             + 1j * jax.random.normal(key_imag, shape, dtype=ftype)) / jnp.sqrt(2.0)
+    noise = (noise * grid_norm).astype(dtype)
     noise = noise.at[..., 0].set(_symmetrize_real_line(noise[..., 0]))
     noise = noise.at[..., -1].set(_symmetrize_real_line(noise[..., -1]))
     return noise
@@ -59,7 +67,9 @@ def _draw_shell_noise(key, shape, dtype, grid_norm, fidx_x, fidx_y):
     # stream from the full-grid draw, so the two differ bitwise
     key_real, key_imag = jax.random.split(key)
     shell_shape = shape[:-2] + (fidx_x.shape[0],)
-    raw = (jax.random.normal(key_real, shell_shape) + 1j * jax.random.normal(key_imag, shell_shape)) / jnp.sqrt(2.0)
+    ftype = _precision.ftype   # pinned draw: see _draw_symmetrized_noise
+    raw = (jax.random.normal(key_real, shell_shape, dtype=ftype)
+           + 1j * jax.random.normal(key_imag, shell_shape, dtype=ftype)) / jnp.sqrt(2.0)
     raw = (raw * grid_norm).astype(dtype)
     noise = jnp.zeros(shape, dtype).at[..., fidx_x, fidx_y].set(raw)
     noise = noise.at[..., 0].set(_symmetrize_real_line(noise[..., 0]))

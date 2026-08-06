@@ -306,7 +306,11 @@ def _script_skip_reason(fn):
     if not names:
         return None
     import jax
-    x64 = bool(jax.config.jax_enable_x64)
+    from jax_rmhd import _precision
+    # FIELD precision (RMHD_PRECISION), not the jax_enable_x64 config flag: that flag
+    # is now unconditionally on (jax_rmhd/__init__.py) -- only _precision knows
+    # whether this is an fp32 or fp64 session.
+    x64 = _precision.precision == "64"
     if "fp32" in names and x64:
         return "requires an RMHD_PRECISION=32 session"
     if "fp64" in names and not x64:

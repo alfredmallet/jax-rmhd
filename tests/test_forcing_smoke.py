@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 
 import jax_rmhd as jr
-from jax_rmhd import snapshot_io
+from jax_rmhd import _precision, snapshot_io
 from jax_rmhd.physics import rmhd, shared_physics
 
 _F = dict(diss=(0.0, 0.0), forcing=True, forcing_mode="momentum", forcing_power=1.0,
@@ -28,7 +28,7 @@ def test_ou_update_preserves_hermitian_symmetry():
         forcing_state, forcing_key = shared_physics.ou_update(
             forcing_state, forcing_key, 0.01, params, kgrid)
     mirror_idx = (-jnp.arange(forcing_state.shape[-2])) % forcing_state.shape[-2]
-    tol = 1e-10 if jax.config.jax_enable_x64 else 1e-4
+    tol = 1e-10 if _precision.precision == "64" else 1e-4
     with checks() as c:
         for ky_idx in (0, -1):
             col = forcing_state[..., ky_idx]
@@ -42,7 +42,7 @@ def test_safe_scale_uncapped_and_capped():
     # the scale factor, never a floor on the denominator P).
     target = 2.0
     scale_max = 1.0  # default
-    tol = 1e-8 if jax.config.jax_enable_x64 else 1e-6
+    tol = 1e-8 if _precision.precision == "64" else 1e-6
     with checks() as c:
         for P_val in (3.0, -3.0):
             # |target/P| < scale_max: the cap must not engage -- exact match.
