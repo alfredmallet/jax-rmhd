@@ -55,6 +55,17 @@ jobs:
         run: |
           mkdir -p _site/webgpu
           cp -r webgpu/. _site/webgpu/
+          # Cache-bust the intra-site js/css references with the deploying commit, so a
+          # browser holding a cached common.js can never pair it with newer HTML (the
+          # "Can't find variable: controlsBuild" class of breakage, seen 2026-08-06).
+          # The HTML itself is served with GH Pages' max-age=600, so within 10 minutes
+          # of a deploy every client re-pairs atomically. Repo files stay unstamped.
+          v="${GITHUB_SHA::8}"
+          sed -i -e "s|src=\"common.js\"|src=\"common.js?v=$v\"|" \
+                 -e "s|src=\"physics.js\"|src=\"physics.js?v=$v\"|" \
+                 -e "s|href=\"style.css\"|href=\"style.css?v=$v\"|" \
+                 _site/webgpu/index.html _site/webgpu/rmhd2d.html _site/webgpu/rmhd3d.html
+          grep -c "?v=$v" _site/webgpu/rmhd2d.html _site/webgpu/rmhd3d.html _site/webgpu/index.html
           cat > _site/index.html <<'EOF'
           <!DOCTYPE html>
           <meta charset="utf-8">
