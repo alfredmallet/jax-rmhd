@@ -3,35 +3,36 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebGPU forced reduced-MHD — jax_rmhd in the browser</title>
+<title>WebGPU reduced MHD — jax_rmhd in the browser</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>Forced reduced-MHD in the browser — WebGPU pseudospectral solvers</h1>
+<h1>Reduced MHD in the browser — WebGPU pseudospectral solvers</h1>
 <div class="sub">a browser port of the
   <a href="https://github.com/alfredmallet/jax_rmhd" target="_blank" rel="noopener">jax_rmhd</a>
   solver &middot; fp32 &middot; no server, no build step
   &middot; <a href="https://github.com/alfredmallet/jax_rmhd/blob/main/webgpu/README.md"
        target="_blank" rel="noopener">about / README</a></div>
 
-<p class="lead">Two live pseudospectral solvers for forced reduced MHD, running entirely on
+<p class="lead">Two live pseudospectral solvers for reduced MHD, running entirely on
 your GPU through WebGPU: the same equations, dealiasing, LSRK33 integrating-factor stepper
-and Elsasser Ornstein&ndash;Uhlenbeck forcing as the JAX code they were ported from. Both
+and (optional) Elsasser Ornstein&ndash;Uhlenbeck forcing as the JAX code they were ported
+from. Both
 pages ship the fp64 reference vectors generated from <code>jax_rmhd</code> itself and a
 <b>Self-test</b> button that runs them through the same GPU pipelines as production. They
 are demos, not science runs: WebGPU has no float64.</p>
 
 <div class="cards">
   <a class="card" href="rmhd2d.html">
-    <h2>2D forced RMHD &rarr;</h2>
+    <h2>2D RMHD &rarr;</h2>
     <p>rfft2 spectral in (x,y), 128&sup2;&ndash;512&sup2; or a wide 4&pi;&times;2&pi; box.
       Vorticity / current / potentials / velocity and magnetic field with arrow and
-      field-line overlays, energy trace, shell-binned spectra, cut trace. Long runs show
+      field-line overlays, energy trace, shell-binned spectra, cut trace. Forced runs show
       the 2D inverse cascade piling magnetic energy up at the box scale; the equilibrium
       presets show shear-flow roll-up and magnetic reconnection instead.</p>
   </a>
   <a class="card" href="rmhd3d.html">
-    <h2>3D forced RMHD, spectral z &rarr;</h2>
+    <h2>3D RMHD, spectral z &rarr;</h2>
     <p>rfftn over (z,x,y), 64&sup2;&times;32 to 256&sup2;&times;64. The Alfv&eacute;n coupling
       &plusmn;i&middot;k<sub>z</sub> is applied exactly by a closed-form 2&times;2 wave
       propagator, so there is no wave CFL. z-slice or three-face cube view, perpendicular

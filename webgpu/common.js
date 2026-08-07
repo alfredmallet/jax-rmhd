@@ -394,23 +394,31 @@ async function cutLineRead(s, iz) {
   return readBuf(d, s.buf.cutR, 4 * s.g.ny * 4);
 }
 
-// One display chain's contour level table (REFINE_PLAN I2.4). The CPU owns nlev, the
-// GPU (contLevel) owns the adapting range and the spacing, and a ZERO spacing is what
-// switches the overlay off inside the shared shader -- so turning contours off is one
-// 4-byte write, not a pipeline or bind-group change. Identical in both apps.
-function setContLevels(device, D, nlev) {
-  device.queue.writeBuffer(D.buf.contB, 8, new Float32Array([Math.max(1, nlev | 0)]));
-  if (!D.cont) device.queue.writeBuffer(D.buf.contB, 4, new Float32Array([0]));
+// One display chain's contour level tables (REFINE_PLAN I2.4; CONT_SETS of them since
+// J2.2, so that psi and phi can be drawn at once). The CPU owns nlev and the plain-
+// background flag, the GPU (contLevel) owns the adapting range and the spacing, and a
+// ZERO spacing is what switches a set off inside the shared shader -- so turning contours
+// off is one 4-byte write, not a pipeline or bind-group change. Identical in both apps.
+const CONT_SETS = 2;
+// one buffer / uniform / bind group per contour set: the chains are built in the apps,
+// the set count lives here
+const contPer = f => Array.from({ length: CONT_SETS }, (_, i) => f(i));
+function setContLevels(device, D, nlev, plain) {
+  const tail = new Float32Array([Math.max(1, nlev | 0), plain ? 1 : 0]);
+  for (let i = 0; i < CONT_SETS; i++) {
+    device.queue.writeBuffer(D.buf.contB[i], 8, tail);
+    if (!D.cont[i]) device.queue.writeBuffer(D.buf.contB[i], 4, new Float32Array([0]));
+  }
 }
-// ... and the tail of its per-frame prep, once the app's own inverse transform has put
-// the potential plane where colorize reads it: max |pot| over that plane (the shared
+// ... and the tail of one set's per-frame prep, once the app's own inverse transform has
+// put that potential plane where colorize reads it: max |pot| over the plane (the shared
 // reduction) -> the level table. Identical in both apps.
-function contLevelEncode(p, s, D, nPart) {
-  p.setPipeline(s.pl.maxPartial); p.setBindGroup(0, D.bg.maxPartialCont);
+function contLevelEncode(p, s, D, nPart, i) {
+  p.setPipeline(s.pl.maxPartial); p.setBindGroup(0, D.bg.contMax[i]);
   p.dispatchWorkgroups(nPart);
-  p.setPipeline(s.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinalCont);
+  p.setPipeline(s.pl.maxFinal); p.setBindGroup(0, D.bg.contFin[i]);
   p.dispatchWorkgroups(1);
-  p.setPipeline(s.pl.contLevel); p.setBindGroup(0, D.bg.contLevel);
+  p.setPipeline(s.pl.contLevel); p.setBindGroup(0, D.bg.contLev[i]);
   p.dispatchWorkgroups(1);
 }
 
@@ -524,7 +532,7 @@ function chartCtx(cv, w, h) {
 const VEC_SIZE = 512;
 // the overlay context of ONE display card. All drawing is in a logical w-by-h space
 // (VEC_SIZE square unless the card is aspect-correct for a rectangular box -- J.2); the
-// logical size rides on the context so drawArrows / clearArrows need no extra argument.
+// logical size rides on the context so drawArrows needs no extra argument.
 function vecCtx(cv, w, h) {
   const dpr = Math.min(2, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
   const W = w || VEC_SIZE, H = h || VEC_SIZE;
@@ -545,10 +553,12 @@ function vecCtx(cv, w, h) {
 // so on an aspect-correct card (pixels/length equal on both axes) they must go through an
 // ISOTROPIC map instead -- otherwise a 4:1 box would shear every arrow. `sc` renormalizes
 // to the longest arrow, so only the SHAPE of `d` matters, not its overall scale.
+//
+// The overlay is CLEARED by its owner (DisplayCard.overlay), not here: since REFINE_PLAN
+// K/K2 the same canvas can instead carry the projected field lines (arrows and lines are
+// mutually exclusive per view), and the single owner keeps the clear-then-draw order.
 const ARROW_FRAME = { ox: 0, oy: 0, ax: VEC_SIZE, ay: 0, bx: 0, by: VEC_SIZE };
 function drawArrows(c, a, nax, nay, X) {
-  const W = c.__w || VEC_SIZE, H = c.__h || VEC_SIZE;
-  c.clearRect(0, 0, W, H);
   const F = X || ARROW_FRAME, Dm = F.d || F;
   let mx = 0;
   for (let i = 0; i < nax * nay; i++) {
@@ -584,6 +594,62 @@ function drawArrows(c, a, nax, nay, X) {
   c.lineCap = "round"; c.lineJoin = "round";
   c.strokeStyle = "rgba(0,0,0,0.55)"; c.lineWidth = 2.6; c.stroke(path);
   c.strokeStyle = "rgba(190,255,255,0.8)"; c.lineWidth = 1.1; c.stroke(path);
+}
+
+// ---------------------------------------------------------------------------
+// 3D magnetic field lines: the box frame and the polylines (REFINE_PLAN K.2, K2.3)
+// ---------------------------------------------------------------------------
+// Both take `F`, the box's own oblique projection (rmhd3d's cubeFrame): box fractions
+// (x, y, z) -> canvas pixels, the same three vectors the cube faces are drawn with, so
+// everything lands inside the box. Since K2 these are the LINES VIEW's overlay and
+// nothing else's: the background under them is the flat contour plate, which is what
+// their colours are tuned for (dark stroke, light halo -- legible where a line crosses
+// the thin psi ink or the phi accent of the transparent top face).
+//
+// The frame is the twelve box edges: four parallel to each axis, at the four
+// combinations of the other two axes' 0/1 ends.
+function drawBoxFrame(c, F) {
+  if (!F) return;
+  const P = q => [F.ox + q[0] * F.ax + q[1] * F.bx + q[2] * F.cx,
+                  F.oy + q[0] * F.ay + q[1] * F.by + q[2] * F.cy];
+  const path = new Path2D();
+  for (let e = 0; e < 3; e++) {
+    for (let q = 0; q < 4; q++) {
+      const a = [0, 0, 0];
+      a[(e + 1) % 3] = q & 1; a[(e + 2) % 3] = q >> 1;
+      const b = a.slice();
+      b[e] = 1;
+      const p0 = P(a), p1 = P(b);
+      path.moveTo(p0[0], p0[1]); path.lineTo(p1[0], p1[1]);
+    }
+  }
+  c.lineCap = "round"; c.lineJoin = "round";
+  c.strokeStyle = "rgba(40,48,60,0.45)"; c.lineWidth = 1.0; c.stroke(path);
+}
+// `L.pos` is the GPU marcher's output: L.nl polylines of L.nz points, each the line's
+// PERPENDICULAR position in box fractions and UNWRAPPED (the marcher never folds it), so
+// a line that leaves the box shows up as a change in floor(u) -- which is exactly the
+// place to lift the pen instead of drawing a stripe across the picture.
+// No depth sorting and no occlusion -- 2D canvas, one pass, everything visible.
+function drawFieldLines(c, L, F) {
+  if (!F) return;
+  const pos = L.pos, nz = L.nz;
+  const path = new Path2D();
+  for (let l = 0; l < L.nl; l++) {
+    let pu = 0, pv = 0, brk = true;
+    for (let k = 0; k < nz; k++) {
+      const u = pos[2 * (l * nz + k)], v = pos[2 * (l * nz + k) + 1];
+      const fu = Math.floor(u), fv = Math.floor(v), w = k / nz;
+      const x = F.ox + (u - fu) * F.ax + (v - fv) * F.bx + w * F.cx;
+      const y = F.oy + (u - fu) * F.ay + (v - fv) * F.by + w * F.cy;
+      if (!isFinite(x) || !isFinite(y)) { brk = true; continue; }
+      if (brk || fu !== pu || fv !== pv) path.moveTo(x, y); else path.lineTo(x, y);
+      pu = fu; pv = fv; brk = false;
+    }
+  }
+  c.lineCap = "round"; c.lineJoin = "round";
+  c.strokeStyle = "rgba(255,255,255,0.85)"; c.lineWidth = 2.6; c.stroke(path);
+  c.strokeStyle = "rgba(20,60,150,0.90)"; c.lineWidth = 1.1; c.stroke(path);
 }
 
 const _histCols = () => [hist.t, hist.ek, hist.em, hist.hc];
@@ -744,6 +810,81 @@ const SPEC_SETS = {
   ub: [["E_u", COL.ek, (u, b, h) => u], ["E_b", COL.em, (u, b, h) => b]],
   pm: [["E+", COL.zp, (u, b, h) => u + b + h], ["E-", COL.zm, (u, b, h) => u + b - h]]
 };
+
+// ---------------------------------------------------------------------------
+// the TRUE parallel spectrum, along the field lines (REFINE_PLAN K.3)
+// ---------------------------------------------------------------------------
+// The GPU marcher samples (u_x, u_y, b_x, b_y) at every z plane of every line, uniformly
+// in z (arc length = z to leading order in RMHD). The signal is NOT periodic -- a line
+// leaves the box perpendicularly displaced, so its two ends are unrelated -- hence a Hann
+// window before the transform; the window's mean square W2 divides back out, so the
+// binned values keep the meaning (and the units) of the COORDINATE E(k_par) they are
+// plotted beside, and Parseval still holds: the bins sum to the along-line mean square.
+//
+// The three lanes are the ones every spectrum here carries, [E_u | E_b | H_c] with
+// E+- = E_u + E_b +- H_c (SPEC_SETS), so the chart code needs no field-line branch at all:
+//   E_u(k) = 1/2 (P[u_x] + P[u_y]),  E_b likewise,  H_c(k) = C[u_x,b_x] + C[u_y,b_y]
+// with P the folded power and C the folded co-spectrum. Bins are |kz| = 1..nz/2 in the
+// SAME layout as the coordinate parallel spectrum (kz = 0 dropped: no place on a log
+// axis), so drawSpectrum's parKfac abscissa is shared too.
+// In-place radix-2 complex transform; sign -1 = forward, unnormalized.
+function fftPow2(re, im, sign) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let b = n >> 1;
+    for (; j & b; b >>= 1) j ^= b;
+    j ^= b;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = sign * 2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), h = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < h; k++) {
+        const ur = re[i + k], ui = im[i + k];
+        const vr = re[i + k + h] * cr - im[i + k + h] * ci;
+        const vi = re[i + k + h] * ci + im[i + k + h] * cr;
+        re[i + k] = ur + vr; im[i + k] = ui + vi;
+        re[i + k + h] = ur - vr; im[i + k + h] = ui - vi;
+        const nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr;
+      }
+    }
+  }
+}
+// periodic Hann window and its mean square (exactly 3/8 for n >= 3; computed, not assumed)
+function flHann(n) {
+  const w = new Float64Array(n);
+  let s = 0;
+  for (let j = 0; j < n; j++) { w[j] = 0.5 * (1 - Math.cos(2 * Math.PI * j / n)); s += w[j] * w[j]; }
+  return { w, w2: s / n };
+}
+function flSpectrum(smp, nl, nz) {
+  const nzb = nz >> 1;
+  const out = new Float32Array(3 * Math.max(1, nzb));
+  if (!(nl > 0) || nzb < 1) return out;
+  const H = flHann(nz), nrm = 1 / (nz * nz * H.w2 * nl);
+  const re = [], im = [];
+  for (let c = 0; c < 4; c++) { re.push(new Float64Array(nz)); im.push(new Float64Array(nz)); }
+  for (let l = 0; l < nl; l++) {
+    for (let c = 0; c < 4; c++) {
+      for (let j = 0; j < nz; j++) { re[c][j] = H.w[j] * smp[4 * (l * nz + j) + c]; im[c][j] = 0; }
+      fftPow2(re[c], im[c], -1);
+    }
+    for (let b = 1; b <= nzb; b++) {
+      const f = (2 * b === nz) ? 1 : 2;            // the kz-Nyquist bin has no -kz partner
+      let eu = 0, eb = 0, hc = 0;
+      for (let c = 0; c < 2; c++) {                // the two perpendicular components
+        eu += re[c][b] * re[c][b] + im[c][b] * im[c][b];
+        eb += re[c + 2][b] * re[c + 2][b] + im[c + 2][b] * im[c + 2][b];
+        hc += re[c][b] * re[c + 2][b] + im[c][b] * im[c + 2][b];
+      }
+      out[b - 1] += 0.5 * f * eu * nrm;
+      out[nzb + b - 1] += 0.5 * f * eb * nrm;
+      out[2 * nzb + b - 1] += f * hc * nrm;
+    }
+  }
+  return out;
+}
 const specSeries = sq => (sq === "both" ? SPEC_SETS.ub.concat(SPEC_SETS.pm)
                                         : (SPEC_SETS[sq] || SPEC_SETS.ub));
 function drawSpectrum(c, d, o) {
@@ -753,9 +894,14 @@ function drawSpectrum(c, d, o) {
   c.textAlign = "left"; c.fillStyle = COL.txt;
   const bins = (d && d.perp) || new Float32Array(3), nb = (d && d.nb) || 1;
   const fshell = (d && d.fshell) || [1, 3];
-  const par = d && d.par, parKfac = (d && d.parKfac) || 1;
+  const parKfac = (d && d.parKfac) || 1;
   const set = specSeries(o && o.sq);
   const sd = (o && o.sd) || "both";
+  // "fl" swaps the COORDINATE parallel spectrum for the field-line one (REFINE_PLAN K.3):
+  // same three lanes, same bins, same abscissa -- only the source differs, so nothing
+  // below this line knows which it is drawing beyond the legend label.
+  const fl = sd === "fl";
+  const par = d && (fl ? d.parFL : d.par);
   const wantPerp = sd !== "par", wantPar = sd !== "perp" && par && par.length >= 3;
   // curves: [points(k,v pairs), colour, dash, label]
   const curves = [];
@@ -781,7 +927,7 @@ function drawSpectrum(c, d, o) {
         const v = sr[2](par[b - 1], par[nzb + b - 1], par[2 * nzb + b - 1]);
         if (v > 0 && isFinite(v)) { pts.push(b * parKfac, v); hi = Math.max(hi, v); lo = Math.min(lo, v); }
       }
-      curves.push([pts, sr[1], [5, 3], sr[0] + "(k∥)"]);
+      curves.push([pts, sr[1], [5, 3], sr[0] + (fl ? "(k∥ line)" : "(k∥)")]);
     }
   }
   if (hiP > 0) { hi = hiP; lo = loP; }
@@ -944,10 +1090,12 @@ function drawCut(c, d, o) {
 // The app supplies the parts that are genuinely per-app through cardsInit(cfg):
 //   fields      [{v, t}] the quantity <option> list
 //   zslice      true in 3D: build the per-card z-source select + slice slider
-//   cube        true in 3D: that select also offers the cube-faces VIEW (I2.1)
+//   cube        true in 3D: that select also offers the cube-faces and field-lines
+//               VIEWS (I2.1, K2.1) -- both meaningless on the cut card, hence one flag
 //   nz()        current nz, for the slider range
 //   zsliceOf(c) resolved plane index of card c (slider or tracked peak)
 //   arrowXform() 3D only: the cube top face's (u,v) -> canvas affine, for the arrows
+//   lineXform() 3D only: the whole box's (x,y,z) -> canvas affine, for the field lines
 //   caption(c)  optional text appended to the card's caption
 //   onLayout()  called after any add/remove/close, for app-side label syncing
 // Everything else -- DOM, wiring, render order, throttles -- is shared.
@@ -972,8 +1120,10 @@ const CHART_TYPES = {
     opts: cfg => [{ id: "sq", ti: "which spectra to bin",
                     o: [["ub", "E_u / E_b"], ["pm", "E&#8314; / E&#8315;"], ["both", "both"]] }]
       .concat(cfg.zslice
-        ? [{ id: "sd", ti: "perpendicular (solid) / parallel (dashed) spectra",
-             o: [["both", "&perp; + &#8741;"], ["perp", "&perp; only"], ["par", "&#8741; only"]] }]
+        ? [{ id: "sd", ti: "perpendicular (solid) / parallel (dashed) spectra; "
+               + "\"field line\" measures k_par ALONG B, not along z",
+             o: [["both", "&perp; + &#8741;"], ["perp", "&perp; only"], ["par", "&#8741; only"],
+                 ["fl", "&perp; + k&#8741; (field line)"]] }]
         : []),
     draw: (c, d, o) => drawSpectrum(c, d, o),
     hint: "shell-binned, ~3&times;/s; E<sup>&plusmn;</sup>(k) = E<sub>u</sub>+E<sub>b</sub>&plusmn;H<sub>c</sub>. "
@@ -1030,28 +1180,39 @@ function _sel(parent, opts, title) {
 // The plane a cube card resolves to is its TOP face (I2.2), which is why the two are one
 // control and not two: every combination is meaningful and the header stays one select
 // wide on a phone. `cube` is false for the cut chart, where faces mean nothing.
+// Since K2.1 the FIELD LINES are a view on the same select: a whole-box object with no
+// plane of its own, so it takes no tracker and no slider and is flagged out of the cut
+// card with the cube entries.
 const ZSRC_OPTS = [{ v: "manual", t: "z slice" }, { v: "zp", t: "track z&#8314;" },
                    { v: "zm", t: "track z&#8315;" }];
 const ZSRC_CUBE = [{ v: "cube", t: "cube faces" }, { v: "cubezp", t: "cube + track z&#8314;" },
-                   { v: "cubezm", t: "cube + track z&#8315;" }];
+                   { v: "cubezm", t: "cube + track z&#8315;" }, { v: "lines", t: "field lines" }];
 function _zSliceControls(card, head, cube) {
   const cfg = cards.cfg;
   if (!cfg.zslice) return;
   card.selZSrc = _sel(head, cube ? ZSRC_OPTS.concat(ZSRC_CUBE) : ZSRC_OPTS,
-                      "which z plane this card uses" + (cube ? ", and whether it draws the cube faces" : ""));
+                      "which z plane this card uses" + (cube ? ", and whether it draws the cube faces or the field lines" : ""));
   card.rSlice = _mk("input", "zslider", head);
   card.rSlice.type = "range"; card.rSlice.min = "0"; card.rSlice.step = "1"; card.rSlice.value = "0";
   card.rSlice.max = String(Math.max(0, cfg.nz() - 1));
 }
 // the plane source of a card, with the view prefix stripped: every caller that resolves
 // a plane (the app's zsliceOf / trackingOn) sees exactly the three pre-I2 values
-function _zSrcPlane(v) { return v.indexOf("cube") === 0 ? (v.slice(4) || "manual") : v; }
+// ("lines" owns no plane at all -- reporting it as "manual" is what keeps the trackers
+// and the slider out of the lines view, K2.5)
+function _zSrcPlane(v) {
+  if (v === "lines") return "manual";
+  return v.indexOf("cube") === 0 ? (v.slice(4) || "manual") : v;
+}
 // the contour overlay's per-card selectors (REFINE_PLAN I2.4), in BOTH apps: in-plane
-// field lines of psi (B_perp) or streamlines of phi, on the plane the card displays.
-// The value IS the potential's display mode, so the solver needs no second mapping.
+// field lines of psi (B_perp) or streamlines of phi, on the plane the card displays --
+// or BOTH at once (J2.2), which is the alignment view. The value IS the potential's
+// display mode, so the solver needs no second mapping; "both" is the pair, in the order
+// the two contour sets are drawn (psi in the automatic ink, phi in the fixed accent).
 // (a function, not a const: physics.js -- where DISP_PSI lives -- loads after this file)
 const _contOpts = () => [{ v: "0", t: "no contours" }, { v: String(DISP_PSI), t: "&psi; contours" },
-                         { v: String(DISP_PHI), t: "&phi; contours" }];
+                         { v: String(DISP_PHI), t: "&phi; contours" },
+                         { v: "both", t: "&psi; + &phi;" }];
 const CONT_LEVELS = [8, 16, 32];
 
 class DisplayCard {
@@ -1070,7 +1231,11 @@ class DisplayCard {
     al.title = "vector overlay on the |u| / |b| / |z±| modes (on the cube: its top face)";
     this.selCont = _sel(head, _contOpts(), "in-plane field lines: psi -> B_perp, phi -> streamlines");
     this.selLev = _sel(head, CONT_LEVELS.map(n => ({ v: n, t: n + " levels" })), "contour level count");
-    this.selLev.style.display = "none";               // only meaningful with contours on
+    this.selBg = _sel(head, [{ v: "0", t: "field bg" }, { v: "1", t: "plain bg" }],
+                      "draw the contours over the field, or over a blank plate");
+    // both only mean anything with contours on
+    this.selLev.style.display = "none";
+    this.selBg.style.display = "none";
     this.selCmap = _sel(head, CMAP_NAMES.map((n, i) => ({ v: i, t: n })), "colormap");
     this.btnClose = _mk("button", "x", head);
     this.btnClose.innerHTML = "&times;";
@@ -1084,16 +1249,19 @@ class DisplayCard {
     this.gw = 0; this.gh = 0;
     this._resize();                       // sizes both canvases BEFORE the GPU context
     this.ctx = gpuCanvasCtx(this.cv);
-    this.vecDrawn = false;
+    this.arr = null;                      // last arrow gather, and (3D) the field lines:
+    this.lines = null;                    // two sources, one overlay canvas (see overlay())
     this.arrowAt = 0;
+    this.wasLines = false;                // edge-trigger for the lines view's psi default
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
     this.selField.onchange = apply;
     this.selCmap.onchange = apply;
     this.selCont.onchange = apply;
     this.selLev.onchange = apply;
-    this.cbArrow.onchange = () => { if (!this.cbArrow.checked) this.clearArrows(); apply(); };
-    if (this.selZSrc) this.selZSrc.onchange = () => { this.clearArrows(); apply(); };
+    this.selBg.onchange = apply;
+    this.cbArrow.onchange = apply;
+    if (this.selZSrc) this.selZSrc.onchange = apply;
     if (this.rSlice) this.rSlice.oninput = apply;
     this.btnClose.onclick = () => cardClose(this);
   }
@@ -1101,10 +1269,18 @@ class DisplayCard {
   cmap() { return parseInt(this.selCmap.value, 10) | 0; }
   // the PLANE source, view prefix stripped (the app's zsliceOf / trackingOn use this)
   zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
-  // ... and the view the same select carries: cube faces instead of the one plane
+  // ... and the two VIEWS the same select carries instead of the one plane: the cube
+  // faces, or (K2.1) the whole box's field lines with a transparent top face
   cubeView() { return !!this.selZSrc && this.selZSrc.value.indexOf("cube") === 0; }
-  cont() { return parseInt(this.selCont.value, 10) | 0; }
+  linesView() { return !!this.selZSrc && this.selZSrc.value === "lines"; }
+  // the card's CONT_SETS contour potentials, as display modes (0 = that set is off)
+  cont() {
+    const v = this.selCont.value;
+    return v === "both" ? [DISP_PSI, DISP_PHI] : [parseInt(v, 10) | 0, 0];
+  }
+  contOn() { return this.selCont.value !== "0"; }
   nlev() { return parseInt(this.selLev.value, 10) | 0; }
+  plainBg() { return this.selBg.value === "1"; }
   // Aspect-correct card geometry (REFINE_PLAN J.2): ONE place decides the card's pixel
   // box, and the wrapper's CSS ratio, the WebGPU canvas backing store, the overlay canvas
   // and the arrow frame all follow it. Apps with square boxes supply no cfg.aspect and
@@ -1117,7 +1293,6 @@ class DisplayCard {
     this.wrap.style.aspectRatio = (w === h) ? "" : (w + " / " + h);   // "" = the CSS 1/1
     this.cv.width = w; this.cv.height = h;
     this.vcx = vecCtx(this.cvVec, w, h);
-    this.vecDrawn = false;
   }
   // push this card's state into the live solver and relabel it
   apply() {
@@ -1125,18 +1300,30 @@ class DisplayCard {
     const cfg = cards.cfg;
     this._resize();
     if (this.rSlice) this.rSlice.max = String(Math.max(0, cfg.nz() - 1));
+    // ENTERING the lines view turns psi contours on: the transparent top face is the
+    // point of the view (K2.3). From there the card's own contour select rules, "off"
+    // included -- hence the edge trigger rather than a forced value.
+    const lines = this.linesView();
+    if (lines && !this.wasLines && !this.contOn()) this.selCont.value = String(DISP_PSI);
+    this.wasLines = lines;
     solver.setDisplayMode(this.ci, this.sel(), cfg.zsliceOf(this), this.cmap(),
-                          { cube: this.cubeView(), cont: this.cont(), nlev: this.nlev() });
+                          { cube: this.cubeView(), lines: lines, cont: this.cont(), nlev: this.nlev(),
+                            plain: lines || (this.contOn() && this.plainBg()) });
     // the slider drives the displayed plane in the slice view and the TOP face in the
-    // cube view, so it is live in both -- and dead whenever a tracker owns the plane
-    if (this.rSlice) this.rSlice.disabled = this.zsrc() !== "manual";
-    this.selLev.style.display = this.cont() ? "" : "none";
+    // cube view, so it is live in both -- and dead whenever a tracker owns the plane, or
+    // in the lines view, whose face is the top BOUNDARY of the box (K2.5)
+    if (this.rSlice) this.rSlice.disabled = lines || this.zsrc() !== "manual";
+    this.selLev.style.display = this.contOn() ? "" : "none";
+    this.selBg.style.display = (this.contOn() && !lines) ? "" : "none";   // lines: always plain
+    // the field selector is inert in the lines view (the lines are psi lines), so the
+    // caption is the app's alone there
     const o = this.selField.options[this.selField.selectedIndex];
-    this.cap.innerHTML = (o ? o.innerHTML : "") + (cfg.caption ? cfg.caption(this) : "");
-    if (!this.showArrows()) this.clearArrows();
+    this.cap.innerHTML = (o && !lines ? o.innerHTML : "") + (cfg.caption ? cfg.caption(this) : "");
+    this.overlay();                       // the quantity / view may have retired an overlay
   }
   showArrows() {
-    return !!(this.cbArrow.checked && solver && dispIsVector(solver.modeOf(this.ci)));
+    return !!(this.cbArrow.checked && !this.linesView() &&
+              solver && dispIsVector(solver.modeOf(this.ci)));
   }
   // the cube view draws its arrows on the projected top face; a square plane view uses the
   // default frame (identical pixels to pre-J); a rectangular one needs the aspect-correct
@@ -1150,11 +1337,28 @@ class DisplayCard {
              d: { ox: 0, oy: 0, ax: s, ay: 0, bx: 0, by: s } };
   }
   render() { if (this.ctx && solver) solver.render(this.ctx, this.ci); }
-  drawArrows(a, nax, nay) {
-    if (this.vcx) { drawArrows(this.vcx, a, nax, nay, this.arrowFrame()); this.vecDrawn = true; }
-  }
-  clearArrows() {
-    if (this.vcx && this.vecDrawn) { this.vcx.clearRect(0, 0, this.gw, this.gh); this.vecDrawn = false; }
+  // The overlay canvas carries the arrow field AND (3D, lines view) the box frame and the
+  // projected field lines, whose readbacks land at different rates -- so ONE method owns
+  // the canvas: clear once, each source drawn from its last cached data. Called by both
+  // setters and by apply(), which is what retires an overlay the new mode/view has no
+  // business showing. The two are mutually exclusive since K2 (no arrows in the lines
+  // view, no lines over the cube faces), but the traced lines stay cached either way.
+  setArrows(a, nax, nay) { this.arr = a ? { a, nax, nay } : null; this.overlay(); }
+  // cache always (so entering the lines view shows instantly via apply()'s overlay());
+  // redraw only when this card actually displays lines -- the 2 Hz march must not force
+  // an overlay repaint on every slice/cube card (reviewer, GATE K2)
+  setLines(L) { this.lines = L; if (this.linesView()) this.overlay(); }
+  overlay() {
+    const c = this.vcx;
+    if (!c) return;
+    c.clearRect(0, 0, this.gw, this.gh);
+    const X = cards.cfg && cards.cfg.lineXform;
+    if (this.linesView() && X) {
+      const F = X();                      // the box the lines live in; the GPU canvas
+      drawBoxFrame(c, F);                 // under it carries only the top face's ink
+      if (this.lines) drawFieldLines(c, this.lines, F);
+    }
+    if (this.arr && this.showArrows()) drawArrows(c, this.arr.a, this.arr.nax, this.arr.nay, this.arrowFrame());
   }
   destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
 }
@@ -1257,6 +1461,7 @@ function addDisplayCard(state) {
     if (state.zslice !== undefined && c.rSlice) c.rSlice.value = String(state.zslice);
     if (state.cont !== undefined) c.selCont.value = String(state.cont);
     if (state.nlev !== undefined) c.selLev.value = String(state.nlev);
+    if (state.plain !== undefined) c.selBg.value = state.plain ? "1" : "0";
   }
   return c;
 }
@@ -1399,8 +1604,8 @@ const CTRL_CFL = [
   { k: "rng", id: "rCflEvery", min: 1, max: 16, step: 1, v: 4 }, { k: "val", id: "vCflEvery" }
 ];
 // the hyper / diss row: the slider's default differs between the pages, and only 2D
-// offers the eta/nu ratio (REFINE_PLAN J.1 -- the 2D propagator is diagonal per field,
-// so nu and eta can differ; the 3D 2x2 Alfven propagator needs an equal diagonal).
+// offers Pm (REFINE_PLAN J.1, J2.6 -- the 2D propagator is diagonal per field, so nu and
+// eta can differ; the 3D 2x2 Alfven propagator needs an equal diagonal).
 const ctrlDissRow = (dflt, o) => [
   { k: "lab", t: "hyper" },
   { k: "sel", id: "selHyper", o: [[1, "1"], [2, "2"], [3, "3"], [4, "4"]], v: 4 },
@@ -1408,11 +1613,12 @@ const ctrlDissRow = (dflt, o) => [
   { k: "rng", id: "rDiss", min: -20, max: -1, step: 0.05, v: dflt }, { k: "val", id: "vDiss" },
   { k: "btn", id: "btnAutoDiss", t: "auto",
     ti: "a marginally-resolved diss for the current hyper / resolution / power" }
-].concat((o && o.ratio) ? [
-  { k: "lab", t: "&eta;/&nu;" },
-  { k: "num", id: "nPm", v: 1, w: 62,
-    ti: "inverse magnetic Prandtl number: nu multiplies phi, eta = ratio*nu multiplies psi. "
-      + "1 is the historical scalar dissipation; changing it rebuilds the solver." }
+].concat((o && o.pm) ? [
+  { k: "lab", t: "Pm" },
+  { k: "num", id: "nPm", v: 1, w: 62, min: 0,
+    ti: "magnetic Prandtl number nu/eta: the diss slider is eta (it multiplies psi) and "
+      + "nu = Pm*eta multiplies phi. 1 is the scalar dissipation every other path uses, "
+      + "0 is an inviscid phi; changing it rebuilds the solver." }
 ] : []);
 // the forcing group is IDENTICAL on both pages (this block was the GATE-G MAJOR)
 const CTRL_GRP_FORCE = {
@@ -1953,6 +2159,8 @@ function icPresetFields(q, preset, ampP, ampM, env) {
 // like the letters and the drawing do, one record per preset:
 //   rows    the control-row ids only this preset shows
 //   hyper   the hyper exponent it LOCKS the UI to (undefined = the user's choice)
+//   src     this equilibrium can be MAINTAINED against resistive decay (J2.3): the
+//           #cbEqSrc toggle is live for it, and nothing else ever turns the source on
 //   fields  (g) -> {phi, psi}, on the geometry record icDrawGrid returns
 // 2D only: the equilibria are 2D objects and the 3D page never lists them in #selIC.
 const IC_BUILDERS = {};
@@ -1973,6 +2181,13 @@ function icHasPreset(name) {
   return false;
 }
 const icEqPert = () => Math.pow(10, icEqNum("rEqPert", -3));
+// is the equilibrium-flux source live? (REFINE_PLAN J2.3) -- only for a preset whose
+// builder declares `src`, and only while its toggle is checked. A compile-time constant
+// of nlAssemble, so every caller treats a change of it as a rebuild.
+function icEqSrcOn() {
+  const p = el("selIC").value;
+  return !!(icHasPreset(p) && IC_BUILDERS[p] && IC_BUILDERS[p].src && el("cbEqSrc").checked);
+}
 // 4th-order second derivative of a periodic 1D profile at index i
 function icD2(f, i, h) {
   const n = f.length, w = k => f[(((i + k) % n) + n) % n];
@@ -2004,10 +2219,13 @@ function icPlaneFromX(prof, seed, g) {
 
 // KH [20]: u_y is the double-tanh above; B is the same profile scaled by b0, so B lies
 // in plane along y. Ideal 2D MHD stabilizes the layer once b0 >= U0 (the shear is then
-// slower than the Alfven speed tying the field lines together); resistivity softens that
+// slower than the Alfven speed tying the field lines together); dissipation softens that
 // threshold rather than removing it. The seed sits on BOTH layers -- they are independent.
+// hyper is NOT locked here (J2.5): KH is an ideal instability, so a hyper-dissipation that
+// leaves the layer alone and sharpens the secondary structure is a legitimate choice --
+// unlike tearing, whose resistive layer IS the physics.
 icRegister("kh", {
-  rows: ["rowEq", "rowKH"], hyper: 1,
+  rows: ["rowEq", "rowKH"],
   fields: g => {
     const U0 = icEqNum("rEqU0", 1), b0 = icEqNum("rEqB0", 0);
     const a = icEqNum("rEqA", 0.05) * g.Lx, A = icEqPert();
@@ -2037,7 +2255,7 @@ icRegister("kh", {
 // its value AT the surface is exactly the slider: psitilde(x_s) = A, and the initial
 // island width is 4 sqrt(A/|psi_eq''|).
 icRegister("tearing", {
-  rows: ["rowEq", "rowTear"], hyper: 1,
+  rows: ["rowEq", "rowTear"], hyper: 1, src: true,
   fields: g => {
     const psi0 = icEqNum("rEqPsi0", 1.65);
     const a = icEqNum("rEqA", 0.1) * g.Lx, A = icEqPert();
@@ -2127,7 +2345,10 @@ const CTRL_ROWS_EQ = [
     { k: "lab", t: "&psi;&#8320;" },
     { k: "rng", id: "rEqPsi0", min: 0.1, max: 4, step: 0.05, v: 1.65,
       ti: "flux-function amplitude: psi_eq = psi0 sech^2((x - Lx/2)/a)" },
-    { k: "val", id: "vEqPsi0" }
+    { k: "val", id: "vEqPsi0" },
+    { k: "cbl", id: "cbEqSrc", t: "maintain equilibrium flux", v: true,
+      ti: "add the static source S = -eta grad^2 psi_eq, which holds the equilibrium "
+        + "against its own resistive decay (rebuilds the solver)" }
   ] },
   { k: "hintdiv", id: "vEqInfo" }
 ];
@@ -2667,7 +2888,9 @@ function trackArgmax(e, off, nz, cur) {
 //                       its own throttle and must re-check that `solver` is still the
 //                       live one after any await
 //   readoutExtra()      extra text lines appended to #readout
-let frameHook = null, readoutExtra = null;
+//   specExtra()         extra fields merged into the spectrum cards' data object (the 3D
+//                       field-line E(k_par), which its own hook refreshes at its own rate)
+let frameHook = null, readoutExtra = null, specExtra = null;
 const cardsThrottle = { spec: 0, cut: 0 };
 const _chartsOf = t => cards.chart.filter(c => c.type() === t);
 // cards fed by one readback SOURCE: a type's `src` (island rides the cut line) or, by
@@ -2723,15 +2946,17 @@ async function loop() {
     // render() pass, so this is only a copy + map round trip. ~10 Hz per card, one
     // frame of lag, and it never runs per step. A cube card gathers the plane its TOP
     // face shows and draws through that face's projection (REFINE_PLAN I2.3).
-    // (snapshot: a close button can splice cards.disp while we are awaiting)
+    // (snapshot: a close button can splice cards.disp while we are awaiting. A card that
+    // is not showing arrows is simply skipped -- overlay() gates on showArrows(), so the
+    // stale gather cannot reappear, and apply() has already redrawn the canvas.)
     for (const d of cards.disp.slice()) {
-      if (!d.showArrows()) { d.clearArrows(); continue; }
+      if (!d.showArrows()) continue;
       const tnow = performance.now();
       if (tnow - d.arrowAt <= 100) continue;
       d.arrowAt = tnow;
       const sv = solver;
       const av = await sv.readArrows(d.ci);
-      if (sv === solver && cards.disp.indexOf(d) >= 0 && d.showArrows()) d.drawArrows(av, sv.nax, sv.nay);
+      if (sv === solver && cards.disp.indexOf(d) >= 0) d.setArrows(av, sv.nax, sv.nay);
     }
 
     // cut trace: same throttle / guard idiom as the arrows. SELF-CONTAINED since
@@ -2766,7 +2991,9 @@ async function loop() {
       const sv = solver;
       const sp = await sv.readSpectrum();
       if (sv === solver) {
-        const d = { perp: sp.perp, nb: sv.nb, fshell: sv.p.fshell, par: sp.par, parKfac: sp.parKfac };
+        const d = Object.assign({ perp: sp.perp, nb: sv.nb, fshell: sv.p.fshell,
+                                  par: sp.par, parKfac: sp.parKfac },
+                                specExtra ? specExtra() : null);
         for (const c of specCards) c.draw(d);
       }
     }

@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebGPU 2D forced RMHD (pseudospectral)</title>
+<title>2D RMHD (WebGPU pseudospectral)</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>2D forced reduced-MHD — WebGPU pseudospectral solver</h1>
-<div class="sub">rfft2 spectral &middot; LSRK33 integrating factor &middot; Elsasser OU forcing &middot; fp32
+<h1>2D RMHD — WebGPU pseudospectral solver</h1>
+<div class="sub">rfft2 spectral &middot; LSRK33 integrating factor &middot; fp32
   &middot; <a href="rmhd3d.html">3D (spectral z) &rarr;</a>
   &middot; <a href="index.html">overview</a>
   &middot; <a href="https://github.com/alfredmallet/jax_rmhd/blob/main/webgpu/README.md"
@@ -85,7 +85,7 @@ controlsBuild({
        { k: "val", id: "vBox" }].concat(CTRL_SEED),
       CTRL_CFL
     ] },
-    { id: "grpDiss", summary: "dissipation", rows: [ctrlDissRow(-13, { ratio: true })] },
+    { id: "grpDiss", summary: "dissipation", rows: [ctrlDissRow(-13, { pm: true })] },
     CTRL_GRP_FORCE,
     ctrlGrpIC({ letters: "letters A / B", amp: 0, extra: CTRL_ROWS_EQ,
                 presets: [["kh", "Kelvin–Helmholtz shear layers"],
@@ -164,7 +164,7 @@ struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f
   // flat mode index, real-space kernels at 64 threads, the display buffer is the
   // whole domain.
   const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, dissRatio: g.pm };
+              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc };
 
   const S = {};
 
@@ -241,11 +241,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   rhs[NM + m] = rhs[NM + m] + 0.5 * (fp - fm);
 }`;
 
+  // ---- maintain the equilibrium flux (REFINE_PLAN J2.3) -------------------
+  // psi_eq,k, extracted ONCE per Reset from the k_y = 0 column of the uploaded IC --
+  // which IS the equilibrium, every equilibrium seed here having zero mean along y --
+  // and read by nlAssemble as the static source -lin_L*psi_eq,k. Taking it from the
+  // solver's own fields means it is the dealiased, fp32 equilibrium the run actually
+  // holds, not a CPU re-derivation of it. Emitted only when the preset asks.
+  if (g.eqsrc) S.srcInit = pre + `
+@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> eqk: array<vec2<f32>>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let m: u32 = gid.x;
+  if (m >= NM) { return; }
+  eqk[m] = select(vec2<f32>(0.0, 0.0), fields[NM + m], (m % NKY) == 0u);
+}`;
+
   // ---- LSRK33 stage update (integrating factor) ---------------------------
   // The 2D linear operator is DIAGONAL per field, so phi and psi may carry different
-  // dissipation (REFINE_PLAN J.1): _dissLin substitutes the eta/nu factor into the
-  // exponent for the psi half of the stack. At ratio 1 the expression is the bare
-  // gridB[m].y this kernel has always had -- byte for byte.
+  // dissipation (REFINE_PLAN J.1 / J2.6): _dissLin substitutes Pm = nu/eta into the
+  // exponent for the phi half of the stack (the diss slider being eta). At Pm 1 the
+  // expression is the bare gridB[m].y this kernel has always had -- byte for byte.
   S.stage = pre + `
 struct Stage { alpha: f32, beta: f32, gamma: f32, pad: f32 };
 @group(0) @binding(0) var<storage, read_write> fields: array<vec2<f32>>;
@@ -363,15 +379,19 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
 class Solver {
   constructor(device, p) {
     this.device = device;
-    // `pm` is eta/nu (REFINE_PLAN J.1); 1 -- the default every pre-J caller gets, the
-    // self-test included -- is the historical scalar-dissipation code path exactly.
+    // `pm` is the magnetic Prandtl number nu/eta and `eqsrc` the maintained-equilibrium
+    // source (REFINE_PLAN J.1 / J2.3, J2.6); pm = 1 with eqsrc off -- the default every
+    // other caller gets, the self-test included -- is the historical scalar-dissipation
+    // code path exactly, kernel text and all.
     this.p = Object.assign({
       nx: 256, ny: 256, Lx: 2 * Math.PI, Ly: 2 * Math.PI, diss: 1e-13, hyper: 4, pm: 1,
+      eqsrc: false,
       epsP: 0.15, epsM: 0.15, tau: 1.0, fshell: [1, 3], cfl: 0.4, smax: 1.0, seed: 7
     }, p || {});
     const q = this.p;
     const grid = makeGrid(q);
-    this.g = Object.assign({ nx: q.nx, ny: q.ny, Lx: q.Lx, Ly: q.Ly, pm: q.pm }, grid);
+    this.g = Object.assign({ nx: q.nx, ny: q.ny, Lx: q.Lx, Ly: q.Ly, pm: q.pm,
+                             eqsrc: q.eqsrc }, grid);
     this.nr = q.nx * q.ny;
     this.ns = grid.shell.length;
     this.nPartR = Math.ceil(this.nr / 1024);
@@ -421,6 +441,8 @@ class Solver {
       cfg: d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       stage: [0, 1, 2].map(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
+    // psi_eq,k for the maintained-flux source: only the equilibrium path has one (J2.3)
+    if (this.p.eqsrc) this.buf.eqk = d.createBuffer({ size: cx, usage: SQ });
     for (let s = 0; s < 3; s++) {
       d.queue.writeBuffer(this.buf.stage[s], 0,
         new Float32Array([LSRK33.alpha[s], LSRK33.beta[s], LSRK33.gamma[s], 0]));
@@ -442,9 +464,10 @@ class Solver {
   // pass are ordered, so the reuse is safe.
   //
   // The contour overlay (REFINE_PLAN I2.4) extends that discipline instead of
-  // allocating: it runs LAST in the frame, when dispK2/dispTmp2/dispR2 are dead in
-  // every mode, so the potential plane lands in dispR2 and colorize reads it from
-  // there. Its only new state is the tiny level table (contMx, contB).
+  // allocating: it runs LAST in the frame, when dispK2/dispTmp2/dispR2 -- and, with
+  // sigma_c finished, dispR3 -- are dead in every mode, so the two potential planes of
+  // the "both" selection (J2.2) land in dispR2 and dispR3 and colorize reads them from
+  // there. Their only new state is the CONT_SETS tiny level tables (contMx, contB).
   _makeChain() {
     const d = this.device, nm = this.g.nm, nr = this.nr, cx = nm * 8;
     const B = {
@@ -461,15 +484,16 @@ class Solver {
       maxVal: d.createBuffer({ size: 4, usage: SQ }),
       // per-card overlay gathers (8 kB + ny floats -- negligible next to dispR)
       arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
-      // contour overlay: the plane's max, and [range, delta, nlev, -] (contLevel owns
-      // range/delta, the CPU owns nlev -- and delta = 0 is how the overlay is switched off)
-      contMx: d.createBuffer({ size: 4, usage: SQ }),
-      contB: d.createBuffer({ size: 16, usage: SQ }),
+      // contour overlay, per set: the plane's max, and [range, delta, nlev, plain bg]
+      // (contLevel owns range/delta, the CPU owns the rest -- and delta = 0 is how a set
+      // is switched off)
+      contMx: contPer(() => d.createBuffer({ size: 4, usage: SQ })),
+      contB: contPer(() => d.createBuffer({ size: 16, usage: SQ })),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the z- vector: the second half of the sigma_c chain
       modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-      // pinned to the contour overlay's potential (phi or psi)
-      modeC: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      // pinned to each contour set's potential (phi or psi)
+      modeC: contPer(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
     d.queue.writeBuffer(B.modeM, 0, new Uint32Array([DISP_ZMINUS, 0, 0, 0]));
     const tex = d.createTexture({
@@ -499,13 +523,15 @@ class Solver {
       maxPartial: bgOf(this.pl.maxPartial, [B.dispR, B.maxPart]),
       maxFinal: bgOf(this.pl.maxFinal, [B.maxPart, B.maxVal]),
       vecGather: bgOf(this.pl.vecGather, [B.dispR, B.dispR2, B.arrows]),
-      // contour prep: the potential through the SAME prepDisp + inverse transform the
-      // display modes use (its own Mode uniform, the second component's dead scratch as
-      // the throwaway outk2), then the shared max reduction into its level table
-      prepDispC: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeC, B.dispK]),
-      maxPartialCont: bgOf(this.pl.maxPartial, [B.dispR2, B.maxPart]),
-      maxFinalCont: bgOf(this.pl.maxFinal, [B.maxPart, B.contMx]),
-      contLevel: bgOf(this.pl.contLevel, [B.contMx, B.contB]),
+      // contour prep, per set: the potential through the SAME prepDisp + inverse
+      // transform the display modes use (its own Mode uniform, the second component's
+      // dead scratch as the throwaway outk2), landing in dispR2 (set 0) / dispR3 (set 1),
+      // then the shared max reduction into that set's level table
+      contPrep: contPer(i => bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeC[i], B.dispK])),
+      contMax: [bgOf(this.pl.maxPartial, [B.dispR2, B.maxPart]),
+                bgOf(this.pl.maxPartial, [B.dispR3, B.maxPart])],
+      contFin: contPer(i => bgOf(this.pl.maxFinal, [B.maxPart, B.contMx[i]])),
+      contLev: contPer(i => bgOf(this.pl.contLevel, [B.contMx[i], B.contB[i]])),
       colorize: d.createBindGroup({
         layout: this.pl.colorize.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: B.dispR } },
@@ -513,7 +539,9 @@ class Solver {
                   { binding: 2, resource: tex.createView() },
                   { binding: 3, resource: { buffer: B.mode } },
                   { binding: 4, resource: { buffer: B.dispR2 } },
-                  { binding: 5, resource: { buffer: B.contB } }]
+                  { binding: 5, resource: { buffer: B.contB[0] } },
+                  { binding: 6, resource: { buffer: B.dispR3 } },
+                  { binding: 7, resource: { buffer: B.contB[1] } }]
       }),
       render: d.createBindGroup({
         layout: this.plRender.getBindGroupLayout(0),
@@ -521,7 +549,9 @@ class Solver {
                   { binding: 1, resource: tex.createView() }]
       })
     };
-    return { mode: 0, cube: 0, cont: 0, zslice: 0, buf: B, tex, bg };
+    // the two sets' inverse transforms are the two the sigma_c chain already declares
+    bg.contRows = [bg.rowsC2RDisp2, bg.rowsC2RDisp2H1];
+    return { mode: 0, cube: 0, cont: [0, 0], zslice: 0, buf: B, tex, bg };
   }
 
   // chain ci, built on first use
@@ -559,6 +589,7 @@ class Solver {
       maxSumPartial: cp(S.maxSumPartial, "maxSumPartial"),
       sigmaCombine: cp(S.sigmaCombine, "sigmaCombine"), contLevel: cp(S.contLevel, "contLevel")
     };
+    if (S.srcInit) this.pl.srcInit = cp(S.srcInit, "srcInit");
     const rmod = mod(S.render, "render");
     this.plRender = d.createRenderPipeline({
       layout: "auto",
@@ -582,7 +613,9 @@ class Solver {
       colsFwdNL: bg(this.pl.colsFwd, [B.specTmp, B.nlk]),
       colsInvNL: bg(this.pl.colsInv, [B.nlk, B.specTmp]),          // self-test roundtrip
       rowsC2RNL: bg(this.pl.rowsC2R, [B.specTmp, B.realNL]),       // self-test roundtrip
-      nlAssemble: bg(this.pl.nlAssemble, [B.nlk, B.gridA, B.gridB, B.rhs]),
+      // the maintained-flux source is a fifth binding of nlAssemble, present only when
+      // the kernel declared it (REFINE_PLAN J2.3)
+      nlAssemble: bg(this.pl.nlAssemble, [B.nlk, B.gridA, B.gridB, B.rhs].concat(B.eqk || [])),
       forcingAdd: bg(this.pl.forcingAdd, [B.forcing, B.scalars, B.rhs]),
       stage: [0, 1, 2].map(s => bg(this.pl.stage,
         [B.fields, B.delta, B.rhs, B.gridB, B.scalars, B.stage[s]])),
@@ -598,13 +631,15 @@ class Solver {
       scale: bg(this.pl.scale, [B.fields, B.forcing, B.gridA, B.gridB, B.shell, B.scalars, B.cfg]),
       icFinish: bg(this.pl.icFinish, [B.nlk, B.gridB, B.fields])
     };
+    if (this.pl.srcInit) this.bg.srcInit = bg(this.pl.srcInit, [B.fields, B.eqk]);
   }
 
   destroy() {
-    for (const k in this.buf) { const b = this.buf[k]; if (Array.isArray(b)) b.forEach(x => x.destroy()); else b.destroy(); }
+    const kill = b => { if (Array.isArray(b)) b.forEach(x => x.destroy()); else b.destroy(); };
+    for (const k in this.buf) kill(this.buf[k]);
     for (const D of this.disp) {
       if (!D) continue;
-      for (const k in D.buf) D.buf[k].destroy();
+      for (const k in D.buf) kill(D.buf[k]);
       D.tex.destroy();
     }
   }
@@ -629,19 +664,22 @@ class Solver {
   }
   // ci = which display card / chain. `zslice` is accepted (and ignored) so both apps
   // present the same signature to the shared card code; `cmap` indexes CMAP_NAMES.
-  // `opt.cont` is the contour overlay's potential as a display mode (0 = off, 2 = phi,
-  // 3 = psi) and `opt.nlev` its level count; `opt.cube` is 3D-only and ignored here.
+  // `opt.cont` is the contour sets' potentials as display modes (0 = that set off,
+  // 2 = phi, 3 = psi), `opt.nlev` their level count and `opt.plain` the blank-background
+  // option (J2.1/J2.2); `opt.cube` is 3D-only and ignored here.
   setDisplayMode(ci, mode, zslice, cmap, opt) {
     const D = this.chain(ci), o = opt || {};
     D.mode = mode | 0;
-    D.cont = o.cont | 0;
+    D.cont = (o.cont || [0, 0]).slice();
     const u = new Uint32Array([D.mode, 0, (cmap | 0), 0]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = DISP_ZMINUS;                     // the sigma_c second half, same colormap
     this.device.queue.writeBuffer(D.buf.modeM, 0, u);
-    u[0] = D.cont || DISP_PHI;              // the contour potential's own prep
-    this.device.queue.writeBuffer(D.buf.modeC, 0, u);
-    setContLevels(this.device, D, o.nlev);
+    for (let i = 0; i < CONT_SETS; i++) {   // each contour potential's own prep
+      u[0] = D.cont[i] || DISP_PHI;
+      this.device.queue.writeBuffer(D.buf.modeC[i], 0, u);
+    }
+    setContLevels(this.device, D, o.nlev, o.plain);
   }
 
   // ---- initial condition --------------------------------------------------
@@ -693,6 +731,11 @@ class Solver {
     p.setPipeline(this.pl.rowsR2C); p.setBindGroup(0, this.bg.rowsR2CNL); p.dispatchWorkgroups(2 * nx);
     p.setPipeline(this.pl.colsFwd); p.setBindGroup(0, this.bg.colsFwdNL); p.dispatchWorkgroups(2 * this.g.nky);
     p.setPipeline(this.pl.icFinish); p.setBindGroup(0, this.bg.icFinish); p.dispatchWorkgroups(Math.ceil(2 * this.g.nm / 64));
+    // the maintained equilibrium is whatever this IC's k_y = 0 column is (J2.3)
+    if (this.pl.srcInit) {
+      p.setPipeline(this.pl.srcInit); p.setBindGroup(0, this.bg.srcInit);
+      p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+    }
     // matches run._refresh_forcing_scale: the very first step uses a scale from the IC
     p.setPipeline(this.pl.scale); p.setBindGroup(0, this.bg.scale); p.dispatchWorkgroups(1);
     p.setPipeline(this.pl.energyPartial); p.setBindGroup(0, this.bg.energyPartial); p.dispatchWorkgroups(this.nPartM);
@@ -811,18 +854,22 @@ class Solver {
     p.dispatchWorkgroups(this.g.nx);
   }
 
-  // the contour overlay's potential (REFINE_PLAN I2.4): ONE extra inverse transform per
-  // card frame, into the second component's now-dead scratch (dispR2, which is where
-  // colorize reads it), plus the max reduction that feeds the adapting level spacing.
-  // Runs LAST, after every mode has finished with that scratch.
+  // the contour overlay's potentials (REFINE_PLAN I2.4, J2.2): ONE extra inverse
+  // transform per ACTIVE set per card frame, into the now-dead display scratch (dispR2
+  // for set 0, dispR3 for set 1 -- which is where colorize reads them), plus the max
+  // reduction that feeds each set's adapting level spacing. Runs LAST, after every mode
+  // has finished with that scratch.
   _dispCont(p, D) {
-    p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, D.bg.prepDispC);
-    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
-    p.setPipeline(this.pl.colsInv); p.setBindGroup(0, D.bg.colsInvDisp2);
-    p.dispatchWorkgroups(this.g.nky);
-    p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, D.bg.rowsC2RDisp2);
-    p.dispatchWorkgroups(this.g.nx);
-    contLevelEncode(p, this, D, this.nPartR);
+    for (let i = 0; i < CONT_SETS; i++) {
+      if (!D.cont[i]) continue;
+      p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, D.bg.contPrep[i]);
+      p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+      p.setPipeline(this.pl.colsInv); p.setBindGroup(0, D.bg.colsInvDisp2);
+      p.dispatchWorkgroups(this.g.nky);
+      p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, D.bg.contRows[i]);
+      p.dispatchWorkgroups(this.g.nx);
+      contLevelEncode(p, this, D, this.nPartR, i);
+    }
   }
 
   render(ctx, ci) {
@@ -859,7 +906,7 @@ class Solver {
       p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
       p.dispatchWorkgroups(1);
     }
-    if (D.cont) this._dispCont(p, D);
+    this._dispCont(p, D);
     p.setPipeline(this.pl.colorize); p.setBindGroup(0, D.bg.colorize);
     p.dispatchWorkgroups(Math.ceil(this.g.nx / 8), Math.ceil(this.g.ny / 8));
     p.end();
@@ -904,11 +951,12 @@ class Solver {
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
-// eta/nu, from the ratio box: a positive finite number, 1 (the scalar-dissipation path)
-// on anything else. A compile-time constant of the stage kernel, hence a rebuild knob.
+// Pm = nu/eta, from its box: a non-negative finite number (0 = inviscid phi), 1 (the
+// scalar-dissipation path) on anything else. A compile-time constant of the stage
+// kernel, hence a rebuild knob.
 function uiPm() {
   const v = parseFloat(el("nPm").value);
-  return (isFinite(v) && v > 0) ? v : 1;
+  return (isFinite(v) && v >= 0) ? v : 1;
 }
 function uiParams() {
   const eps = uiEps(), b = boxOf(), nx = parseInt(el("selRes").value, 10);
@@ -916,7 +964,7 @@ function uiParams() {
     nx: nx, ny: Math.max(32, Math.round(nx * b.fy)),
     Lx: b.Lx, Ly: b.Ly,
     diss: Math.pow(10, parseFloat(el("rDiss").value)),
-    hyper: parseInt(el("selHyper").value, 10), pm: uiPm(),
+    hyper: parseInt(el("selHyper").value, 10), pm: uiPm(), eqsrc: icEqSrcOn(),
     epsP: eps[0], epsM: eps[1],
     tau: parseFloat(el("rTau").value),
     cfl: parseFloat(el("rCfl").value),
@@ -952,6 +1000,10 @@ function syncIC() { icSyncRows(); }
 // (re)apply the current preset to the live solver and restart the traces
 function applyIC() {
   if (!solver) return;
+  // the maintained-flux source is a compile-time constant of nlAssemble (J2.3), so
+  // switching IC preset into or out of the equilibrium that owns it is a REBUILD (which
+  // ends by calling this again, now in step)
+  if (!!solver.p.eqsrc !== uiParams().eqsrc) { rebuild(); return; }
   const q = solver.p, preset = el("selIC").value, amp = uiAmp();
   if (preset === "quiescent") solver.setIC(true);
   else if (preset === "modes") solver.setIC();
@@ -1012,9 +1064,10 @@ const PRESETS = {
       + "amplitude only matters against the fixed dissipation (in 3D it is &chi;)."
   },
   // ---- the two equilibrium demos (REFINE_PLAN J.3 / J.5) --------------------
-  // Both run in the 4pi x 2pi box at 512 x 128, with hyper LOCKED to 1 by the IC preset
-  // (see icSyncRows): a hyper-dissipative "resistivity" has no resistive layer and no
-  // Rutherford stage, so it would falsify exactly what these demos are for.
+  // Both run in the 4pi x 2pi box at 512 x 128. TEARING locks hyper to 1 through its IC
+  // preset (see icSyncRows): a hyper-dissipative "resistivity" has no resistive layer and
+  // no Rutherford stage, so it would falsify exactly what that demo is for. KH does not
+  // (J2.5) -- it is an ideal instability, and hyper sharpens its secondary structure.
   kh: {
     label: "Kelvin–Helmholtz shear layers",
     set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
@@ -1025,7 +1078,7 @@ const PRESETS = {
       + "3L<sub>x</sub>/4, independent while a &Lt; L<sub>x</sub>/2. With b&#8320; = 0 the "
       + "k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed rolls up into vortices; raise <b>b&#8320;</b> "
       + "past <b>U&#8320;</b> and the tension of the in-plane field suppresses it "
-      + "(ideal threshold b&#8320; = U&#8320; for this geometry &mdash; resistivity softens it, "
+      + "(ideal threshold b&#8320; = U&#8320; for this geometry &mdash; dissipation softens it, "
       + "it does not remove it). Linear reference &gamma; &asymp; 0.267 U&#8320;k<sub>y</sub> "
       + "(k<sub>y</sub> = 2&pi;/L<sub>y</sub>) at a = 0.05L<sub>x</sub>, b&#8320; = 0."
   },
@@ -1033,19 +1086,21 @@ const PRESETS = {
     label: "tearing mode (magnetic islands)",
     set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
            rDiss: "-3", selIC: "tearing", rEqA: "0.1", rEqPert: "-3", rEqPsi0: "1.65",
-           rCflEvery: "4" },
+           cbEqSrc: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }], charts: ["island", "energy"] },
     hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "
       + "&phi;<sub>eq</sub> = 0: b<sub>y</sub> vanishes on x = L<sub>x</sub>/2, so that is the "
       + "resonant surface of the k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed. Watch the &psi; "
       + "contours (= B<sub>&perp;</sub> field lines) over the current sheet reconnect into an "
       + "island chain; the <b>island width</b> chart is log&nbsp;W(t), so the linear stage is a "
-      + "straight line and the Rutherford stage bends over. &eta; = &nu; here &mdash; use the "
-      + "<b>&eta;/&nu;</b> box for other magnetic Prandtl numbers. Linear reference "
-      + "&gamma; &asymp; 0.0287 at &eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4, "
-      + "&gamma; &prop; &eta;<sup>3/5</sup>) &mdash; for a FROZEN equilibrium; here "
-      + "&psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, so the measured slope runs "
-      + "some 30&ndash;40% below it."
+      + "straight line and the Rutherford stage bends over. The diss slider is &eta; and "
+      + "<b>Pm</b> = &nu;/&eta; (1 here; Pm = 0 is an inviscid &phi;, which piles energy up at "
+      + "the grid scale in a long run). Linear reference &gamma; &asymp; 0.0287 at "
+      + "&eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4, &gamma; &prop; "
+      + "&eta;<sup>3/5</sup>), which <b>maintain equilibrium flux</b> reproduces: it adds the "
+      + "static source S = &minus;&eta;&nabla;&sup2;&psi;<sub>eq</sub> that holds the layer. "
+      + "Switch it off and &psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, dropping the "
+      + "measured slope some 30&ndash;40% below the reference."
   }
 };
 
@@ -1217,7 +1272,7 @@ async function boot() {
     onLayout: syncLabels
   });
   // wire first: bootApply's syncIC asks the editor config which rows a preset owns
-  wireCommonControls({ presets: PRESETS, rebuildOn: ["selBox", "nPm"],
+  wireCommonControls({ presets: PRESETS, rebuildOn: ["selBox", "nPm", "cbEqSrc"],
                        icSliders: EQ_SLIDERS });
   bootApply(pre);
   loop();

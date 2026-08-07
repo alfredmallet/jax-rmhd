@@ -8,11 +8,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   page (common.js + physics.js + its inline script) under node, plus `run()` to keep
   evaluating in the page's context. `require("./stubenv")(dir, page, demo)`. Since
   Phase H.0 the control panel is BUILT from a spec, so every tool that needs to see a
-  control has to boot the page — hence one stub, three consumers.
+  control has to boot the page — hence one stub, three consumers. Its `Path2D` stub
+  counts the points the overlays (arrows, field lines) push into a path and fails on any
+  non-finite coordinate.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
   kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
   clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
-  overrides every parameter set (`pm` = eta/nu, `ny`/`Lx`/`Ly` = a rectangular 2D box),
+  overrides every parameter set (`pm` = Pm = nu/eta, `eqsrc` = the maintained-flux
+  source, `ny`/`Lx`/`Ly` = a rectangular 2D box),
   which is how a knob's kernel footprint is shown: dump twice, diff the two.
 - `wgslparse.mjs` — parse all emitted kernels with wgsl_reflect (closest available
   compile check; npm i wgsl_reflect first).
@@ -20,8 +23,15 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   cards (add/close/reuse/retype), every chart card's option selects with a frame drawn
   per value, the cut card's own z source, presets, ?demo= links, colormaps, the 3D cube
   VIEW (five fields × manual / track ζ±, top-face plane, arrow frame, cut card exclusion,
-  add/remove with a cube card live — I2.1-I2.3), the contour overlay (ψ / φ / off × two
-  level counts × slice and cube — I2.4), the editor view
+  add/remove with a cube card live — I2.1-I2.3), the contour overlay (ψ / φ / both / off ×
+  two level counts × field and plain background × slice and cube — I2.4, J2.1, J2.2), Pm
+  (4, 0, back to 1) and the maintain-flux toggle down to the emitted WGSL (J2.3, J2.6),
+  the tearing/KH hyper-lock split (J2.5), the 3D field-lines VIEW (K2: per card, beside a
+  cube and a slice card, the 64 polylines and 12 box edges projected point by point, the
+  dead z controls, the contour selects driving the ink-only top face, its absence from the
+  cut card, and the `k∥ (field line)` chart tracing on its own — with the sample readback
+  asserted to follow that chart alone — K.1–K.3, K2.1–K2.5),
+  the editor view
   (enter/paint/save/cancel/save&run), eps± lock, band rebuild, amplitude rescale, and
   the self-test path end to end. Validates dispatch sizes, bind groups, writeBuffer
   extents.
@@ -39,7 +49,19 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   on an analytic island, per-field nu/eta decay rates, and the tearing / KH linear
   GROWTH rates from a small fp64 pseudospectral 2D RMHD solver written in the file
   (plain complex FFTs + RK4, same 2/3 dealias) — compared against `eqlinear.py`, not
-  against itself.
+  against itself. Section 4b (GATE J2) adds the maintained equilibrium flux: the same
+  solver with the app's source term, checking that psi_eq is then stationary to round-off
+  and that the free-running growth rate is the frozen-equilibrium eigenvalue again.
+- `checkk.js [dir]` — GATE K fp64 checks: the field-line integrator against the analytic
+  line of a single-mode ψ (both perpendicular components, RK2 order measured by halving
+  dz), the along-line sampler against the analytic (u, b) at the position the polyline
+  reports, and the REAL `flHann` / `flSpectrum` / `fftPow2` on synthetic signals (window
+  shape and mean square, peak bin, Parseval through the window, the E±/H_c lane algebra,
+  and the leakage a non-periodic line would otherwise put at high k∥). The marcher itself
+  is WGSL, so sections 1–2 drive a documented fp64 MIRROR of that kernel — never the
+  kernel against itself — and the kernel's own dz/dx, dz/dy constants are read out of the
+  emitted WGSL. Section 0 also pins `cubeTopXform` to its pre-K pixels and checks the
+  box frame against all twelve projected face corners.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

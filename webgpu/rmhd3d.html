@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebGPU 3D forced RMHD (spectral z, pseudospectral)</title>
+<title>3D RMHD (spectral z, WebGPU pseudospectral)</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>3D forced reduced-MHD (spectral z) — WebGPU pseudospectral solver</h1>
+<h1>3D RMHD (spectral z) — WebGPU pseudospectral solver</h1>
 <div class="sub">rfftn over (z,x,y) &middot; LSRK33 with the exact 2&times;2 Alfv&eacute;n propagator
-  &middot; Elsasser OU forcing &middot; fp32
+  &middot; fp32
   &middot; <a href="rmhd2d.html">&larr; 2D version</a>
   &middot; <a href="index.html">overview</a>
   &middot; <a href="https://github.com/alfredmallet/jax_rmhd/blob/main/webgpu/README.md"
@@ -175,7 +175,9 @@ function makeGrid(p) {
     }
   }
   if (shell.length === 0) throw new Error("forcing shell contains no modes on this grid");
-  return { nkx, nky, nz, nmp, nm, gridA, gridB, gridZ, shell, kunit };
+  // the box lengths ride along: the field-line marcher (REFINE_PLAN K.1) is the one kernel
+  // whose constants are a RATIO of grid spacings, dz/dx and dz/dy
+  return { nkx, nky, nz, nmp, nm, gridA, gridB, gridZ, shell, kunit, Lx: p.Lx, Ly: p.Ly, Lz: p.Lz };
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +574,75 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   if (tid == 0u) { outp[iz] = sh[0].x; outp[NZ + iz] = sh[0].y; }
 }`;
 
+  // ---- magnetic field lines + their along-line samples (REFINE_PLAN K.1) --
+  // The volume this marches is the RHS's OWN gradient stack: prepGrads + the 8-field
+  // inverse transform (Solver.encodeGrads) leave grad phi in real-space slots 0,1 and
+  // grad psi in 2,3, so b_perp = zhat x grad psi = (-d_y psi, d_x psi) and
+  // u_perp = zhat x grad phi are two sign flips away and NO new gradient or FFT kernel
+  // exists. Nothing of that volume is ever read back -- only the polylines below.
+  //
+  // The line equation is dx_perp/dz = b_perp/B0 with B0 = v_A = 1 in these units, marched
+  // with RK2 (midpoint): the midpoint sits half a plane up, where the field is the mean of
+  // the two bracketing planes, so the scheme is second order in dz with no extra storage.
+  // Positions are carried in GRID index units (hence the dz/dx, dz/dy factors) and are
+  // NEVER folded back into the box -- the sampler wraps, and leaving the raw value alone is
+  // what lets the renderer tell a wrap from a jump. Seeds: a side x side grid on iz = 0.
+  const flC = (nz, nn, L, LL) => ((L / nz) / (LL / nn)).toExponential(12);
+  S.fieldLine = pre + `
+struct FL { side: u32, pad0: u32, pad1: u32, pad2: u32 };
+@group(0) @binding(0) var<storage, read> gr: array<f32>;
+@group(0) @binding(1) var<storage, read_write> pos: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> smp: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> fl: FL;
+const CX: f32 = ${flC(nz, nx, g.Lz, g.Lx)};
+const CY: f32 = ${flC(nz, ny, g.Lz, g.Ly)};
+fn gwrap(i: i32, n: i32) -> u32 { return u32(((i % n) + n) % n); }
+// bilinear, periodic in both perpendicular directions, of the component PAIR (base,
+// base+1) of the real-space gradient stack on plane iz: base 0 -> grad phi, 2 -> grad psi
+fn samp2(base: u32, iz: u32, gx: f32, gy: f32) -> vec2<f32> {
+  let fx: f32 = floor(gx);
+  let fy: f32 = floor(gy);
+  let x0: u32 = gwrap(i32(fx), i32(NX));
+  let x1: u32 = gwrap(i32(fx) + 1, i32(NX));
+  let y0: u32 = gwrap(i32(fy), i32(NY));
+  let y1: u32 = gwrap(i32(fy) + 1, i32(NY));
+  let o: u32 = base * NR + iz * NRS;
+  let a00: u32 = o + x0 * NY + y0;
+  let a10: u32 = o + x1 * NY + y0;
+  let a01: u32 = o + x0 * NY + y1;
+  let a11: u32 = o + x1 * NY + y1;
+  let lo: vec2<f32> = mix(vec2<f32>(gr[a00], gr[NR + a00]), vec2<f32>(gr[a10], gr[NR + a10]), gx - fx);
+  let hi: vec2<f32> = mix(vec2<f32>(gr[a01], gr[NR + a01]), vec2<f32>(gr[a11], gr[NR + a11]), gx - fx);
+  return mix(lo, hi, gy - fy);
+}
+fn bperp(iz: u32, gx: f32, gy: f32) -> vec2<f32> {
+  let g: vec2<f32> = samp2(2u, iz, gx, gy);
+  return vec2<f32>(-g.y, g.x);
+}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i: u32 = gid.x;
+  let side: u32 = fl.side;
+  if (i >= side * side) { return; }
+  var gx: f32 = (f32(i / side) + 0.5) / f32(side) * f32(NX);
+  var gy: f32 = (f32(i % side) + 0.5) / f32(side) * f32(NY);
+  for (var iz: u32 = 0u; iz < NZ; iz = iz + 1u) {
+    let o: u32 = i * NZ + iz;
+    pos[o] = vec2<f32>(gx / f32(NX), gy / f32(NY));
+    let gp: vec2<f32> = samp2(0u, iz, gx, gy);
+    let gs: vec2<f32> = samp2(2u, iz, gx, gy);
+    // (u_x, u_y, b_x, b_y) here, as in the cut line -- z+- = u +- b is CPU arithmetic
+    smp[o] = vec4<f32>(-gp.y, gp.x, -gs.y, gs.x);
+    let k1: vec2<f32> = vec2<f32>(-gs.y, gs.x);
+    let mx: f32 = gx + 0.5 * CX * k1.x;
+    let my: f32 = gy + 0.5 * CY * k1.y;
+    let iz1: u32 = (iz + 1u) % NZ;
+    let k2: vec2<f32> = 0.5 * (bperp(iz, mx, my) + bperp(iz1, mx, my));
+    gx = gx + CX * k2.x;
+    gy = gy + CY * k2.y;
+  }
+}`;
+
   // ---- t += dt, and the time integral of the dissipation rate -------------
   S.tick = tickWGSL(pre);
 
@@ -651,6 +722,8 @@ ${MODE_STRUCT}
 @group(0) @binding(5) var<uniform> md: Mode;
 @group(0) @binding(6) var<storage, read> cp: array<f32>;
 @group(0) @binding(7) var<storage, read> cd: array<f32>;
+@group(0) @binding(8) var<storage, read> cp2: array<f32>;
+@group(0) @binding(9) var<storage, read> cd2: array<f32>;
 ${CMAP_WGSL}
 ${DISP_SHADE_WGSL}
 @compute @workgroup_size(8, 8)
@@ -659,7 +732,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x < NX && gid.y < NY) {
     let c: vec3<f32> = cmap(dispX(f[gid.x * NY + gid.y], s, md.mode), md.cmap);
     textureStore(texZ, vec2<i32>(i32(gid.x), i32(gid.y)),
-                 vec4<f32>(contInk(c, gid.x, gid.y), 1.0));
+                 vec4<f32>(contInk(c, ${CONT_ARGS}), 1.0));
   }
   if (gid.x < NZ && gid.y < NY) {
     let c: vec3<f32> = cmap(dispX(f[OFF1 + gid.x * NY + gid.y], s, md.mode), md.cmap);
@@ -784,19 +857,36 @@ function cubeQuads() {
   }
   return out;
 }
-// The top face's map from face texture coordinates -- u along ix, v along iy, exactly
-// what colorizeCube wrote into texZ -- to the arrow overlay's canvas, for the arrows a
-// cube card draws on its visible top face (REFINE_PLAN I2.3). The face is an affine
-// parallelogram, so its origin and two edge vectors are all drawArrows needs, and they
-// come out of the SAME cubeQuads array the render pass is fed: one projection, not two.
-// Clip space (x right, y up) -> canvas (x right, y down) over the square overlay.
-function cubeTopXform() {
+// The projection is affine, so the whole BOX is one origin plus three edge vectors in
+// overlay-canvas pixels -- and they are read off the SAME cubeQuads array the render pass
+// is fed, so there is one projection here, not two. Clip space (x right, y up) -> canvas
+// (x right, y down) over the square overlay.
+//   face 0 (z = 1) gives the origin at (0,0,1) and the x / y edges;
+//   face 1 (x = 1) runs its u along z, so its first edge IS the z edge.
+// Consumers: the field-line polylines, which live inside the box (REFINE_PLAN K.2), and
+// the arrow overlay of a cube card, which is this frame restricted to the visible top
+// face z = 1 (I2.3) -- origin + the z edge, with the face's own two edges.
+function cubeFrame() {
   const q = cubeQuads(), S = VEC_SIZE;
   const px = i => [(q[i] + 1) * 0.5 * S, (1 - q[i + 1]) * 0.5 * S];
-  const o = px(0), a = px(2), b = px(4);      // p00, p10 (u edge), p01 (v edge)
-  return { ox: o[0], oy: o[1], ax: a[0] - o[0], ay: a[1] - o[1],
-           bx: b[0] - o[0], by: b[1] - o[1] };
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+  const top = px(0), a = sub(px(2), top), b = sub(px(4), top);
+  const c = sub(px(14), px(12));
+  return { ox: top[0] - c[0], oy: top[1] - c[1], ax: a[0], ay: a[1],
+           bx: b[0], by: b[1], cx: c[0], cy: c[1] };
 }
+function cubeTopXform() {
+  const F = cubeFrame();
+  return { ox: F.ox + F.cx, oy: F.oy + F.cy, ax: F.ax, ay: F.ay, bx: F.bx, by: F.by };
+}
+// field lines (REFINE_PLAN K, K2.2): the seed grid is FL_SIDE x FL_SIDE on the bottom
+// face -- ONE constant, no UI. The march runs only while something consumes it (a lines
+// -view card or the k_par chart, fieldLineHook), and at FL_PERIOD, not per step: the
+// volume pass behind it is 8 inverse transforms, cheap at 2 Hz but not free.
+// The lines view's plain background is the contour plate itself (physics.js), which is
+// what makes its top face read as ink with no plate -- see Solver.render.
+const FL_SIDE = 8, FL_PERIOD = 500;
+const FL_BG = { r: CONT_PLATE_RGB[0], g: CONT_PLATE_RGB[1], b: CONT_PLATE_RGB[2], a: 1 };
 
 // ---------------------------------------------------------------------------
 // Solver
@@ -873,6 +963,12 @@ class Solver {
       cutM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // per-real-z-plane Elsasser energies [E+ | E-], for the peak tracking
       planeE: d.createBuffer({ size: 2 * this.g.nz * 4, usage: SQ }),
+      // field lines (REFINE_PLAN K.1): nz points per line of (x,y) and of
+      // (u_x,u_y,b_x,b_y) -- 384 kB at FL_SIDE = 8 x nz = 256, which is why the polylines
+      // and not the volume come back
+      flPos: d.createBuffer({ size: FL_SIDE * FL_SIDE * this.g.nz * 8, usage: SQ }),
+      flSmp: d.createBuffer({ size: FL_SIDE * FL_SIDE * this.g.nz * 16, usage: SQ }),
+      flCfg: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       cfg: d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       cubeU: d.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // 0..2 are the LSRK33 stages; 3 is (alpha,beta,gamma) = (0,0,1), i.e. a bare
@@ -908,6 +1004,7 @@ class Solver {
       specReduceZ: cp(S.specReduceZ, "specReduceZ"), spectrum: cp(S.spectrum, "spectrum"),
       specPar: cp(S.specPar, "specPar"),
       zpPrep: cp(S.zpPrep, "zpPrep"), planeEnergy: cp(S.planeEnergy, "planeEnergy"),
+      fieldLine: cp(S.fieldLine, "fieldLine"),
       prepDisp: cp(S.prepDisp, "prepDisp"), sliceExtract: cp(S.sliceExtract, "sliceExtract"),
       faceExtract: cp(S.faceExtract, "faceExtract"), colorizeCube: cp(S.colorizeCube, "colorizeCube"),
       maxPartial: cp(S.maxPartial, "maxPartial"), maxFinal: cp(S.maxFinal, "maxFinal"),
@@ -976,6 +1073,9 @@ class Solver {
       // order, so it can never overlap the RHS's use of that buffer.
       zpPrep: bg(this.pl.zpPrep, [B.fields, B.gradsK]),
       planeEnergy: bg(this.pl.planeEnergy, [B.gradsK, B.gridA, B.gridB, B.planeE]),
+      // the field-line marcher reads the REAL-space gradient volume the RHS builds
+      // (same own-submit argument as the plane-energy pass above)
+      fieldLine: bg(this.pl.fieldLine, [B.realGrads, B.flPos, B.flSmp, B.flCfg]),
       tick: bg(this.pl.tick, [B.scalars]),
       ou: bg(this.pl.ou, [B.forcing, B.shell, B.noise, B.scalars, B.cfg]),
       scale: bg(this.pl.scale, [B.fields, B.forcing, B.gridA, B.gridB, B.shell, B.scalars, B.cfg]),
@@ -1007,10 +1107,11 @@ class Solver {
   // targets are described by the `tg` entries below and driven by one _dispPass.
   //
   // The contour overlay (I2.4) extends the reuse discipline instead of allocating: it
-  // runs LAST in the frame, when dispK2 / dispR2 / sliceB are dead in every mode, so
-  // the potential plane lands in sliceB -- which is both what colorize reads and, since
-  // the top face IS that plane, what the cube's top face reads. Its only new state is
-  // the tiny level table (contMx, contB).
+  // runs LAST in the frame, when dispK2 / dispR2 / sliceB -- and, sigma_c being finished,
+  // sliceC -- are dead in every mode, so the two potential planes of the "both" selection
+  // (J2.2) land in sliceB and sliceC, which is both what colorize reads and, since the
+  // top face IS that plane, what the cube's top face reads. Their only new state is the
+  // CONT_SETS tiny level tables (contMx, contB).
   _makeChain() {
     const d = this.device, nm = this.g.nm, nr = this.nr, nrs = this.nrs, cx = nm * 8;
     const B = {
@@ -1032,10 +1133,11 @@ class Solver {
       facesA: d.createBuffer({ size: this.nface * 4, usage: SQ }),
       facesB: d.createBuffer({ size: this.nface * 4, usage: SQ }),
       facesC: d.createBuffer({ size: this.nface * 4, usage: SQ }),
-      // contour overlay: the plane's max, and [range, delta, nlev, -] (contLevel owns
-      // range/delta, the CPU owns nlev -- and delta = 0 is how the overlay is switched off)
-      contMx: d.createBuffer({ size: 4, usage: SQ }),
-      contB: d.createBuffer({ size: 16, usage: SQ }),
+      // contour overlay, per set: the plane's max, and [range, delta, nlev, plain bg]
+      // (contLevel owns range/delta, the CPU owns the rest -- and delta = 0 is how a set
+      // is switched off)
+      contMx: contPer(() => d.createBuffer({ size: 4, usage: SQ })),
+      contB: contPer(() => d.createBuffer({ size: 16, usage: SQ })),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the z- vector: the second half of the sigma_c chain. Only its `mode`
       // field is ever read (by prepDisp): sliceExtract runs off the chain's main Mode
@@ -1043,8 +1145,8 @@ class Solver {
       // in step with the main uniform anyway, so the two never disagree if some future
       // kernel does start reading it.
       modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-      // pinned to the contour overlay's potential (phi or psi), same plane
-      modeC: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      // pinned to each contour set's potential (phi or psi), same plane
+      modeC: contPer(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
     const ftex = (w, h) => d.createTexture({
       size: [w, h], format: "rgba8unorm",
@@ -1087,7 +1189,9 @@ class Solver {
                   { binding: 2, resource: tex.createView() },
                   { binding: 3, resource: { buffer: B.mode } },
                   { binding: 4, resource: { buffer: B.sliceB } },
-                  { binding: 5, resource: { buffer: B.contB } }]
+                  { binding: 5, resource: { buffer: B.contB[0] } },
+                  { binding: 6, resource: { buffer: B.sliceC } },
+                  { binding: 7, resource: { buffer: B.contB[1] } }]
       }),
       render: d.createBindGroup({
         layout: this.plRender.getBindGroupLayout(0),
@@ -1108,13 +1212,15 @@ class Solver {
       sigmaCombineFace: bgOf(this.pl.sigmaCombineFace, [B.facesA, B.facesB, B.maxVal]),
       maxPartialFace: bgOf(this.pl.maxPartialFace, [B.facesA, B.maxPartF]),
       maxFinalFace: bgOf(this.pl.maxFinalFace, [B.maxPartF, B.maxVal]),
-      // contour prep: the potential through the SAME prepDisp + inverse transform + slice
-      // extraction the display modes use (its own Mode uniform, the first component's
-      // dead k scratch as the throwaway outk2), then the shared max into its level table
-      prepDispC: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeC, B.dispK]),
-      maxPartialCont: bgOf(this.pl.maxPartial, [B.sliceB, B.maxPart]),
-      maxFinalCont: bgOf(this.pl.maxFinal, [B.maxPart, B.contMx]),
-      contLevel: bgOf(this.pl.contLevel, [B.contMx, B.contB]),
+      // contour prep, per set: the potential through the SAME prepDisp + inverse transform
+      // + slice extraction the display modes use (its own Mode uniform, the first
+      // component's dead k scratch as the throwaway outk2), landing in sliceB (set 0) /
+      // sliceC (set 1), then the shared max into that set's level table
+      contPrep: contPer(i => bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeC[i], B.dispK])),
+      contMax: [bgOf(this.pl.maxPartial, [B.sliceB, B.maxPart]),
+                bgOf(this.pl.maxPartial, [B.sliceC, B.maxPart])],
+      contFin: contPer(i => bgOf(this.pl.maxFinal, [B.maxPart, B.contMx[i]])),
+      contLev: contPer(i => bgOf(this.pl.contLevel, [B.contMx[i], B.contB[i]])),
       colorizeCube: d.createBindGroup({
         layout: this.pl.colorizeCube.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: B.facesA } },
@@ -1124,7 +1230,9 @@ class Solver {
                   { binding: 4, resource: texY.createView() },
                   { binding: 5, resource: { buffer: B.mode } },
                   { binding: 6, resource: { buffer: B.sliceB } },
-                  { binding: 7, resource: { buffer: B.contB } }]
+                  { binding: 7, resource: { buffer: B.contB[0] } },
+                  { binding: 8, resource: { buffer: B.sliceC } },
+                  { binding: 9, resource: { buffer: B.contB[1] } }]
       }),
       renderCube: d.createBindGroup({
         layout: this.plCube.getBindGroupLayout(0),
@@ -1159,7 +1267,9 @@ class Solver {
               mpart: bg.maxPartialFace, mfin: bg.maxFinalFace }
       }
     };
-    return { mode: 0, cube: 0, cont: 0, zslice: 0, buf: B, tex, texZ, texX, texY, bg, tg };
+    // the two sets' slice extractions are the two the sigma_c chain already declares
+    bg.contSlice = [bg.sliceDisp2, bg.sliceDisp2H1];
+    return { mode: 0, cube: 0, lines: 0, cont: [0, 0], zslice: 0, buf: B, tex, texZ, texX, texY, bg, tg };
   }
 
   // chain ci, built on first use
@@ -1174,10 +1284,11 @@ class Solver {
   zsliceOf(ci) { const D = this.disp[ci | 0]; return D ? D.zslice : 0; }
 
   destroy() {
-    for (const k in this.buf) { const b = this.buf[k]; if (Array.isArray(b)) b.forEach(x => x.destroy()); else b.destroy(); }
+    const kill = b => { if (Array.isArray(b)) b.forEach(x => x.destroy()); else b.destroy(); };
+    for (const k in this.buf) kill(this.buf[k]);
     for (const D of this.disp) {
       if (!D) continue;
-      for (const k in D.buf) D.buf[k].destroy();
+      for (const k in D.buf) kill(D.buf[k]);
       D.tex.destroy(); D.texZ.destroy(); D.texX.destroy(); D.texY.destroy();
     }
   }
@@ -1211,23 +1322,30 @@ class Solver {
   // sel 0..8 is the displayed quantity (0..3 scalars, 4..7 vector magnitudes + arrows,
   // 8 sigma_c) and is orthogonal to the VIEW: `opt.cube` draws the three boundary faces
   // of that same quantity instead of one plane, and the plane it resolves to is then the
-  // cube's TOP face (REFINE_PLAN I2.1/I2.2). `opt.cont` is the contour overlay's
-  // potential as a display mode (0 = off, 2 = phi, 3 = psi), `opt.nlev` its level count.
+  // cube's TOP face (REFINE_PLAN I2.1/I2.2). `opt.cont` is the contour sets' potentials
+  // as display modes (0 = that set off, 2 = phi, 3 = psi), `opt.nlev` their level count
+  // and `opt.plain` the blank-background option (J2.1/J2.2).
+  // `opt.lines` is the FIELD LINES view (K2.1/K2.3): the same cube geometry, but only
+  // the top face is drawn and only as contour ink -- so it is a cube view that skips the
+  // field entirely (see render), and the quantity `sel` is inert there.
   // ci selects the display card / chain; every chain carries the whole cube and contour
   // path, so any card may use either. `cmap` indexes CMAP_NAMES.
   setDisplayMode(ci, sel, zslice, cmap, opt) {
     const D = this.chain(ci), o = opt || {};
     D.mode = sel | 0;
-    D.cube = o.cube ? 1 : 0;
-    D.cont = o.cont | 0;
+    D.lines = o.lines ? 1 : 0;
+    D.cube = (o.cube || D.lines) ? 1 : 0;
+    D.cont = (o.cont || [0, 0]).slice();
     if (zslice !== undefined) D.zslice = Math.max(0, Math.min(this.g.nz - 1, zslice | 0));
     const u = new Uint32Array([D.mode, D.zslice, (cmap | 0), 0]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = DISP_ZMINUS;                     // the sigma_c second half, same z slice
     this.device.queue.writeBuffer(D.buf.modeM, 0, u);
-    u[0] = D.cont || DISP_PHI;              // the contour potential's own prep
-    this.device.queue.writeBuffer(D.buf.modeC, 0, u);
-    setContLevels(this.device, D, o.nlev);
+    for (let i = 0; i < CONT_SETS; i++) {   // each contour potential's own prep
+      u[0] = D.cont[i] || DISP_PHI;
+      this.device.queue.writeBuffer(D.buf.modeC[i], 0, u);
+    }
+    setContLevels(this.device, D, o.nlev, o.plain);
   }
 
   // ---- initial condition --------------------------------------------------
@@ -1315,13 +1433,20 @@ class Solver {
     pass.dispatchWorkgroups(nz * nx, batch);
   }
 
+  // the perpendicular gradient volume: the eight i*k gradients, inverse-transformed into
+  // realGrads (slots 0,1 = grad phi, 2,3 = grad psi, 4..7 = grad vorticity / current).
+  // The RHS's first move, and the whole of the field-line pass's volume prep (K.1).
+  encodeGrads(pass) {
+    pass.setPipeline(this.pl.prepGrads); pass.setBindGroup(0, this.bg.prepGrads);
+    pass.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+    this.encodeInv3D(pass, 8, this.bg.zInvGrads, this.bg.colsInvGrads, this.bg.rowsC2RGrads);
+  }
+
   // ---- RHS + one LSRK33 step ---------------------------------------------
   encodeRHS(pass, opts) {
     const doCFL = !!(opts && opts.cfl), doForce = !(opts && opts.forcing === false);
     const nm = this.g.nm;
-    pass.setPipeline(this.pl.prepGrads); pass.setBindGroup(0, this.bg.prepGrads);
-    pass.dispatchWorkgroups(Math.ceil(nm / 64));
-    this.encodeInv3D(pass, 8, this.bg.zInvGrads, this.bg.colsInvGrads, this.bg.rowsC2RGrads);
+    this.encodeGrads(pass);
     if (doCFL) {
       pass.setPipeline(this.pl.cflPartial); pass.setBindGroup(0, this.bg.cflPartial);
       pass.dispatchWorkgroups(this.nPartR);
@@ -1448,27 +1573,38 @@ class Solver {
     p.setPipeline(T.pl.mfin); p.setBindGroup(0, T.bg.mfin); p.dispatchWorkgroups(1);
   }
 
-  // the contour overlay's potential (REFINE_PLAN I2.4): ONE extra volume transform per
-  // card frame, through the second component's now-dead scratch, extracted on the card's
-  // plane into sliceB -- which colorize reads, and which IS the cube's top face -- plus
-  // the max reduction that feeds the adapting level spacing. Runs LAST, after every mode
-  // (and the cube's arrow gather) has finished with that scratch.
+  // the contour overlay's potentials (REFINE_PLAN I2.4, J2.2): ONE extra volume transform
+  // per ACTIVE set per card frame, through the second component's now-dead scratch,
+  // extracted on the card's plane into sliceB (set 0) / sliceC (set 1) -- which colorize
+  // reads, and which IS the cube's top face -- plus the max reduction that feeds each
+  // set's adapting level spacing. Runs LAST, after every mode (and the cube's arrow
+  // gather) has finished with that scratch.
   _dispCont(p, D) {
-    p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, D.bg.prepDispC);
-    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
-    this.encodeInv3D(p, 1, D.bg.zInvDisp2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2);
-    p.setPipeline(this.pl.sliceExtract); p.setBindGroup(0, D.bg.sliceDisp2);
-    p.dispatchWorkgroups(Math.ceil(this.nrs / 256));
-    contLevelEncode(p, this, D, this.nPartS);
+    for (let i = 0; i < CONT_SETS; i++) {
+      if (!D.cont[i]) continue;
+      p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, D.bg.contPrep[i]);
+      p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+      this.encodeInv3D(p, 1, D.bg.zInvDisp2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2);
+      p.setPipeline(this.pl.sliceExtract); p.setBindGroup(0, D.bg.contSlice[i]);
+      p.dispatchWorkgroups(Math.ceil(this.nrs / 256));
+      contLevelEncode(p, this, D, this.nPartS, i);
+    }
   }
 
+  // The LINES view (REFINE_PLAN K2.3) rides this same path with two changes and no new
+  // kernel: the whole mode chain is skipped (its face carries no field, so extraction,
+  // magnitudes and the autoscale would be dead work -- contInk discards the colour under
+  // a plain background), and the render pass clears to the contour PLATE and draws only
+  // instance 0, the top face. Every texel of that face which is not contour ink is then
+  // exactly the background colour, so the face reads as transparent ink over the plain
+  // canvas -- no plate, no blend state, no second colorize kernel.
   render(ctx, ci) {
     const d = this.device, D = this.chain(ci || 0), mode = D.mode;
-    const cube = !!D.cube;
+    const cube = !!D.cube, lines = !!D.lines;
     const enc = d.createCommandEncoder();
     const p = enc.beginComputePass();
-    this._dispPass(p, D, mode, cube ? D.tg.cube : D.tg.slice);
-    if (cube && dispIsVector(mode)) {
+    if (!lines) this._dispPass(p, D, mode, cube ? D.tg.cube : D.tg.slice);
+    if (cube && !lines && dispIsVector(mode)) {
       // arrows on the visible TOP face (REFINE_PLAN I2.3): the same two components on
       // the same plane that face shows, gathered through the slice kernels -- the
       // volumes are still intact, the faces having been collapsed, not the volumes
@@ -1480,7 +1616,7 @@ class Solver {
       p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
       p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
     }
-    if (D.cont) this._dispCont(p, D);
+    this._dispCont(p, D);
     if (cube) {
       p.setPipeline(this.pl.colorizeCube); p.setBindGroup(0, D.bg.colorizeCube);
       p.dispatchWorkgroups(Math.ceil(Math.max(this.g.nx, this.g.nz) / 8),
@@ -1493,10 +1629,10 @@ class Solver {
     const rp = enc.beginRenderPass({
       colorAttachments: [{
         view: ctx.getCurrentTexture().createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store"
+        clearValue: lines ? FL_BG : { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store"
       }]
     });
-    if (cube) { rp.setPipeline(this.plCube); rp.setBindGroup(0, D.bg.renderCube); rp.draw(6, 3); }
+    if (cube) { rp.setPipeline(this.plCube); rp.setBindGroup(0, D.bg.renderCube); rp.draw(6, lines ? 1 : 3); }
     else { rp.setPipeline(this.plRender); rp.setBindGroup(0, D.bg.render); rp.draw(3); }
     rp.end();
     d.queue.submit([enc.finish()]);
@@ -1553,6 +1689,28 @@ class Solver {
     p.end();
     d.queue.submit([enc.finish()]);
     return readBuf(d, this.buf.planeE, 2 * nz * 4);
+  }
+
+  // FL_SIDE x FL_SIDE magnetic field lines from the bottom face (REFINE_PLAN K.1). One
+  // submit: the RHS's gradient volume (b_perp never leaves the GPU) and then the marcher,
+  // which writes ONLY the polylines -- nl*nz*(2 + 4) floats, tens of kB, versus the
+  // ~100 MB volume. Its own submit, so borrowing the RHS scratch cannot overlap a step
+  // (submits on one queue execute in order -- same argument as readPlaneEnergy).
+  // Returns pos (box fractions, unwrapped) and -- only when `withSmp`, i.e. only when a
+  // k_par (field line) chart is open (K2.4) -- smp (u_x, u_y, b_x, b_y along the line);
+  // the kernel writes both either way, it is the map round trip that is skipped.
+  async readFieldLines(withSmp) {
+    const d = this.device, nl = FL_SIDE * FL_SIDE, nz = this.g.nz;
+    d.queue.writeBuffer(this.buf.flCfg, 0, new Uint32Array([FL_SIDE, 0, 0, 0]));
+    const enc = d.createCommandEncoder();
+    const p = enc.beginComputePass();
+    this.encodeGrads(p);
+    p.setPipeline(this.pl.fieldLine); p.setBindGroup(0, this.bg.fieldLine);
+    p.dispatchWorkgroups(Math.ceil(nl / 64));
+    p.end();
+    d.queue.submit([enc.finish()]);
+    return { pos: await readBuf(d, this.buf.flPos, nl * nz * 8),
+             smp: withSmp ? await readBuf(d, this.buf.flSmp, nl * nz * 16) : null };
   }
 }
 
@@ -1661,6 +1819,9 @@ function applyIC() {
   spsSmooth = 0;
   chartsReset();
   planeE = null; planeAt = 0;
+  // the traced lines belong to the retired state (and possibly to another nz): drop them
+  flData = null; flPar = null; flAt = 0;
+  for (const d of cards.disp) d.setLines(null);
 }
 
 // the blob editor lives in common.js (view, buttons and all); this hands it the app's
@@ -1692,9 +1853,13 @@ function wireDrawEditor() {
 let planeE = null, planeAt = 0;
 const trackIdx = [0, 0];                    // tracked plane of E+ , of E-
 const trackPos = [-1, -1];                  // ... and its continuous coordinate (centroid)
-// the plane one card is on: its tracker, or its slider
+// the plane one card is on: its tracker, or its slider -- or, in the lines view, the top
+// BOUNDARY plane, which is where the field lines end and what its ink-only face shows
+// (REFINE_PLAN K2.5). nz-1 and not 0: the marcher's last written point is plane nz-1, so
+// the endpoints puncture exactly the structure the face draws.
 function sliceOfCard(c) {
   if (!c) return 0;
+  if (c.linesView && c.linesView()) return solver ? solver.g.nz - 1 : 0;
   const s = c.zsrc();
   if (s === "zp") return trackIdx[0];
   if (s === "zm") return trackIdx[1];
@@ -1731,6 +1896,35 @@ async function planeTrackHook(sv) {
     cardsSync();
   }
 }
+// ---------------------------------------------------------------------------
+// field lines + the true parallel spectrum (REFINE_PLAN K)
+// ---------------------------------------------------------------------------
+// Both ride ONE march + polyline readback at ~2 Hz -- deliberately not per step: the lines
+// are a picture of the instantaneous B, not a time series, and the volume pass behind them
+// costs an RHS gradient prep. Its two consumers are independent (REFINE_PLAN K2.4): any
+// card in the LINES VIEW, and an open "k∥ (field line)" spectrum card, which traces on its
+// own with no lines card anywhere. The along-line SAMPLES are a second readback of four
+// times the size and only the chart reads them, so they come back only when it is open.
+let flData = null, flPar = null, flAt = 0;
+const flLinesOn = () => cards.disp.some(d => d.linesView());
+const flChartOn = () => cards.chart.some(c => c.type() === "spectrum" && c.optVals().sd === "fl");
+async function fieldLineHook(sv) {
+  const chart = flChartOn();
+  if (!chart && !flLinesOn()) {
+    if (flData) { flData = null; flPar = null; for (const d of cards.disp) d.setLines(null); }
+    return;
+  }
+  const now = performance.now();
+  if (now - flAt < FL_PERIOD) return;
+  flAt = now;
+  const L = await sv.readFieldLines(chart);
+  if (sv !== solver) return;                // retired mid-readback
+  flData = { pos: L.pos, nl: FL_SIDE * FL_SIDE, nz: sv.g.nz };
+  flPar = chart ? flSpectrum(L.smp, flData.nl, sv.g.nz) : null;
+  // every card caches them; only a lines-view card draws them (DisplayCard.overlay)
+  for (const d of cards.disp) d.setLines(flData);
+}
+
 // extra readout lines: where the trackers are (continuous, so a smooth centroid reads
 // as smooth even while the displayed plane is quantized)
 function planeReadout() {
@@ -2023,8 +2217,9 @@ async function boot() {
   // DEFAULT 128 MiB storage-binding limit -> ask the adapter for its own limits.
   if (!await initGPU({ maxLimits: true })) return;
 
-  frameHook = planeTrackHook;
+  frameHook = async sv => { await planeTrackHook(sv); if (sv === solver) await fieldLineHook(sv); };
   readoutExtra = planeReadout;
+  specExtra = () => ({ parFL: flPar });
   cardsInit({
     fields: DISP_FIELDS,
     zslice: true,                                     // per-card z slice / peak tracker
@@ -2032,8 +2227,13 @@ async function boot() {
     nz: () => (solver ? solver.g.nz : uiRes()[1]),
     zsliceOf: sliceOfCard,
     arrowXform: cubeTopXform,
-    caption: c => (solver && solver.cubeOf(c.ci) ? "  (cube faces, top iz " : "  (iz ")
-      + sliceOfCard(c) + ")",
+    lineXform: cubeFrame,                             // the whole box, for the field lines
+    caption: c => c.linesView() && !c.contOn()
+      ? FL_SIDE * FL_SIDE + " B⊥ field lines"
+      : (c.linesView()
+        ? FL_SIDE * FL_SIDE + " B⊥ field lines  (top face: contours at iz "
+        : (solver && solver.cubeOf(c.ci) ? "  (cube faces, top iz " : "  (iz "))
+        + sliceOfCard(c) + ")",
     onLayout: () => {
       planeAt = 0;                                    // re-track on the next frame
       syncLabels();

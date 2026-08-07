@@ -26,8 +26,9 @@ const dir = process.argv[2] || path.join(__dirname, "..");
 const REF = {
   Lx: 4 * Math.PI, Ly: 2 * Math.PI,
   tear: { a: 0.1 * 4 * Math.PI, psi0: 1.65,
-          g: { "1e-3": 0.028716, "3.1623e-3": 0.051395 },      // eta = nu
-          gPm10: 0.114636,                                     // nu = 1e-3, eta = 1e-2
+          g: { "1e-3": 0.028716, "3.1623e-3": 0.051395 },      // eta = nu, i.e. Pm = 1
+          gPm0p1: 0.114636,                                    // nu = 1e-3, eta = 1e-2
+          gPm0: 0.043646,                                      // nu = 0, eta = 1e-3
           dp_a: 8.3995 },
   kh: { a: 0.05 * 4 * Math.PI, U0: 1, nu: 3.1623e-4,
         g0: 0.266260, gHalf: 0.206229, gSup: 0.003646 }        // b0 = 0, 0.5, 1.2
@@ -131,13 +132,23 @@ function makeSolver(o) {
       out[2][m] = de[m] * nlr[1][m] - o.eta * h * f[2][m];
       out[3][m] = de[m] * nli[1][m] - o.eta * h * f[3][m];
     }
+    // MAINTAIN (o.maintain, REFINE_PLAN J2.3): the static source S = -eta grad^2 psi_eq,
+    // psi_eq being the k_y = 0 column of the IC -- exactly what the app's srcInit
+    // extracts and what nlAssemble then multiplies by the SAME -lin_L the stage applies.
+    // Written with the identical grouping as the damping term above, so it cancels it
+    // bitwise while psi is still the equilibrium.
+    if (src) for (let m = 0; m < n; m++) {
+      const e = o.eta * Math.pow(ksq[m], o.hyper);
+      out[2][m] += e * src[0][m];
+      out[3][m] += e * src[1][m];
+    }
   }
   const f = [A(), A(), A(), A()];
   // FREEZE (o.freeze): restore the k_y = 0 modes after every step, i.e. hold the
   // equilibrium. That is exactly the assumption the eigenvalue problem makes, and it is
   // what makes the two comparable: a free-running initial-value problem also lets psi_eq
   // diffuse (rate ~ eta/a^2), which slowly lowers the growth rate -- see section 4.
-  let eqk = null;
+  let eqk = null, src = null;
   const k1 = [A(), A(), A(), A()], k2 = [A(), A(), A(), A()];
   const k3 = [A(), A(), A(), A()], k4 = [A(), A(), A(), A()], tmp = [A(), A(), A(), A()];
   const axpy = (dst, a, s, b) => { for (let c = 0; c < 4; c++) for (let m = 0; m < n; m++) dst[c][m] = a[c][m] + s * b[c][m]; };
@@ -150,6 +161,16 @@ function makeSolver(o) {
         for (let m = 0; m < n; m++) { dr[m] *= de[m]; di[m] *= de[m]; }   // icFinish
       }
       if (o.freeze) eqk = f.map(a => a.slice());
+      if (o.maintain) {
+        src = [A(), A()];
+        for (let i = 0; i < nx; i++) { src[0][i * ny] = f[2][i * ny]; src[1][i * ny] = f[3][i * ny]; }
+      }
+    },
+    // the k_y = 0 column of psi: the equilibrium, as the maintained source sees it
+    eqColumn() {
+      const c = new Float64Array(2 * nx);
+      for (let i = 0; i < nx; i++) { c[2 * i] = f[2][i * ny]; c[2 * i + 1] = f[3][i * ny]; }
+      return c;
     },
     step(dt) {
       rhs(f, k1); axpy(tmp, f, 0.5 * dt, k1);
@@ -336,36 +357,81 @@ console.log("4. tearing linear growth rate vs the eigenvalue reference (J physic
 // gives the same rate to 4 digits, which is how that was established.)
 {
   const Lx = REF.Lx, Ly = REF.Ly, nx = 256, ny = 8;
-  const mk = (nu, eta, freeze) => {
-    const T = appIC("tearing", nx, ny, Lx, Ly, { rEqA: 0.1, rEqPsi0: REF.tear.psi0, rEqPert: -3 });
-    const s = makeSolver({ nx, ny, Lx, Ly, hyper: 1, nu, eta, freeze });
+  const mk = (nu, eta, o) => {
+    const T = appIC("tearing", nx, ny, Lx, Ly,
+                    { rEqA: 0.1, rEqPsi0: REF.tear.psi0, rEqPert: (o && o.pert) || -3 });
+    const s = makeSolver(Object.assign({ nx, ny, Lx, Ly, hyper: 1, nu, eta }, o));
     s.setIC(Float64Array.from(T.phi), Float64Array.from(T.psi));
     return s;
   };
   for (const C of [{ nu: 1e-3, eta: 1e-3, ref: REF.tear.g["1e-3"], t: [30, 80], tag: "eta = nu = 1e-3" },
                    { nu: 3.1623e-3, eta: 3.1623e-3, ref: REF.tear.g["3.1623e-3"], t: [20, 50],
                      tag: "eta = nu = 3.16e-3" },
-                   { nu: 1e-3, eta: 1e-2, ref: REF.tear.gPm10, t: [12, 32],
-                     tag: "nu = 1e-3, eta = 1e-2 (eta/nu = 10)" }]) {
-    const s = mk(C.nu, C.eta, true);
+                   { nu: 1e-3, eta: 1e-2, ref: REF.tear.gPm0p1, t: [12, 32],
+                     tag: "eta = 1e-2, nu = 1e-3 (Pm = 0.1)" },
+                   // Pm = 0 grows faster AND takes longer to shed the seed's transient
+                   // (nothing damps phi, so its eigenfunction settles resistively): a
+                   // smaller seed and a later window, still far from saturation
+                   { nu: 0, eta: 1e-3, ref: REF.tear.gPm0, t: [40, 80], pert: -5,
+                     tag: "eta = 1e-3, nu = 0 (Pm = 0, J2.6)" }]) {
+    const s = mk(C.nu, C.eta, { freeze: true, pert: C.pert });
     const g = measure(s, () => s.psiTilde(), 0.02, C.t[0], C.t[1], 250);
     ok("tearing gamma, " + C.tag, rel(g, C.ref) < 0.02,
        "2D pseudospectral " + g.toPrecision(5) + " vs 1D eigenvalue " + C.ref +
        "  (" + (100 * rel(g, C.ref)).toFixed(2) + "%)");
   }
-  // ... and the FREE-RUNNING rate, which is what the demo shows: the same run without
-  // holding psi_eq, whose own resistive diffusion (rate ~ eta/a^2) widens the layer and
-  // steadily lowers Delta'. Documented, not a defect -- but the preset's hint quotes the
-  // frozen-equilibrium number, so record how far the two part company.
+  // ... and the FREE-RUNNING rate with the source OFF, which is what the demo shows with
+  // "maintain equilibrium flux" unchecked: the same run without holding psi_eq, whose own
+  // resistive diffusion (rate ~ eta/a^2) widens the layer and steadily lowers Delta'.
+  // Documented, not a defect -- record how far it parts company with the eigenvalue.
   {
-    const s = mk(1e-3, 1e-3, false);
+    const s = mk(1e-3, 1e-3, null);
     const g = measure(s, () => s.psiTilde(), 0.02, 30, 80, 250);
     const r = REF.tear.g["1e-3"];
-    ok("free-running tearing gamma is the eigenvalue rate, degraded by equilibrium decay",
+    ok("free-running tearing gamma (source OFF) is degraded by equilibrium decay",
        g > 0.6 * r && g < r,
        "free " + g.toPrecision(4) + " vs frozen/eigen " + r + "  (eta/a^2 = " +
        (1e-3 / (REF.tear.a * REF.tear.a)).toExponential(2) + ", " +
        (100 * (1 - g / r)).toFixed(0) + "% slower over t = 30..80)");
+  }
+
+  console.log("4b. maintained equilibrium flux (J2.3)");
+  // (a) with the source on and NO seed (a 1e-60 amplitude underflows to exactly 0 in the
+  // fp32 plane the app builds), psi_eq must not move at all -- the source is defined as
+  // minus its own damping term. Off, it decays at the resistive rate.
+  {
+    const run = maintain => {
+      const s = mk(1e-3, 1e-3, { maintain, pert: -60 });
+      const c0 = s.eqColumn();
+      for (let n = 0; n < 2500; n++) s.step(0.02);       // t = 50
+      const c1 = s.eqColumn();
+      let d = 0, mx = 0;
+      for (let i = 0; i < c0.length; i++) {
+        d = Math.max(d, Math.abs(c1[i] - c0[i])); mx = Math.max(mx, Math.abs(c0[i]));
+      }
+      return d / mx;
+    };
+    const on = run(true), off = run(false);
+    // "to round-off" holds for THIS plain-RK4 mirror, where rhs(eq) == 0 identically so
+    // any RK is exactly stationary. The app's IF stepper exponentiates L while the source
+    // rides the nonlinear quadrature: its psi_eq sits at a discrete fixed point offset
+    // O((eta k^2 dt)^2) from the true one -- scheme accuracy, negligible at the sech^2
+    // profile's low k, but not round-off.
+    ok("maintained psi_eq is stationary to round-off over t = 50", on < 1e-12,
+       "max relative drift " + on.toExponential(2));
+    ok("... and decays without the source", off > 1e-3,
+       "max relative drift " + off.toExponential(2) + " (eta/a^2 t = " +
+       (50e-3 / (REF.tear.a * REF.tear.a)).toPrecision(3) + ")");
+  }
+  // (b) the point of the whole exercise: FREE-RUNNING, source on, the growth rate is the
+  // frozen-equilibrium eigenvalue again -- 0.0287, not the 0.018 of the decaying layer.
+  {
+    const s = mk(1e-3, 1e-3, { maintain: true });
+    const g = measure(s, () => s.psiTilde(), 0.02, 30, 80, 250);
+    const r = REF.tear.g["1e-3"];
+    ok("free-running tearing gamma with the source ON is the eigenvalue rate",
+       rel(g, r) < 0.05, "maintained " + g.toPrecision(5) + " vs 1D eigenvalue " + r +
+       "  (" + (100 * rel(g, r)).toFixed(2) + "%)");
   }
 }
 

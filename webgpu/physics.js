@@ -129,41 +129,58 @@ function nlAssembleWGSL(C) {
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> gridB: array<vec4<f32>>;
 ${_zBind(C, 3)}@group(0) @binding(${_zSlot(C, 3)}) var<storage, read_write> rhs: array<vec2<f32>>;
-@compute @workgroup_size(64)
+${_eqSrcBind(C)}@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m: u32 = gid.x;
   if (m >= NM) { return; }
 ${_mpDecl(C)}  let de: f32 = ${_dealias(C)};
   rhs[m]      = (-gridA[${_mpName(C)}].w * de) * nlk[m];
-  rhs[NM + m] = de * nlk[NM + m];
+  rhs[NM + m] = de * nlk[NM + m]${_eqSrcAdd(C)};
 }`;
 }
 
 // ---------------------------------------------------------------------------
-// per-field dissipation (REFINE_PLAN J.1)
+// maintained equilibrium flux (REFINE_PLAN J2.3)
 // ---------------------------------------------------------------------------
-// `C.dissRatio` is eta/nu (inverse magnetic Prandtl number). The linear diagonal stored
-// in gridB.y is NU's (-nu ksq^hyper), so psi's rate is that times the ratio -- one
+// A static source S = -eta grad^2 psi_eq on the psi equation cancels the resistive decay
+// of an equilibrium, so a tearing demo shows the instability and not the layer's own
+// diffusion. In k space S = -lin_L * psi_eq,k -- the SAME diagonal gridB.y the stage
+// applies, so the source tracks the eta slider with no bookkeeping of its own, and it is
+// eta and not nu because gridB.y IS psi's rate (see _pm below). psi_eq,k lives in `eqk`,
+// written once per Reset by the app's srcInit; here it is one emit-time term, present ONLY
+// when the equilibrium preset asks for it -- with it off, every kernel below is the
+// pre-J2 text byte for byte.
+const _eqSrcBind = C => (C.eqSrc
+  ? `@group(0) @binding(${_zSlot(C, 3) + 1}) var<storage, read> eqk: array<vec2<f32>>;\n` : "");
+const _eqSrcAdd = C => (C.eqSrc ? ` - gridB[${_mpName(C)}].y * eqk[m]` : "");
+
+// ---------------------------------------------------------------------------
+// per-field dissipation (REFINE_PLAN J.1, in Pm since J2.6)
+// ---------------------------------------------------------------------------
+// `C.pm` is the magnetic Prandtl number nu/eta. The linear diagonal stored in gridB.y is
+// ETA's (-eta ksq^hyper) -- the diss slider IS eta -- so PHI's rate is that times Pm: one
 // emit-time factor, never a forked kernel. It is a COMPILE-TIME constant on purpose: at
-// the default ratio of 1 every template below emits the pre-J text character for
-// character (the byte-diff gate), and changing the ratio rebuilds the solver exactly as
-// changing the resolution or the forcing band does. 3D never sets it: its 2x2 Alfven
-// propagator needs an equal diagonal, so nu = eta there is a constraint, not a default.
+// the default Pm of 1 every template below emits the pre-J text character for character
+// (the byte-diff gate), and changing Pm rebuilds the solver exactly as changing the
+// resolution or the forcing band does. Pm = 0 (inviscid phi, pure resistive tearing) is a
+// legitimate value and is NOT the default path -- hence the explicit null test.
+// 3D never sets it: its 2x2 Alfven propagator needs an equal diagonal, so nu = eta there
+// is a constraint, not a default.
 const _f32lit = v => (v === Math.round(v) ? v.toFixed(1) : String(v));
-const _dissRatio = C => (C.dissRatio && C.dissRatio !== 1 ? C.dissRatio : 0);
-// the em term of the dissipation-rate accumulator, and the psi factor of a linear
-// diagonal read at flat stack index `idx` (idx >= NM is psi)
-const _dissEm = C => (_dissRatio(C) ? `${_f32lit(C.dissRatio)} * em` : "em");
-const _dissLin = (C, expr) => (_dissRatio(C)
-  ? `(${expr} * select(1.0, ${_f32lit(C.dissRatio)}, idx >= NM))` : expr);
+const _pm = C => (C.pm === undefined || C.pm === 1 ? null : C.pm);
+// the ek term of the dissipation-rate accumulator, and the phi factor of a linear
+// diagonal read at flat stack index `idx` (idx < NM is phi)
+const _dissEk = C => (_pm(C) === null ? "ek" : `${_f32lit(C.pm)} * ek`);
+const _dissLin = (C, expr) => (_pm(C) === null
+  ? expr : `(${expr} * select(1.0, ${_f32lit(C.pm)}, idx < NM))`);
 
 // ---------------------------------------------------------------------------
 // energy + dissipation rate (first stage; energyFinal is the generic tail)
 // ---------------------------------------------------------------------------
 // The dissipation rate uses only the DIAGONAL d of the linear operator: in 3D the
 // off-diagonal i*kzd Alfven coupling is energy-conserving, so d picks up the kz^4
-// damping and nothing else. With eta != nu (2D only) the magnetic half of the rate
-// carries the ratio -- one substituted factor, see _dissEm above.
+// damping and nothing else. With nu != eta (2D only) the KINETIC half of the rate
+// carries Pm -- one substituted factor, see _dissEk above.
 //
 // The FOURTH accumulator lane (REFINE_PLAN H.2) is the cross helicity
 //   H_c = <u.b> = sum ksq_perp * Re(phi conj(psi)) * yfac * INVN2,
@@ -195,7 +212,7 @@ ${dcoefLine}      let phi: vec2<f32> = fields[m];
       let psi: vec2<f32> = fields[NM + m];
       let ek: f32 = A.z * dot(phi, phi) * B.w;
       let em: f32 = A.z * dot(psi, psi) * B.w;
-      acc = acc + vec4<f32>(ek, em, -${dcoef} * (ek + ${_dissEm(C)}), A.z * dot(phi, psi) * B.w);
+      acc = acc + vec4<f32>(ek, em, -${dcoef} * (${_dissEk(C)} + em), A.z * dot(phi, psi) * B.w);
     }
     m = m + 256u;
   }
@@ -613,9 +630,9 @@ fn cmap(x: f32, which: u32) -> vec3<f32> {
 // ---------------------------------------------------------------------------
 // Every displayed texel goes through the same two steps whether it lands in the z-slice
 // texture (colorize, below) or on a cube face (the 3D app's colorizeCube), so both live
-// here and neither kernel carries a copy. The two bindings they must declare for the
-// overlay are `cp` (the potential on the SAME plane as the texel) and `cd` (the level
-// table [range, delta, nlev, -]).
+// here and neither kernel carries a copy. The bindings they must declare for the overlay
+// are `cp` / `cp2` (the two contour potentials on the SAME plane as the texel) and
+// `cd` / `cd2` (their level tables, [range, delta, nlev, plain-background]).
 //
 // dispX: signed fields (modes 0..3) are symmetric about the autoscale
 // (imshow(..., vmin=-s, vmax=+s)); magnitude modes (4..7) are already non-negative and
@@ -627,9 +644,26 @@ fn cmap(x: f32, which: u32) -> vec3<f32> {
 // floor(pot/delta) differs from that of its +x or +y neighbour (both periodic): a
 // two-neighbour crossing test, so no derivatives and no fwidth -- this is a compute
 // shader. delta is UNIFORM, so line density goes as |grad pot| = |B_perp| (or |u_perp|),
-// which is the physically honest picture; delta <= 0 means the overlay is off. The ink is
-// black over a light background and white over a dark one, so the lines stay visible in
-// every colormap.
+// which is the physically honest picture; delta <= 0 means that set is off.
+//
+// Since J2.1/J2.2 it also owns the two options that make the overlay legible on its own:
+// the BACKGROUND (cd[3] > 0 replaces the field by a flat plate, so the lines are read
+// without the colours underneath) and a SECOND set (the "both" selection: psi AND phi at
+// once, for alignment inspection). Set 0 keeps the automatic ink -- black over a light
+// background, white over a dark one, so it survives every colormap and the plate -- and
+// set 1 uses a FIXED accent that no colormap here produces, so the two are always told
+// apart. There is one implementation: the caller passes the six sampled texels (WGSL
+// function parameters cannot be storage pointers) through _contArgs.
+// The "plain background" plate, as JS numbers first: the 3D lines view (REFINE_PLAN K2.3)
+// clears its canvas to exactly this colour, so the ink-only top face it draws over that
+// clear is invisible wherever it is not ink -- a transparent face with no plate, no blend
+// state and no second kernel. One constant, both consumers.
+const CONT_PLATE_RGB = [0.93, 0.93, 0.93];
+const CONT_PLATE = `vec3<f32>(${CONT_PLATE_RGB.join(", ")})`;
+const CONT_ACCENT = "vec3<f32>(1.0, 0.15, 0.85)";      // set 1's fixed ink
+const _contArgs = a => `${a}[gid.x * NY + gid.y], ${a}[((gid.x + 1u) % NX) * NY + gid.y], ` +
+                       `${a}[gid.x * NY + ((gid.y + 1u) % NY)]`;
+const CONT_ARGS = `${_contArgs("cp")}, ${_contArgs("cp2")}`;
 const DISP_SHADE_WGSL = `
 fn dispX(raw: f32, s: f32, mode: u32) -> f32 {
   if (mode == ${DISP_SIGMA}u) { return 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
@@ -637,23 +671,28 @@ fn dispX(raw: f32, s: f32, mode: u32) -> f32 {
   if (mode >= ${DISP_VEC0}u) { return v; }
   return 0.5 * (clamp(v, -1.0, 1.0) + 1.0);
 }
-fn contInk(col: vec3<f32>, ix: u32, iy: u32) -> vec3<f32> {
-  let dl: f32 = cd[1];
-  if (!(dl > 0.0)) { return col; }
-  let n0: f32 = floor(cp[ix * NY + iy] / dl);
-  let nu: f32 = floor(cp[((ix + 1u) % NX) * NY + iy] / dl);
-  let nv: f32 = floor(cp[ix * NY + ((iy + 1u) % NY)] / dl);
-  if (n0 == nu && n0 == nv) { return col; }
-  let lum: f32 = dot(col, vec3<f32>(0.299, 0.587, 0.114));
-  return mix(col, select(vec3<f32>(1.0), vec3<f32>(0.0), lum > 0.5), 0.8);
+fn contHit(p0: f32, pu: f32, pv: f32, dl: f32) -> bool {
+  if (!(dl > 0.0)) { return false; }
+  let n0: f32 = floor(p0 / dl);
+  return !(n0 == floor(pu / dl) && n0 == floor(pv / dl));
+}
+fn contInk(col: vec3<f32>, a0: f32, au: f32, av: f32, b0: f32, bu: f32, bv: f32) -> vec3<f32> {
+  var c: vec3<f32> = select(col, ${CONT_PLATE}, cd[3] > 0.5);
+  if (contHit(a0, au, av, cd[1])) {
+    let lum: f32 = dot(c, vec3<f32>(0.299, 0.587, 0.114));
+    c = mix(c, select(vec3<f32>(1.0), vec3<f32>(0.0), lum > 0.5), 0.8);
+  }
+  if (contHit(b0, bu, bv, cd2[1])) { c = mix(c, ${CONT_ACCENT}, 0.85); }
+  return c;
 }`;
 
 // the contour level table, one thread: max |pot| over the displayed plane -> a slowly
 // adapting range -> the uniform spacing delta = 2*range/nlev. Adapting on the GPU (rather
 // than reading the max back) keeps the overlay off the CPU frame path entirely; the range
 // rises at once and falls by 5% of the gap per frame, so the lines do not flicker as the
-// plane's extremum wanders. st = [range, delta, nlev (written by the CPU), unused], and
-// delta = 0 is what turns contInk off.
+// plane's extremum wanders. Each contour SET has its own table -- psi and phi have
+// unrelated ranges -- and one kernel serves both. st = [range, delta, nlev, plain
+// background] with the last two written by the CPU, and delta = 0 turns that set off.
 const CONT_RELAX = 0.05;
 function contLevelWGSL(C) {
   return C.pre + `
@@ -679,13 +718,15 @@ ${MODE_STRUCT}
 @group(0) @binding(3) var<uniform> md: Mode;
 @group(0) @binding(4) var<storage, read> cp: array<f32>;
 @group(0) @binding(5) var<storage, read> cd: array<f32>;
+@group(0) @binding(6) var<storage, read> cp2: array<f32>;
+@group(0) @binding(7) var<storage, read> cd2: array<f32>;
 ${CMAP_WGSL}
 ${DISP_SHADE_WGSL}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= NX || gid.y >= NY) { return; }
   let x: f32 = dispX(f[gid.x * NY + gid.y], mx[0], md.mode);
-  let col: vec3<f32> = contInk(cmap(x, md.cmap), gid.x, gid.y);
+  let col: vec3<f32> = contInk(cmap(x, md.cmap), ${CONT_ARGS});
   textureStore(tex, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<f32>(col, 1.0));
 }`;
 }

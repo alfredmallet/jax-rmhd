@@ -4,11 +4,12 @@
 //   (kdiff.py diffs two dumps)
 //
 // The optional 5th argument is a JSON object merged into every parameter set, for
-// dumping a NON-default solver: the 2D per-field dissipation (`{"pm":10}`) and the
-// rectangular boxes (`{"ny":128,"Lx":12.566370614359172,"Ly":6.283185307179586}`) of
-// REFINE_PLAN J are compile-time constants, so they have their own kernel text. Diff two
-// such dumps against each other (the labels are the same) to see exactly which kernels a
-// knob reaches; leave it off for the phase baseline, which it does not change by a byte.
+// dumping a NON-default solver: the 2D per-field dissipation (`{"pm":10}`, Pm = nu/eta),
+// the maintained equilibrium flux (`{"eqsrc":true}`) and the rectangular boxes
+// (`{"ny":128,"Lx":12.566370614359172,"Ly":6.283185307179586}`) of REFINE_PLAN J / J2 are
+// compile-time constants, so they have their own kernel text. Diff two such dumps against
+// each other (the labels are the same) to see exactly which kernels a knob reaches; leave
+// it off for the phase baseline, which it does not change by a byte.
 "use strict";
 const fs = require("fs");
 const [dir, page, demo, out] = process.argv.slice(2);
@@ -22,7 +23,7 @@ function dump(label, P) {
   const S = env.run(`function(P){
     const gr = makeGrid(P);
     const g = Object.assign(${is3d ? "{ nx: P.nx, ny: P.ny, nz: P.nz }"
-                                   : "{ nx: P.nx, ny: P.ny, Lx: P.Lx, Ly: P.Ly, pm: P.pm }"}, gr);
+                                   : "{ nx: P.nx, ny: P.ny, Lx: P.Lx, Ly: P.Ly, pm: P.pm, eqsrc: P.eqsrc }"}, gr);
     return buildShaders(g);
   }`, P);
   for (const k of Object.keys(S).sort()) chunks.push("########## " + label + " :: " + k + " ##########\n" + S[k] + "\n");

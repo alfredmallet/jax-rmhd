@@ -1,4 +1,4 @@
-# WebGPU 3D forced RMHD (spectral-z) — implementation spec
+# WebGPU 3D RMHD (spectral-z) — implementation spec
 
 > **File layout note (2026-08-05):** the app now lives in `webgpu/rmhd3d.html` (UI,
 > physics WGSL, Solver, inlined reference vectors) on top of the shared `webgpu/common.js`

@@ -167,6 +167,17 @@ module.exports = function makeEnv(dir, page, demo) {
     return o;
   }
 
+  // ---- Path2D: what the overlays (arrows, field lines) build and hand to stroke() ----
+  // Every coordinate that reaches it is checked for finiteness and counted, so a caller
+  // can assert that an overlay really drew and that nothing NaN'd on the way in.
+  function Path2DStub() { this.pts = 0; }
+  for (const m of ["moveTo", "lineTo"]) {
+    Path2DStub.prototype[m] = function (x, y) {
+      if (!isFinite(x) || !isFinite(y)) fail("non-finite " + m + "(" + x + ", " + y + ") on a Path2D");
+      this.pts++;
+    };
+  }
+
   // ---- WebGPU stub -----------------------------------------------------------
   const live = { buffers: 0, textures: 0 };
   const mkBuf = o => { live.buffers++; return { size: o.size, usage: o.usage,
@@ -238,6 +249,7 @@ module.exports = function makeEnv(dir, page, demo) {
     },
     performance: { now: (function () { let t = 1000; return () => (t += 250); })() },
     requestAnimationFrame: () => {},
+    Path2D: Path2DStub,
     console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8ClampedArray, Map, Set,
     Error, Promise, setTimeout, Number, String, Array, Object, isFinite, parseInt, parseFloat,
     GPUBufferUsage: { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, UNIFORM: 8, MAP_READ: 16 },

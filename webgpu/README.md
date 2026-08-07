@@ -1,4 +1,4 @@
-# WebGPU forced RMHD (2D + 3D)
+# WebGPU RMHD (2D + 3D)
 
 Two browser apps over one shared core: `rmhd2d.html` (2D) and `rmhd3d.html` (3D
 spectral-z, the `z_spectral=True` path — Alfvén coupling applied exactly via the
@@ -13,9 +13,9 @@ carries over to 3D except where SPEC3D.md says otherwise.
 
 ## 2D app
 
-A browser-based port of the repo's 2D forced-RMHD solver: pseudospectral (numpy-rfft2
-layout), LSRK33 integrating-factor stepper, elsasser Ornstein–Uhlenbeck forcing with
-per-step power normalization, adaptive CFL dt with `cfl_every`-style blocks. fp32
+A browser-based port of the repo's 2D RMHD solver: pseudospectral (numpy-rfft2
+layout), LSRK33 integrating-factor stepper, optional elsasser Ornstein–Uhlenbeck forcing
+with per-step power normalization, adaptive CFL dt with `cfl_every`-style blocks. fp32
 (WebGPU has no f64). All physics runs in WGSL compute shaders, including a
 workgroup-shared-memory Stockham FFT; the only CPU work per step is drawing the
 shell-restricted OU noise (~12 modes).
@@ -100,8 +100,8 @@ programmatically; do not try to hand-edit a 180 kB line).
 
 The UI is built from **cards**. A *display card* is one WebGPU canvas plus its own
 quantity selector, colormap, arrows checkbox, contour-overlay selectors and — in 3D — its
-own z slice / view select (manual slider, `track z⁺ / z⁻`, or the same three with the
-cube-faces view); "+ display" adds one (up to three), the × on its header
+own z slice / view select (manual slider, `track z⁺ / z⁻`, the same three with the
+cube-faces view, or the field-lines view); "+ display" adds one (up to three), the × on its header
 closes it. Card index *is* the solver's display-chain index, so N cards cost exactly N
 chains (scratch, bind groups, gather targets, textures), each built lazily on first use.
 *Any* card can be closed down to the last one (whose × goes disabled) — the IC editor has
@@ -117,7 +117,7 @@ is the default and is what the chart drew before they existed):
 | --- | --- | --- |
 | energy trace | which energies | `E_kin / E_mag` (with E_tot) · `E⁺ / E⁻` (with E_tot) |
 | spectra | which spectra | `E_u / E_b` · `E⁺ / E⁻` · both |
-| spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only |
+| spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only · ⊥ + k∥ (field line) |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
 | island width (2D) | — | log W(t); needs the tearing IC (see below) |
@@ -163,18 +163,24 @@ time and the IC editor's CPU preview reads the same table through `cmapRGB`, so 
 cannot drift.
 
 **Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
-field lines) or φ contours (= the streamlines), at 8 / 16 / 32 levels, over whatever
-field the card displays. They are drawn inside the shared colorize kernel, not as a
-second pass: the potential on the card's plane reaches the display scratch through ONE
-extra inverse transform per card frame (reusing the second component's scratch, which is
-dead by then), and a texel is inked when `floor(pot/Δ)` differs from that of its +x or +y
+field lines), φ contours (= the streamlines), or **both at once** (ψ + φ — the alignment
+view), at 8 / 16 / 32 levels, over whatever field the card displays or over a **plain
+background** (the second per-card select: contour ink on a blank plate, when the colours
+underneath are in the way). They are drawn inside the shared colorize kernel, not as a
+second pass: each active set's potential reaches the display scratch through ONE
+extra inverse transform per card frame (reusing scratch that is dead by then — the second
+component's, and for the second set the σ_c half-1 buffer), and a texel is inked when
+`floor(pot/Δ)` differs from that of its +x or +y
 neighbour — a crossing test, so no derivatives and nothing a compute shader cannot do.
 Δ is **uniform**, so the line density is proportional to |B⊥| (or |u⊥|), which is the
 honest picture rather than a prettier equal-area one. Δ = 2·range/nlev with the range
 adapted on the GPU (up at once, down by 5% of the gap per frame) so the lines do not
-flicker from frame to frame; the ink is black over a light background and white over a
-dark one, so it survives every colormap. On the cube view the contours are drawn on the
-**top face only** — that is the one face whose in-plane potential the chain already has.
+flicker from frame to frame, and each set has its own range (ψ and φ are unrelated in
+size). The first set's ink is black over a light background and white over a dark one, so
+it survives every colormap and the plain plate; the second set is a fixed magenta accent
+that none of the four colormaps produces, so the two sets are always told apart. On the
+cube view the contours are drawn on the **top face only** — that is the one face whose
+in-plane potential the chain already has.
 
 **Cross helicity σ_c** = (|z⁺|²−|z⁻|²)/(|z⁺|²+|z⁻|²), pointwise, is the one mode with a
 **fixed** colour range (±1, symmetric — no autoscale, so colours are comparable
@@ -184,8 +190,9 @@ in quiet regions the ratio is pure noise. It costs four inverse transforms per f
 (both components of both z±) instead of the vector modes' two — display cost only, no
 physics buffer is touched.
 
-3D only: **cube faces** are a *view*, not a field — the last three entries of a display
-card's z-source select ("cube faces", "cube + track z⁺", "cube + track z⁻"), orthogonal
+3D only: **cube faces** are a *view*, not a field — three of the last four entries of a
+display card's z-source select ("cube faces", "cube + track z⁺", "cube + track z⁻"; the
+fourth is the field-lines view below), orthogonal
 to the field selector, so **any** quantity (σ_c and the vector magnitudes included) can
 be drawn as a cube. It draws the three visible boundary faces of the box in the oblique
 view `examples/forced-turbulence-3D.ipynb` uses (matplotlib `view_init(elev=30,
@@ -203,6 +210,46 @@ card also carries the parallel spectra as dashed curves (|kz| bins 1…nz/2, ±k
 kz = 0 omitted from the log axis); **the y limits are set by the perpendicular spectra
 alone**, so the dashed curves are plotted inside that range and never stretch it (unless
 ∥ only is selected, when there is nothing else to scale to).
+
+### 3D field lines, and k∥ measured along them
+
+**Field lines** are the last *view* in a display card's z-source select, next to the cube
+entries (and, like them, not offered by the cut chart). It traces a fixed 8×8 grid of
+magnetic field lines seeded on the bottom face and draws them — with the twelve box edges
+— through the same oblique box projection on the card's overlay canvas. The march is a compute
+kernel solving dx⊥/dz = b⊥/B₀ with B₀ = v_A = 1: RK2 midpoint (the midpoint field is the
+mean of the two bracketing planes, so it is second order in dz with no extra storage),
+bilinear in plane, uniform dz, periodic ⊥ wrap. Its volume is the RHS's *own* gradient
+prep — ∇⊥φ and ∇⊥ψ in real space — so b⊥ = ẑ×∇ψ needs no new gradient or FFT kernel, and
+the volume never leaves the GPU: what comes back is the **polylines only** (N_lines × nz
+positions plus the same number of (u, b) samples, tens of kB). It runs at ~2 Hz, not per
+step, in its own submit. There is no depth sorting and no occlusion: a 2D canvas, one
+pass, every line visible. A line that leaves the box is drawn wrapped, with the pen
+lifted at the seam.
+
+Behind the lines the GPU canvas carries no field: it is cleared to the contour plate and
+draws the box's **top boundary plane as contour ink only**, through the cube projection
+and the same shared colorize kernel — every texel of that face which is not ink is exactly
+the background colour, so the face is transparent with no plate, no blend state and no
+second kernel (the whole mode chain is skipped in this view, since nothing reads its
+colour). The card's own contour selectors stay live and drive that face — ψ (the default
+on entering the view), φ, both, or off — so the line endpoints are seen puncturing the
+exit plane on its own ⊥ structure. The field selector and the arrow overlay are inert
+here, and so are the tracker and the z slider: the view is the whole box, and its face is
+the top boundary, not a tracked plane.
+
+The same march samples (u, b) **along** each line, which is what the spectra card's
+`⊥ + k∥ (field line)` option bins: the true parallel spectrum, measured along B rather
+than along the z coordinate. The samples are uniform in z (arc length = z to leading
+order in RMHD) but not periodic — a line exits perpendicularly displaced — so each line
+is Hann-windowed before the transform, the window's mean square divides back out (so
+Parseval still holds and the numbers mean the same thing as the coordinate E(k∥) plotted
+beside them), the ±kz bins are folded, and the ensemble of lines is averaged. The three
+binned lanes are the usual [E_u | E_b | H_c], so E<sup>±</sup>(k∥) needs no separate
+path, and the y-limit rule is unchanged: the ⊥ spectra set the range. The two consumers
+are independent: with such a chart open and no card in the lines view the lines are still
+traced and simply not drawn, and the along-line samples — four times the polylines' size —
+come back only while that chart is open.
 
 ## Initial conditions
 
@@ -329,7 +376,8 @@ physical (U₀, b₀, ψ₀, the layer width a, the seed amplitude) and they ski
 normalization entirely — rescaling an equilibrium to a fixed max |∇ζ| would not be the
 equilibrium anyone asked for. They are registered exactly like the letters and the
 drawing (`icRegister` in common.js: `rows` = the control rows the preset shows, `hyper` =
-the exponent it locks, `fields(g)` = the (φ, ψ) pair), so adding a third costs one record.
+the exponent it locks, `src` = whether it offers the maintained-flux source, `fields(g)` =
+the (φ, ψ) pair), so adding a third costs one record.
 
 Both run in a **rectangular box**: 512 × 128 on 4π × 2π, chosen by the `box` select next
 to the resolution (which now means n_x — n_y and both box lengths follow the box). A long
@@ -345,7 +393,7 @@ which get equal pixels per unit *length* so that contours and arrows are not she
   scaled by b₀, i.e. an in-plane field along ŷ. The potentials are the analytic
   antiderivative, a·ln cosh(·) written overflow-safe, so u_y and b_y are exact to
   round-off. Ideal 2D MHD stabilizes the layer at **b₀ ≥ U₀** (the shear is then slower
-  than the Alfvén speed tying the field lines together); resistivity softens that
+  than the Alfvén speed tying the field lines together); dissipation softens that
   threshold rather than removing it.
 - **Tearing**: ψ_eq = ψ₀ sech²((x−L_x/2)/a) (Numata/Loureiro-style — net-flux free, and
   periodic to O(e^{−L_x/2a})), φ_eq = 0. b_y = ψ_eq′ **vanishes on x = L_x/2**, so that
@@ -353,18 +401,33 @@ which get equal pixels per unit *length* so that contours and arrows are not she
   even-in-x envelope, so ψ̃(x_s) is exactly the seed slider. L_y/a sets Δ′a (8.40 at the
   defaults, from a shooting solve of the outer equation — `devtools/eqlinear.py`).
 
-**hyper is LOCKED to 1** by both presets (the select goes disabled and shows why):
+**hyper is LOCKED to 1 by the tearing preset** (the select goes disabled and shows why):
 hyper-dissipation has no resistive layer and no Rutherford stage, so it would falsify
-exactly the physics these demos exist to show.
+exactly the physics that demo exists to show. KH does **not** lock it — it is an ideal
+instability, and hyper is a legitimate way to sharpen its secondary structure.
 
-**Per-field dissipation.** The 2D linear operator is diagonal per field, so ν (on φ) and
-η (on ψ) need not be equal: the `η/ν` box next to the diss slider is the inverse magnetic
-Prandtl number, default 1. It is a compile-time constant of the stage kernel — at 1 the
-emitted WGSL is character-for-character the pre-J scalar-dissipation text, and changing
-it rebuilds the solver like a resolution change. Exactly two kernels carry it: `stage`
-(the ψ half of the integrating factor) and `energyPartial` (the magnetic half of the
-dissipation-rate lane). 3D keeps ν = η — its 2×2 Alfvén propagator needs an equal
-diagonal.
+**Maintaining the equilibrium flux.** Tearing carries a `maintain equilibrium flux`
+checkbox (on by default) that adds the static source **S = −η∇²ψ_eq** to the ψ equation,
+cancelling the equilibrium's own resistive decay so that the demo shows the instability
+and not the layer spreading. ψ_eq,k is extracted once per Reset from the k_y = 0 column of
+the uploaded IC — which *is* the equilibrium, every seed here having zero mean along y —
+by the tiny `srcInit` kernel, and `nlAssemble` then adds −lin_L·ψ_eq,k: the SAME diagonal
+the stage applies, so the source follows the η slider with no bookkeeping of its own and
+uses η (ψ's coefficient), never ν. Like Pm it is emitted at WGSL-generation time and only
+when the preset asks, so every other path keeps its byte-identical kernel text. With the
+source on the measured growth rate is the frozen-equilibrium eigenvalue (0.0284 vs
+0.028716 at the benchmark, `devtools/checkj.js` §4b) and the maintained ψ_eq is stationary
+to round-off; with it off, see the caveat under the table below.
+
+**Per-field dissipation (Pm).** The 2D linear operator is diagonal per field, so ν (on φ)
+and η (on ψ) need not be equal: the **diss slider is η**, and the `Pm` box next to it is
+the magnetic Prandtl number ν/η, default 1 (Pm = 0 is allowed — a completely inviscid φ,
+which in a long run piles kinetic energy up at the grid scale). It is a compile-time
+constant of the stage kernel — at Pm = 1 the emitted WGSL is character-for-character the
+scalar-dissipation text every other path uses, and changing it rebuilds the solver like a
+resolution change. Exactly two kernels carry it: `stage` (the φ half of the integrating
+factor) and `energyPartial` (the kinetic half of the dissipation-rate lane). 3D keeps
+ν = η — its 2×2 Alfvén propagator needs an equal diagonal.
 
 **Island width.** The `island width` chart card (2D only) plots W(t) on a log axis, so
 the linear tearing stage is a straight line, the Rutherford stage bends over, and
@@ -389,17 +452,20 @@ pseudospectral 2D run of the app's own ICs):
 
 | case | parameters | γ (eigenvalue) | γ (2D run) |
 | --- | --- | --- | --- |
-| tearing | η = ν = 10⁻³, ψ₀ = 1.65, a = 0.1L_x | 0.028716 | 0.028609 |
+| tearing | η = ν = 10⁻³ (Pm = 1), ψ₀ = 1.65, a = 0.1L_x | 0.028716 | 0.028609 |
 | tearing | η = ν = 10^−2.5 | 0.051395 | 0.051300 |
-| tearing | ν = 10⁻³, η = 10⁻² (η/ν = 10) | 0.114636 | 0.11401 |
+| tearing | η = 10⁻², ν = 10⁻³ (Pm = 0.1) | 0.114636 | 0.11401 |
+| tearing | η = 10⁻³, ν = 0 (Pm = 0) | 0.043646 | 0.043373 |
 | KH | b₀ = 0, U₀ = 1, a = 0.05L_x, ν = 10^−3.5 | 0.266260 | 0.26657 |
 | KH | b₀ = 0.5 U₀ | 0.206229 | 0.20377 |
 | KH | b₀ = 1.2 U₀ | 0.003646 (resistive residue) | decaying |
 
-Those rates are for a **frozen equilibrium**, which is what an eigenvalue problem assumes.
-The demo free-runs, so ψ_eq also diffuses at ~η/a² and slowly lowers Δ′: over t = 30…80
-at η = 10⁻³ the measured tearing rate is ≈ 0.018, some 37 % below the frozen-equilibrium
-value. KH is unaffected in practice (ν/a² ≪ γ there: 3.6 %).
+Those rates are for a **frozen equilibrium**, which is what an eigenvalue problem assumes
+— and what `maintain equilibrium flux` reproduces in the demo (0.0283 free-running with
+the source on, 1.3 % off the eigenvalue). **With the source off** ψ_eq also diffuses at
+~η/a² and slowly lowers Δ′: over t = 30…80 at η = 10⁻³ the measured tearing rate is
+≈ 0.018, some 37 % below the frozen-equilibrium value. KH has no such source and does not
+need one (ν/a² ≪ γ there: 3.6 %).
 
 ## Forcing controls
 

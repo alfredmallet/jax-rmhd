@@ -118,9 +118,10 @@ KH = dict(Lx=4 * np.pi, Ly=2 * np.pi, a=0.05 * 4 * np.pi, U0=1.0, nu=10 ** -3.5)
 
 
 def bench(n=BENCH_N):
-    """Print the checkj.js REF table: tearing at two eta = nu and at eta/nu = 10, KH at
-    b0/U0 = 0, 1/2 and 6/5. Both dissipations are decade-and-a-half slider values
-    (10^-3, 10^-2.5, 10^-3.5), i.e. exactly what the presets' rDiss offers."""
+    """Print the checkj.js REF table: tearing at two eta = nu (Pm = 1), at Pm = nu/eta =
+    0.1 and at Pm = 0 (inviscid phi -- REFINE_PLAN J2.6 allows it), KH at b0/U0 = 0, 1/2
+    and 6/5. Both dissipations are decade-and-a-half slider values (10^-3, 10^-2.5,
+    10^-3.5), i.e. exactly what the presets' rDiss offers."""
     print("=" * 74)
     print(f"BENCHMARK TABLE for devtools/checkj.js REF  (n = {n} Fourier modes)")
     print("=" * 74)
@@ -131,9 +132,9 @@ def bench(n=BENCH_N):
     print(f"tearing  Lx={Lx:.5f} Ly={Ly:.5f} a={a:.5f} psi0={psi0}  "
           f"Delta'a={deltaprime(Lx, a, k):.4f}  k a={k*a:.4f}")
     for nu, eta, tag in [(1e-3, 1e-3, 'g["1e-3"]'), (10 ** -2.5, 10 ** -2.5, 'g["3.1623e-3"]'),
-                         (1e-3, 1e-2, "gPm10")]:
+                         (1e-3, 1e-2, "gPm0p1"), (0.0, 1e-3, "gPm0")]:
         g, _ = growth(Uy, By, k, nu, eta, Lx, n)
-        print(f"  nu={nu:.4e} eta={eta:.4e}   gamma = {g.real:.6f}   -> {tag}")
+        print(f"  nu={nu:.4e} eta={eta:.4e} (Pm={nu/eta:.2f})   gamma = {g.real:.6f}   -> {tag}")
     Lx, Ly, aK, U0, nu = KH["Lx"], KH["Ly"], KH["a"], KH["U0"], KH["nu"]
     x = np.arange(n) * Lx / n
     Uy = kh_profile(x, Lx, U0, aK)

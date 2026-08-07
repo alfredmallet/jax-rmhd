@@ -18,7 +18,8 @@ const frame = () => run(`async function(){
   for (const c of cards.chart) {
     if (c.type() === "energy") c.draw(null);
     else if (c.type() === "spectrum") { const sp = await solver.readSpectrum();
-      c.draw({ perp: sp.perp, nb: solver.nb, fshell: solver.p.fshell, par: sp.par, parKfac: sp.parKfac }); }
+      c.draw(Object.assign({ perp: sp.perp, nb: solver.nb, fshell: solver.p.fshell,
+                             par: sp.par, parKfac: sp.parKfac }, specExtra ? specExtra() : null)); }
     else {
       const vals = await solver.readCutLine(cards.cfg.zsliceOf(c));
       if (c.type() === "island") islandPush(solver.nsteps * 1e-3, vals, solver.p.ny, solver.p.Ly);
@@ -26,8 +27,8 @@ const frame = () => run(`async function(){
     }
   }
   for (const d of cards.disp) {
-    if (!d.showArrows()) { d.clearArrows(); continue; }
-    d.drawArrows(await solver.readArrows(d.ci), solver.nax, solver.nay);
+    if (!d.showArrows()) continue;
+    d.setArrows(await solver.readArrows(d.ci), solver.nax, solver.nay);
   }
 }`);
 const state = () => run(`function(){
@@ -35,7 +36,7 @@ const state = () => run(`function(){
            disp: cards.disp.map(d => ({ ci: d.ci, sel: d.sel(), cmap: d.cmap(), zsrc: d.zsrc(),
                                         view: d.selZSrc ? d.selZSrc.value : "-",
                                         mode: solver.modeOf(d.ci), cube: solver.cubeOf(d.ci),
-                                        cont: d.cont(), nlev: d.nlev(),
+                                        cont: d.cont(), nlev: d.nlev(), plain: d.plainBg(),
                                         zslice: solver.zsliceOf(d.ci), cap: d.cap.innerHTML,
                                         arrows: d.showArrows() })),
            charts: cards.chart.map(c => c.type()),
@@ -163,28 +164,153 @@ setTimeout(async () => {
       await frame();
       run(`function(){ cards.disp[1].selZSrc.value = "manual"; cards.disp[1].apply(); }`);
       await frame();
+
+      // --- field lines as a VIEW + the true k_par spectrum (K, K2) ------------
+      // Two things the stub cannot otherwise see are instrumented here: WHICH readbacks
+      // the tracer performs (K2.4 reads the samples only for the chart), and what
+      // reaches the contour level tables (K2.3 drives the ink-only face through them).
+      run(`function(){
+        globalThis.flReads = { pos: 0, smp: 0 };
+        const rfl = Solver.prototype.readFieldLines;
+        Solver.prototype.readFieldLines = async function (w) {
+          const r = await rfl.call(this, w);
+          globalThis.flReads.pos++; if (r.smp) globalThis.flReads.smp++;
+          return r;
+        };
+        const scl = setContLevels;
+        globalThis.contWrites = {};
+        globalThis.setContLevels = function (dev, D, nlev, plain) {
+          globalThis.contWrites[solver.disp.indexOf(D)] = [D.cont.slice(), nlev, !!plain];
+          return scl(dev, D, nlev, plain);
+        };
+      }`);
+      const setSD = v => run(`function(v){ for (const c of cards.chart) {
+        if (c.type() !== "spectrum") continue;
+        const s = c.optEls.filter(e => e.__optId === "sd")[0];
+        if (s) { s.value = v; s.onchange(); } } }`, v);
+      const fl = () => run(`function(){
+        return { nl: flData && flData.nl, nz: flData && flData.nz,
+                 pos: flData && flData.pos.length, par: flPar && flPar.length,
+                 // a COPY: the counters live in the sandbox, and a reference would let a
+                 // later frame move a number this side has already recorded
+                 reads: { pos: globalThis.flReads.pos, smp: globalThis.flReads.smp },
+                 cont: JSON.parse(JSON.stringify(globalThis.contWrites)),
+                 held: cards.disp.map(d => !!d.lines),
+                 views: cards.disp.map(d => d.selZSrc.value),
+                 lv: cards.disp.map(d => d.linesView()) }; }`);
+      // drawn through the box projection: every point must land at a finite pixel, and
+      // there must be one per line point plus two per box edge (the Path2D stub counts
+      // and checks them)
+      const drawn = fn => run(`function(fn){
+        let got = 0;
+        const c = { lineCap: "", lineJoin: "", strokeStyle: "", lineWidth: 0,
+                    stroke(p) { got = Math.max(got, p.pts); } };
+        const F = cards.cfg.lineXform();
+        if (fn === "frame") drawBoxFrame(c, F); else drawFieldLines(c, flData, F);
+        return got; }`, fn);
+      setSD("both");
+      // one card in the lines view, one on the cube, one on a plain slice
+      run(`function(){ cards.disp[0].selField.value = "4";           // a vector quantity
+                       cards.disp[0].selZSrc.value = "lines"; cards.disp[0].apply();
+                       cards.disp[1].selZSrc.value = "cubezp"; cards.disp[1].apply();
+                       cards.disp[2].selZSrc.value = "manual"; cards.disp[2].apply(); }`);
+      await frame(); await frame();            // the hook runs at ~2 Hz
+      {
+        const f = fl(), st2 = state(), d0 = st2.disp[0];
+        if (f.nl !== 64) fail("the lines view traced " + f.nl + " lines, expected 8x8 = 64");
+        if (f.pos !== f.nl * f.nz * 2) fail("polyline readback is not nl*nz*2: " + JSON.stringify(f));
+        if (f.reads.smp) fail("the along-line samples were read back with no k_par chart open");
+        if (drawn() !== f.nl * f.nz) fail("the projection dropped points: " + drawn() + " of " + f.nl * f.nz);
+        if (drawn("frame") !== 24) fail("the box frame is not 12 edges: " + drawn("frame") + " points");
+        // the view is the whole box: no arrows, no tracker, no slider, top BOUNDARY face
+        if (d0.arrows) fail("the lines view drew arrows on a vector quantity");
+        if (d0.zsrc !== "manual") fail("the lines view claimed a tracked plane: " + d0.zsrc);
+        if (!run("function(){ return cards.disp[0].rSlice.disabled; }"))
+          fail("the lines view left its z slider live");
+        if (d0.zslice !== st2.nz - 1)
+          fail("the lines face is not the top boundary plane: iz " + d0.zslice + " of " + st2.nz);
+        if (d0.cap.indexOf("field lines") < 0) fail("lines caption missing: " + d0.cap);
+        if (String(f.cont[0]) !== String([[3, 0], 8, true]))
+          fail("the lines view did not open on plain-background psi contours: " + JSON.stringify(f.cont[0]));
+        if (!f.held[1] || !f.held[2]) fail("a cube / slice card lost its (undrawn) line cache");
+        if (f.lv[1] || f.lv[2]) fail("a cube / slice card entered the lines view");
+        console.log(tag + " lines view: " + JSON.stringify({ nl: f.nl, views: f.views, cap: d0.cap,
+                    lines: drawn(), frame: drawn("frame"), cont: f.cont[0] }));
+      }
+      // the per-card contour controls stay LIVE in the lines view and drive the face
+      for (const [cv, want] of [["2", [2, 0]], ["both", [3, 2]], ["0", [0, 0]], ["3", [3, 0]]]) {
+        run(`function(c){ const d = cards.disp[0]; d.selCont.value = c; d.selLev.value = "16"; d.apply(); }`, cv);
+        await frame();
+        const w = fl().cont[0];
+        if (String(w) !== String([want, 16, true]))
+          fail("contour select " + cv + " did not reach the lines face: " + JSON.stringify(w));
+        if (run(`function(){ return cards.disp[0].selBg.style.display; }`) !== "none")
+          fail("the background select is live in the lines view, whose face is always plain");
+      }
+      console.log(tag + " lines-view contours: {psi, phi, both, off} -> the top face OK");
+      // ... and the cut chart must not offer the view at all
+      if (run(`function(){ const c = cards.chart.filter(x => x.type() === "cut")[0];
+                           return !c || c.selZSrc.options.some(o => o.value === "lines"); }`))
+        fail("the cut card offers the field-lines view");
+      // close the lines card and re-add one from a saved state
+      run(`function(){ cardClose(cards.disp[0]); addDisplayCard({ sel: 1, zsrc: "lines" }); cardsSync(); }`);
+      await frame(); await frame();
+      if (!fl().lv.some(v => v)) fail("a re-added card did not restore the lines view");
+      // no consumer left: the traces are dropped and the march stops
+      run(`function(){ for (const d of cards.disp) { d.selZSrc.value = "manual"; d.apply(); } }`);
+      await frame(); await frame();
+      const off = fl();
+      if (off.nl !== null || off.held.some(v => v))
+        fail("leaving the lines view left the traces behind: " + JSON.stringify(off));
+      // ... but the k_par CHART option traces them on its own, with no lines card open,
+      // and only then are the along-line samples read back (K2.4)
+      const before = off.reads;
+      setSD("fl");
+      await frame(); await frame();
+      const chart = fl();
+      if (!(chart.par > 0) || chart.par !== 3 * (chart.nz >> 1))
+        fail("the k_par (field line) option produced no spectrum: " + JSON.stringify(chart));
+      if (chart.reads.pos <= before.pos) fail("the chart-only path did not march the lines");
+      if (chart.reads.smp !== before.smp + (chart.reads.pos - before.pos))
+        fail("the sample readback did not follow the chart: " + JSON.stringify(chart.reads));
+      if (chart.lv.some(v => v)) fail("the chart-only path opened a lines view");
+      await frame();
+      console.log(tag + " k∥ (field line) spectrum, no lines card: " + JSON.stringify(
+        { par: chart.par, reads: chart.reads }));
+      setSD("both");
+      await frame(); await frame();
+      if (fl().nl !== null) fail("the field-line trace outlived its only consumer");
     }
 
-    // --- contour overlay (both apps, REFINE_PLAN I2.4) ------------------------
-    // psi / phi contours at two level counts, on a slice card and (3D) a cube card
+    // --- contour overlay (both apps, REFINE_PLAN I2.4 + J2.1/J2.2) ------------
+    // psi / phi / BOTH contours at two level counts, over the field and over the plain
+    // plate, on a slice card and (3D) a cube card
     {
       const views = page.indexOf("3d") >= 0 ? ["manual", "cube"] : [null];
+      const want = { "3": [3, 0], "2": [2, 0], both: [3, 2], "0": [0, 0] };
       for (const v of views) {
-        for (const cont of ["3", "2", "0"]) {
+        for (const cont of ["3", "2", "both", "0"]) {
           for (const nl of ["8", "32"]) {
-            run(`function(v, c, n){ const d = cards.disp[0];
-              if (v && d.selZSrc) d.selZSrc.value = v;
-              d.selCont.value = c; d.selLev.value = n; d.apply(); }`, v, cont, nl);
-            const d0 = state().disp[0];
-            if (d0.cont !== parseInt(cont, 10)) fail("contour selection did not take");
-            const shown = run("function(){ return cards.disp[0].selLev.style.display; }");
-            if ((cont === "0") !== (shown === "none"))
-              fail("the level select is not tied to the contour toggle: " + cont + " / " + shown);
-            await frame();
+            for (const bg of ["0", "1"]) {
+              run(`function(v, c, n, b){ const d = cards.disp[0];
+                if (v && d.selZSrc) d.selZSrc.value = v;
+                d.selCont.value = c; d.selLev.value = n; d.selBg.value = b; d.apply(); }`,
+                  v, cont, nl, bg);
+              const d0 = state().disp[0];
+              if (String(d0.cont) !== String(want[cont]))
+                fail("contour selection did not take: " + cont + " -> " + JSON.stringify(d0.cont));
+              if (d0.plain !== (bg === "1")) fail("the contour background option did not take");
+              const shown = run(`function(){ const d = cards.disp[0];
+                return [d.selLev.style.display, d.selBg.style.display].join(","); }`);
+              if ((cont === "0") !== (shown === "none,none"))
+                fail("the level / background selects are not tied to the contour toggle: "
+                     + cont + " / " + shown);
+              await frame();
+            }
           }
         }
       }
-      console.log(tag + " contours: {psi, phi, off} x {8, 32} levels" +
+      console.log(tag + " contours: {psi, phi, both, off} x {8, 32} levels x {field, plain} bg" +
                   (views.length > 1 ? " x {slice, cube}" : "") + " OK");
     }
 
@@ -234,8 +360,11 @@ setTimeout(async () => {
                  fr: f && [f.ax, f.by, f.d.ax, f.d.by],
                  hyper: document.getElementById("selHyper").value,
                  hyperLock: document.getElementById("selHyper").disabled,
-                 pm: solver.p.pm };
+                 pm: solver.p.pm, eqsrc: !!solver.p.eqsrc };
       }`);
+      // hyper is LOCKED to 1 by tearing (resistive-layer physics) and FREE for KH
+      // (an ideal instability) -- REFINE_PLAN J2.5
+      const HYPLOCK = { tearing: true, kh: false };
       for (const k of ["tearing", "kh"]) {
         run(`function(k){ const s = document.getElementById("selPreset"); s.value = k; s.onchange(); }`, k);
         const g = geom();
@@ -250,9 +379,12 @@ setTimeout(async () => {
         // the arrow frame: rectangular anchors, ISOTROPIC directions
         if (!g.fr || g.fr[0] !== 512 || g.fr[1] !== 256 || g.fr[2] !== g.fr[3])
           fail(k + ": arrow frame is not {rect anchors, isotropic directions}: " + JSON.stringify(g.fr));
-        // hyper is LOCKED to 1 by these presets, in the UI and in the solver
-        if (g.hyper !== "1" || !g.hyperLock) fail(k + ": hyper is not locked to 1: " + JSON.stringify(g));
+        // both presets ASK for hyper 1; only tearing locks the control there
+        if (g.hyper !== "1" || g.hyperLock !== HYPLOCK[k])
+          fail(k + ": wrong hyper lock state: " + JSON.stringify(g));
         if (run("function(){ return solver.p.hyper; }") !== 1) fail(k + ": the solver kept a hyper != 1");
+        // ... and only tearing arms the maintained-flux source (J2.3)
+        if (g.eqsrc !== (k === "tearing")) fail(k + ": wrong maintain-flux state: " + g.eqsrc);
         await frame();
         // add / close a display card on the rectangular grid
         run(`function(){ addDisplayCard({ sel: 5 }); cardsSync(); }`);
@@ -280,20 +412,50 @@ setTimeout(async () => {
       // from chartTypeKeys when cfg.zslice is on -- see the 3D run's own assertion below)
       if (run(`function(){ return chartTypeKeys().indexOf("island") < 0; }`))
         fail("the 2D page does not offer the island chart");
-      // eta/nu: a rebuild knob, and it must reach BOTH the solver and the stage kernel
-      run(`function(){ const e = document.getElementById("nPm"); e.value = "4"; e.onchange(); }`);
-      if (run("function(){ return solver.p.pm; }") !== 4) fail("the eta/nu ratio did not reach the solver");
-      const wg = run(`function(){ const S = buildShaders(solver.g);
-                                  return [S.stage, S.energyPartial].join("\\n"); }`);
-      if (wg.indexOf("select(1.0, 4.0, idx >= NM)") < 0 || wg.indexOf("4.0 * em") < 0)
-        fail("the eta/nu ratio is not in the emitted stage / energyPartial WGSL");
-      run(`function(){ const e = document.getElementById("nPm"); e.value = "1"; e.onchange(); }`);
-      const wg1 = run(`function(){ const S = buildShaders(solver.g);
-                                   return [S.stage, S.energyPartial].join("\\n"); }`);
-      if (wg1.indexOf("select(1.0,") >= 0 || wg1.indexOf("* em") >= 0 ||
+      // KH's hyper really is live (J2.5): the select moves the solver
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "kh"; s.onchange();
+                       const h = document.getElementById("selHyper"); h.value = "3"; h.onchange(); }`);
+      if (run("function(){ return solver.p.hyper; }") !== 3)
+        fail("KH's unlocked hyper did not reach the solver");
+      await frame();
+      // Pm: a rebuild knob, and it must reach BOTH the solver and the stage kernel. The
+      // substitution is on PHI now (the diss slider is eta) -- J2.6.
+      const wgsl = () => run(`function(){ const S = buildShaders(solver.g);
+                                          return [S.stage, S.energyPartial, S.nlAssemble].join("\\n"); }`);
+      const setPm = v => run(`function(v){ const e = document.getElementById("nPm");
+                                           e.value = v; e.onchange(); }`, v);
+      for (const [v, lit] of [["4", "4.0"], ["0", "0.0"]]) {
+        setPm(v);
+        if (run("function(){ return solver.p.pm; }") !== parseFloat(v))
+          fail("Pm = " + v + " did not reach the solver");
+        const wg = wgsl();
+        if (wg.indexOf("select(1.0, " + lit + ", idx < NM)") < 0 || wg.indexOf(lit + " * ek") < 0)
+          fail("Pm = " + v + " is not in the emitted stage / energyPartial WGSL");
+        await frame();
+      }
+      setPm("1");
+      const wg1 = wgsl();
+      if (wg1.indexOf("select(1.0,") >= 0 || wg1.indexOf("* ek") >= 0 ||
           wg1.indexOf("gridB[m].y * dt") < 0 || wg1.indexOf("(ek + em)") < 0)
-        fail("ratio 1 did not restore the scalar-dissipation kernel text");
-      console.log(tag + " eta/nu ratio: solver + WGSL round trip OK");
+        fail("Pm 1 did not restore the scalar-dissipation kernel text");
+      console.log(tag + " Pm (4, 0, back to 1): solver + WGSL round trip OK");
+      // the maintained-flux source is emitted ONLY with the toggle on, and only into
+      // nlAssemble; switching it rebuilds (J2.3)
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "tearing"; s.onchange(); }`);
+      if (wgsl().indexOf("- gridB[m].y * eqk[m]") < 0 || !run("function(){ return !!solver.pl.srcInit; }"))
+        fail("the tearing preset did not emit the maintained-flux source");
+      await frame();
+      run(`function(){ const e = document.getElementById("cbEqSrc"); e.checked = false; e.onchange(); }`);
+      if (run("function(){ return solver.p.eqsrc; }") !== false) fail("the maintain-flux toggle did not rebuild");
+      if (wgsl().indexOf("eqk") >= 0 || run("function(){ return !!solver.pl.srcInit; }"))
+        fail("the source survived its toggle going off");
+      // ... and it goes away with the IC preset too, without touching the toggle
+      run(`function(){ const e = document.getElementById("cbEqSrc"); e.checked = true; e.onchange();
+                       const s = document.getElementById("selIC"); s.value = "modes"; s.onchange(); }`);
+      if (run("function(){ return solver.p.eqsrc; }") !== false)
+        fail("a non-equilibrium IC kept the maintained-flux source");
+      console.log(tag + " maintain equilibrium flux: on / off / IC switch OK");
+      await frame();
       // hyper is free again once a non-equilibrium preset is chosen
       run(`function(){ const s = document.getElementById("selPreset"); s.value = "forced"; s.onchange(); }`);
       if (run(`function(){ return document.getElementById("selHyper").disabled; }`))

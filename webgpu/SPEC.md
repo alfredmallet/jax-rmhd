@@ -1,4 +1,4 @@
-# WebGPU 2D forced RMHD — implementation spec
+# WebGPU 2D RMHD — implementation spec
 
 > **File layout note (2026-08-05):** the app was split into `webgpu/rmhd2d.html` (this
 > spec's app: UI, physics WGSL, Solver, inlined reference vectors) plus `webgpu/common.js`

@@ -196,6 +196,38 @@ GATE J: the above physics checks; byte-diff on all non-equilibrium paths (ratio=
 path bitwise-identical); self-tests; duplication audit (per-field diss must not fork the
 stage kernel — parameterize); sonnet review.
 
+## Phase J2 — post-J polish (Alfred 2026-08-06, items 1–6 of his queries)
+
+1. **Contours without the field**: per-card background option (field / plain) — contour
+   ink on a blank background.
+2. **Both contour sets at once**: ψ AND φ (third contour-select entry "both"); second
+   potential plane in scratch, second contInk pass in a fixed accent color (ψ stays
+   ink-black/white) so the two are distinguishable on any background. Alignment
+   inspection is the use case.
+3. **Maintain equilibrium flux (tearing)**: static source S = −η∇²ψ_eq on the ψ
+   equation (precompute η·k²·ψ_eq,k at Reset), emitted at WGSL-generation time ONLY
+   when the preset enables it — every non-equilibrium path stays byte-identical (same
+   pattern as the Pm substitution). Toggle "maintain equilibrium flux", default on for
+   tearing. Source uses η (the ψ coefficient), not ν. fp64 gate: maintained ψ_eq
+   exactly stationary; linear γ then matches the frozen-equilibrium eigenvalue
+   (0.0287 at the η=ν=1e-3 benchmark — NOT the free-running 0.018); update
+   hint/README (the free-running caveat text becomes the source-off description).
+4. **Titles**: pages become "2D RMHD" / "3D RMHD"; drop forced-turbulence wording from
+   titles and landing cards (forcing is one option among the ICs).
+5. **Hyper lock split**: tearing stays locked to 1 (resistive-layer physics is the
+   demo); KH UNLOCKED (ideal instability — hyper is desirable for secondary
+   structure). KH hint's threshold footnote says "dissipation", not "resistivity".
+6. **Pm replaces η/ν**: input is Pm = ν/η; the diss slider now means η and ν = Pm·diss
+   (substitution moves to the φ diagonal + energyPartial's ek term). Pm=1 is the
+   bitwise-identical legacy path (gate). Pm=0 allowed (pure tearing, ν=0) — one hint
+   line warning that inviscid φ piles energy at the grid scale in long runs.
+
+GATE J2: byte-diff (Pm=1, source-off paths bitwise identical; Pm≠1 and source-on diffs
+justified line-by-line); fp64 checks per item 3 + Pm=0 tearing γ against the eigenvalue
+solver (eqlinear.py takes independent ν, η already); both self-tests byte-identical;
+stub boot incl. contour background/both modes and the KH hyper unlock; duplication
+audit; adversarial Fable review (may combine with GATE K's).
+
 ## Phase K — 3D field lines + true k∥ spectrum (post-J)
 
 Added 2026-08-06 (Alfred). This is the GPU-touching half of the field-line idea, split
@@ -220,6 +252,37 @@ GATE K: fp64 node check of the integrator against an analytic b⊥ (single-mode 
 known sinusoidal line displacement) and of the along-line sampler; window/SF
 correctness on a synthetic signal; physics WGSL byte-identical outside the volume
 gradient pass; stub boot; duplication audit; sonnet review.
+
+## Phase K2 — field lines are a VIEW (Alfred on-device feedback, 2026-08-06)
+
+Lines drawn over the cube faces looked wrong. Rework, display-side only (the fieldLine
+kernel, march, readback and k∥(field-line) chart machinery are UNTOUCHED):
+
+1. **"field lines" joins the per-card view dropdown** (manual z / track ζ⁺ / track ζ⁻ /
+   cube faces / field lines), excluded from the cut card exactly like cube. The
+   page-level lines select is DELETED.
+2. **N_lines fixed at 8×8** — no UI; one constant.
+3. **Lines view rendering**: the oblique box frame (edges) + the 64 polylines through
+   the existing projection, on the card's overlay canvas, over a plain background —
+   plus a TRANSPARENT top face (Alfred 2026-08-06): the top boundary plane rendered as
+   contour INK ONLY (no fill/plate — lines behind it stay visible; thin-ink overprint
+   is acceptable, solid-face overdraw was not) through the existing cube projection and
+   J2 contour machinery. The per-card contour controls (ψ/φ/both, levels) stay LIVE in
+   lines view and drive the face; default ψ. Physics tie-in: endpoints puncture the
+   exit plane on its ⊥ field-line structure. No arrows; field selector is inert for
+   the line geometry (lines are ψ-lines) — hide or ignore, whichever is less code.
+   This is the ONE intended display-kernel WGSL diff of the phase; physics kernels and
+   both self-tests stay byte-identical.
+4. **Tracer scheduling**: march + polyline readback when any lines-view card exists OR a
+   k∥(field-line) chart is open; the sample readback (flSmp) only when the chart needs
+   it (reviewer note from GATE K folded in here).
+5. Track/z-slider disabled in lines view (whole-box object, no plane).
+
+GATE K2: physics WGSL byte-identical, display diffs = the intended top-face-ink ones
+only; stub boot exercising the lines view per card incl. coexistence with cube/slice
+cards, the chart-only path, and contour-select changes in lines view; dup audit;
+node --check; line count should be ~flat (a select and its wiring are deleted, the
+face path reuses existing machinery); compact adversarial Fable pass on the diff.
 
 ## Execution notes for the coordinator
 
