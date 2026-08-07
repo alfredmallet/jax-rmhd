@@ -16,15 +16,19 @@
 # ONE-TIME MANUAL STEP: repo Settings -> Pages -> "Build and deployment" ->
 # Source: "GitHub Actions" (replacing "Deploy from a branch"). Until that is
 # flipped, this workflow deploys AND the old branch pipeline keeps running;
-# after it, the branch pipeline stops. Trigger covers gdi_v2 (current work
-# branch) and main (post-merge); last push wins, which is the same behaviour
-# the branch pipeline had.
+# after it, the branch pipeline stops. Trigger covers the work branches and
+# main (post-merge); last push wins, which is the same behaviour the branch
+# pipeline had. NOTE: each branch listed here must ALSO be allowed in the
+# github-pages deployment environment (Settings -> Environments ->
+# github-pages -> Deployment branches), or the deploy step is rejected.
+# (2026-08-06: webgpu work moved to the precision branch mid-outage, so
+# precision was added to both lists.)
 
 name: pages
 
 on:
   push:
-    branches: [gdi_v2, main]
+    branches: [gdi_v2, precision, main]
     paths:
       - "webgpu/**"
       - ".github/workflows/pages.yml"
