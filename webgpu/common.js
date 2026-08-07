@@ -1937,9 +1937,13 @@ function icSigmaZ() {
 }
 
 // glyph -> [0,1] coverage mask, or null when there is no usable 2D canvas (node).
-// `blurPx`: if the canvas supports ctx.filter, the gaussian is done here; otherwise the
-// caller applies icGaussBlur, the exact separable periodic gaussian (icLetterField handles both).
-function icGlyphRaster(text, nx, ny, cover, blurPx) {
+// The raster is SHARP by design; the caller always applies icGaussBlur, the exact
+// separable periodic gaussian. There used to be a ctx.filter fast path here -- it was
+// removed 2026-08-07: iOS Safari reflects the filter attribute while ignoring it at
+// rasterization (sharp letters on the phone, the very defect G.2 fixed), and where CSS
+// blur does apply it is a box approximation, not the exact gaussian the node gates test.
+// One blur implementation, identical on every engine.
+function icGlyphRaster(text, nx, ny, cover) {
   let cv = null;
   try { cv = document.createElement("canvas"); } catch (e) { return null; }
   if (!cv || !cv.getContext) return null;
@@ -1961,11 +1965,8 @@ function icGlyphRaster(text, nx, ny, cover, blurPx) {
   if (big > 0) px = Math.max(6, Math.round(px * target / big));
   c.font = fontAt(px);
   c.textAlign = "center"; c.textBaseline = "middle";
-  const canFilter = icCanvasBlurOK(c);
-  if (canFilter && blurPx > 0) c.filter = "blur(" + blurPx + "px)";
   c.fillStyle = "#fff";
   c.fillText(text, nx / 2, ny / 2);
-  if (canFilter) c.filter = "none";
   let dat;
   try { dat = c.getImageData(0, 0, nx, ny).data; } catch (e) { return null; }
   const out = new Float32Array(nx * ny);
@@ -1978,18 +1979,11 @@ function icGlyphRaster(text, nx, ny, cover, blurPx) {
     }
   }
   if (!(peak > 0)) return null;              // nothing was drawn (unknown glyph)
-  out.blurred = canFilter && blurPx > 0;
   return out;
-}
-// does this 2D context honour ctx.filter? (Safari <17 and some engines ignore it)
-function icCanvasBlurOK(c) {
-  try { c.filter = "blur(2px)"; const ok = c.filter === "blur(2px)"; c.filter = "none"; return ok; }
-  catch (e) { return false; }
 }
 
 // Separable PERIODIC gaussian blur, truncated at 3.5 sigma with the kernel renormalized
-// (it keeps 0.9995 of the mass). This is the fallback for engines whose 2D context
-// ignores ctx.filter -- and the only path in node.
+// (it keeps 0.9995 of the mass). The ONLY letter-smoothing path, on every engine.
 //
 // It is an exact gaussian at any sigma on purpose: the 3-pass box approximation it
 // replaced realized sigma_eff/sigma = 1.118 at 4 px and 1.031 at 16 px, so the SAME
@@ -2110,9 +2104,9 @@ function icLetterField(text, nx, ny, Lx, Ly, opts) {
   const sigL = o.sigma === undefined ? icSigmaLetter(Lx) : o.sigma;
   const sigma = Math.max(2, sigL / (Lx / nx));            // physical length -> pixels
   let f = (text && String(text).length)
-    ? icGlyphRaster(String(text).charAt(0), nx, ny, cover, sigma) : null;
+    ? icGlyphRaster(String(text).charAt(0), nx, ny, cover) : null;
   if (!f) f = icFallbackBlob(nx, ny);
-  else if (!f.blurred) f = icGaussBlur(f, nx, ny, sigma);
+  else f = icGaussBlur(f, nx, ny, sigma);
   return f;
 }
 

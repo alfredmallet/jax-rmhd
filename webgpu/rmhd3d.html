@@ -50,7 +50,7 @@
 </div>
 <div class="hint" id="buildline" style="margin-top:4px">
   build <span class="buildid">dev</span> &middot;
-  <a href="#" onclick="const u=new URL(location);u.searchParams.set('fresh',Date.now());location.replace(u);return false">load latest build</a>
+  <a href="#" onclick="var u=new window.URL(window.location.href);u.searchParams.set('fresh',Date.now());window.location.replace(u.href);return false">load latest build</a>
 </div>
 
 <script src="common.js"></script>
