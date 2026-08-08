@@ -89,6 +89,27 @@ setTimeout(async () => {
       await frame();
     }
     console.log(tag + " chart options: " + combos.map(c => c[3] + "." + c[1] + "=" + c[2]).join(" "));
+    // ... and the NUMERIC options (FEEDBACK item 8's fit-line index / amplitude), which
+    // carry no <option> list: a sane value, a blank, and a NaN, each drawn on real data
+    const nums = run(`function(){
+      const out = [];
+      cards.chart.forEach((c, i) => c.optEls.forEach(s => { if (s.type === "number") out.push([i, s.__optId]); }));
+      return out;
+    }`);
+    for (const nb of nums) {
+      for (const v of ["-1.667", "-2.5", "", "abc", "0.05"]) {
+        run(`function(i, id, v){
+          const s = cards.chart[i].optEls.filter(e => e.__optId === id)[0];
+          s.value = v; s.oninput();
+        }`, nb[0], nb[1], v);
+        await frame();
+      }
+    }
+    if (!nums.length) fail("the spectrum card exposed no numeric options");
+    // back to the built defaults, so nothing downstream draws against a stray fit line
+    run(`function(){ for (const c of cards.chart) { c.build(); c.draw(null); } }`);
+    await frame();
+    console.log(tag + " chart numeric options: " + nums.map(n => n[1]).join(" ") + " x {value, blank, NaN}");
     // the cut card owns its z plane in 3D (no display card involved)
     if (page.indexOf("3d") >= 0) {
       run(`function(){ const c = cards.chart.filter(x => x.type() === "cut")[0];
@@ -513,6 +534,119 @@ setTimeout(async () => {
     }`);
     if (!(ampCheck[1] > 0) || ampCheck[0] > 1e-6 * ampCheck[1])
       fail("amplitude is not an exact rescale: " + JSON.stringify(ampCheck));
+
+    // --- the sinusoidal z+- packet IC (FEEDBACK item 9, 3D only) ---------------
+    // it must build, carry the packet envelopes, keep the chi/packet readout line and
+    // leave the paint row hidden (it is not the drawing preset)
+    if (page.indexOf("3d") >= 0) {
+      run(`function(){ document.getElementById("selIC").value = IC_SINE;
+                       document.getElementById("selIC").onchange(); }`);
+      await frame();
+      const sine = run(`function(){
+        const q = solver.p, g = icDrawGrid(q), sz = icSigmaZ(), pg = packetGeom(q.Lz, sz);
+        const env = [icGaussZ(q.nz, q.Lz, pg.zPlus, sz), icGaussZ(q.nz, q.Lz, pg.zMinus, sz)];
+        const z = icSineZeta(g, env), nrs = g.nx * g.ny;
+        // the packet planes: |zeta| peaks where its own envelope does
+        let kp = 0, km = 0, mp = 0, mm = 0;
+        for (let k = 0; k < g.nz; k++) {
+          let ap = 0, am = 0;
+          for (let i = 0; i < nrs; i++) {
+            ap = Math.max(ap, Math.abs(z.zp[k * nrs + i]));
+            am = Math.max(am, Math.abs(z.zm[k * nrs + i]));
+          }
+          if (ap > mp) { mp = ap; kp = k; }
+          if (am > mm) { mm = am; km = k; }
+        }
+        return { kp: kp, km: km, zp: Math.round(pg.zPlus / q.Lz * q.nz), zm: Math.round(pg.zMinus / q.Lz * q.nz),
+                 draw: document.getElementById("rowDraw").style.display,
+                 sigz: document.getElementById("rowSigZ").style.display,
+                 amp: document.getElementById("rAmpP").disabled,
+                 info: document.getElementById("icinfo").innerHTML.length,
+                 nz: q.nz };
+      }`);
+      if (Math.abs(sine.kp - sine.zp) > 1 || Math.abs(sine.km - sine.zm) > 1)
+        fail("sinusoid packets are not on their envelope planes: " + JSON.stringify(sine));
+      if (sine.draw !== "none" || sine.sigz !== "" || sine.amp)
+        fail("sinusoid IC left the wrong IC rows visible: " + JSON.stringify(sine));
+      if (!(sine.info > 0)) fail("sinusoid IC lost the chi / packet readout line");
+      console.log(tag + " sinusoid z+- IC: packets at iz " + sine.kp + " / " + sine.km +
+                  " of " + sine.nz + ", paint row hidden, chi line live");
+    }
+
+    // --- auto-diss as a continuous controller (FEEDBACK item 6) ----------------
+    // ticked: the slider is the controller's readout and moves on its own; unticked: the
+    // manual slider is live again and stays exactly where the controller left it.
+    {
+      const dz = () => run(`function(){ const e = document.getElementById("rDiss");
+        return { v: +e.value, dis: e.disabled, min: +e.min, max: +e.max, diss: solver.p.diss }; }`);
+      run(`function(){ const e = document.getElementById("cbAutoDiss"); e.checked = true; e.onchange(); }`);
+      const a0 = dz();
+      if (!a0.dis) fail("auto-diss ticked did not disable the manual slider");
+      if (!(a0.min < a0.max)) fail("the diss slider range is degenerate: " + JSON.stringify(a0));
+      // drive the hook with a synthetic spectrum THROUGH THE CACHE (the cards' ride-along
+      // path): plenty of energy at k_d, so the target is well above nu_min and the
+      // controller must move UP toward it -- and it must never pay for its own readback
+      // while a fresh cached one exists
+      const moved = await run(`async function(){
+        running = true;
+        const sv = solver, bins = new Float32Array(3 * sv.nb);
+        for (let b = 1; b < sv.nb; b++) { bins[b] = 1e-2; bins[sv.nb + b] = 1e-2; }
+        const before = +document.getElementById("rDiss").value;
+        const rs = sv.readSpectrum.bind(sv);
+        let own = 0;
+        sv.readSpectrum = () => { own++; return rs(); };
+        for (let i = 0; i < 20; i++) {
+          autoDissAt = 0;
+          autoDissCache.sv = sv; autoDissCache.at = performance.now(); autoDissCache.perp = bins;
+          await autoDissHook(sv);
+        }
+        sv.readSpectrum = rs;
+        const after = +document.getElementById("rDiss").value;
+        running = false;
+        return [before, after, solver.p.diss, own];
+      }`);
+      if (!(moved[1] > moved[0])) fail("auto-diss did not track a loud shell upward: " + JSON.stringify(moved));
+      if (Math.abs(Math.log10(moved[2]) - moved[1]) > 1e-6)
+        fail("the controller's slider value did not reach the solver: " + JSON.stringify(moved));
+      if (moved[3] !== 0) fail("auto-diss read the spectrum itself despite a fresh cache: " + moved[3]);
+      // a shell with nothing in it must HOLD, not collapse
+      const held = await run(`async function(){
+        running = true;
+        const sv = solver, zero = new Float32Array(3 * sv.nb);
+        const before = +document.getElementById("rDiss").value;
+        for (let i = 0; i < 20; i++) {
+          autoDissAt = 0;
+          autoDissCache.sv = sv; autoDissCache.at = performance.now(); autoDissCache.perp = zero;
+          await autoDissHook(sv);
+        }
+        running = false;
+        return [before, +document.getElementById("rDiss").value];
+      }`);
+      if (held[0] !== held[1]) fail("auto-diss moved on an empty spectrum: " + JSON.stringify(held));
+      // with NO spectrum card open (stale cache) it must take its own readback
+      const noCard = await run(`async function(){
+        while (cards.chart.length) cardClose(cards.chart[0]);
+        addChartCard("energy"); cardsSync();
+        running = true; autoDissAt = 0;
+        autoDissCache.sv = null; autoDissCache.perp = null;
+        const sv = solver, rs = sv.readSpectrum.bind(sv);
+        let own = 0;
+        sv.readSpectrum = () => { own++; return rs(); };
+        await autoDissHook(sv);
+        sv.readSpectrum = rs;
+        running = false;
+        return [cards.chart.filter(c => c.type() === "spectrum").length, own];
+      }`);
+      if (noCard[0] !== 0) fail("the no-spectrum-card auto-diss path was not exercised");
+      if (noCard[1] !== 1) fail("auto-diss with no card should read the spectrum exactly once: " + noCard[1]);
+      const a1 = run(`function(){ const e = document.getElementById("cbAutoDiss"); e.checked = false; e.onchange();
+        const r = document.getElementById("rDiss"); return { v: +r.value, dis: r.disabled }; }`);
+      if (a1.dis) fail("unticking auto-diss left the slider disabled");
+      if (Math.abs(a1.v - held[1]) > 1e-9)
+        fail("unticking auto-diss moved the value: " + a1.v + " vs " + held[1]);
+      console.log(tag + " auto-diss: tick -> tracks (" + moved[0] + " -> " + moved[1] +
+                  "), empty shell holds, no-card readback OK, untick keeps " + a1.v);
+    }
 
     // --- the IC editor as its own view (Phase G.7) -----------------------------
     run(`function(){ document.getElementById("selIC").value = "custom";

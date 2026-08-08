@@ -1018,6 +1018,41 @@ function specFloor(rc, hi, lo) {
   return Math.max(Math.min(ea * Math.pow(10, -SPEC_TAIL), pre),
                   hi * Math.pow(10, -SPEC_MAXDEC));
 }
+// ---------------------------------------------------------------------------
+// the spectrum chart's FIT LINE (FEEDBACK_2026-08-08 item 8)
+// ---------------------------------------------------------------------------
+// The fixed k^-5/3 guide becomes a straight line E = A k^p with a settable index p and a
+// settable amplitude A, per CHART CARD (so two cards can carry two slopes over the same
+// spectrum), plus the mode it always had: PIN the amplitude to the field and only choose
+// the index. The controls are the card's own, beside `sq` / `sd`.
+//
+// The index box holds a plain decimal, which cannot spell -5/3 exactly, so a value within
+// FIT_SNAP of one of the two indices this subject actually argues about snaps to the
+// exact fraction -- for the drawn line AND for the legend, which is why one function
+// answers both. Anything else is drawn and labelled as the number it is.
+const FIT_SNAP = 5e-3;
+const FIT_FRACS = [[-5 / 3, "-5/3"], [-3 / 2, "-3/2"]];
+function _fitFrac(p) {
+  for (const f of FIT_FRACS) if (Math.abs(p - f[0]) < FIT_SNAP) return f;
+  return null;
+}
+function fitIndex(v) {
+  const p = parseFloat(v);
+  if (!isFinite(p)) return FIT_FRACS[0][0];         // blank / NaN box: the default index
+  const f = _fitFrac(p);
+  return f ? f[0] : p;
+}
+function fitLabel(p) {
+  const f = _fitFrac(p);
+  return "k^" + (f ? f[1] : String(Math.round(p * 1000) / 1000));
+}
+// A in E = A k^p, pinned to a drawn series: its first point at or above kA, exactly where
+// the old guide anchored (just above the forcing shell). 0 when the series has no such
+// point -- an empty or still-filling chart draws no line.
+function fitAnchor(pts, kA, p) {
+  for (let i = 0; i < pts.length; i += 2) if (pts[i] >= kA) return pts[i + 1] * Math.pow(pts[i], -p);
+  return 0;
+}
 function drawSpectrum(c, d, o) {
   if (!c) return;
   const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
@@ -1098,19 +1133,26 @@ function drawSpectrum(c, d, o) {
     }
   }
   c.setLineDash([]);
-  // k^-5/3 guide, anchored on the first drawn (perpendicular) series just above the
-  // forcing shell
+  // the fit line E = A k^p, from kA (just above the forcing shell, where the old fixed
+  // guide was anchored) to the last bin. `fit` = pin / amp / off; in "amp" mode an empty
+  // or non-positive amplitude box falls back to the pinned anchor, so switching to it
+  // never blanks the line before the user has typed anything.
   const kA = Math.max(2, Math.min(nb - 1, Math.round(fshell[1])));
+  const fitMode = (o && o.fit) || "pin";
+  const fitP = fitIndex(o && o.fitp);
   let anch = 0;
-  const first = wantPerp && curves.length ? curves[0][0] : [];
-  for (let i = 0; i < first.length; i += 2) {
-    if (first[i] >= kA) { anch = first[i + 1] * Math.pow(first[i], 5 / 3); break; }
+  if (fitMode !== "off") {
+    anch = fitAnchor(wantPerp && curves.length ? curves[0][0] : [], kA, fitP);
+    const A = parseFloat(o && o.fita);
+    // "amp" only ever draws over a DRAWN perpendicular series (hiP > 0): on a par-only
+    // card the axis is k_par*parKfac, where a perp-bin fit line would be meaningless
+    if (fitMode === "amp" && isFinite(A) && A > 0 && hiP > 0) anch = A;
   }
   if (anch > 0) {
     c.strokeStyle = COL.guide; c.setLineDash([5, 4]);
     c.beginPath();
-    c.moveTo(X(kA), Y(anch * Math.pow(kA, -5 / 3)));
-    c.lineTo(X(nb), Y(anch * Math.pow(nb, -5 / 3)));
+    c.moveTo(X(kA), Y(anch * Math.pow(kA, fitP)));
+    c.lineTo(X(nb), Y(anch * Math.pow(nb, fitP)));
     c.stroke(); c.setLineDash([]);
   }
   c.lineWidth = 1.4;
@@ -1126,7 +1168,7 @@ function drawSpectrum(c, d, o) {
   }
   c.restore();
   const items = curves.filter(cv => cv[0].length >= 4).map(cv => [cv[3], cv[1], cv[2]]);
-  if (anch > 0) items.push(["k^-5/3", COL.guide, [4, 3]]);
+  if (anch > 0) items.push([fitLabel(fitP), COL.guide, [4, 3]]);
   legend(c, x0 + 6, y0 + 12, items, x1 - 30);
 }
 
@@ -1246,7 +1288,17 @@ const CHART_TYPES = {
                + "\"field line\" measures k_par ALONG B, not along z",
              o: [["both", "&perp; + &#8741;"], ["perp", "&perp; only"], ["par", "&#8741; only"],
                  ["fl", "&perp; + k&#8741; (field line)"]] }]
-        : []),
+        : [],
+        // the fit line (item 8): mode, index, amplitude. The two boxes are meaningless
+        // with the line off, so they hide with it.
+        [{ id: "fit", ti: "power-law fit line E = A k^p",
+           o: [["pin", "fit: pin to field"], ["amp", "fit: set A"], ["off", "fit: off"]] },
+         { id: "fitp", k: "num", w: 62, step: "any", v: -1.667,
+           ti: "fit-line spectral index p in E = A k^p (-5/3 default; -1.5 reads as -3/2)",
+           vis: v => v.fit !== "off" },
+         { id: "fita", k: "num", w: 74, step: "any", min: 0,
+           ti: "fit-line amplitude A at k = 1 in E = A k^p; blank pins it to the spectrum",
+           vis: v => v.fit === "amp" }]),
     draw: (c, d, o) => drawSpectrum(c, d, o),
     hint: "shell-binned, ~3&times;/s; E<sup>&plusmn;</sup>(k) = E<sub>u</sub>+E<sub>b</sub>&plusmn;H<sub>c</sub>. "
       + "The y range follows the &perp; spectra."
@@ -1517,6 +1569,11 @@ class ChartCard {
     for (const s of this.optEls) o[s.__optId] = s.value;
     return o;
   }
+  // show/hide the options whose meaning depends on another one (the fit line's boxes)
+  _optSync() {
+    const v = this.optVals();
+    for (const s of this.optEls) if (s.__optVis) s.style.display = s.__optVis(v) ? "" : "none";
+  }
   build() {
     const T = CHART_TYPES[this.type()];
     // drop the previous type's controls (a select is appended AFTER the close button,
@@ -1524,14 +1581,30 @@ class ChartCard {
     for (const s of this.optEls) this.head.removeChild(s);
     if (this.rSlice) { this.head.removeChild(this.selZSrc); this.head.removeChild(this.rSlice); }
     this.optEls = []; this.selZSrc = null; this.rSlice = null;
-    const redraw = () => { this.draw(null); cardsThrottle.spec = 0; cardsThrottle.cut = 0; };
+    const redraw = () => { this._optSync(); this.draw(null); cardsThrottle.spec = 0; cardsThrottle.cut = 0; };
+    // an option is a <select> over `o`, or (k: "num") a small number box -- both end up
+    // in optEls with the same __optId, so optVals() and the type's draw() see one shape.
+    // `vis(vals)` optionally hides one when another option makes it meaningless.
     for (const spec of (T.opts ? T.opts(cards.cfg || {}) : [])) {
-      const s = _sel(this.head, spec.o.map(x => ({ v: x[0], t: x[1] })), spec.ti);
+      let s;
+      if (spec.k === "num") {
+        s = _mk("input", "optnum", this.head);
+        s.type = "number";
+        if (spec.min !== undefined) s.min = String(spec.min);
+        if (spec.step !== undefined) s.step = String(spec.step);
+        if (spec.w) s.style.width = spec.w + "px";
+        if (spec.ti) s.title = spec.ti;
+        s.oninput = redraw;
+      } else {
+        s = _sel(this.head, spec.o.map(x => ({ v: x[0], t: x[1] })), spec.ti);
+        s.onchange = redraw;
+      }
       if (spec.v !== undefined) s.value = String(spec.v);
       s.__optId = spec.id;
-      s.onchange = redraw;
+      s.__optVis = spec.vis || null;
       this.optEls.push(s);
     }
+    this._optSync();
     if (T.zslice) {
       _zSliceControls(this, this.head);
       if (this.selZSrc) {
@@ -1732,9 +1805,15 @@ const ctrlDissRow = (dflt, o) => [
   { k: "lab", t: "hyper" },
   { k: "sel", id: "selHyper", o: [[1, "1"], [2, "2"], [3, "3"], [4, "4"]], v: 4 },
   { k: "lab", t: "diss" },
-  { k: "rng", id: "rDiss", min: -20, max: -1, step: 0.05, v: dflt }, { k: "val", id: "vDiss" },
-  { k: "btn", id: "btnAutoDiss", t: "auto",
-    ti: "a marginally-resolved diss for the current hyper / resolution / power" }
+  // the range is DYNAMIC (FEEDBACK_2026-08-08 item 7): dissRangeSync() rewrites min/max
+  // from the live hyper / resolution / box, so the two numbers here are only what the
+  // element carries between construction and the first syncLabels. The STEP is the one
+  // fixed thing -- every value written to this slider is a multiple of it (see
+  // DISS_STEP), which is what keeps a range update from snapping a preset's value.
+  { k: "rng", id: "rDiss", min: -20, max: -1, step: DISS_STEP, v: dflt }, { k: "val", id: "vDiss" },
+  { k: "cbl", id: "cbAutoDiss", t: "auto", v: true,
+    ti: "drive diss continuously from the measured field amplitude near the dissipation "
+      + "scale; untick to take the slider back where the controller left it" }
 ].concat((o && o.pm) ? [
   { k: "lab", t: "Pm" },
   { k: "num", id: "nPm", v: 1, w: 62, min: 0,
@@ -1851,20 +1930,220 @@ function uiFshell() {
   return [lo, hi];
 }
 
-// marginally-resolved dissipation for the current hyper / resolution / injected power:
-// diss ~ eps^(1/3) * k_c^(2/3 - 2*hyper) with k_c = nx/3, times the safety margin the
-// repo's reference notebook uses. (uiParams / applyControls are per-app.)
-function autoDiss() {
+// ===========================================================================
+// perpendicular dissipation: the slider's dynamic range and the auto-diss
+// controller (FEEDBACK_2026-08-08 P2 items 7 and 6)
+// ===========================================================================
+// The linear operator is -nu * k_perp^(2*hyper) (makeGrid's linL), so "diss" is the
+// COEFFICIENT nu and the slider carries log10(nu). Two numbers follow from the GRID and
+// the hyper exponent alone -- no field, no forcing power -- and both items below are
+// built on them:
+//
+//   k_d      the wavenumber the cascade is meant to terminate at: DISS_KD_FRAC of the
+//            largest RETAINED perpendicular wavenumber. In this app that cutoff is the
+//            2/3 dealias, which is exactly what the perpendicular spectrum is binned out
+//            to -- nb bins of kunit each -- so k_d = frac * nb * kunit and the controller
+//            below measures in the same units it acts in.
+//   nu_marg  the MARGINAL coefficient at that scale for an O(1) box-scale amplitude:
+//            walk a Kolmogorov u(k) = u_1 (k/k_1)^(-1/3) from u_1 = 1 at k_1 = kunit down
+//            to k_d and impose the same balance the controller imposes (dissipation rate
+//            = nonlinear rate at k_d, i.e. nu k_d^(2n) = u_d k_d):
+//                nu_marg = k_1^(1/3) * k_d^(2/3 - 2*hyper).
+//            This is the amplitude-free stand-in for the controller's own answer. It is
+//            the old eps-based "auto" button's formula with eps^(1/3) -> u_1 k_1^(1/3)
+//            (eps ~ u_1^3 k_1) and lands within ~0.3 decades of it on the 512^2 decaying
+//            preset that formula was tuned on -- without the eps dependence, which is
+//            precisely what P1 item 3 was about.
+const DISS_KD_FRAC = 0.6;
+const dissKd = (nb, kunit) => DISS_KD_FRAC * Math.max(1, nb) * kunit;
+function dissMarginal(nb, kunit, hyper) {
+  return Math.pow(kunit, 1 / 3) * Math.pow(dissKd(nb, kunit), 2 / 3 - 2 * hyper);
+}
+// nb / kunit / hyper as the CONTROLS currently say -- the same two formulas makeGrid and
+// nbins use, so this works with no live solver (a preset writes the diss slider, and the
+// range must already fit it, before the first rebuild).
+function dissGrid() {
   const q = uiParams();
-  // use the sliders' eps even when the forcing checkbox is off (auto-diss for the
-  // power you WOULD inject; with eps identically 0 the formula would degenerate)
-  const epsTot = Math.pow(10, parseFloat(el("rEpsP").value)) +
-                 Math.pow(10, parseFloat(el("rEpsM").value));
-  const kc = q.nx / 3;
-  const diss = 30 * Math.pow(epsTot, 1 / 3) * Math.pow(kc, 2 / 3 - 2 * q.hyper);
-  const lg = Math.min(-1, Math.max(-20, Math.log10(diss)));
-  el("rDiss").value = String(lg);
+  return { nb: nbins(q.nx, q.ny, q.Lx, q.Ly), hyper: q.hyper,
+           kunit: Math.min(2 * Math.PI / q.Lx, 2 * Math.PI / q.Ly) };
+}
+
+// ---- item 7: the slider as a demo instrument -------------------------------
+// The old fixed -20 .. -1 spent most of its travel on values nothing can tell apart. One
+// sweep of the new range walks the whole physics instead:
+//   top     Re ~ 1 at the box scale -- nonlinear rate u k_1 equal to the dissipation rate
+//           nu k_1^(2n) with u = O(1), i.e. nu_top = k_1^(1 - 2*hyper) (k_1 = kunit, so
+//           exactly 1 in a 2pi box). Above it the box-scale flow is viscous.
+//   middle  nu_marg: turbulence with a resolved dissipation range, where the dissipation
+//           RATE stops depending on nu at all (the zeroth law).
+//   bottom  DISS_DECADES_BELOW under nu_marg: the cascade no longer terminates inside the
+//           retained band, energy piles up at the dealias scale and the run stops being a
+//           simulation of anything. That bottom is deliberately only 3 decades down: it
+//           is also the controller's nu_min (see below), and a controller that bottoms
+//           out 3 decades under marginal recovers in a couple of seconds.
+// Both ends move with hyper and with the resolution/box (k_d and k_1 do), so the range is
+// recomputed by syncCommonLabels rather than written once.
+const DISS_STEP = 0.05;                 // log10 per slider notch (unchanged)
+const DISS_DECADES_BELOW = 3;
+const DISS_LG_OPEN = [-30, 6];          // the hard bounds presetWrite opens the range to
+// snap to the step grid, away from (dir < 0) or toward (dir > 0) +infinity
+const dissQ = (x, dir) => DISS_STEP * (dir < 0 ? Math.floor(x / DISS_STEP + 1e-9)
+                                               : Math.ceil(x / DISS_STEP - 1e-9));
+function dissRange(nb, kunit, hyper) {
+  const hi = (1 - 2 * hyper) * Math.log10(kunit);
+  const lo = Math.log10(dissMarginal(nb, kunit, hyper)) - DISS_DECADES_BELOW;
+  return [Math.min(lo, hi - 1), hi];    // never a degenerate (or inverted) axis
+}
+// A range <input> SANITIZES an assigned value against min/max/step, so narrowing the
+// range around a preset's diss would silently rewrite it. presetWrite therefore OPENS the
+// range to the hard bounds before it writes anything, and the syncLabels that follows
+// narrows it again -- widened outward to whatever value is then stored, so a re-range
+// never moves the physical value, only the travel around it.
+function dissRangeOpen() {
+  const e = el("rDiss");
+  if (!e) return;
+  e.min = String(DISS_LG_OPEN[0]); e.max = String(DISS_LG_OPEN[1]);
+}
+function dissRangeSync() {
+  const e = el("rDiss");
+  if (!e) return;
+  const g = dissGrid(), r = dissRange(g.nb, g.kunit, g.hyper), v = parseFloat(e.value);
+  let lo = dissQ(r[0], -1), hi = dissQ(r[1], +1);
+  if (isFinite(v)) { lo = Math.min(lo, dissQ(v, -1)); hi = Math.max(hi, dissQ(v, +1)); }
+  e.min = lo.toFixed(2); e.max = hi.toFixed(2);
+}
+// the ONE place code (as opposed to a dragging finger) writes the diss slider: quantized
+// to the slider's own step, clamped to the live range, and pushed down the LIVE parameter
+// path -- never a rebuild -- and only when it actually moved. Returns whether it did.
+function dissWriteLog(lg) {
+  const e = el("rDiss");
+  if (!e || !isFinite(lg)) return false;
+  const v = Math.min(parseFloat(e.max),
+                     Math.max(parseFloat(e.min), DISS_STEP * Math.round(lg / DISS_STEP)));
+  if (Math.abs(v - parseFloat(e.value)) < 1e-9) return false;
+  e.value = v.toFixed(2);
   applyControls();
+  return true;
+}
+// The t = 0 SEED. Before the first measurement there is no amplitude to measure, so a
+// preset that wants the app to pick its dissipation gets nu_marg. (Presets that quote a
+// physical dissipation -- tearing's eta -- set rDiss themselves and turn the controller
+// off instead.)
+function autoDissSeed() { const g = dissGrid(); dissWriteLog(Math.log10(dissMarginal(g.nb, g.kunit, g.hyper))); }
+
+// ---- item 6: the auto-diss controller --------------------------------------
+// A tickbox, ON by default -- not a one-shot button. It sets nu CONTINUOUSLY from the
+// MEASURED field amplitude near the dissipation scale, which needs no assumption about
+// where the energy came from: forced, decaying, KH, tearing and packet collisions all go
+// through one rule. That is what supersedes P1 item 3, whose failure was an amplitude
+// taken from the FORCING sliders on a run with the forcing switched off.
+//
+// THE RULE is Jono Squire's rmhd-gpu (`rmhdgpu/auto_dissipation.py`), ported with its
+// structure and its defaults:
+//   k_d      = DISS_KD_FRAC * (max retained k_perp)                    [dissKd, above]
+//   E_d      = kinetic + magnetic energy in the LOGARITHMIC shell
+//              k_d e^-W <= k_perp <= k_d e^+W,  W = AUTODISS_SHELL_W
+//   u_d      = sqrt(2 E_d)                              the velocity at that scale
+//   nu_targ  = u_d * k_d^(1 - 2*hyper)                  i.e. nu k_d^(2n) = u_d k_d: the
+//              dissipation rate at k_d equals the nonlinear rate there, which IS the
+//              statement "the cascade terminates at k_d"
+//   nu       relaxed toward nu_targ in LOG space by AUTODISS_SMOOTH per update, one
+//              update's change capped at a factor AUTODISS_MAX_FACTOR, clamped to
+//              [nu_min, nu_max]
+// E_d is read off the app's OWN perpendicular spectrum bins (the E_u and E_b lanes), so
+// the quadratic density is exactly the energy diagnostic's and there is no new kernel.
+//
+// DEVIATIONS from the reference, both forced by the app rather than chosen:
+//  - cadence. rmhdgpu updates every 10 STEPS; here the loop runs 1..64 steps per frame at
+//    a frame rate nobody controls, and each update costs a spectrum pass plus a map round
+//    trip, so it is a WALL-CLOCK cadence like every other readback hook in the file
+//    (arrows / cut 10 Hz, field lines 2 Hz): AUTODISS_PERIOD, 2 Hz. With the factor-2 cap
+//    that is at most 0.6 decades of nu per second, fast enough that a run cannot outgrow
+//    the controller and slow enough that each update sees a spectrum that has responded
+//    to the last one.
+//  - [nu_min, nu_max] is the SLIDER's live range (item 7) instead of a separate pair of
+//    constants: its ends are "Re ~ 1" and "3 decades below marginal", which is exactly
+//    the window this controller has any business in -- and it guarantees the slider,
+//    which follows the controller, can always represent the value.
+//  - a shell with NO measurable energy HOLDS nu instead of driving it to nu_min. A
+//    quiescent or freshly-seeded IC (forced from rest, KH/tearing at t = 0, a smooth
+//    packet pair) has nothing at k_d yet; that is an uninformative measurement, not an
+//    instruction. Once anything IS there the walk is capped at a factor 2 per update, so
+//    even a badly over-dissipated start descends gradually from the preset's/slider's
+//    value and turns round as soon as the amplitude at k_d comes up.
+const AUTODISS_SHELL_W = 0.5;           // log half-width of the measurement shell
+const AUTODISS_SMOOTH = 0.2;            // log-space relaxation per update
+const AUTODISS_MAX_FACTOR = 2;          // hard cap on one update's change, as a ratio
+const AUTODISS_PERIOD = 500;            // ms between updates (2 Hz)
+
+// PURE CORE (state in, nu out -- this is what the node checks drive).
+// `bins` is the 3*nb [E_u | E_b | H_c] stack, bin b at k_perp = b*kunit.
+function autoDissShellE(bins, nb, kunit) {
+  const kd = dissKd(nb, kunit);
+  const lo = kd * Math.exp(-AUTODISS_SHELL_W), hi = kd * Math.exp(AUTODISS_SHELL_W);
+  let e = 0;
+  for (let b = 1; b < nb; b++) {
+    const k = b * kunit;
+    if (k < lo || k > hi) continue;
+    const v = bins[b] + bins[nb + b];              // E_u + E_b in this shell
+    if (isFinite(v) && v > 0) e += v;
+  }
+  return e;
+}
+// nu that would put the cascade's termination exactly at k_d, or 0 for "no measurement"
+function autoDissTarget(bins, nb, kunit, hyper) {
+  if (!(nb > 1) || !(kunit > 0)) return 0;
+  const ed = autoDissShellE(bins, nb, kunit);
+  if (!(ed > 0)) return 0;
+  return Math.sqrt(2 * ed) * Math.pow(dissKd(nb, kunit), 1 - 2 * hyper);
+}
+// one update of the controller state: clamp the target, relax in log space, cap the move
+function autoDissRelax(nu, target, lo, hi) {
+  if (!(nu > 0) || !(target > 0) || !(lo > 0) || !(hi >= lo)) return nu;
+  const t = Math.min(hi, Math.max(lo, target)), cap = Math.log(AUTODISS_MAX_FACTOR);
+  const d = Math.max(-cap, Math.min(cap, AUTODISS_SMOOTH * Math.log(t / nu)));
+  return Math.min(hi, Math.max(lo, nu * Math.exp(d)));
+}
+
+// IMPURE EDGE: cadence, readback, slider write. Called from the frame loop with the
+// perpendicular bins the spectrum CARDS read this frame, or null when no such card is
+// open -- in which case the controller takes its own readback at its own cadence, the
+// same "one bounded round trip per period" contract planeTrackHook and fieldLineHook use.
+//
+// The slider is DISABLED while the box is ticked (syncCommonLabels) and follows the
+// controller, so the level is always visible and unticking simply leaves the manual
+// slider where the controller last put it. Everything goes through dissWriteLog, hence
+// through applyControls -> solver.refreshDissipation: the live path, never a rebuild.
+// Its 0.05-decade quantization doubles as the controller's DEAD BAND -- with
+// AUTODISS_SMOOTH = 0.2 an update smaller than 0.125 decades of log-distance rounds to no
+// change at all, which is what stops a converged controller from re-uploading the
+// dissipation array twice a second.
+let autoDissAt = 0;
+function autoDissOn() { const e = el("cbAutoDiss"); return !!(e && e.checked); }
+// the spectrum cards' last readback, kept so the controller can ride it instead of
+// paying for a second spectrum pass: the cards fire at ~3.3 Hz and the controller at
+// 2 Hz, so with a card open a fresh-enough entry almost always exists. `sv` keys the
+// cache to the solver that produced it -- a preset/resolution switch retires the
+// solver and with it the cache (nb and kunit change with the grid).
+const autoDissCache = { sv: null, at: 0, perp: null };
+async function autoDissHook(sv) {
+  if (!sv || !autoDissOn() || !running) return;
+  const now = performance.now();
+  if (now - autoDissAt < AUTODISS_PERIOD) return;
+  autoDissAt = now;
+  let bins = (autoDissCache.sv === sv && now - autoDissCache.at <= AUTODISS_PERIOD)
+    ? autoDissCache.perp : null;
+  if (!bins) {                                     // no card open (or its readback stale)
+    const sp = await sv.readSpectrum();
+    if (sv !== solver) return;                     // retired while we were awaiting
+    bins = sp.perp;
+  }
+  const e = el("rDiss");
+  const t = autoDissTarget(bins, sv.nb, sv.g.kunit, sv.p.hyper);
+  if (!(t > 0)) return;                            // nothing measurable yet: hold
+  dissWriteLog(Math.log10(autoDissRelax(Math.pow(10, parseFloat(e.value)), t,
+                                        Math.pow(10, parseFloat(e.min)),
+                                        Math.pow(10, parseFloat(e.max)))));
 }
 
 // ---------------------------------------------------------------------------
@@ -1891,6 +2170,11 @@ function demoNameFromURL() {
 function presetWrite(registry, name) {
   const d = (registry && registry[name]) || null;
   if (!d) return null;
+  // the diss slider's range is dynamic and a range <input> sanitizes assignments against
+  // it: open it to the hard bounds first so a preset's diss is written verbatim, whatever
+  // hyper / resolution the range was last narrowed to (the syncLabels of the bootApply
+  // that follows narrows it again, around the value this wrote -- item 7).
+  dissRangeOpen();
   for (const id in (d.set || {})) {
     const e = el(id);
     if (!e) { console.warn("preset " + name + ": no control #" + id); continue; }
@@ -1924,14 +2208,19 @@ function presetBoot(registry) {
 // boot wiring shared by both apps
 // ---------------------------------------------------------------------------
 // These talk to functions each app defines under the SAME names (uiParams, syncIC,
-// syncLabels, rebuild, applyIC, applyControls, autoDiss, wireDrawEditor, runSelfTest)
-// -- the arrangement autoDiss above already relies on: common.js is loaded first, but
-// its bodies only run once the app script has declared them.
+// syncLabels, rebuild, applyIC, applyControls, wireDrawEditor, runSelfTest)
+// -- an arrangement the shared code above already relies on: common.js is loaded
+// first, but its bodies only run once the app script has declared them.
 
 // the slider readouts every page has. Each app's syncLabels() calls this and then adds
 // its own (3D: z_diss_k, sigma_z, chi) -- the shared numbers exist once.
 function syncCommonLabels() {
   const eps = uiEps(), amp = uiAmp(), fs = uiFshell();
+  // the diss slider's travel follows hyper / resolution / box (item 7), and the auto-diss
+  // controller owns the handle while its box is ticked (item 6). Both belong here: this
+  // is the one function every path that can change either of them ends in.
+  dissRangeSync();
+  el("rDiss").disabled = autoDissOn();
   el("vDiss").textContent = Math.pow(10, parseFloat(el("rDiss").value)).toExponential(1);
   el("vEpsP").textContent = el("cbForce").checked ? eps[0].toExponential(1) : "off";
   el("vEpsM").textContent = el("cbForce").checked ? eps[1].toExponential(1) : "off";
@@ -1980,7 +2269,9 @@ function wireCommonControls(opts) {
   lockPair("rAmpP", "rAmpM", "cbAmpLock", syncLabels, () => { if (!icDraw.on) applyIC(); });
   lockPair("rEpsP", "rEpsM", "cbEpsLock", applyControls);
   el("selHyper").onchange = applyControls;
-  el("btnAutoDiss").onclick = autoDiss;
+  // auto-diss (item 6): ticking hands the slider to the controller and lets it act on the
+  // next frame; unticking gives the slider back exactly where the controller left it.
+  el("cbAutoDiss").onchange = () => { autoDissAt = 0; syncLabels(); };
   el("cbForce").onchange = () => { syncForceEnabled(); applyControls(); };
   for (const id of ["selRes"].concat(opts.rebuildOn || [])) el(id).onchange = rebuild;
   for (const id of ["rDiss", "rTau", "rCfl", "rCflEvery"].concat(opts.sliders || [])) {
@@ -2236,32 +2527,87 @@ function icLetterField(text, nx, ny, Lx, Ly, opts) {
 // times a gaussian z-envelope of peak 1 in 3D (`env` = [envPlus, envMinus], each nz
 // floats; null in 2D). Shared by both apps -- the only difference between them is that
 // pair of envelopes.
+// one perpendicular plane times a gaussian z-envelope of peak 1 -> a stored 3D potential.
+// `e` is null in 2D (and for a page with no packets), where the plane IS the potential.
+function icZExtrude(plane, e, g) {
+  if (!e) return plane;
+  const nrs = g.nx * g.ny, f = new Float32Array(g.nz * nrs);
+  for (let k = 0; k < g.nz; k++) {
+    const o = k * nrs, a = e[k];
+    for (let i = 0; i < nrs; i++) f[o + i] = a * plane[i];
+  }
+  return f;
+}
 function icLetterZeta(g, env) {
-  const nrs = g.nx * g.ny, out = [];
+  const out = [];
   for (let s = 0; s < 2; s++) {
     const glyph = icLetterField(IC_LETTERS.charAt(s) || IC_LETTERS.charAt(0),
                                 g.nx, g.ny, g.Lx, g.Ly);
-    if (!env) { out.push(glyph); continue; }
-    const f = new Float32Array(g.nz * nrs), e = env[s];
-    for (let k = 0; k < g.nz; k++) {
-      const o = k * nrs, a = e[k];
-      for (let i = 0; i < nrs; i++) f[o + i] = a * glyph[i];
-    }
-    out.push(f);
+    out.push(icZExtrude(glyph, env ? env[s] : null, g));
   }
   return { zp: out[0], zm: out[1] };
 }
 
+// ---------------------------------------------------------------------------
+// the sinusoidal Elsasser pair (FEEDBACK_2026-08-08 item 9) -- 3D only
+// ---------------------------------------------------------------------------
+// The classic exact-interaction configuration: one counter-propagating packet whose
+// perpendicular structure is a single mode in x, the other a single mode in y.
+//
+// WHAT IS STORED IS THE POTENTIAL. The Elsasser FIELDS are z+- = zhat x grad zeta+- =
+// (-d_y zeta+-, d_x zeta+-), so a field that is a pure sine needs a potential that is a
+// pure COSINE of the OTHER sign convention:
+//     z+ = a+ yhat sin(k1x x)   <-   zeta+ = -cos(k1x x) / k1x     (d_y zeta+ = 0)
+//     z- = a- xhat sin(k1y y)   <-   zeta- = +cos(k1y y) / k1y     (d_x zeta- = 0)
+// with k1x = 2pi IC_SINE_N / Lx and likewise in y. Each field alone is an exact ideal
+// solution (it propagates along z unchanged: a z+ with no z- feels no nonlinearity at
+// all). Together they interact through exactly one beat:
+//     (z- . grad) z+ = a+ a- k1x sin(k1y y) cos(k1x x) yhat,
+// which is why this pair -- and not a pair of blobs -- is the textbook collision.
+//
+// The 1/k prefactors make the UNNORMALIZED potentials generate unit-amplitude sine
+// fields; icZetaFields then rescales by max |grad zeta| = k * (1/k) = 1 per field, so the
+// zeta+- amp sliders come out as the field amplitudes a+- exactly, as everywhere else.
+// The z-envelope machinery is the letters' (icGaussZ + packetGeom), so sigma_z, chi, the
+// packet trackers and the collision timing all keep working unchanged.
+const IC_SINE = "sine";
+const IC_SINE_N = 1;                     // box-scale mode number of both sinusoids
+// the perpendicular gradient scale of the pair, i.e. 1/k1x -- what chiEstimate wants
+const icSigmaSine = Lx => Lx / (2 * Math.PI * IC_SINE_N);
+function icSinePlanes(g) {
+  const nrs = g.nx * g.ny, zp = new Float32Array(nrs), zm = new Float32Array(nrs);
+  const kx = 2 * Math.PI * IC_SINE_N / g.Lx, ky = 2 * Math.PI * IC_SINE_N / g.Ly;
+  for (let i = 0; i < g.nx; i++) {
+    const a = -Math.cos(kx * (i * g.Lx / g.nx)) / kx, row = i * g.ny;
+    for (let j = 0; j < g.ny; j++) {
+      zp[row + j] = a;
+      zm[row + j] = Math.cos(ky * (j * g.Ly / g.ny)) / ky;
+    }
+  }
+  return { zp: zp, zm: zm };
+}
+function icSineZeta(g, env) {
+  const p = icSinePlanes(g);
+  return { zp: icZExtrude(p.zp, env ? env[0] : null, g),
+           zm: icZExtrude(p.zm, env ? env[1] : null, g) };
+}
+// the presets whose stored potentials are normalized by the zeta+- amp sliders AND (in
+// 3D) carried by a counter-propagating packet envelope. One predicate, so the app's
+// applyIC, the chi readout and icSyncRows cannot disagree about what a packet preset is.
+const icIsPacketIC = p => (p === "letters" || p === IC_SINE);
+
 // The whole CPU IC path for the two potential-based presets, in one place: pick the
 // stored zeta+- pair, then normalize + map through icZetaFields.
-//   preset "custom"  the drawing;  anything else  the letters
-//   env              3D letter z-envelopes (see icLetterZeta), null in 2D
+//   preset "custom"  the drawing;  IC_SINE  the sinusoids;  anything else  the letters
+//   env              3D packet z-envelopes (icLetterZeta / icSineZeta), null in 2D
 function icPresetFields(q, preset, ampP, ampM, env) {
   const g = icDrawGrid(q);            // also the geometry record for the letter path
   icEq.on = false;                    // only an equilibrium builder turns this back on
   const B = IC_BUILDERS[preset];
   if (B) return B.fields(g);
-  const z = preset === "custom" ? { zp: icDraw.zp, zm: icDraw.zm } : icLetterZeta(g, env);
+  const z = preset === "custom" ? { zp: icDraw.zp, zm: icDraw.zm }
+          : preset === IC_SINE ? icSineZeta(g, env)
+          : icLetterZeta(g, env);
   return icZetaFields(z.zp, z.zm, g, ampP, ampM);
 }
 
@@ -2932,11 +3278,14 @@ function icDrawWire(cfg) {
 // which IC rows apply to the selected preset -- the same rule in both apps (the app
 // names its own extra rows through cfg.icRows, so nothing here guesses at ids).
 function icSyncRows() {
-  const p = el("selIC").value, isL = p === "letters", isC = p === "custom";
-  for (const id of ["rAmpP", "rAmpM", "cbAmpLock"]) el(id).disabled = !isL && !isC;
+  // isP = a PACKET preset (letters, or the item-9 sinusoids): stored potentials that the
+  // amp sliders normalize and the sigma_z row shapes. isC = the drawing, which is those
+  // things AND owns the paint row.
+  const p = el("selIC").value, isP = icIsPacketIC(p), isC = p === "custom";
+  for (const id of ["rAmpP", "rAmpM", "cbAmpLock"]) el(id).disabled = !isP && !isC;
   el("rowDraw").style.display = isC ? "" : "none";
   for (const id of ((icDraw.cfg && icDraw.cfg.icRows) || [])) {
-    el(id).style.display = (isL || isC) ? "" : "none";
+    el(id).style.display = (isP || isC) ? "" : "none";
   }
   // the registered equilibrium builders (REFINE_PLAN J.3): hide every row any of the
   // presets THIS PAGE offers owns, THEN show the selected one's -- two passes, because
@@ -3110,9 +3459,14 @@ async function loop() {
         const d = Object.assign({ perp: sp.perp, nb: sv.nb, fshell: sv.p.fshell,
                                   par: sp.par, parKfac: sp.parKfac },
                                 specExtra ? specExtra() : null);
+        autoDissCache.sv = sv; autoDissCache.at = now; autoDissCache.perp = sp.perp;
         for (const c of specCards) c.draw(d);
       }
     }
+    // auto-diss (item 6): the same perpendicular bins, at its own 2 Hz cadence. It rides
+    // the cards' cached readback whenever a fresh one exists and takes its own only
+    // when none does -- the controller must work with the chart closed.
+    await autoDissHook(solver);
   }
 }
 

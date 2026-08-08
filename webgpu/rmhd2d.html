@@ -1049,7 +1049,7 @@ const PRESETS = {
     label: "forced turbulence (default)",
     set: { selRes: "256", selBox: "sq", selHyper: "4", nPm: "1", cbForce: true,
            rEpsP: "-0.82", rEpsM: "-0.82",
-           cbEpsLock: true, rFmin: "1", rFmax: "3", rDiss: "-13",
+           cbEpsLock: true, rFmin: "1", rFmax: "3", rDiss: "-13", cbAutoDiss: true,
            selIC: "modes", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 0 }], charts: ["energy", "spectrum", "cut"] },
     hint: ""
@@ -1057,8 +1057,11 @@ const PRESETS = {
   decay: {
     label: "decaying A / B packets",
     set: { selRes: "512", selBox: "sq", selHyper: "4", nPm: "1", cbForce: false,
+           cbAutoDiss: true,
            selIC: "letters", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
-    prep: () => autoDiss(),          // marginally-resolved diss for 512^2, hyper=4
+    // no rDiss of its own: the marginal estimate for 512^2 / hyper=4 is the t=0 seed and
+    // the auto-diss controller takes it from there (FEEDBACK item 6)
+    prep: () => autoDissSeed(),
     layout: { disp: [{ sel: 6 }, { sel: 7 }], charts: ["energy", "spectrum"] },
     hint: "Decaying 2D turbulence: A-shaped &zeta;<sup>+</sup> and B-shaped &zeta;<sup>&minus;</sup> "
       + "potentials at 512&sup2;, forcing off &mdash; press <b>Run</b> and switch a display to "
@@ -1074,8 +1077,15 @@ const PRESETS = {
   // (J2.5) -- it is an ideal instability, and hyper sharpens its secondary structure.
   kh: {
     label: "Kelvin–Helmholtz shear layers",
+    // auto-diss ON, unlike tearing: KH is an IDEAL instability, so nothing here is quoted
+    // against a dissipation. Its quoted gamma is the b0 = 0 ideal rate, which a controller
+    // that only ever LOWERS nu during the linear stage (there is nothing at k_d yet) can
+    // only approach; once the layer rolls up the controller is what keeps the secondary
+    // structure off the dealias scales, which is the P1 item 3 failure this replaces.
+    // rDiss is its t=0 seed, not a physical claim.
     set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
-           rDiss: "-3.5", selIC: "kh", rEqA: "0.05", rEqPert: "-3",
+           rDiss: "-3.5", cbAutoDiss: true,
+           selIC: "kh", rEqA: "0.05", rEqPert: "-3",
            rEqU0: "1", rEqB0: "0", rCflEvery: "4" },
     layout: { disp: [{ sel: 0 }], charts: ["energy", "cut"] },
     hint: "Two opposite shear layers (periodicity needs a pair) at x = L<sub>x</sub>/4 and "
@@ -1088,8 +1098,13 @@ const PRESETS = {
   },
   tearing: {
     label: "tearing mode (magnetic islands)",
+    // the ONE preset that turns the auto-diss controller OFF. Its whole point is a
+    // QUOTED resistivity -- eta = 1e-3, against a linear reference growth rate -- and a
+    // controller wandering eta would falsify exactly what the demo measures, the same
+    // argument that makes this preset lock hyper to 1 (icSyncRows).
     set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
-           rDiss: "-3", selIC: "tearing", rEqA: "0.1", rEqPert: "-3", rEqPsi0: "1.65",
+           rDiss: "-3", cbAutoDiss: false,
+           selIC: "tearing", rEqA: "0.1", rEqPert: "-3", rEqPsi0: "1.65",
            cbEqSrc: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }], charts: ["island", "energy"] },
     hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "

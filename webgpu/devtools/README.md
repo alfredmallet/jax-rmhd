@@ -34,7 +34,12 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   the editor view
   (enter/paint/save/cancel/save&run), eps± lock, band rebuild, amplitude rescale, and
   the self-test path end to end. Validates dispatch sizes, bind groups, writeBuffer
-  extents.
+  extents. Since FEEDBACK_2026-08-08 P2 it also drives the chart cards' NUMERIC options
+  (the fit line's index / amplitude, incl. blank and NaN), the 3D sinusoidal z± packet IC
+  (envelope planes, hidden paint row, live chi line) and the auto-diss controller end to
+  end on the live solver: tick disables the slider, a loud synthetic shell drives it up
+  and reaches `solver.p.diss`, an empty one holds, the no-spectrum-card path takes its own
+  readback, and unticking leaves the value alone.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
@@ -48,7 +53,16 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   it was written for.
 - `checks.js` — GATE G fp64 unit checks (normalized-IC rescale, sigma_letter k-perp
   content at two resolutions, chi formula, separation cap, centroid/argmax trackers)
-  against the real common.js functions via vm.
+  against the real common.js functions via vm. Sections 6-9 (FEEDBACK_2026-08-08 P2) add
+  the auto-diss controller's PURE core on synthetic spectra (the analytic nu_target, the
+  clamp / smoothing / cap, a quiescent start that holds instead of collapsing, a growing
+  KH-like spectrum, and a closed-loop cascade model whose fixed point the controller finds
+  from 3 decades either side), the diss slider's dynamic range (every preset's value
+  survives the open-then-narrow sequence unchanged; a re-range widens outward instead of
+  moving it), the fit line's index / label / anchor algebra, and the sinusoidal z± IC
+  (2D DFT mode content, envelope placement, icZetaFields normalization, and the field it
+  produces on its packet plane). Those sections need controls that REMEMBER writes, hence
+  the `ELS` map behind `getEl`; sections 1-5 keep the old throwaway elements.
 - `checksh.js` — GATE H fp64 checks against the pages' inlined reference A states:
   the H_c accumulator lane, E± = E_kin+E_mag±H_c = ½⟨|z±|²⟩, the spectra lanes summing
   back to the energies, and cutPrep+rowsC2R reproducing (u_x,u_y,b_x,b_y) on x = Lx/2 —

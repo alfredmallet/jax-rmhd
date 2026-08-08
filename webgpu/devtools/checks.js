@@ -41,8 +41,13 @@ const mkCanvas = () => { const cv = { width: 0, height: 0, style: {} };
 const stubEl = () => ({ value: "", style: {}, textContent: "", innerHTML: "", checked: false,
                         disabled: false, min: "", max: "", step: "", options: [],
                         addEventListener() {}, appendChild() {} });
+// Sections 6-9 (FEEDBACK_2026-08-08 P2) drive code that reads and WRITES real controls,
+// so getElementById has to remember them. `ELS` is null everywhere else, which keeps the
+// throwaway-element behaviour sections 1-5 were written against.
+let ELS = null;
+const getEl = id => (ELS ? (ELS[id] || (ELS[id] = stubEl())) : stubEl());
 const sandbox = {
-  document: { getElementById: () => stubEl(),
+  document: { getElementById: getEl,
               createElement: t => (t === "canvas" ? mkCanvas() : stubEl()),
               createTextNode: () => ({}), querySelectorAll: () => [] },
   window: { addEventListener() {}, devicePixelRatio: 1, matchMedia: () => ({ matches: true }) },
@@ -57,7 +62,10 @@ const C = sandbox;
 // top-level `const`s of a vm script are not properties of the context: pull the ones
 // the checks need out through an expression.
 Object.assign(C, vm.runInContext("({ icSigmaLetter, IC_SIGMA_PERP_FRAC, IC_SIGMA_Z_FRAC,"
-  + " IC_SIGMA_Z_MAX_FRAC, TRACK_HYST, IC_LETTERS })", sandbox));
+  + " IC_SIGMA_Z_MAX_FRAC, TRACK_HYST, IC_LETTERS, DISS_KD_FRAC, dissKd, DISS_STEP,"
+  + " DISS_DECADES_BELOW, DISS_LG_OPEN, AUTODISS_SHELL_W, AUTODISS_SMOOTH,"
+  + " AUTODISS_MAX_FACTOR, AUTODISS_PERIOD, IC_SINE, IC_SINE_N, icSigmaSine, icIsPacketIC,"
+  + " FIT_FRACS, FIT_SNAP })", sandbox));
 const L = 2 * Math.PI;
 
 // ---------------------------------------------------------------------------
@@ -254,7 +262,7 @@ console.log("4. packet separation cap (G.6)");
      parseFloat(e.max) === C.IC_SIGMA_Z_MAX_FRAC && parseFloat(e.value) === C.IC_SIGMA_Z_FRAC &&
      Math.abs(parseFloat(e.value) / parseFloat(e.step) - 12) < 1e-9,
      "min " + e.min + " max " + e.max + " step " + e.step + " value " + e.value);
-  sandbox.document.getElementById = () => stubEl();
+  sandbox.document.getElementById = getEl;      // the shared one back (sections 6-9 use ELS)
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +329,378 @@ console.log("5. centroid tracker on a moving packet (G.8 / [7])");
   h.fill(0); h[40] = 1.0; h[200] = 1.15;          // 15%: it should
   ok("argmax hysteresis: a 15% rival does take it", C.trackArgmax(h, 0, nz, 40) === 200);
   ok("hysteresis threshold is 10%", C.TRACK_HYST === 1.1);
+}
+
+// ---------------------------------------------------------------------------
+console.log("6. auto-diss controller: the pure core (FEEDBACK item 6)");
+// ---------------------------------------------------------------------------
+// A synthetic perpendicular spectrum, [E_u | E_b | H_c] in 3*nb bins at k = b*kunit:
+// a power law E(k) = A k^slope, so the shell energy (and hence nu_target) is analytic.
+function synthBins(nb, kunit, A, slope) {
+  const b = new Float64Array(3 * nb);
+  for (let i = 1; i < nb; i++) {
+    const e = 0.5 * A * Math.pow(i * kunit, slope);   // half in u, half in b
+    b[i] = e; b[nb + i] = e;
+  }
+  return b;
+}
+{
+  const nb = 64, kunit = 1, hyper = 4;
+  const kd = C.dissKd(nb, kunit);
+  ok("k_d is DISS_KD_FRAC of the retained k_perp max", Math.abs(kd - 0.6 * nb * kunit) < 1e-12,
+     "k_d = " + kd + " with nb = " + nb);
+  ok("the reference constants are rmhdgpu's",
+     C.DISS_KD_FRAC === 0.6 && C.AUTODISS_SHELL_W === 0.5 && C.AUTODISS_SMOOTH === 0.2 &&
+     C.AUTODISS_MAX_FACTOR === 2,
+     "kd_fraction 0.6, shell_half_width 0.5, smooth 0.2, max_update 2");
+
+  // (i) the target IS u_d k_d^(1-2n) with u_d = sqrt(2 E_shell), summed by hand
+  const bins = synthBins(nb, kunit, 1e-3, -5 / 3);
+  const lo = kd * Math.exp(-C.AUTODISS_SHELL_W), hi = kd * Math.exp(C.AUTODISS_SHELL_W);
+  let ed = 0, nsh = 0;
+  for (let i = 1; i < nb; i++) {
+    const k = i * kunit;
+    if (k >= lo && k <= hi) { ed += bins[i] + bins[nb + i]; nsh++; }
+  }
+  const want = Math.sqrt(2 * ed) * Math.pow(kd, 1 - 2 * hyper);
+  const got = C.autoDissTarget(bins, nb, kunit, hyper);
+  ok("nu_target = sqrt(2 E_d) k_d^(1-2n) over the log shell (" + nsh + " bins)",
+     Math.abs(got / want - 1) < 1e-12, "got " + got.toExponential(4));
+  ok("E_d is exactly the shell sum of the E_u + E_b lanes",
+     Math.abs(C.autoDissShellE(bins, nb, kunit) / ed - 1) < 1e-12);
+  // bins outside the shell must not contribute
+  const only = new Float64Array(3 * nb);
+  only[1] = 1e3; only[nb + 1] = 1e3;                  // a huge k = 1 bin, far below the shell
+  ok("energy outside the log shell is ignored", C.autoDissTarget(only, nb, kunit, hyper) === 0);
+
+  // (ii) convergence to the analytic answer, from three decades either side
+  for (const start of [want * 1e3, want * 1e-3]) {
+    let nu = start;
+    for (let i = 0; i < 200; i++) nu = C.autoDissRelax(nu, want, want * 1e-9, want * 1e9);
+    ok("converges to nu_target from " + (start > want ? "3 decades above" : "3 decades below"),
+       Math.abs(Math.log10(nu / want)) < 1e-6, "nu/nu_target = " + (nu / want).toPrecision(8));
+  }
+  // (iii) smoothing and the per-update cap
+  const one = (nu, t) => C.autoDissRelax(nu, t, 1e-300, 1e300);
+  const d1 = Math.log10(one(1, 10) / 1);
+  ok("one update moves SMOOTH of the log distance", Math.abs(d1 - C.AUTODISS_SMOOTH) < 1e-12,
+     "1 decade -> " + d1.toFixed(6) + " decades");
+  const d6 = one(1, 1e6) / 1, d6d = 1 / one(1, 1e-6);
+  ok("a far target is capped at exactly MAX_UPDATE_FACTOR (both ways)",
+     Math.abs(d6 - C.AUTODISS_MAX_FACTOR) < 1e-12 && Math.abs(d6d - C.AUTODISS_MAX_FACTOR) < 1e-12,
+     "x" + d6.toFixed(6) + " up, /" + d6d.toFixed(6) + " down");
+  // (iv) the clamp
+  ok("the target is clamped to [nu_min, nu_max] before smoothing",
+     C.autoDissRelax(1, 1e9, 0.5, 2) <= 2 && C.autoDissRelax(1, 1e-9, 0.5, 2) >= 0.5);
+  let nuc = 1;
+  for (let i = 0; i < 100; i++) nuc = C.autoDissRelax(nuc, 1e9, 0.5, 2);
+  ok("and the state never leaves the clamp", nuc <= 2 + 1e-12, "nu = " + nuc.toPrecision(6));
+
+  // (v) a QUIESCENT start does not collapse: an empty shell reports "no measurement" (0),
+  // which the hook reads as HOLD, and even a real but absurdly quiet shell descends no
+  // faster than the cap -- so the floor is minutes away, not milliseconds
+  ok("an empty spectrum yields no target at all (the hook holds)",
+     C.autoDissTarget(new Float64Array(3 * nb), nb, kunit, hyper) === 0);
+  {
+    const faint = synthBins(nb, kunit, 1e-40, -5 / 3);
+    let nu = want, worst = 0;
+    for (let i = 0; i < 10; i++) {
+      const nx = C.autoDissRelax(nu, C.autoDissTarget(faint, nb, kunit, hyper), want * 1e-3, want * 1e3);
+      worst = Math.max(worst, nu / nx);
+      nu = nx;
+    }
+    ok("a quiescent-like shell walks DOWN at no more than the cap per update",
+       worst <= C.AUTODISS_MAX_FACTOR + 1e-12, "worst single step /" + worst.toFixed(4));
+    ok("... and cannot fall below nu_min (3 decades under marginal)", nu >= want * 1e-3 - 1e-300,
+       "after 10 updates nu/nu_marg = " + (nu / want).toExponential(2));
+  }
+
+  // (vi) a KH-like run: the amplitude at k_d GROWS as the layer rolls up, and the
+  // controller must follow it upward monotonically instead of sitting at the floor
+  {
+    const amp = i => 1e-12 * Math.pow(10, i / 4);                // 1 decade / 4 updates
+    // start ON the target implied by the layer's initial (tiny) amplitude, which is where
+    // the descent guard above leaves a KH start: from there the only way is up
+    let nu = C.autoDissTarget(synthBins(nb, kunit, amp(0), -5 / 3), nb, kunit, hyper);
+    let prev = 0, mono = true;
+    for (let i = 0; i < 40; i++) {
+      const t = C.autoDissTarget(synthBins(nb, kunit, amp(i), -5 / 3), nb, kunit, hyper);
+      const nx = C.autoDissRelax(nu, t, want * 1e-9, want * 1e9);
+      if (nx < nu - 1e-300) mono = false;
+      prev = t; nu = nx;
+    }
+    ok("a growing (KH-like) spectrum drives nu monotonically UP", mono,
+       "nu " + nu.toExponential(3) + " chasing " + prev.toExponential(3));
+    ok("... to within a factor of a few of the live target", nu > 0.1 * prev,
+       "nu / nu_target = " + (nu / prev).toPrecision(4));
+  }
+
+  // (vii) CLOSED LOOP. Model the cascade's response: with u(k) = u1 (k/k1)^(-1/3) the
+  // dissipation scale k_nu solves nu k_nu^(2n) = u(k_nu) k_nu, and the spectrum is
+  // inertial below it and cut off exponentially above -- so E_d(nu) has a genuine fixed
+  // point exactly where the controller's rule says. Start 3 decades off either way.
+  {
+    const u1 = 1, k1 = kunit;
+    const knu = nu => Math.pow(u1 * Math.pow(k1, 1 / 3) / nu, 1 / (2 * hyper - 2 / 3));
+    const shellE = nu => {                      // E_d from that model, in the same shell
+      let e = 0;
+      for (let i = 1; i < nb; i++) {
+        const k = i * kunit;
+        if (k < lo || k > hi) continue;
+        const uk = u1 * Math.pow(k / k1, -1 / 3);
+        e += 0.5 * uk * uk * Math.exp(-2 * Math.max(0, k / knu(nu) - 1));
+      }
+      return e;
+    };
+    const fixed = (() => {                      // the model's own fixed point, by bisection
+      let a = 1e-16, b = 1e2;
+      for (let i = 0; i < 200; i++) {
+        const m = Math.sqrt(a * b);
+        const t = Math.sqrt(2 * shellE(m)) * Math.pow(kd, 1 - 2 * hyper);
+        if (t > m) a = m; else b = m;
+      }
+      return Math.sqrt(a * b);
+    })();
+    for (const f of [1e3, 1e-3]) {
+      let nu = fixed * f;
+      for (let i = 0; i < 60; i++) {
+        const t = Math.sqrt(2 * shellE(nu)) * Math.pow(kd, 1 - 2 * hyper);
+        nu = C.autoDissRelax(nu, t, fixed * 1e-6, fixed * 1e6);
+      }
+      ok("closed loop from " + (f > 1 ? "1e3x" : "1e-3x") + " marginal settles at the fixed point",
+         Math.abs(Math.log10(nu / fixed)) < 0.05,
+         "nu / nu* = " + (nu / fixed).toPrecision(5) + " after 60 updates (30 s at 2 Hz)");
+    }
+    // ... and it lands within a decade of the amplitude-free nu_marg the t=0 seed and the
+    // slider's bottom anchor use. It is not meant to be closer: nu_marg puts u_1 = 1 at
+    // k_1 and counts ONE shell, while E_d here is the sum over the whole log shell -- the
+    // point of the check is that the seed starts the controller in the right decade.
+    const marg = Math.pow(k1, 1 / 3) * Math.pow(kd, 2 / 3 - 2 * hyper);
+    ok("the loop's fixed point is nu_marg to within a decade",
+       Math.abs(Math.log10(fixed / marg)) < 1,
+       "nu* = " + fixed.toExponential(3) + " vs nu_marg = " + marg.toExponential(3) +
+       " (" + Math.log10(fixed / marg).toFixed(2) + " decades)");
+  }
+  ok("the update cadence is the documented 2 Hz", C.AUTODISS_PERIOD === 500);
+}
+
+// ---------------------------------------------------------------------------
+console.log("7. the diss slider's dynamic range (FEEDBACK item 7)");
+// ---------------------------------------------------------------------------
+{
+  ELS = {};                                  // from here on the controls REMEMBER
+  let applied = 0;
+  C.applyControls = () => { applied++; };
+  const GEOM = { sq256: { nx: 256, ny: 256, Lx: 2 * Math.PI, Ly: 2 * Math.PI },
+                 sq512: { nx: 512, ny: 512, Lx: 2 * Math.PI, Ly: 2 * Math.PI },
+                 wide512: { nx: 512, ny: 128, Lx: 4 * Math.PI, Ly: 2 * Math.PI },
+                 d3_128: { nx: 128, ny: 128, Lx: 2 * Math.PI, Ly: 2 * Math.PI },
+                 d3_64: { nx: 64, ny: 64, Lx: 2 * Math.PI, Ly: 2 * Math.PI } };
+  let GEO = GEOM.sq256, HY = 4;
+  C.uiParams = () => Object.assign({ hyper: HY }, GEO);
+  const R = () => ELS.rDiss || (ELS.rDiss = C.document.getElementById("rDiss"));
+
+  // the top end IS Re ~ 1 at the box scale, k_1^(1-2*hyper)
+  for (const [g, h] of [[GEOM.sq256, 4], [GEOM.wide512, 1]]) {
+    GEO = g; HY = h;
+    const k1 = Math.min(2 * Math.PI / g.Lx, 2 * Math.PI / g.Ly);
+    const rr = C.dissRange(C.nbins(g.nx, g.ny, g.Lx, g.Ly), k1, h);
+    ok("top of the range is nu = k_1^(1-2*hyper) (hyper " + h + ", k_1 " + k1 + ")",
+       Math.abs(rr[1] - (1 - 2 * h) * Math.log10(k1)) < 1e-12, "log10 nu_top = " + rr[1].toFixed(4));
+    ok("bottom is DISS_DECADES_BELOW under nu_marg",
+       Math.abs(rr[0] - (Math.log10(C.dissMarginal(C.nbins(g.nx, g.ny, g.Lx, g.Ly), k1, h))
+                         - C.DISS_DECADES_BELOW)) < 1e-12, "log10 nu_min = " + rr[0].toFixed(4));
+  }
+
+  // EVERY value a preset writes must survive the open-then-narrow sequence presetWrite
+  // and the following syncLabels perform -- byte for byte, no snapping, no clamping.
+  const PRESET_DISS = [["2D forced", GEOM.sq256, 4, "-13"], ["2D kh", GEOM.wide512, 1, "-3.5"],
+                       ["2D tearing", GEOM.wide512, 1, "-3"], ["3D forced", GEOM.d3_128, 4, "-10.65"],
+                       ["2D 512^2 decay seed", GEOM.sq512, 4, "-14.75"]];
+  for (const [nm, g, h, v] of PRESET_DISS) {
+    GEO = g; HY = h;
+    C.dissRangeOpen();
+    R().value = v;                           // exactly what presetWrite does
+    C.dissRangeSync();
+    const lo = parseFloat(R().min), hi = parseFloat(R().max);
+    ok(nm + " diss " + v + " survives the re-range and stays representable",
+       R().value === v && parseFloat(v) >= lo && parseFloat(v) <= hi,
+       "value " + R().value + " in [" + lo + ", " + hi + "]");
+  }
+
+  // a RE-RANGE never moves the stored value, even when hyper walks it out of the range
+  GEO = GEOM.sq256; HY = 4;
+  C.dissRangeOpen(); R().value = "-13"; C.dissRangeSync();
+  const before = R().value, lo4 = parseFloat(R().min);
+  HY = 1;                                    // hyper 4 -> 1 lifts nu_marg by many decades
+  C.dissRangeSync();
+  ok("changing hyper re-ranges the slider without moving its value",
+     R().value === before && parseFloat(R().min) !== lo4,
+     "value " + R().value + ", min " + lo4 + " -> " + R().min);
+  ok("... widening the range OUTWARD to keep the value representable",
+     parseFloat(R().value) >= parseFloat(R().min) && parseFloat(R().value) <= parseFloat(R().max),
+     "[" + R().min + ", " + R().max + "]");
+  ok("the hard open range is wide enough for anything a preset can ask",
+     C.DISS_LG_OPEN[0] <= -30 && C.DISS_LG_OPEN[1] >= 6);
+  // both ends land on the step grid, which is what stops a browser range input from
+  // snapping an assigned value away from its multiple of DISS_STEP
+  const onGrid = x => Math.abs(x / C.DISS_STEP - Math.round(x / C.DISS_STEP)) < 1e-6;
+  ok("the range ends are multiples of the slider step",
+     onGrid(parseFloat(R().min)) && onGrid(parseFloat(R().max)),
+     R().min + " / " + R().max);
+
+  // dissWriteLog: quantized, clamped, and silent when nothing moved
+  HY = 4; GEO = GEOM.sq256;
+  C.dissRangeOpen(); R().value = "-13.00"; C.dissRangeSync();
+  applied = 0;
+  C.dissWriteLog(-12.3712);
+  ok("dissWriteLog quantizes to the slider step", onGrid(parseFloat(R().value)),
+     "-12.3712 -> " + R().value);
+  ok("... and pushes it down the LIVE path", applied === 1);
+  applied = 0;
+  C.dissWriteLog(parseFloat(R().value) + 0.4 * C.DISS_STEP);
+  ok("a sub-step move is the controller's dead band (no re-upload)", applied === 0,
+     "value still " + R().value);
+  C.dissWriteLog(-999);
+  ok("a wild value is clamped to the live range", parseFloat(R().value) === parseFloat(R().min),
+     "clamped to " + R().value);
+  C.dissWriteLog(Number.NaN);
+  ok("NaN is refused outright", parseFloat(R().value) === parseFloat(R().min));
+
+  // the t=0 seed is the marginal level itself
+  C.dissRangeOpen(); R().value = "-1"; C.dissRangeSync();
+  C.autoDissSeed();
+  const g0 = C.dissGrid();
+  ok("autoDissSeed writes nu_marg for the live grid",
+     Math.abs(parseFloat(R().value) - Math.log10(C.dissMarginal(g0.nb, g0.kunit, g0.hyper)))
+       <= 0.5 * C.DISS_STEP + 1e-9,
+     "seed " + R().value + " vs nu_marg " + Math.log10(C.dissMarginal(g0.nb, g0.kunit, g0.hyper)).toFixed(4));
+  ELS = null;
+}
+
+// ---------------------------------------------------------------------------
+console.log("8. spectrum fit line: index, amplitude, anchor (FEEDBACK item 8)");
+// ---------------------------------------------------------------------------
+{
+  // the index box holds decimals; -5/3 and -3/2 snap to the exact fraction, everything
+  // else is taken literally, and a blank / NaN box falls back to the default
+  ok("-1.667 snaps to exactly -5/3", C.fitIndex("-1.667") === -5 / 3);
+  ok("-1.5 is -3/2", C.fitIndex("-1.5") === -1.5);
+  ok("-2.3 is taken literally", C.fitIndex("-2.3") === -2.3);
+  ok("a blank box is the default index", C.fitIndex("") === C.FIT_FRACS[0][0] &&
+     C.FIT_FRACS[0][0] === -5 / 3);
+  ok("a NaN box is the default index", C.fitIndex("abc") === -5 / 3 &&
+     C.fitIndex(undefined) === -5 / 3);
+  ok("outside FIT_SNAP nothing snaps", C.fitIndex(String(-5 / 3 + 2 * C.FIT_SNAP)) !== -5 / 3);
+  ok("the legend reflects the chosen index", C.fitLabel(-5 / 3) === "k^-5/3" &&
+     C.fitLabel(-1.5) === "k^-3/2" && C.fitLabel(-2.3) === "k^-2.3" && C.fitLabel(-1) === "k^-1",
+     "k^-5/3, k^-3/2, k^-2.3, k^-1");
+
+  // the anchor inverts E = A k^p at the first drawn point at or above kA -- for ANY p,
+  // which is the whole change from the fixed 5/3 the old guide assumed
+  for (const p of [-5 / 3, -1.5, -2.5, -1]) {
+    const A = 0.0137, pts = [];
+    for (let k = 1; k <= 40; k++) pts.push(k, A * Math.pow(k, p));
+    const a = C.fitAnchor(pts, 3, p);
+    ok("anchor recovers A for p = " + p.toFixed(4), Math.abs(a / A - 1) < 1e-12,
+       "A = " + a.toExponential(6));
+    // and the line through the anchor passes through the spectrum at kA exactly
+    ok("... so the line meets the spectrum at kA", Math.abs(a * Math.pow(3, p) / (A * Math.pow(3, p)) - 1) < 1e-12);
+  }
+  ok("an empty series anchors nothing (the waiting... path stays blank)",
+     C.fitAnchor([], 3, -5 / 3) === 0);
+  ok("a series that stops below kA anchors nothing", C.fitAnchor([1, 1, 2, 0.5], 8, -5 / 3) === 0);
+}
+
+// ---------------------------------------------------------------------------
+console.log("9. sinusoidal z+- packet IC (FEEDBACK item 9)");
+// ---------------------------------------------------------------------------
+{
+  const g = { nx: 64, ny: 64, nz: 32, Lx: 2 * Math.PI, Ly: 2 * Math.PI, Lz: 16 * Math.PI };
+  const nrs = g.nx * g.ny;
+  const sz = g.Lz / 16, pg = C.packetGeom(g.Lz, sz);
+  const env = [C.icGaussZ(g.nz, g.Lz, pg.zPlus, sz), C.icGaussZ(g.nz, g.Lz, pg.zMinus, sz)];
+  const z = C.icSineZeta(g, env);
+
+  // MODE CONTENT: a 2D DFT of each potential's peak plane must hold one mode only
+  const peak = e => { let k = 0; for (let i = 1; i < g.nz; i++) if (e[i] > e[k]) k = i; return k; };
+  const kP = peak(env[0]), kM = peak(env[1]);
+  function dft2(f, off) {
+    const P = [];
+    for (let m = 0; m <= 3; m++) {
+      P.push([]);
+      for (let n = 0; n <= 3; n++) {
+        let re = 0, im = 0;
+        for (let i = 0; i < g.nx; i++) for (let j = 0; j < g.ny; j++) {
+          const th = 2 * Math.PI * (m * i / g.nx + n * j / g.ny);
+          re += f[off + i * g.ny + j] * Math.cos(th); im -= f[off + i * g.ny + j] * Math.sin(th);
+        }
+        P[m].push((re * re + im * im) / (nrs * nrs));
+      }
+    }
+    return P;
+  }
+  for (const [nm, f, off, mi, ni] of [["zeta+", z.zp, kP * nrs, 1, 0], ["zeta-", z.zm, kM * nrs, 0, 1]]) {
+    const P = dft2(f, off);
+    let tot = 0, rest = 0;
+    for (let m = 0; m <= 3; m++) for (let n = 0; n <= 3; n++) {
+      tot += P[m][n];
+      if (!(m === mi && n === ni) && !(m === 0 && n === 0)) rest += P[m][n];
+    }
+    ok(nm + " is the single mode (m,n) = (" + mi + "," + ni + ")",
+       P[mi][ni] > 0 && rest < 1e-12 * P[mi][ni],
+       "power " + P[mi][ni].toExponential(3) + ", everything else " + rest.toExponential(3));
+    ok(nm + " has no mean (a potential's gauge)", P[0][0] < 1e-20 * (tot || 1));
+  }
+  ok("the two potentials use k = 2pi IC_SINE_N / L", C.IC_SINE_N === 1);
+  ok("its perpendicular gradient scale is 1/k1", Math.abs(C.icSigmaSine(g.Lx) - g.Lx / (2 * Math.PI)) < 1e-15);
+  ok("it is a PACKET preset (envelopes, sigma_z row, amp sliders)",
+     C.icIsPacketIC(C.IC_SINE) && C.icIsPacketIC("letters") && !C.icIsPacketIC("custom") &&
+     !C.icIsPacketIC("modes"));
+
+  // Z ENVELOPE: each potential's plane amplitude follows its own icGaussZ, so the packets
+  // sit where packetGeom puts them and the collision timing is the letters' unchanged
+  let devP = 0, devM = 0;
+  for (let k = 0; k < g.nz; k++) {
+    let ap = 0, am = 0;
+    for (let i = 0; i < nrs; i++) {
+      ap = Math.max(ap, Math.abs(z.zp[k * nrs + i]));
+      am = Math.max(am, Math.abs(z.zm[k * nrs + i]));
+    }
+    const a0 = 1 / (2 * Math.PI / g.Lx);            // |zeta| peak of the unenveloped plane
+    devP = Math.max(devP, Math.abs(ap - env[0][k] * a0));
+    devM = Math.max(devM, Math.abs(am - env[1][k] * a0));
+  }
+  ok("zeta+ rides envelope 0 (peak at z = " + pg.zPlus.toFixed(3) + ")", devP < 1e-6, "max dev " + devP.toExponential(2));
+  ok("zeta- rides envelope 1 (peak at z = " + pg.zMinus.toFixed(3) + ")", devM < 1e-6, "max dev " + devM.toExponential(2));
+  ok("zeta+ is placed ABOVE the midplane, zeta- below (they meet head-on)",
+     pg.zPlus > 0.5 * g.Lz && pg.zMinus < 0.5 * g.Lz);
+
+  // NORMALIZATION: icZetaFields must make the FIELDS z+- = zhat x grad zeta+- come out at
+  // the amp sliders exactly -- and on the packet plane they must be the pure sinusoids
+  const aP = 0.37, aM = 0.11;
+  const F = C.icZetaFields(z.zp, z.zm, g, aP, aM);
+  const zetaP = new Float32Array(g.nz * nrs), zetaM = new Float32Array(g.nz * nrs);
+  for (let i = 0; i < g.nz * nrs; i++) { zetaP[i] = F.phi[i] + F.psi[i]; zetaM[i] = F.phi[i] - F.psi[i]; }
+  const gm = (f, off) => C.icGradMax(f, g.nx, g.ny, g.Lx / g.nx, g.Ly / g.ny, off);
+  let mxP = 0, mxM = 0;
+  for (let k = 0; k < g.nz; k++) { mxP = Math.max(mxP, gm(zetaP, k * nrs)); mxM = Math.max(mxM, gm(zetaM, k * nrs)); }
+  ok("max |grad zeta+| is the zeta+ amp slider", Math.abs(mxP / aP - 1) < 1e-4, "got " + mxP.toPrecision(6));
+  ok("max |grad zeta-| is the zeta- amp slider", Math.abs(mxM / aM - 1) < 1e-4, "got " + mxM.toPrecision(6));
+  // the FIELD on the packet plane: z+ = a+ yhat sin(k1 x) (so d_y zeta+ = 0 identically)
+  const k1 = 2 * Math.PI / g.Lx;
+  let eF = 0, eY = 0;
+  for (let i = 0; i < g.nx; i++) {
+    const x = i * g.Lx / g.nx;
+    // 4th-order d_x, the same estimator icGradMax uses (row j = 0; there is no y
+    // dependence, which the next check asserts separately)
+    const at = q => zetaP[kP * nrs + ((((i + q) % g.nx) + g.nx) % g.nx) * g.ny];
+    const dx = (at(-2) - 8 * at(-1) + 8 * at(1) - at(2)) / (12 * g.Lx / g.nx);
+    eF = Math.max(eF, Math.abs(dx - aP * Math.sin(k1 * x)));
+    eY = Math.max(eY, Math.abs(zetaP[kP * nrs + i * g.ny + 3] - zetaP[kP * nrs + i * g.ny + 17]));
+  }
+  ok("on its packet plane z+ = a+ yhat sin(k1 x)", eF < 2e-3 * aP, "max dev " + eF.toExponential(2));
+  ok("... with no y dependence at all (d_y zeta+ = 0)", eY < 1e-9, "max spread " + eY.toExponential(2));
 }
 
 console.log(bad ? "\n" + bad + " CHECK(S) FAILED" : "\nall GATE G node checks passed");

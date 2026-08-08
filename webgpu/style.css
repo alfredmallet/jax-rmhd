@@ -41,6 +41,9 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 .card.chart { width: 100%; }
 .cardhead { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 6px; }
 .cardhead select { padding: 2px 5px; font-size: 12px; max-width: 100%; }
+/* a chart card's numeric option (the spectrum fit line's index / amplitude) sits beside
+   its selects, so it matches them rather than the control panel's wider number boxes */
+.cardhead .optnum { padding: 2px 4px; font-size: 12px; max-width: 100%; }
 .cardhead .cbl { display: inline-flex; align-items: center; gap: 3px; color: #9aa5b4; font-size: 12px; }
 .cardhead .zslider { flex: 1 1 70px; min-width: 60px; width: auto; }
 .cardhead button.x { margin-left: auto; padding: 1px 7px; line-height: 1.2; color: #9aa5b4; }

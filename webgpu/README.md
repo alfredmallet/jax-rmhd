@@ -118,9 +118,19 @@ is the default and is what the chart drew before they existed):
 | energy trace | which energies | `E_kin / E_mag` (with E_tot) · `E⁺ / E⁻` (with E_tot) |
 | spectra | which spectra | `E_u / E_b` · `E⁺ / E⁻` · both |
 | spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only · ⊥ + k∥ (field line) |
+| spectra | fit line | `pin to field` · `set A` · `off`, plus a numeric index `p` and amplitude `A` |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
 | island width (2D) | — | log W(t); needs the tearing IC (see below) |
+
+**The spectrum fit line** (FEEDBACK item 8) is a straight E = A k<sup>p</sup> from just
+above the forcing shell to the last bin, per CHART CARD, so two cards can carry two
+slopes over the same spectrum. `p` defaults to −5/3 (the index box holds decimals, and a
+value within `FIT_SNAP` of −5/3 or −3/2 snaps to the exact fraction and is *labelled* as
+it, so the legend reads `k^-5/3` / `k^-3/2` and anything else reads as the number it is).
+`pin to field` takes A off the spectrum itself, exactly as the old fixed guide did;
+`set A` uses the amplitude box (A at k = 1) and falls back to the pinned anchor while the
+box is empty; `off` hides the line and both boxes. NaN in either box is ignored.
 
 The Elsasser energies are E<sup>±</sup> = E_kin + E_mag ± H_c with the cross helicity
 H_c = ⟨u·b⟩, i.e. E<sup>±</sup> = ½⟨|z<sup>±</sup>|²⟩ and E_tot = (E⁺+E⁻)/2 — the
@@ -259,8 +269,9 @@ else is built on the CPU and uploaded through **`setICFromReal(phi, psi)`** — 
 `Float32Array`s in the buffers' own layout (`ix*ny + iy` in 2D, `(iz*nx + ix)*ny + iy` in
 3D) — which forward-transforms them and applies the 2/3 dealias exactly like the
 constructor does (unmasked beyond-cutoff IC energy would persist and alias). The **IC**
-selector then offers `large-scale modes`, `quiescent`, `letters` and `custom`; **Reset**
-re-applies the current one.
+selector then offers `large-scale modes`, `quiescent`, `letters` and `custom` (plus the
+two equilibrium presets in 2D, and the sinusoidal packet pair in 3D); **Reset** re-applies
+the current one.
 
 ### ζ±, amplitudes, and where the normalization happens
 
@@ -349,14 +360,15 @@ into [0,L).
 ## Presets (the dropdown, and `?demo=`)
 
 A preset is a **configuration**, never new physics. A registry entry carries `set`
-(control id → value), `prep` (the "auto" buttons), `layout` (the display + chart cards it
+(control id → value), `prep` (the "auto" seeds), `layout` (the display + chart cards it
 wants) and a one-line `hint`. `presetBoot` (common.js) fills the dropdown, preselects
 `?demo=NAME` if the URL carries one, and writes the controls *before* the first solver is
 built; picking another entry from the dropdown runs the same path plus a rebuild.
 Everything stays adjustable afterwards. There are no separate demo pages.
 
 - **2D `decaying A / B packets`** (`rmhd2d.html?demo=decay`) — letters A/B at 512²,
-  forcing off, hyper=4 with auto diss, two displays showing |z⁺| and |z⁻|. Watch the
+  forcing off, hyper=4 seeded at ν_marg and then driven by auto-diss (see
+  *Dissipation* below), two displays showing |z⁺| and |z⁻|. Watch the
   spectrum settle onto the quasi-universal decaying slope, and switch a display to σ_c
   for dynamic alignment. Its hint states the one thing the amplitude slider does *not*
   do here: ideal 2D RMHD is self-similar in amplitude ((a,t) → (a/λ, λt)), and dt is
@@ -467,6 +479,59 @@ the source on, 1.3 % off the eigenvalue). **With the source off** ψ_eq also dif
 ≈ 0.018, some 37 % below the frozen-equilibrium value. KH has no such source and does not
 need one (ν/a² ≪ γ there: 3.6 %).
 
+## Dissipation: the slider's range, and auto-diss
+
+The perpendicular operator is −ν·k⊥<sup>2·hyper</sup>, so the **diss** slider carries
+log₁₀ ν. Two grid-only numbers set everything here (`common.js`, beside `ctrlDissRow`):
+
+- **k_d** = `DISS_KD_FRAC`·(largest retained k⊥). In this app that cutoff is the 2/3
+  dealias, which is exactly what the ⊥ spectrum is binned out to, so k_d = 0.6·nb·kunit.
+- **ν_marg** = k₁<sup>1/3</sup>·k_d<sup>2/3−2·hyper</sup> — the marginal coefficient for
+  an O(1) box-scale amplitude: walk a Kolmogorov u(k) = u₁(k/k₁)<sup>−1/3</sup> from
+  u₁ = 1 at k₁ = kunit down to k_d and set the dissipation rate there equal to the
+  nonlinear rate. It is the old "auto" button's formula with ε<sup>1/3</sup> → u₁k₁<sup>1/3</sup>,
+  i.e. *without* its dependence on the forcing sliders.
+
+**The slider is a demo instrument** (FEEDBACK item 7). Its range is recomputed from the
+live hyper / resolution / box by `dissRangeSync` (called from `syncCommonLabels`, so every
+path that can change them ends in it): the top is Re ~ 1 at the box scale,
+ν_top = k₁<sup>1−2·hyper</sup>; the bottom is `DISS_DECADES_BELOW` = 3 decades under
+ν_marg, where the cascade no longer terminates inside the retained band. One sweep
+therefore goes viscous → turbulent with an ε-independent dissipation rate → numerically
+unresolved. A range <input> sanitizes assigned values against min/max/step, so
+`presetWrite` **opens** the range to the hard bounds before writing and the following
+`syncLabels` narrows it again — widened outward around whatever is stored, so a re-range
+never moves the physical value, and every value written from code goes through
+`dissWriteLog` (quantized to the slider's own 0.05-decade step, clamped, live path only).
+
+**Auto-diss is a tickbox, ON by default** (FEEDBACK item 6), not the old one-shot button.
+It sets ν continuously from the *measured* amplitude near the dissipation scale, so it
+needs no assumption about where the energy came from — which is what makes it work for
+KH and tearing as well as for a forced run. The rule is Jono Squire's rmhd-gpu
+(`rmhdgpu/auto_dissipation.py`), ported with its structure and defaults: E_d = kinetic +
+magnetic energy in the logarithmic shell k_d·e<sup>∓0.5</sup>, u_d = √(2E_d),
+ν_target = u_d·k_d<sup>1−2·hyper</sup> (i.e. ν k_d<sup>2n</sup> = u_d k_d: the cascade
+terminates at k_d), relaxed in log space by 0.2 per update with the change capped at a
+factor 2. Three app-forced deviations: the cadence is wall-clock (`AUTODISS_PERIOD`,
+2 Hz — the loop's step count per frame is not ours to choose, and every other readback
+hook here is wall-clock too); [ν_min, ν_max] *is* the slider's dynamic range above; and a
+shell with no measurable energy **holds** ν rather than driving it to ν_min, because a
+quiescent or freshly-seeded IC has nothing at k_d yet. E_d comes off the app's own ⊥
+spectrum bins — the same kernels the spectra card uses. With a spectrum card open the
+controller rides that card's cached readback (the cards refresh faster than the
+controller updates, so a fresh one almost always exists); only with no card open does it
+take a readback of its own — so there is no new kernel and no new buffer, and at most
+one spectrum pass is ever added.
+
+While ticked the slider is disabled and *follows* the controller, so the level is always
+visible and unticking simply leaves the manual slider where the controller left it. The
+pure core (`autoDissShellE` / `autoDissTarget` / `autoDissRelax`) takes state in and
+returns ν, which is what `devtools/checks.js` §6 drives — including a closed-loop cascade
+model whose fixed point is ν_marg to within a decade. Before the first measurement a
+preset that wants the app to choose gets `autoDissSeed()` = ν_marg; the one preset that
+turns the controller **off** is 2D `tearing`, whose whole point is a quoted η against a
+linear reference growth rate (the same argument that makes it lock hyper).
+
 ## Forcing controls
 
 ε⁺ and ε⁻ are separate log sliders with a lock checkbox (on by default); they are in the
@@ -515,6 +580,21 @@ weak regime: the packets pass through each other nearly unchanged and distortion
 accumulates over many transits (the box is periodic, so they collide again and again);
 χ ≳ 1 is strong, a single collision already shreds them. The demo starts at a ≈ 0.2,
 σ_z = Lz/16, χ ≈ 1.6, and reaches χ ≈ 2.1 at the σ_z cap.
+
+**The sinusoidal pair** (3D IC preset `sinusoidal z± packets`, FEEDBACK item 9) is the
+textbook version of the same collision: one packet whose perpendicular structure is a
+single mode in x, the other a single mode in y. What is *stored* is the potential, so a
+field that is a pure sine needs a potential that is a cosine of the other coordinate's
+sign convention — ζ⁺ = −cos(k₁ˣx)/k₁ˣ and ζ⁻ = +cos(k₁ʸy)/k₁ʸ give
+**z⁺ = a⁺·ŷ·sin(k₁ˣx)** and **z⁻ = a⁻·x̂·sin(k₁ʸy)** after `icZetaFields` normalizes each
+to max|∇ζ| = its own amp slider (the 1/k prefactors are what make that exact). Each field
+alone is an exact ideal solution — a z⁺ with no z⁻ propagates unchanged — and together
+they interact through exactly one beat, (z⁻·∇)z⁺ = a⁺a⁻k₁ˣ sin(k₁ʸy)cos(k₁ˣx)ŷ. It is a
+PACKET preset in every other respect: the same `icGaussZ` + `packetGeom` envelopes, so
+σ_z, the ≥ 5σ_z placement, the trackers and the meeting time above are unchanged, and its
+k̄⊥ in the χ line is the mode's own 1/k₁ = Lx/2π (the one case where it is not an
+estimate). The collision preset's *default* IC is still the letters; this is a second
+entry in the IC dropdown.
 
 **Plane tracking.** Because z is spectral, "the energy in plane iz" is not a k-space
 partial sum: `readPlaneEnergy` forms z± = φ±ψ, inverse-transforms *along z only*

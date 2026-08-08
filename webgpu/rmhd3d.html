@@ -90,7 +90,12 @@ controlsBuild({
          ti: "set the kz^4 filter to 3x the Alfven frequency at the kz cutoff" }]
     ] },
     CTRL_GRP_FORCE,
-    ctrlGrpIC({ letters: "letter packets A / B", amp: -0.7, extra: [
+    // the sinusoid pair (FEEDBACK_2026-08-08 item 9) is a second PACKET preset: same
+    // envelope machinery as the letters, a single perpendicular mode per field instead of
+    // a glyph. 3D only -- it is a collision setup.
+    ctrlGrpIC({ letters: "letter packets A / B", amp: -0.7,
+                presets: [[IC_SINE, "sinusoidal z&plusmn; packets (exact interaction)"]],
+                extra: [
       { id: "rowSigZ", hide: true, items: [
         { k: "lab", t: "&sigma;<sub>z</sub>" },
         { k: "rng", id: "rSigZ", ti: "packet length along z (letters) / blob length (custom)" },
@@ -1767,18 +1772,21 @@ function syncLabels() {
 // the packets meet. Empty unless a potential-based preset is selected.
 function icInfoLine(sz) {
   const p = el("selIC").value;
-  if (p !== "letters" && p !== "custom") return "";
+  if (!icIsPacketIC(p) && p !== "custom") return "";
   const q = liveParams(), a = uiAmp();
   // the perpendicular scale is the structure's own: sigma_letter for the glyphs, the
-  // blob-width slider for a drawing (they share a default -- REFINE_PLAN G.2)
-  const sp = p === "custom" ? icSigmaPerp() : icSigmaLetter(q.Lx);
+  // blob-width slider for a drawing (they share a default -- REFINE_PLAN G.2), and for
+  // the sinusoids the single mode's own gradient scale 1/k1 = Lx/2pi (item 9), which is
+  // the one case where kbar_perp is not an estimate but the exact wavenumber
+  const sp = p === "custom" ? icSigmaPerp()
+           : p === IC_SINE ? icSigmaSine(q.Lx) : icSigmaLetter(q.Lx);
   const chi = chiEstimate(sp, sz, a[0], a[1]);
   const g = packetGeom(q.Lz, sz);
   const fmt = v => (v < 100 ? v.toPrecision(2) : v.toExponential(1));
   return "&chi;<sup>&plusmn;</sup> = a<sup>&mp;</sup>&middot;k&#772;&perp;&middot;&sigma;<sub>z</sub>/v<sub>A</sub>"
     + " with k&#772;&perp; = 1/&sigma;&perp; = " + (1 / sp).toPrecision(3)
     + " &rarr; &chi;<sup>+</sup> " + fmt(chi[0]) + ", &chi;<sup>&minus;</sup> " + fmt(chi[1])
-    + (p === "letters"
+    + (icIsPacketIC(p)
         ? "; packets " + g.sep.toPrecision(3) + " apart (&ge; 5&sigma;<sub>z</sub>), meeting at t = "
           + g.tColl.toPrecision(3)
         : "");
@@ -1811,9 +1819,11 @@ function applyIC() {
   if (preset === "quiescent") solver.setIC(true);
   else if (preset === "modes") solver.setIC();
   else {
-    // the two counter-propagating packet envelopes (peak exactly 1 on the grid)
+    // the two counter-propagating packet envelopes (peak exactly 1 on the grid). Every
+    // PACKET preset gets them -- the letters and the item-9 sinusoids -- so sigma_z, the
+    // >= 5 sigma_z placement and the meeting time are one piece of machinery.
     let env = null;
-    if (preset === "letters") {
+    if (icIsPacketIC(preset)) {
       const sz = icSigmaZ(), g = packetGeom(q.Lz, sz);
       env = [icGaussZ(q.nz, q.Lz, g.zPlus, sz), icGaussZ(q.nz, q.Lz, g.zMinus, sz)];
     }
@@ -1959,17 +1969,19 @@ const PRESETS = {
     label: "forced turbulence (default)",
     set: { selRes: "128,64", selLz: "2", selHyper: "4", cbForce: true,
            rEpsP: "-0.82", rEpsM: "-0.82", cbEpsLock: true, rFmin: "1", rFmax: "3",
-           rDiss: "-10.65", rZDiss: "-3.51", selIC: "modes",
+           rDiss: "-10.65", cbAutoDiss: true, rZDiss: "-3.51", selIC: "modes",
            rAmpP: "-0.7", rAmpM: "-0.7", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 0 }], charts: ["energy", "spectrum", "cut"] },
     hint: ""
   },
   collision: {
     label: "Alfven-wave collision",
-    set: { selRes: "64,256", selLz: "8", selHyper: "4", cbForce: false,
+    set: { selRes: "64,256", selLz: "8", selHyper: "4", cbForce: false, cbAutoDiss: true,
            selIC: "letters", rAmpP: "-0.7", rAmpM: "-0.7", cbAmpLock: true,
            rSigZ: String(IC_SIGMA_Z_FRAC), selTrack: "centroid", rCflEvery: "4" },
-    prep: () => { autoZDiss(); autoDiss(); },
+    // the kz stabiliser is a fixed function of the grid; the perpendicular diss gets the
+    // marginal estimate as its t=0 seed and the auto-diss controller from there
+    prep: () => { autoZDiss(); autoDissSeed(); },
     // two displays, each riding the energy centroid of one packet
     layout: { disp: [{ sel: 6, zsrc: "zp" }, { sel: 7, zsrc: "zm" }],
               charts: ["energy", "spectrum"] },
@@ -1977,7 +1989,10 @@ const PRESETS = {
       + "they meet head-on at z = L<sub>z</sub>/2, each display riding one packet. "
       + "&sigma;<sub>z</sub> sets the packet length and hence &chi; &mdash; the line under the IC "
       + "controls gives &chi;<sup>&plusmn;</sup> (weak collision &lt;&lt;1, strong &gtrsim;1) and "
-      + "the meeting time."
+      + "the meeting time. Switch the IC preset to <b>sinusoidal z&plusmn; packets</b> for the "
+      + "textbook version of the same collision: z<sup>+</sup> &prop; y&#770; sin x against "
+      + "z<sup>&minus;</sup> &prop; x&#770; sin y, one perpendicular mode each, so the "
+      + "interaction is a single beat rather than a spectrum of them."
   }
 };
 
