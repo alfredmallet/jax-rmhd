@@ -403,11 +403,27 @@ const CONT_SETS = 2;
 // one buffer / uniform / bind group per contour set: the chains are built in the apps,
 // the set count lives here
 const contPer = f => Array.from({ length: CONT_SETS }, (_, i) => f(i));
+// The adapting range (st[0]) belongs to the potential it was measured FROM, and contLevel
+// only ever relaxes it downwards (CONT_RELAX per frame). So a set that changes potential
+// -- psi -> phi, or off and back on as the other one -- must start its range again, or the
+// new potential is contoured at the old one's spacing until the relaxation catches up:
+// ~1/CONT_RELAX frames, and in the tearing preset (|psi| ~ 1.6, |phi| ~ 1e-2) that is a
+// 100x-too-coarse delta, i.e. no visible contours at all for a couple of seconds
+// (FEEDBACK_2026-08-08 P0.2). A zero range is what contLevel reads as "no history": it
+// takes the measured max outright on the next frame. contMx needs no reset -- the max
+// reduction overwrites it before contLevel reads it. The set -> potential bookkeeping
+// lives HERE, next to the only writer of that field, so neither app carries a copy.
 function setContLevels(device, D, nlev, plain) {
   const tail = new Float32Array([Math.max(1, nlev | 0), plain ? 1 : 0]);
+  const zero = new Float32Array([0]);
+  if (!D.contFor) D.contFor = contPer(() => 0);
   for (let i = 0; i < CONT_SETS; i++) {
     device.queue.writeBuffer(D.buf.contB[i], 8, tail);
-    if (!D.cont[i]) device.queue.writeBuffer(D.buf.contB[i], 4, new Float32Array([0]));
+    if (!D.cont[i]) device.queue.writeBuffer(D.buf.contB[i], 4, zero);
+    if (D.cont[i] !== D.contFor[i]) {
+      device.queue.writeBuffer(D.buf.contB[i], 0, zero);
+      D.contFor[i] = D.cont[i];
+    }
   }
 }
 // ... and the tail of one set's per-frame prep, once the app's own inverse transform has
@@ -498,7 +514,7 @@ const PADS = { l: 54, r: 10, t: 10, b: 22 };
 const PADC = { l: 54, r: 10, t: 10, b: 20 };
 const COL = { ek: "#6fb3ff", em: "#ff9c6b", et: "#9ee493",
               zp: "#c58cf5", zm: "#5fd7c8",          // the Elsasser pair, in every chart
-              grid: "#232833", axis: "#39404d", txt: "#8a94a3",
+              grid: "#232833", grid2: "#1a1e26", axis: "#39404d", txt: "#8a94a3",
               guide: "#7d8798", shell: "#5a6472", cut: "#c9d4e2" };
 const HIST_MAX = 2000;
 // hc is the cross helicity <u.b> (energyPartial's fourth lane): with it the same
@@ -673,6 +689,61 @@ function chartFrame(c, W, H, P) {
   c.strokeStyle = COL.axis; c.lineWidth = 1;
   c.strokeRect(P.l + 0.5, P.t + 0.5, W - P.l - P.r - 1, H - P.t - P.b - 1);
 }
+// ---------------------------------------------------------------------------
+// axis ticks, shared by EVERY chart (FEEDBACK_2026-08-08 item 5)
+// ---------------------------------------------------------------------------
+// One gridline + one label, in the two orientations the charts need. `major` picks
+// the brighter grid colour; a falsy label draws the line only. Both leave textAlign
+// set the way the label needed it, so callers that print anything else afterwards
+// set their own alignment (they all already did).
+function xTick(c, x, y0, y1, ylab, label, major) {
+  const xr = Math.round(x) + 0.5;
+  c.strokeStyle = major ? COL.grid : COL.grid2; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(xr, y0); c.lineTo(xr, y1); c.stroke();
+  if (!label) return;
+  c.fillStyle = COL.txt; c.textAlign = "center"; c.fillText(label, xr, ylab);
+}
+function yTick(c, y, x0, x1, label, major) {
+  const yr = Math.round(y) + 0.5;
+  c.strokeStyle = major ? COL.grid : COL.grid2; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(x0, yr); c.lineTo(x1, yr); c.stroke();
+  if (!label) return;
+  c.fillStyle = COL.txt; c.textAlign = "right"; c.fillText(label, x0 - 5, yr + 3);
+}
+// Tick VALUES for a log axis running from 10^vlo to 10^vhi across `pxPerDec` pixels
+// per decade: the decades are the majors (thinned by a stride so at most ~7 labels
+// land on any axis), and inside each decade the 2..9 minors go in as soon as the
+// decade is wide enough to be worth subdividing -- standard log-axis practice, and
+// what makes a 1.5-decade spectrum readable at all. The subdivision has two tiers --
+// 2/3/5 on a narrow decade, the full 2..9 once there is room for them -- and only
+// mantissae 2 and 5 are ever labelled, on a wide decade, so labels never collide on
+// a narrow card. `fmt(mantissa, decade)` renders a label; returns [value, major,
+// label] in increasing value order (no sort: majors precede their decade's minors).
+const MINOR_MIN_PX = 45, MINOR_ALL_PX = 90, MINOR_LABEL_PX = 95;
+const MINOR_MANT = [2, 3, 4, 5, 6, 7, 8, 9], MINOR_FEW = [2, 3, 5];
+const LOG_FMT = (m, d) => (m === 1 ? "1e" + d : m + "e" + d);
+function logTicks(vlo, vhi, pxPerDec, fmt) {
+  const lab = fmt || LOG_FMT, out = [];
+  const d0 = Math.ceil(vlo - 1e-9), d1 = Math.floor(vhi + 1e-9);
+  const stride = Math.max(1, Math.ceil((d1 - d0 + 1) / 7));
+  const minor = stride === 1 && pxPerDec >= MINOR_MIN_PX;
+  const mlab = minor && pxPerDec >= MINOR_LABEL_PX;
+  const mant = pxPerDec >= MINOR_ALL_PX ? MINOR_MANT : MINOR_FEW;
+  for (let d = d0 - 1; d <= d1; d++) {
+    if (d >= d0 && (d - d0) % stride === 0) out.push([Math.pow(10, d), true, lab(1, d)]);
+    if (!minor) continue;
+    for (const m of mant) {
+      const lv = d + Math.log10(m);
+      if (lv <= vlo || lv >= vhi) continue;
+      out.push([m * Math.pow(10, d), false, mlab && (m === 2 || m === 5) ? lab(m, d) : ""]);
+    }
+  }
+  return out;
+}
+// Tick FRACTIONS 0..1 of a linear axis: `n` equal intervals, every other one a
+// labelled major, so the linear charts get the same major/minor texture.
+const linTicks = n => Array.from({ length: n + 1 }, (_, i) => [i / n, i % 2 === 0]);
+
 // items: [label, colour, dash?]. Wraps onto further lines at xmax, so a chart with
 // four series plus a guide line still shows every key.
 function legend(c, x, y, items, xmax) {
@@ -733,25 +804,26 @@ function drawTimeSeries(c, W, H, P, ts, series, o) {
   const X = t => x0 + (t - t0) / tspan * (x1 - x0);
   const Y = v => px(y1 - ((useLog ? Math.log10(Math.max(v, 1e-300)) : v) - vlo) / (vhi - vlo) * (y1 - y0));
 
-  c.strokeStyle = COL.grid; c.fillStyle = COL.txt; c.textAlign = "right"; c.lineWidth = 1;
   if (useLog) {
-    const d0 = Math.ceil(vlo), d1 = Math.floor(vhi);
-    const stride = Math.max(1, Math.ceil((d1 - d0 + 1) / 6));
-    for (let d = d0; d <= d1; d += stride) {
-      const y = Math.round(Y(Math.pow(10, d))) + 0.5;
-      c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
-      c.fillText("1e" + d, x0 - 5, y + 3);
-    }
+    for (const tk of logTicks(vlo, vhi, (y1 - y0) / (vhi - vlo)))
+      yTick(c, Y(tk[0]), x0, x1, tk[2], tk[1]);
   } else {
-    for (let i = 0; i <= 4; i++) {
-      const v = vlo + (vhi - vlo) * i / 4, y = Math.round(Y(v)) + 0.5;
-      c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
-      c.fillText(v.toExponential(1), x0 - 5, y + 3);
+    for (const tk of linTicks(8)) {
+      const v = vlo + (vhi - vlo) * tk[0];
+      yTick(c, Y(v), x0, x1, tk[1] ? v.toExponential(1) : "", tk[1]);
     }
   }
-  c.fillText(t1.toFixed(2), x1, H - 6);
+  // x (time): gridlines across the panel, the two ENDS labelled flush with the frame
+  // (a centred label there would hang outside it) and the interior majors centred.
+  const ft = v => v.toFixed(tspan < 0.5 ? 3 : 2);
+  for (const tk of linTicks(8)) {
+    if (tk[0] === 0 || tk[0] === 1) continue;
+    xTick(c, X(t0 + tspan * tk[0]), y0, y1, H - 6, tk[1] ? ft(t0 + tspan * tk[0]) : "", tk[1]);
+  }
+  c.strokeStyle = COL.grid; c.fillStyle = COL.txt; c.textAlign = "right"; c.lineWidth = 1;
+  c.fillText(ft(t1), x1, H - 6);
   c.textAlign = "left";
-  c.fillText("t = " + t0.toFixed(2), x0, H - 6);
+  c.fillText("t = " + ft(t0), x0, H - 6);
 
   c.save();
   c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
@@ -887,6 +959,65 @@ function flSpectrum(smp, nl, nz) {
 }
 const specSeries = sq => (sq === "both" ? SPEC_SETS.ub.concat(SPEC_SETS.pm)
                                         : (SPEC_SETS[sq] || SPEC_SETS.ub));
+// ---------------------------------------------------------------------------
+// the spectrum chart's LOWER y limit (FEEDBACK_2026-08-08 item 4)
+// ---------------------------------------------------------------------------
+// A hyper-dissipative tail runs 15+ decades below the peak, and a floor at the
+// smallest drawn value squashes the whole inertial range into a couple of pixels.
+// So the floor is pinned to a fraction of the spectrum's own value near the
+// dissipation scale, MEASURED off the spectrum rather than derived from eps/diss --
+// nothing is assumed about where the energy comes from, exactly as for the
+// amplitude-based auto-diss (P2 item 6), so decaying and instability presets are
+// handled by the same rule as a forced run:
+//   k_d    the first k ABOVE THE CURVE'S OWN PEAK at which the drawn spectrum has
+//          fallen SPEC_KNEE decades below the chart's peak. The dissipation fall-off
+//          is far steeper than any inertial slope, so k_d sits at the knee whatever
+//          the slope above it is; it is a plain crossing, so a non-monotone bump
+//          cannot skip it. The walk MUST start at the peak: a rising spectrum (an
+//          inverse cascade, peak at the last bin) or a mid-k-peaked one with a deep
+//          low-k side would otherwise take the crossing on the low-k side of the peak
+//          and read a "dissipation scale" of k = 1.
+//   E_a    the spectrum at SPEC_KFRAC * k_d, i.e. a fixed FRACTION of k_d, still
+//          inside the cascade; the floor is SPEC_TAIL decades below that.
+//   E_pre  the smallest value on the LOW-k side of the peak. The tail rule is about
+//          the dissipation range only; low-k content is demo-relevant physics (the
+//          inverse cascade of item P2 5, a forcing shell with a quiet large-scale
+//          range below it) and must stay inside the frame, so the floor is the MIN of
+//          the tail rule and E_pre -- never higher than the deepest pre-peak bin.
+// A spectrum that never falls SPEC_KNEE decades (instability presets, early frames,
+// a flat/empty chart) has no knee and simply keeps its measured minimum -- which by
+// construction is then already less than SPEC_KNEE decades of range. A curve lying
+// wholly below the crossing (a series 4+ decades quieter than the loudest one) has no
+// knee of its own and is skipped, so it cannot drag k_d down to its first bin.
+// SPEC_MAXDEC is the hard floor that keeps the panel readable no matter what the
+// crossing and the pre-peak minimum find.
+const SPEC_KNEE = 4, SPEC_KFRAC = 0.5, SPEC_TAIL = 3, SPEC_MAXDEC = 9;
+// `rc` are the range-setting curves, each [ [k, v, k, v, ...], ... ] in k order.
+function specFloor(rc, hi, lo) {
+  const thr = hi * Math.pow(10, -SPEC_KNEE);
+  let kd = Infinity, pre = Infinity;
+  for (const cv of rc) {
+    const a = cv[0];
+    let p = -1, pv = 0;                          // this curve's own peak bin (argmax)
+    for (let i = 0; i < a.length; i += 2) if (a[i + 1] > pv) { pv = a[i + 1]; p = i; }
+    if (p < 0 || pv <= thr) continue;            // empty, or wholly below the crossing
+    for (let i = p + 2; i < a.length; i += 2)    // the knee: walk RIGHT from the peak
+      if (a[i + 1] <= thr) { kd = Math.min(kd, a[i]); break; }
+    for (let i = 0; i < p; i += 2) pre = Math.min(pre, a[i + 1]);   // low-k side of the peak
+  }
+  if (!isFinite(kd)) return lo;                 // no knee: the data set their own floor
+  const ka = SPEC_KFRAC * kd;
+  let ea = 0;
+  for (const cv of rc) {                        // E_a = each curve AT k_a (its last bin <= k_a)
+    const a = cv[0];
+    let v = 0;
+    for (let i = 0; i < a.length; i += 2) { if (a[i] > ka) break; v = a[i + 1]; }
+    ea = Math.max(ea, v);
+  }
+  if (!(ea > 0)) ea = hi;                       // knee in the very first bins
+  return Math.max(Math.min(ea * Math.pow(10, -SPEC_TAIL), pre),
+                  hi * Math.pow(10, -SPEC_MAXDEC));
+}
 function drawSpectrum(c, d, o) {
   if (!c) return;
   const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
@@ -932,29 +1063,26 @@ function drawSpectrum(c, d, o) {
   }
   if (hiP > 0) { hi = hiP; lo = loP; }
   if (nb < 2 || !(hi > 0)) { c.fillText("spectra — waiting…", x0 + 6, y0 + 13); return; }
+  // the curves the y range is read off: the perpendicular ones whenever they carry
+  // anything, else (par-only cards) the parallel ones, which are the tail of `curves`
+  const nPerp = wantPerp ? set.length : 0;
+  const rc = hiP > 0 ? curves.slice(0, nPerp) : curves.slice(nPerp);
   const ymax = Math.log10(hi) + 0.3;
-  const ymin = Math.max(Math.log10(Math.max(lo, hi * 1e-14)) - 0.3, ymax - 14.6);
+  // at least one decade always, so a flat or single-valued spectrum still has an axis
+  const ymin = Math.min(ymax - 1,
+    Math.log10(Math.max(specFloor(rc, hi, lo), hi * Math.pow(10, -SPEC_MAXDEC))) - 0.3);
   const xmax = Math.log10(nb);
   const X = k => x0 + Math.log10(k) / xmax * (x1 - x0);
   const Y = v => px(y1 - (Math.log10(v) - ymin) / (ymax - ymin) * (y1 - y0));
 
-  // y decades
-  c.strokeStyle = COL.grid; c.fillStyle = COL.txt; c.textAlign = "right"; c.lineWidth = 1;
-  const d0 = Math.ceil(ymin), d1 = Math.floor(ymax);
-  const stride = Math.max(1, Math.ceil((d1 - d0 + 1) / 7));
-  for (let d = d0; d <= d1; d += stride) {
-    const y = Math.round(Y(Math.pow(10, d))) + 0.5;
-    c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
-    c.fillText("1e" + d, x0 - 5, y + 3);
-  }
-  // x decades + endpoint
-  c.textAlign = "center";
-  for (const k of [1, 10, 100, 1000]) {
-    if (k > nb) break;
-    const x = Math.round(X(k)) + 0.5;
-    c.strokeStyle = COL.grid; c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
-    c.fillStyle = COL.txt; c.fillText(String(k), x, SH - 8);
-  }
+  // y decades (+ 2..9 minors once the range is down to a few decades)
+  for (const tk of logTicks(ymin, ymax, (y1 - y0) / (ymax - ymin)))
+    yTick(c, Y(tk[0]), x0, x1, tk[2], tk[1]);
+  // x decades + 2..9 minors, labelled as the integer k they are; the last-bin label
+  // owns the right edge, so any tick label that would run into it stays unlabelled
+  for (const tk of logTicks(0, xmax, (x1 - x0) / Math.max(xmax, 1e-9), (m, d) => String(m * Math.pow(10, d))))
+    xTick(c, X(tk[0]), y0, y1, SH - 8, X(tk[0]) > x1 - 20 ? "" : tk[2], tk[1]);
+  c.fillStyle = COL.txt; c.textAlign = "center";
   c.fillText(String(nb), x1, SH - 8);
   c.textAlign = "left";
   c.fillText("k / kunit", x0 + 4, SH - 8);
@@ -1040,21 +1168,15 @@ function drawCut(c, d, o) {
   const X = j => x0 + (j / n) * (x1 - x0);
   const Y = v => px(y1 - (v - vlo) / (vhi - vlo) * (y1 - y0));
 
-  // y ticks: the two extremes, plus the zero line for signed quantities
-  c.strokeStyle = COL.grid; c.fillStyle = COL.txt; c.textAlign = "right"; c.lineWidth = 1;
-  for (const v of (signed ? [vhi, 0, vlo] : [vhi, 0])) {
-    const y = Math.round(Y(v)) + 0.5;
-    c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
-    c.fillText(v === 0 ? "0" : v.toExponential(1), x0 - 5, y + 3);
+  // y ticks: the extremes, the midpoints and (for signed pairs) the zero line
+  for (const tk of linTicks(signed ? 8 : 4)) {
+    const v = vlo + (vhi - vlo) * tk[0];
+    yTick(c, Y(v), x0, x1, tk[1] ? (v === 0 ? "0" : v.toExponential(1)) : "", tk[1]);
   }
-  // x ticks: 0, Ly/2, Ly
-  c.textAlign = "center";
-  for (const f of [0, 0.5, 1]) {
-    const x = Math.round(x0 + f * (x1 - x0)) + 0.5;
-    c.beginPath(); c.strokeStyle = COL.grid; c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
-    c.fillStyle = COL.txt; c.fillText((f * Ly).toFixed(2), x, CH - 6);
-  }
-  c.textAlign = "left";
+  // x ticks: quarters of the box, halved again as minors
+  for (const tk of linTicks(8))
+    xTick(c, x0 + tk[0] * (x1 - x0), y0, y1, CH - 6, tk[1] ? (tk[0] * Ly).toFixed(2) : "", tk[1]);
+  c.fillStyle = COL.txt; c.textAlign = "left";
   c.fillText("y", x0 + 4, CH - 6);
 
   c.save();

@@ -315,12 +315,14 @@ const NS: u32 = ${C.ns}u;
 // +-smax, injecting ~0.5*smax^2*F2*dt^2 INDEPENDENTLY of eps -- the spin-up kick this
 // removes. Same pinning recurs whenever P fluctuates through zero, so the fix has to be
 // continuous in P; the quadratic is.
-fn selfnormScale(target: f32, P: f32, F2: f32, dt: f32, smax: f32) -> f32 {
+// NB "tgt", not "target": target is a RESERVED WORD in WGSL (Tint rejects it as an
+// identifier; wgsl_reflect does not, so only real devices catch it).
+fn selfnormScale(tgt: f32, P: f32, F2: f32, dt: f32, smax: f32) -> f32 {
   let F2dt: f32 = F2 * dt;
-  // max(): target >= 0 (an injection RATE) makes disc >= P^2 >= 0, so this is
+  // max(): tgt >= 0 (an injection RATE) makes disc >= P^2 >= 0, so this is
   // unreachable in practice -- it is there so a negative target returns a finite number
   // rather than a NaN poisoning the whole field array.
-  let r: f32 = sqrt(max(P * P + 2.0 * F2dt * target, 0.0));
+  let r: f32 = sqrt(max(P * P + 2.0 * F2dt * tgt, 0.0));
   // POSITIVE root (plan Decision 1): the old form followed sign(P) and so flipped the
   // force under an adverse phase, rectifying the OU process; the positive root keeps
   // s > 0 and lets the exact solve absorb an adverse linear term.
@@ -334,13 +336,13 @@ fn selfnormScale(target: f32, P: f32, F2: f32, dt: f32, smax: f32) -> f32 {
   // degenerate P = r = 0 case only arises for target == 0, short-circuited below.
   let den: f32 = P + r;
   var s: f32 = select((r - P) / select(1.0, F2dt, F2dt > 0.0),
-                      2.0 * target / select(1.0, den, den > 0.0),
+                      2.0 * tgt / select(1.0, den, den > 0.0),
                       P >= 0.0);
   // F2*dt == 0 (no envelope drawn yet, or dt == 0 at initialization -- see _uploadIC,
   // which zeroes sc[0] and the forcing buffer): fall back to the old clamp, which is the
   // same normalization minus the self term.
-  s = select(target / P, s, F2dt > 0.0);
-  s = select(s, 0.0, target == 0.0);
+  s = select(tgt / P, s, F2dt > 0.0);
+  s = select(s, 0.0, tgt == 0.0);
   return clamp(s, -smax, smax);   // last-resort safety, not the normalization
 }
 @compute @workgroup_size(64)
@@ -706,10 +708,22 @@ fn cmap(x: f32, which: u32) -> vec3<f32> {
 // Since J2.1/J2.2 it also owns the two options that make the overlay legible on its own:
 // the BACKGROUND (cd[3] > 0 replaces the field by a flat plate, so the lines are read
 // without the colours underneath) and a SECOND set (the "both" selection: psi AND phi at
-// once, for alignment inspection). Set 0 keeps the automatic ink -- black over a light
-// background, white over a dark one, so it survives every colormap and the plate -- and
-// set 1 uses a FIXED accent that no colormap here produces, so the two are always told
-// apart. There is one implementation: the caller passes the six sampled texels (WGSL
+// once, for alignment inspection).
+//
+// INK (FEEDBACK_2026-08-08 P0.2). Both sets ink in a FIXED colour that no colormap here
+// produces, so the two are always told apart AND neither carries information it does not
+// own. Set 0 USED to pick its ink per texel from the background luminance (black over a
+// light background, white over a dark one). That is legible, but it makes every line a
+// two-tone image of the DISPLAYED field: the black/white boundary is the background's
+// lum = 0.5 contour, which for the signed scalars sits at value/autoscale = -0.10
+// (afmhot), 0.00 (grayscale), +0.23 (viridis), +-0.60 (RdBu). Over a phi colour map the
+// psi field lines then flip colour along a contour of PHI -- exactly the "psi contours
+// reflect the sign/structure of phi" that was reported and mistaken for a cp/cp2 mix-up.
+// Over the PLATE there is no field to confuse the ink with and no colormap to survive,
+// so set 0 keeps its pure black there: that is what the automatic rule already chose on
+// the 0.93 plate, so the plain-background option and the 3D lines view (K2.3) are
+// pixel-identical to before.
+// There is one implementation: the caller passes the six sampled texels (WGSL
 // function parameters cannot be storage pointers) through _contArgs.
 // The "plain background" plate, as JS numbers first: the 3D lines view (REFINE_PLAN K2.3)
 // clears its canvas to exactly this colour, so the ink-only top face it draws over that
@@ -717,6 +731,7 @@ fn cmap(x: f32, which: u32) -> vec3<f32> {
 // state and no second kernel. One constant, both consumers.
 const CONT_PLATE_RGB = [0.93, 0.93, 0.93];
 const CONT_PLATE = `vec3<f32>(${CONT_PLATE_RGB.join(", ")})`;
+const CONT_INK = "vec3<f32>(0.0, 0.85, 1.0)";          // set 0's fixed ink over a field
 const CONT_ACCENT = "vec3<f32>(1.0, 0.15, 0.85)";      // set 1's fixed ink
 const _contArgs = a => `${a}[gid.x * NY + gid.y], ${a}[((gid.x + 1u) % NX) * NY + gid.y], ` +
                        `${a}[gid.x * NY + ((gid.y + 1u) % NY)]`;
@@ -734,10 +749,10 @@ fn contHit(p0: f32, pu: f32, pv: f32, dl: f32) -> bool {
   return !(n0 == floor(pu / dl) && n0 == floor(pv / dl));
 }
 fn contInk(col: vec3<f32>, a0: f32, au: f32, av: f32, b0: f32, bu: f32, bv: f32) -> vec3<f32> {
-  var c: vec3<f32> = select(col, ${CONT_PLATE}, cd[3] > 0.5);
+  let plate: bool = cd[3] > 0.5;
+  var c: vec3<f32> = select(col, ${CONT_PLATE}, plate);
   if (contHit(a0, au, av, cd[1])) {
-    let lum: f32 = dot(c, vec3<f32>(0.299, 0.587, 0.114));
-    c = mix(c, select(vec3<f32>(1.0), vec3<f32>(0.0), lum > 0.5), 0.8);
+    c = mix(c, select(${CONT_INK}, vec3<f32>(0.0), plate), 0.8);
   }
   if (contHit(b0, bu, bv, cd2[1])) { c = mix(c, ${CONT_ACCENT}, 0.85); }
   return c;

@@ -35,6 +35,17 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   (enter/paint/save/cancel/save&run), eps± lock, band rebuild, amplitude rescale, and
   the self-test path end to end. Validates dispatch sizes, bind groups, writeBuffer
   extents.
+- `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
+  (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
+  every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
+  replays the frame symbolically (plus a numeric model of `contLevel`'s adapting range,
+  fed a tearing-like |psi| ~ 1 / |phi| ~ 1e-2). So it separates the three ways the overlay
+  can lie: which potential is PREPARED into `cp`/`cp2`, which level table INKS it, and
+  whether the level spacing still belongs to a PREVIOUS potential. Walks psi / phi / both /
+  off transitions and a card close-and-re-add on the same chain slot, and asserts on the
+  emitted `colorize` / `colorizeCube` that set 0's ink does not depend on the background
+  colour. Run it against a reverse-patched copy of the two shared files to see the failures
+  it was written for.
 - `checks.js` — GATE G fp64 unit checks (normalized-IC rescale, sigma_letter k-perp
   content at two resolutions, chi formula, separation cap, centroid/argmax trackers)
   against the real common.js functions via vm.
