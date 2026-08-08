@@ -12,10 +12,10 @@
 # tolerances -- not exercisable in this sandbox). So every serial-vs-mpi4jax
 # comparison here uses EXACT equality, not a tolerance.
 #
-# The resolution-matrix test monkeypatches jax_rmhd.config.HAVE_MPI4PY/HAVE_MPI4JAX/
+# The resolution-matrix test monkeypatches taranis.config.HAVE_MPI4PY/HAVE_MPI4JAX/
 # MPI (the names _resolve_backend actually reads -- config.py imports them BY VALUE
 # from _mpi_compat, so patching _mpi_compat itself would not be observed) and calls
-# jax_rmhd.config._resolve_backend() directly. jax_rmhd is never re-imported.
+# taranis.config._resolve_backend() directly. taranis is never re-imported.
 #
 # pytest: `pytest tests/test_backend_serial.py`.  Script: `python
 # tests/test_backend_serial.py`.  No markers -- this is the runs-anywhere tier.
@@ -34,10 +34,10 @@ import warnings
 import jax.numpy as jnp
 import numpy as np
 
-import jax_rmhd as jr
-import jax_rmhd.config as cfg
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd import comms
+import taranis as jr
+import taranis.config as cfg
+import taranis.snapshot_io as sn
+from taranis import comms
 
 
 def _single_process_only(what):
@@ -160,7 +160,7 @@ def test_trajectory_2d_forced_serial_matches_stub_mpi4jax():
 # ----------------------------------------------------------- 3. resolution matrix
 
 # Definitive (per-process, launcher-set) vars + the allocation-wide hints they must
-# never be confused with (SERIAL_BACKEND_PLAN.md / jax_rmhd/_mpi_compat.py).
+# never be confused with (SERIAL_BACKEND_PLAN.md / taranis/_mpi_compat.py).
 _LAUNCHER_VARS = ("OMPI_COMM_WORLD_SIZE", "PMI_SIZE", "MV2_COMM_WORLD_SIZE",
                    "SLURM_NTASKS", "SLURM_STEP_NUM_TASKS", "PMIX_RANK")
 
@@ -180,10 +180,10 @@ class _FakeMPI:
 
 @contextlib.contextmanager
 def _patched(have_mpi4py=None, have_mpi4jax=None, mpi_world_size=None, env=None):
-    """Monkeypatch the names jax_rmhd.config._resolve_backend actually reads, and
+    """Monkeypatch the names taranis.config._resolve_backend actually reads, and
     os.environ, restoring everything on exit. Always clears every launcher/
     allocation env var first, so a real cluster's environment (e.g. a Savio SLURM
-    allocation) can never leak into a case. Never re-imports jax_rmhd."""
+    allocation) can never leak into a case. Never re-imports taranis."""
     saved = dict(HAVE_MPI4PY=cfg.HAVE_MPI4PY, HAVE_MPI4JAX=cfg.HAVE_MPI4JAX, MPI=cfg.MPI)
     saved_env = {k: os.environ.get(k) for k in _LAUNCHER_VARS}
     try:
@@ -242,15 +242,15 @@ def test_resolution_matrix():
             c.check("auto + mpi4py-only + real size>1 -> RuntimeError naming mpi4jax",
                     msg is not None and "mpi4jax" in msg, msg)
 
-        # explicit "mpi4jax" without both imports -> ImportError naming jax-rmhd[mpi]
+        # explicit "mpi4jax" without both imports -> ImportError naming taranis[mpi]
         with _patched(have_mpi4py=False):
             msg = _raises(ImportError, lambda: cfg._resolve_backend("mpi4jax"))
-            c.check("explicit mpi4jax, no mpi4py -> ImportError naming jax-rmhd[mpi]",
-                    msg is not None and "jax-rmhd[mpi]" in msg, msg)
+            c.check("explicit mpi4jax, no mpi4py -> ImportError naming taranis[mpi]",
+                    msg is not None and "taranis[mpi]" in msg, msg)
         with _patched(have_mpi4py=True, have_mpi4jax=False, mpi_world_size=1):
             msg = _raises(ImportError, lambda: cfg._resolve_backend("mpi4jax"))
             c.check("explicit mpi4jax, mpi4py present but mpi4jax absent -> ImportError "
-                    "naming jax-rmhd[mpi]", msg is not None and "jax-rmhd[mpi]" in msg, msg)
+                    "naming taranis[mpi]", msg is not None and "taranis[mpi]" in msg, msg)
 
         # explicit "jax" needs only mpi4py (deliberate A1 deviation from mpi4jax)
         with _patched(have_mpi4py=True, have_mpi4jax=False, mpi_world_size=1):
@@ -258,8 +258,8 @@ def test_resolution_matrix():
                     cfg._resolve_backend("jax") == "jax")
         with _patched(have_mpi4py=False):
             msg = _raises(ImportError, lambda: cfg._resolve_backend("jax"))
-            c.check("explicit jax without mpi4py -> ImportError naming jax-rmhd[mpi]",
-                    msg is not None and "jax-rmhd[mpi]" in msg, msg)
+            c.check("explicit jax without mpi4py -> ImportError naming taranis[mpi]",
+                    msg is not None and "taranis[mpi]" in msg, msg)
 
         # definitive launcher vars + no mpi4py -> hard RuntimeError, never silent serial
         for var in ("OMPI_COMM_WORLD_SIZE", "PMI_SIZE", "MV2_COMM_WORLD_SIZE"):
@@ -435,8 +435,8 @@ def test_backfill_of_missing_comm_backend_uses_resolved_value_not_null():
 
 def test_true_no_mpi_import_path_subprocess():
     # bootstrap(stub=False) only means something in a process where it is the FIRST
-    # thing to touch jax_rmhd -- this process already bootstrapped with the stub (and
-    # jax_rmhd is already imported above), so the true absent-MPI path is exercised in
+    # thing to touch taranis -- this process already bootstrapped with the stub (and
+    # taranis is already imported above), so the true absent-MPI path is exercised in
     # a fresh subprocess instead. If this machine genuinely has mpi4py installed (e.g.
     # a Savio account with the real toolchain), the absent-MPI path doesn't apply here
     # and the subprocess says so; treat that as a soft skip, not a failure.
@@ -449,8 +449,8 @@ sys.path.insert(0, {tests_dir!r})
 os.environ.setdefault("RMHD_PRECISION", "64")
 from _rmhd_testing import bootstrap
 bootstrap(stub=False)
-import jax_rmhd as jr
-from jax_rmhd import _mpi_compat as mc
+import taranis as jr
+from taranis import _mpi_compat as mc
 import jax.numpy as jnp
 if mc.HAVE_MPI4PY:
     print("REAL_MPI_PRESENT")

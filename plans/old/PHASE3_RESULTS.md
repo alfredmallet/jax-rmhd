@@ -1,4 +1,4 @@
-# Phase 3 results — GPU backends for jax_rmhd
+# Phase 3 results — GPU backends for taranis
 
 Closes PERFORMANCE_PLAN.md Phase 3 (T8 GPU baseline, T9 jax-native GPU backend).
 Execution detail and per-job logs live in PHASE3_PLAN.md; this file is the consolidated

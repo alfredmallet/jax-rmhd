@@ -40,7 +40,7 @@ NVLIBS=$("$HOME/.conda/envs/jax_gpu/bin/python" -c "import nvidia,os;print(':'.j
 echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
 PY=$HOME/.conda/envs/jax_gpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 PROBE=$REPO/bench/probe_cuda_mpi.py
 # pmi2 is the usual Savio openmpi build; if MPI init fails or every rank reports rank 0/1
 # ranks, rerun with MPI_MODE=pmix (the `srun --mpi=list` output below lists what exists).

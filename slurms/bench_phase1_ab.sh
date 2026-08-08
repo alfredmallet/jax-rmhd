@@ -32,18 +32,18 @@ export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 OLD_REF=${OLD_REF:-origin/main}
 OLDDIR=$SLURM_SUBMIT_DIR/old_pkg_$SLURM_JOB_ID
 mkdir -p "$OLDDIR"
-git -C "$REPO" ls-files jax_rmhd | while read -r f; do
+git -C "$REPO" ls-files taranis | while read -r f; do
     mkdir -p "$OLDDIR/$(dirname "$f")"
     git -C "$REPO" show "$OLD_REF:$f" > "$OLDDIR/$f"
 done
 
 BENCH=$REPO/bench/bench_phase1.py
-# RMHD_PKG (not PYTHONPATH): a pip-install-e'd jax_rmhd registers an import finder that
+# RMHD_PKG (not PYTHONPATH): a pip-install-e'd taranis registers an import finder that
 # beats PYTHONPATH; the bench purges it, imports from RMHD_PKG, and asserts + prints
 # which package file it actually imported (check pkg= in the output!).
 run_old() { RMHD_PKG=$OLDDIR mpirun -n "$SLURM_NTASKS" -x RMHD_PKG "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "32bit precision"; }

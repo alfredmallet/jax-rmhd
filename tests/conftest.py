@@ -1,7 +1,7 @@
 # pytest entry point. The first executable lines below MUST run before any test
 # module is imported: they put tests/ on sys.path and run bootstrap(), which sets
 # RMHD_PRECISION / XLA_FLAGS and installs the MPI stub -- all consumed at
-# jax/jax_rmhd import time. Do not import jax or jax_rmhd above bootstrap().
+# jax/taranis import time. Do not import jax or taranis above bootstrap().
 import os
 import sys
 
@@ -36,10 +36,10 @@ def pytest_addoption(parser):
 
 def pytest_collection_modifyitems(config, items):
     import jax
-    from jax_rmhd import _precision
+    from taranis import _precision
 
     # FIELD precision (RMHD_PRECISION), not the jax_enable_x64 config flag: that flag
-    # is now unconditionally on (jax_rmhd/__init__.py), so it no longer distinguishes
+    # is now unconditionally on (taranis/__init__.py), so it no longer distinguishes
     # an "fp32 session" from an "fp64 session" -- only _precision knows that.
     x64 = _precision.precision == "64"
     size = mpi_size()

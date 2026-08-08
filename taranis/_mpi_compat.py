@@ -1,4 +1,4 @@
-# The ONLY module in jax_rmhd allowed to import mpi4py/mpi4jax at module scope. comms.py
+# The ONLY module in taranis allowed to import mpi4py/mpi4jax at module scope. comms.py
 # and config.py go through the flags/objects exported here, so the package imports cleanly
 # on a machine with no MPI toolchain (where Parameters auto-resolves comm_backend="serial").
 import os

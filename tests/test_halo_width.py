@@ -8,9 +8,9 @@ bootstrap()
 import jax.numpy as jnp
 import pytest
 
-import jax_rmhd as jr
-from jax_rmhd import comms
-from jax_rmhd.physics import rmhd, shared_physics
+import taranis as jr
+from taranis import comms
+from taranis.physics import rmhd, shared_physics
 
 # nz=16 keeps nz_local >= 3 (the width=3 case below) up to mpirun -n 4.
 _CTX = dict(nz=16)

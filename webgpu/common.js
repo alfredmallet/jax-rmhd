@@ -691,7 +691,7 @@ function legend(c, x, y, items, xmax) {
 // The two energy-trace modes (REFINE_PLAN H.2), from the SAME history:
 //   kmt  E_kin, E_mag, E_tot                          (the default: unchanged)
 //   pmt  E+, E-, E_tot with E+- = E_kin + E_mag +- H_c
-// so E_tot = (E+ + E-)/2, which is the repo's Elsasser convention (jax_rmhd
+// so E_tot = (E+ + E-)/2, which is the repo's Elsasser convention (taranis
 // physics/rmhd.py) and what puts all three curves on one comparable axis.
 const ENERGY_MODES = {
   kmt: [["E_kin", COL.ek, i => hist.ek[i]], ["E_mag", COL.em, i => hist.em[i]],

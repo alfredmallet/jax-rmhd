@@ -27,4 +27,4 @@ export OMPI_MCA_pml=ucx
 
 PY=/global/home/users/alfredmallet/.conda/envs/jax_cpu/bin/python
 
-time mpirun -n $SLURM_NTASKS "$PY" -u /global/home/users/alfredmallet/jax_rmhd/tests/test_advection.py
+time mpirun -n $SLURM_NTASKS "$PY" -u /global/home/users/alfredmallet/taranis/tests/test_advection.py

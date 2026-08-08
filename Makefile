@@ -1,7 +1,7 @@
 # Test driver. `make test` is the one local command; MPI-tier tests run on Savio
 # via mpirun / the slurms/ scripts (see docs/RUNNING_TESTS.md).
 #
-# Precision is read once at jax_rmhd import, so fp64 and fp32 cannot share a
+# Precision is read once at taranis import, so fp64 and fp32 cannot share a
 # process: `make test` runs two separate pytest sessions.
 
 PYTEST ?= python -m pytest

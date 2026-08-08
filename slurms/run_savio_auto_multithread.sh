@@ -22,4 +22,4 @@ export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-time srun python -u /global/home/users/alfredmallet/jax_rmhd/examples/test.py
+time srun python -u /global/home/users/alfredmallet/taranis/examples/test.py

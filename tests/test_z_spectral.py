@@ -15,13 +15,13 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-import jax_rmhd as jr
-from jax_rmhd import _precision
-from jax_rmhd import diagnostics as dg
-from jax_rmhd.grids import fft, ifft
-from jax_rmhd.physics import rmhd, shared_physics
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+import taranis as jr
+from taranis import _precision
+from taranis import diagnostics as dg
+from taranis.grids import fft, ifft
+from taranis.physics import rmhd, shared_physics
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 _BOX = dict(nx=16, ny=16, Lx=2.0 * np.pi, Ly=2.0 * np.pi, Lz=2.0 * np.pi, dims=3)
 
@@ -222,7 +222,11 @@ def test_forcing_power_parseval_matches_real_z():
         f_raw = shared_physics.reconstruct_envelope(fs, kgrid, params)
         za = jnp.stack([state.fields[0] + state.fields[1], state.fields[0] - state.fields[1]])
         power = shared_physics.perp_inner_product(za, f_raw, kgrid, params, batch=True)
-        scale = rmhd.forcing_scale(state, kgrid, params)
+        # dt=0.05 (the same step the OU state was advanced with): a NONZERO dt on purpose,
+        # so this also cross-checks the self-energy reduction F2 = <|grad f_raw|^2> that
+        # selfnorm_scale added in 2026-08-08 -- it carries the same nz/2 envelope factors and
+        # perp_reduce 1/nz^2 as the power denominator, so it must Parseval-match too.
+        scale = rmhd.forcing_scale(state, kgrid, params, 0.05)
         fterm = rmhd.ForcingTerm(state._replace(forcing_scale=scale),
                                  rmhd.grad(state, kgrid, params), kgrid, params)
         # realized dE/dt = <grad phi . grad f_phi> + <grad psi . grad f_psi>

@@ -29,8 +29,8 @@ import warnings
 
 import jax
 
-import jax_rmhd as jr
-from jax_rmhd import _precision
+import taranis as jr
+from taranis import _precision
 
 # A parameter set that exercises tuple-valued args (JSON lists on disk), the forcing
 # block and a couple of non-default scalars.
@@ -89,7 +89,7 @@ def _capture(fn):
 
 def _current_precision():
     # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on;
-    # this must match config.py's own record (jax_rmhd._precision.precision).
+    # this must match config.py's own record (taranis._precision.precision).
     return _precision.precision
 
 

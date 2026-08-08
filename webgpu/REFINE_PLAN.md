@@ -185,9 +185,9 @@ Shared infrastructure first (this is most of the phase):
    links); one-line hints each.
 
 Physics sanity targets (agent verifies in node with a small CPU spectral reference or
-against jax_rmhd run in the sandbox — jax IS available, PYTHONPATH=/var/tmp/pylibs plus
+against taranis run in the sandbox — jax IS available, PYTHONPATH=/var/tmp/pylibs plus
 repo root, RMHD_PRECISION=64, dims=2 serial): tearing linear growth rate at one
-benchmark parameter set within ~10% of a jax_rmhd 2D run with the same IC (generate the
+benchmark parameter set within ~10% of a taranis 2D run with the same IC (generate the
 jax comparison the way webgpu/gen_refvectors.py does — a NEW small deterministic vector
 file for the tearing IC is allowed IF the check needs GPU-path comparison; otherwise a
 node-side estimate suffices); KH growth for b0=0 vs suppression at b0>U0.

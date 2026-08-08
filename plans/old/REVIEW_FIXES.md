@@ -7,7 +7,7 @@ path (see [Verification](#verification)).
 
 ## 1. `Parameters.save` could deadlock or desync MPI ranks
 
-**Was** (`jax_rmhd/config.py`): every rank ran the `os.path.exists` check and the
+**Was** (`taranis/config.py`): every rank ran the `os.path.exists` check and the
 diff comparison itself, but only some code paths reached the `comm.Barrier()`. On a lazy
 shared filesystem (Savio Lustre/NFS), ranks can briefly disagree on whether the file
 exists; whichever subset returned early or raised left the other ranks stuck in the
@@ -33,7 +33,7 @@ scalar unwrapping are normalized on both sides).
 
 ## 3. `save_snapshot` could silently fork the on-disk checkpoint structure
 
-**Was** (`jax_rmhd/snapshot_io.py`): a hand-built `SimulationState` (default
+**Was** (`taranis/snapshot_io.py`): a hand-built `SimulationState` (default
 `forcing_scale=None`) in a **non-forced** run sailed past every existing check
 (`ForcingTerm`'s trace-time guard only fires when forcing + `forcing_norm_per_step` are
 on) and orbax recorded the `None` child — forking the on-disk tree structure between
@@ -97,7 +97,7 @@ bisecting the trigger (`save=True` completed; both `save=False` variants spun fo
 `run.py`'s outer while-loop, confirmed via `faulthandler` stack dumps) exposed a
 pre-existing bug unrelated to the fixes above:
 
-**Was** (`jax_rmhd/run.py::simulate`): `t_last_snapshot` was only updated inside
+**Was** (`taranis/run.py::simulate`): `t_last_snapshot` was only updated inside
 `if save:`. With `save=False` and `t_snap < t_end`, `t_next_snapshot =
 min(t_last_snapshot + t_snap, t_end)` stayed frozen at the first target; once `state.t`
 passed it, the jitted inner `lax.while_loop` returned immediately (condition false on

@@ -25,7 +25,7 @@ Tests: `make test` locally (two pytest sessions, fp64 then fp32; no MPI needed �
 mpi4py is absent). Test files are ALSO standalone scripts: `mpirun -n 4 python
 tests/...` is the multi-rank driver on Savio — pytest is never run under mpirun.
 New/converted test modules start with `from _rmhd_testing import bootstrap;
-bootstrap()` BEFORE `import jax_rmhd`, and end with the `script_main(globals())`
+bootstrap()` BEFORE `import taranis`, and end with the `script_main(globals())`
 footer; helpers live in `tests/_rmhd_testing.py` (never cache a SimulationState —
 donation; never mutate `ctx()` results — identity-hashed jit cache). Markers: mpi,
 savio, slow, fp32/fp64, multidev (skip logic in conftest + `_script_skip_reason`).
@@ -93,7 +93,7 @@ forcing_scale_func=None, halo_start_func=None, linear_matrix_func=None)` per `eq
 `term_funcs` are summed into the RHS (`construct_rhs`); the k-local LINEAR part is not an
 RHS term — `linear_matrix_func(kgrid, params) -> L` (convention `dt f = L f + N(f)`) is
 built once by `setup_kgrids` into `kgrid.lin_L`/`lin_m`/`lin_s2`, and the steppers apply
-it only through the `jax_rmhd.propagators` hook (`apply_exp`, `solve_shifted`, `scaled`;
+it only through the `taranis.propagators` hook (`apply_exp`, `solve_shifted`, `scaled`;
 backend chosen by L's shape — diagonal 4-d, putzer2 2x2 5-d). Never reintroduce
 `kgrid.hdiss` or read `lin_*` from a stepper directly; the op order inside `apply_exp` is
 the RMHD bitwise-equivalence gate (docs/numerics.md). **Term funcs take 5
@@ -170,9 +170,14 @@ per N-step block: `run._cfl_block` computes dt from the block's start state and 
 `dt_override` to the stepper. Never put the collective under `lax.cond`, never use a
 rank-local dt — one collective, one dt, all ranks. `cfl_every=1` (and
 `adaptive_timestep=False`) take the unchanged legacy path. A frozen dt can transiently
-violate CFL — compensate with `cfl_safety`; **N>1 from a quiescent forced start silently
-NaNs** (dt collapses ~10x during spin-up) — use only from developed states. Snapshot/t_end
-overshoot grows to N steps. The forcing update still runs every step; `nblock` counts
+violate CFL — compensate with `cfl_safety`. **N>1 from a quiescent forced start used to
+blow up silently** (the spin-up kick collapsed dt ~10x inside a frozen block); the
+2026-08-08 forcing-normalization fix removes the kick and the blow-up with it — re-measured
+2026-08-08 at 64², elsasser, `cfl_every=4`, 240 steps from rest: finite at every
+`eps_tot` in 1e-2…1 (pre-fix: `E ~ 6e58` within 60 steps at all three). It is still not
+free: at `eps_tot=1` the frozen-dt block overshoots the `cfl_every=1` energy by ~10x
+during spin-up before recovering, so **prefer developed states** for N>1 and check the
+early energy trace if you do start from rest. Snapshot/t_end overshoot grows to N steps. The forcing update still runs every step; `nblock` counts
 steps, rounded up to whole blocks.
 
 **Buffer donation consumes input states** (`donate_argnums=(0,)`): a state passed to
@@ -202,8 +207,19 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
 - `shared_physics` (`ou_update`, `reconstruct_envelope`, `perp_inner_product`,
   `perp_mean_square`) is equation-agnostic; `rmhd.ForcingTerm` does the RMHD power
   normalization and (phi,psi) mapping.
-- Normalization targets exact injection power: cap the *scale factor*
-  (`forcing_scale_max`), never floor the denominator `P` (rationale in docs/numerics.md).
+- Normalization targets exact injection power over ONE STEP, self term included
+  (`shared_physics.selfnorm_scale`, since 2026-08-08): it solves
+  `s·P·dt + ½·s²·F₂·dt² = target·dt` for the POSITIVE root, with `P = ⟨∇z·∇f_raw⟩` and
+  `F₂ = ⟨|∇f_raw|²⟩`, then caps the *scale factor* (`forcing_scale_max`) — never floors the
+  denominator `P`. The old `safe_scale` (`s = target/P`, the `F₂dt → 0` limit) is kept and
+  is still what the per-stage path and the `F₂·dt == 0`/`dt == 0` guards use. Rationale,
+  the two-branch cancellation-free evaluation, and the dated behaviour change:
+  docs/numerics.md. **`forcing_scale_func(state, kgrid, params, dt)` takes a dt** —
+  `run._advance_forcing` passes the just-completed step's (lagged, exact under `cfl_every`),
+  `_refresh_forcing_scale` passes `0.0` (guard → `safe_scale`; a fresh `initialize` has
+  `f_raw = 0` anyway). Never re-derive `dt` inside a term func.
+- `rmhd._quiescent_dt` mirrors `rmhd.set_timestep`'s velocity floor (`eps=0.1`) to bound
+  the per-stage path's scale cap — **change both sites together**.
 - All `perp_*` reductions share one normalization (rfft2 ky-doubling, `/ nz*(nx*ny)^2`),
   matching `diagnostics.perpspec`/`energy` and `forcing_power` — keep new energy-like
   diagnostics on this convention or their numbers won't be comparable. `parspec` is

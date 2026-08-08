@@ -1,4 +1,4 @@
-# jax_rmhd on Savio GPUs — from-scratch setup, binding, and benchmarking
+# taranis on Savio GPUs — from-scratch setup, binding, and benchmarking
 
 Everything needed to go from "no GPU env" to "T8 benchmark numbers": build the `jax_gpu`
 conda env, verify one GPU per MPI rank, audit whether the site MPI is CUDA-aware, and run
@@ -79,7 +79,7 @@ pip install orbax-checkpoint tensorstore numpy matplotlib
 # wheels, bypassing the from-source builds above (MPICC pinning, and mpi4jax needing jax +
 # a visible CUDA toolkit at build time -- see the ordering notes above). Both are already
 # satisfied, so plain `-e .` picks them up as-is.
-cd ~/jax_rmhd && pip install -e .
+cd ~/taranis && pip install -e .
 ```
 
 Login-node sanity check (no GPU there — this only confirms imports and MPI wiring):
@@ -229,7 +229,7 @@ Env knobs (all optional, all defaulted so a bare `sbatch` works):
 Each case prints one result line:
 
 ```
-g4     3d_forced  nx=512 nz=128 ranks=4 [scan+nps+cfl1+halo_late] steps=80  ...  ms/step  backend=mpi4jax plat=cuda dev=[cuda:0] pkg=/global/home/users/.../jax_rmhd/__init__.py
+g4     3d_forced  nx=512 nz=128 ranks=4 [scan+nps+cfl1+halo_late] steps=80  ...  ms/step  backend=mpi4jax plat=cuda dev=[cuda:0] pkg=/global/home/users/.../taranis/__init__.py
 ```
 
 `pkg=` proves which package version was imported (the `RMHD_PKG` mechanism — never PYTHONPATH,

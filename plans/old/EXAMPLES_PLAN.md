@@ -54,7 +54,7 @@ and orzag-tang-2D/3d notebooks.
 
 | File | Reason |
 |---|---|
-| `random.ipynb` | RNG histogram scratch; no jax_rmhd content. |
+| `random.ipynb` | RNG histogram scratch; no taranis content. |
 | `tearing.ipynb` | Empty (no code cells). Delete the file; the topic becomes a Phase 2 notebook. |
 | `test.py` | Zero-field smoke script with a hardcoded Savio scratch path; superseded by `tests/`. |
 | `test_lsrk.ipynb` | Old-API perf scratch for the lsrk scan/unroll option; superseded by `bench/bench_phase1.py`. |

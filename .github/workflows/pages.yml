@@ -8,27 +8,27 @@
 # uploads webgpu/ alone (~1.5 MB), so deploys take seconds and the rest of the
 # repo is no longer served publicly.
 #
-# The site keeps its historical URLs: the artifact stages webgpu/ under a
-# webgpu/ subdirectory, so alfredmallet.github.io/jax_rmhd/webgpu/... is
-# unchanged (external links from alfredmallet.wordpress.com point there), and a
-# root index.html redirects the bare /jax_rmhd/ to it.
+# The artifact stages webgpu/ under a webgpu/ subdirectory, so the site lives
+# at alfredmallet.github.io/taranis/webgpu/..., and a root index.html redirects
+# the bare /taranis/ to it. NB: GitHub Pages URLs do NOT redirect across the
+# jax_rmhd->taranis repo rename, so external links from
+# alfredmallet.wordpress.com that point at /jax_rmhd/... are dead until updated
+# there.
 #
 # ONE-TIME MANUAL STEP: repo Settings -> Pages -> "Build and deployment" ->
 # Source: "GitHub Actions" (replacing "Deploy from a branch"). Until that is
 # flipped, this workflow deploys AND the old branch pipeline keeps running;
-# after it, the branch pipeline stops. Trigger covers the work branches and
-# main (post-merge); last push wins, which is the same behaviour the branch
-# pipeline had. NOTE: each branch listed here must ALSO be allowed in the
-# github-pages deployment environment (Settings -> Environments ->
-# github-pages -> Deployment branches), or the deploy step is rejected.
-# (2026-08-06: webgpu work moved to the precision branch mid-outage, so
-# precision was added to both lists.)
+# after it, the branch pipeline stops. Trigger is main only (work branches
+# gdi_v2/precision merged 2026-08; removed 2026-08-08). NOTE: each branch
+# listed here must ALSO be allowed in the github-pages deployment environment
+# (Settings -> Environments -> github-pages -> Deployment branches), or the
+# deploy step is rejected.
 
 name: pages
 
 on:
   push:
-    branches: [gdi_v2, precision, main]
+    branches: [main]
     paths:
       - "webgpu/**"
       - ".github/workflows/pages.yml"
@@ -73,7 +73,7 @@ jobs:
           <!DOCTYPE html>
           <meta charset="utf-8">
           <meta http-equiv="refresh" content="0; url=webgpu/">
-          <title>jax_rmhd</title>
+          <title>taranis</title>
           <a href="webgpu/">webgpu demos</a>
           EOF
       - uses: actions/upload-pages-artifact@v3

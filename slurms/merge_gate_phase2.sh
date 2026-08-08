@@ -31,7 +31,7 @@ export OMPI_MCA_pml=ucx
 export MPLBACKEND=Agg
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 cd "$REPO"
 
 echo "=== 1/3: test_advection, 32 ranks (z-convergence scan; longest part) ==="

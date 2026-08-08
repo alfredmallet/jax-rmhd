@@ -24,7 +24,10 @@
 #      matched to ~4e-6 now -- fp64 t hands ou_update an exact dt = t_new - prev_t where
 #      fp32 t handed it a quantized one -- so it catches a CHANGED stream (O(1) diffs) but
 #      not a subtly different one; the first OU noise draw, on the other hand, involves no
-#      t at all and is asserted BITWISE against hex constants recorded below.
+#      t at all and is asserted BITWISE against hex constants recorded below. Since
+#      2026-08-08 only forcing_state and t are compared at that tolerance: the forcing
+#      normalization gained its self-energy term that day, which moves fields and
+#      forcing_scale by a few percent BY DESIGN (see _REF_BAND_20260808 below).
 #
 # Single-process by design (the reference runs use snapshot tmp dirs, and the z_spectral
 # kgrid variant is size==1 only); listed serially in the Savio manifest, both sessions.
@@ -39,10 +42,10 @@ import numpy as np
 import pytest
 
 import _gen_precision_reference as gen
-from jax_rmhd import _precision
-from jax_rmhd.physics import shared_physics as sp
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+from taranis import _precision
+from taranis.physics import shared_physics as sp
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 # jitted exactly like run.py's mpi4jax path (params/nblock/scheme/stepper static).
 _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
@@ -199,10 +202,28 @@ _FIRST_NOISE = {
     ),
 }
 
-# rel tolerance vs the pre-change reference. Measured max 4e-6 across all nine arrays
-# (fp64 t -> an exact rather than quantized dt into ou_update); 1e-5 leaves margin while
-# still failing loudly on a changed RNG stream, which moves the arrays by O(1).
+# rel tolerance vs the pre-change reference, for the arrays the precision change was about.
+# Measured max 4e-6 (fp64 t -> an exact rather than quantized dt into ou_update); 1e-5
+# leaves margin while still failing loudly on a changed RNG stream, which moves the arrays
+# by O(1). forcing_state and t are the only two that still qualify -- see below.
 _REF_RTOL = 1e-5
+
+# fields and forcing_scale MOVED ON PURPOSE on 2026-08-08: the forcing normalization gained
+# the self-energy term (safe_scale -> selfnorm_scale, plans/FORCING_SPINUP_PLAN.md), which
+# shifts the scale by O(F2*dt*target/P^2) per step -- measured 0.5-1.1% on forcing_scale and
+# 2.6-3.4% on the 10-step fields, at the fixed dt=0.01 these configs use.
+#
+# The reference npz is NOT regenerated for this: it is the repo's only pre-x64-change
+# artefact, and regenerating it on the current tree would make the whole comparison
+# tautological (and invalidate the "reference t was recorded at fp32" check below). Instead
+# the two arrays are bounded on BOTH sides -- they must have moved (a silent revert of the
+# spin-up fix fails the lower bound) but only by a normalization-refinement amount (a
+# changed RNG stream is O(1) and fails the upper bound). The exact post-fix normalization
+# semantics are pinned by tests/test_forcing_spinup.py and
+# test_forcing_smoke.test_selfnorm_scale_limits, not here; the RNG stream itself is pinned
+# bitwise by test_fp32_forcing_noise_bitstream above.
+_REF_BAND_20260808 = (1e-4, 1e-1)
+_CHANGED_20260808 = ("fields", "forcing_scale")
 
 
 def _first_noise(name, shell_noise, mode):
@@ -269,6 +290,13 @@ def test_fp32_matches_precision_reference():
                 a = np.asarray(got)
                 b = ref[f"{name}_{key}"]
                 rel = float(np.max(np.abs(a - b))) / max(float(np.max(np.abs(b))), 1e-30)
+                if key in _CHANGED_20260808:
+                    lo, hi = _REF_BAND_20260808
+                    c.check(f"{name}.{key} differs from the pre-change reference by a "
+                            f"self-energy-normalization amount (rel {rel:.2e} in "
+                            f"[{lo:.0e}, {hi:.0e}]; changed by design 2026-08-08)",
+                            lo <= rel <= hi)
+                    continue
                 c.check(f"{name}.{key} reproduces the pre-change reference "
                         f"(rel {rel:.2e} <= {_REF_RTOL:.0e})", rel <= _REF_RTOL)
             # t is the one thing that deliberately changed dtype

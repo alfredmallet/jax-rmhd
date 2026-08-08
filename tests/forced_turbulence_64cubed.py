@@ -1,10 +1,10 @@
 import os
 os.environ["RMHD_PRECISION"] = "64"
 import jax
-import jax_rmhd as jr
+import taranis as jr
 import jax.numpy as jnp
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd.physics import shared_physics
+import taranis.snapshot_io as sn
+from taranis.physics import shared_physics
 
 # ---------------------------------------------------------------------------
 # Simple 3D forced-turbulence reference run at 64^3. Meant as a quick

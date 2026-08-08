@@ -7,9 +7,9 @@
 > "rmhd2d.html + common.js".
 
 Target: a single self-contained `webgpu/index.html` (no build step, no server — must work
-from `file://`) implementing the 2D forced-RMHD solver of this repo (`jax_rmhd`) on
+from `file://`) implementing the 2D forced-RMHD solver of this repo (`taranis`) on
 WebGPU, with the LSRK33 integrating-factor scheme. fp32 throughout (WebGPU has no f64).
-This spec is extracted from the repo source (`jax_rmhd/physics/rmhd.py`,
+This spec is extracted from the repo source (`taranis/physics/rmhd.py`,
 `shared_physics.py`, `timestepping.py`, `grids.py`, `run.py`, `config.py`) — it is the
 contract; match it exactly. Reference test vectors: `webgpu/refvectors.json` (generated
 at fp64 by `webgpu/gen_refvectors.py`), to be **inlined** into index.html for the
@@ -128,22 +128,37 @@ the shell values (index list + complex values) each step, or keep them GPU-side;
 way the dense `F±` seen by kernels is nonzero only on the shell.
 
 **Normalization scale** (per-step, LAGGED — the production `forcing_norm_per_step=True`):
-after the OU update, compute from the NEW fields and NEW forcing state the two scalars
+after the OU update, compute from the NEW fields and NEW forcing state the two pairs
 
 ```
 z± = phik ± psik
-P± = Σ_k  ksq * Re( conj(z±) * F± ) * yfac   / (nx*ny)²        # nz=1
-s± = clip( 2*eps± / P±,  -scale_max, +scale_max );   s± = 0 if eps± == 0
+P±  = Σ_k  ksq * Re( conj(z±) * F± ) * yfac  / (nx*ny)²        # nz=1
+F2± = Σ_k  ksq * |F±|²               * yfac  / (nx*ny)²
+tgt± = 2*eps±
+s± = [ -P± + sqrt(P±² + 2*F2±*dt*tgt±) ] / (F2±*dt)            # positive root
+s± = clip( s±, -scale_max, +scale_max );   s± = 0 if eps± == 0
 ```
+
+Over one step the force `s·F` injects `ΔE = s·P·dt + ½·s²·F₂·dt²`; the root above is the
+`s` for which that is exactly `tgt·dt`. `F₂·dt → 0` (or `|P|` large) recovers the older
+`s = tgt/P`, which is what the guard branch falls back to; `P → 0` gives
+`√(2·tgt/(F₂·dt))` instead of pinning at `scale_max` and injecting an **ε-independent**
+kick from rest. Authority for the derivation, the positive-root choice, the two
+cancellation-free evaluation branches and the lagged `dt` is
+`docs/numerics.md` ("Normalize against the forcing's own self-energy", 2026-08-08);
+`shared_physics.selfnorm_scale` is the implementation this mirrors line for line.
 
 `eps± = forcing_power_elsasser` (each a contribution to the TOTAL energy injection rate;
 `(p/2, p/2)` ≡ total power p). The factor 2 is load-bearing (E_tot = (E⁺+E⁻)/2). The
-clip caps the SCALE, never floors P. `scale_max` default 1.0. The scales `s±` computed
-here are used for ALL sub-stages of the NEXT step (they lag one step; the very first
-step after init uses scales computed from the initial state). Since `F±` is shell-only,
-P± is a ~12-term sum — do it CPU-side from a tiny GPU readback of the shell values of
-`z±`, or GPU-side; if a readback is used it may be async/lagged (the scale is lagged by
-design), but the self-test one-step path must use the exact recorded scales.
+clip caps the SCALE, never floors P, and is now a last-resort safety rather than part of
+the normalization. `scale_max` default 1.0. `dt` is the step just completed (lagged, as
+the scales are). The scales `s±` computed here are used for ALL sub-stages of the NEXT
+step (they lag one step; the very first step after init uses scales computed from the
+initial state, where `F± = 0` and `dt = 0` put the guard branch in charge). Since `F±` is
+shell-only, P±/F2± are ~12-term sums — do them CPU-side from a tiny GPU readback of the
+shell values of `z±`, or GPU-side; if a readback is used it may be async/lagged (the
+scale is lagged by design), but the self-test one-step path must use the exact recorded
+scales.
 
 ## 5. Adaptive timestep (CFL)
 

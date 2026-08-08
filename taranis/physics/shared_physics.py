@@ -150,3 +150,59 @@ def safe_scale(target, P, scale_max=1.0):
     # used to rescale power inputs
     scale = jnp.where(target == 0.0, 0.0, target / P)
     return jnp.clip(scale, -scale_max, scale_max)
+
+def selfnorm_scale(target, P, F2, dt, scale_max=1.0):
+    # Self-energy-aware power normalization (behaviour change 2026-08-08, see
+    # plans/FORCING_SPINUP_PLAN.md and docs/numerics.md "Cap the scale factor...").
+    #
+    # Over ONE step of length dt the force s*f_raw acting on the fields z injects
+    #     dE = s*P*dt + 0.5*s^2*F2*dt^2,
+    # with P = <grad z . grad f_raw> (the linear cross term safe_scale normalizes) and
+    # F2 = <|grad f_raw|^2> (the SELF term safe_scale ignores). Requiring dE = target*dt
+    # exactly gives the quadratic
+    #     0.5*F2*dt*s^2 + P*s - target = 0.
+    # safe_scale's s = target/P is its |P| -> large limit; from a quiescent start P = 0
+    # and safe_scale therefore pins at +-scale_max, injecting ~0.5*smax^2*F2*dt^2
+    # INDEPENDENTLY of target -- the spin-up kick this function removes. The same pinning
+    # recurs mid-run whenever P fluctuates through zero, so the fix has to be continuous
+    # in P rather than a special case for t = 0; the quadratic is.
+    #
+    # DECIDED 2026-08-08 (plan Decision 1): the POSITIVE root. safe_scale follows sign(P)
+    # and so flips the force under an adverse phase, rectifying the OU process; the
+    # positive root keeps s > 0 and lets the exact solve absorb an adverse linear term.
+    # Limits: F2*dt -> 0 (or |P| large) => s -> target/P, i.e. saturation is unchanged;
+    # P -> 0 => s -> sqrt(2*target/(F2*dt)), i.e. the first kick is target*dt on the nose.
+    #
+    # Nothing here floors P: the cap-not-floor invariant survives, and the +-scale_max clip
+    # below is now a last-resort safety. It engages if F2*dt underflows while P ~ 0, or
+    # under a strongly adverse P < 0 (there s ~ 2|P|/(F2*dt), and clipping means that step
+    # under-injects -- transiently, possibly even net-negative through the linear term;
+    # measured margins in developed runs are >10x away from the clip).
+    F2dt = F2 * dt
+    have_self = F2dt > 0.0
+    # safe denominator in the UNSELECTED branch: with F2dt == 0 the (r - P)/F2dt form below
+    # would be inf/NaN even though the jnp.where discards it (and NaN*0 = NaN under grad).
+    F2dt_safe = jnp.where(have_self, F2dt, 1.0)
+    # discriminant. target >= 0 (it is an injection RATE) makes it >= P^2 >= 0, so the
+    # maximum() below is unreachable in practice; it is there purely so a hypothetical
+    # negative target -- for which no real s reaches the target at all -- returns a finite
+    # number rather than a NaN that would silently poison the whole field array.
+    disc = P * P + 2.0 * F2dt * target
+    r = jnp.sqrt(jnp.maximum(disc, 0.0))
+    # Two algebraically identical forms of the positive root, each chosen where it does NOT
+    # suffer catastrophic cancellation -- this matters precisely in the saturated regime
+    # (2*F2*dt*target << P^2), where r -> |P| and one of the two numerators cancels:
+    #   P >= 0: (-P + r)/(F2*dt) cancels  ->  use the conjugate form 2*target/(P + r).
+    #   P <  0: 2*target/(P + r) cancels  ->  use the direct form   (r - P)/(F2*dt).
+    # Both denominators are guarded so the UNSELECTED branch can never produce a NaN that a
+    # later grad would propagate through the jnp.where (same discipline as propagators'
+    # sinh(s*t)/s): P + r is > 0 for P >= 0 whenever target > 0, and the degenerate
+    # P = r = 0 case only arises when target == 0, which is short-circuited below.
+    den = P + r
+    den_safe = jnp.where(den > 0.0, den, 1.0)
+    scale = jnp.where(P >= 0.0, 2.0 * target / den_safe, (r - P) / F2dt_safe)
+    # F2*dt == 0 (no envelope yet, or dt == 0 at initialization): fall back to safe_scale,
+    # which is the exact same normalization minus the self term.
+    scale = jnp.where(have_self, scale, safe_scale(target, P, scale_max))
+    scale = jnp.where(target == 0.0, 0.0, scale)   # same convention as safe_scale
+    return jnp.clip(scale, -scale_max, scale_max)

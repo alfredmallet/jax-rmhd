@@ -26,9 +26,9 @@ import os
 import jax
 import numpy as np
 
-from jax_rmhd import _precision, diagnostics
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+from taranis import _precision, diagnostics
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 # Fixed dt (ctx default adaptive_timestep=False, dt=0.01) + direct block_of_steps
 # gives an exact step count: t_end = 0.5, decay factors span 1 .. e^-2 ~ 0.135 --

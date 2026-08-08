@@ -23,4 +23,4 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-time srun python -u /global/home/users/alfredmallet/jax_rmhd/examples/savio_ot3d.py
+time srun python -u /global/home/users/alfredmallet/taranis/examples/savio_ot3d.py

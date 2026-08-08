@@ -33,7 +33,7 @@ _TOL_Z2_FP32 = 1e-4   # |z| < 1e-2
 
 def _tol_z2():
     # precision-dependent Taylor cutoff -- FIELD precision (RMHD_PRECISION), not the
-    # (now unconditionally-on) jax_enable_x64 flag; see jax_rmhd/_precision.py.
+    # (now unconditionally-on) jax_enable_x64 flag; see taranis/_precision.py.
     return _TOL_Z2_FP64 if _precision.precision == "64" else _TOL_Z2_FP32
 
 class IdentityPropagator:

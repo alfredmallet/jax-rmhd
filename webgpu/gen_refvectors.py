@@ -13,13 +13,13 @@ os.environ["RMHD_PRECISION"] = "64"
 import numpy as np
 import jax.numpy as jnp
 
-from jax_rmhd.config import Parameters
-from jax_rmhd.grids import setup_kgrids, fft
-from jax_rmhd.run import initialize, _advance_forcing, _refresh_forcing_scale
-from jax_rmhd.timestepping import get_scheme
-from jax_rmhd.physics import equation_registry, construct_rhs
-from jax_rmhd.physics import rmhd
-from jax_rmhd.diagnostics import energy
+from taranis.config import Parameters
+from taranis.grids import setup_kgrids, fft
+from taranis.run import initialize, _advance_forcing, _refresh_forcing_scale
+from taranis.timestepping import get_scheme
+from taranis.physics import equation_registry, construct_rhs
+from taranis.physics import rmhd
+from taranis.diagnostics import energy
 
 NX = NY = 32
 params = Parameters(nx=NX, ny=NY, Lx=2*np.pi, Ly=2*np.pi, cfl_safety=0.4,
@@ -77,10 +77,12 @@ state = _refresh_forcing_scale(state, kgrid, params)
 out["ic_fields_k"] = c2j(state.fields)
 
 # ---- spin-up: 30 real steps so forcing_state/fields are nontrivial ----
+dt_last = 0.0   # the dt _advance_forcing hands to forcing_scale (needed for A_scale_check)
 for _ in range(30):
     prev_t = state.t
     state = stepper(state, kgrid, params, rhs, set_timestep, scheme)
     state = _advance_forcing(state, prev_t, kgrid, params)
+    dt_last = float(state.t) - float(prev_t)
 
 A = state
 out["A_t"] = float(A.t)
@@ -92,7 +94,12 @@ out["A_forcing_scale"] = r2j(A.forcing_scale)
 grads = rmhd.grad(A, kgrid, params)
 out["A_nonlinear_k"] = c2j(rmhd.NonlinearTerm(A, grads, kgrid, params))
 out["A_forcing_term_k"] = c2j(rmhd.ForcingTerm(A, grads, kgrid, params))
-out["A_scale_check"] = r2j(rmhd.forcing_scale(A, kgrid, params))  # recompute from A
+# recompute from A. dt_last is the same step length _advance_forcing used above, so this
+# still reproduces A_forcing_scale exactly (the normalization is dt-dependent since
+# 2026-08-08 -- self-energy-aware quadratic; the app port is FORCING_SPINUP_PLAN Phase 3).
+out["A_scale_check"] = r2j(rmhd.forcing_scale(A, kgrid, params, dt_last))
+# ... and the browser has to put that same dt in sc[0] before dispatching `scale`
+out["A_dt_last"] = dt_last
 ek, em = energy(A, kgrid, params)
 out["A_energy"] = [float(ek), float(em)]
 dtA = float(set_timestep(grads, params))
@@ -103,7 +110,8 @@ B = stepper(A, kgrid, params, rhs, set_timestep, scheme, dt_override=dtA)
 out["B_t"] = float(B.t)
 out["B_fields_k"] = c2j(B.fields)
 
-dst = "/sessions/relaxed-determined-brahmagupta/mnt/outputs/refvectors.json"
+# next to this script, i.e. the copy the apps fetch
+dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refvectors.json")
 with open(dst, "w") as f:
     json.dump(out, f)
 print("wrote", dst, os.path.getsize(dst), "bytes")

@@ -2,7 +2,7 @@
 #
 # The schemes are Cavaglieri & Bewley, JCP 286:172-193 (2015),
 # http://robotics.ucsd.edu/pubs/CB15.pdf -- IMEXRKCB2 (eq. 24), IMEXRKCB3c (eq. 28a),
-# IMEXRKCB3e (eq. 30) and IMEXRKCB3f (eq. 32c). In jax_rmhd the WHOLE k-local linear
+# IMEXRKCB3e (eq. 30) and IMEXRKCB3f (eq. 32c). In taranis the WHOLE k-local linear
 # operator L is the implicit part (dissipation included; no exponential anywhere in this
 # path) and construct_rhs's summed term_funcs are the explicit part.
 #
@@ -51,12 +51,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import jax_rmhd as jr
-from jax_rmhd import _precision, grids, timestepping
-from jax_rmhd.diagnostics import energy
-from jax_rmhd.physics import EquationRecipe, equation_registry
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme, imex2r_advance, imex3r_advance
+import taranis as jr
+from taranis import _precision, grids, timestepping
+from taranis.diagnostics import energy
+from taranis.physics import EquationRecipe, equation_registry
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme, imex2r_advance, imex3r_advance
 
 IMEX_SCHEMES = ("imexcb2", "imexcb3e", "imexcb3c", "imexcb3f")
 

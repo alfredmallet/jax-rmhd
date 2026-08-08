@@ -2,10 +2,10 @@ import os
 os.environ["RMHD_PRECISION"] = "64"
 import jax
 import jax.numpy as jnp
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
+import taranis as jr
+import taranis.snapshot_io as sn
 import orbax.checkpoint as ocp
-from jax_rmhd.types import SimulationState
+from taranis.types import SimulationState
 
 # ---------------------------------------------------------------------------
 # Regression test for cross-rank snapshot-numbering desynchronization when

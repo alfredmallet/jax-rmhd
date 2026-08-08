@@ -50,6 +50,10 @@ JOBS = [
          phases=[dict(launch="serial", n=1)], precisions=_S),
     dict(name="forcing_norm_per_step", tier="cpu", script="tests/test_forcing_norm_per_step.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
+    # the 2026-08-08 spin-up fix. fp64-marked throughout (the recorded reference is fp64,
+    # so a "32" session is all [SKIP]) and single-process (dims=2 + z_spectral).
+    dict(name="forcing_spinup", tier="cpu", script="tests/test_forcing_spinup.py",
+         phases=[dict(launch="serial", n=1)], precisions=("64",)),
     # single-process files (2D / spoofed-rank content)
     dict(name="forcing_modes", tier="cpu", script="tests/test_forcing_modes.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),

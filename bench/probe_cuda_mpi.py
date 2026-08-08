@@ -1,4 +1,4 @@
-# CUDA-aware-MPI probe: runs the exact halo pattern of jax_rmhd.comms.halo_exchange (two
+# CUDA-aware-MPI probe: runs the exact halo pattern of taranis.comms.halo_exchange (two
 # mpi4jax.sendrecv in a ring) on device buffers, checks correctness and times it, so a
 # CUDA-aware openmpi can be told apart from host-staged transport (MPI4JAX_USE_CUDA_MPI=0).
 # usage: srun --ntasks=2 --gpus-per-task=1 python bench/probe_cuda_mpi.py [nx]  (see slurms/probe_cuda_mpi.sh)

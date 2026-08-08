@@ -14,7 +14,7 @@ import sys, os, shutil
 _pkgdir = os.environ.get("RMHD_PKG")
 if _pkgdir:
     sys.meta_path = [f for f in sys.meta_path
-                     if "jax_rmhd" not in (getattr(f, "__module__", "") or "")]
+                     if "taranis" not in (getattr(f, "__module__", "") or "")]
     sys.path.insert(0, _pkgdir)
 
 import numpy as np
@@ -49,9 +49,9 @@ restart_from = sys.argv[3] if len(sys.argv) > 3 else None
 
 import jax
 import jax.numpy as jnp
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd import comms
+import taranis as jr
+import taranis.snapshot_io as sn
+from taranis import comms
 
 nx = ny = int(os.environ.get("RMHD_NX", 64))
 nz = int(os.environ.get("RMHD_NZ", 32))

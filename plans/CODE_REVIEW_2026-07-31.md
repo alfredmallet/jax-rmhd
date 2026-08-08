@@ -1,6 +1,6 @@
 # Full code review — 2026-07-31
 
-Scope: the whole `jax_rmhd/` package (1560 lines), the test suite, docs and repo hygiene.
+Scope: the whole `taranis/` package (1560 lines), the test suite, docs and repo hygiene.
 Findings are ordered by severity within each section.
 
 Baseline at review time: `ruff check .` clean; `RMHD_PRECISION=64 pytest tests`

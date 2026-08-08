@@ -57,10 +57,10 @@ import time
 import numpy as np
 import jax.numpy as jnp
 
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+import taranis as jr
+import taranis.snapshot_io as sn
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 NX = NY = 256
 LX = LY = 8.0 * np.pi

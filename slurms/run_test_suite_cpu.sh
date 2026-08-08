@@ -39,9 +39,9 @@ export OMPI_MCA_pml=ucx
 export MPLBACKEND=Agg
 # ---- end preamble ----
 
-# Adjust these two if your checkout of jax_rmhd or conda env don't match this layout.
+# Adjust these two if your checkout of taranis or conda env don't match this layout.
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 # Per-job clean log/scratch root (every job gets a fresh subdir inside -- stale
 # snapshot dirs can never trip the layout guard).

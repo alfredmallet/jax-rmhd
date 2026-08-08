@@ -13,7 +13,7 @@ UI, charts, self-test harness, and everything in SPEC.md that this file does not
 override. fp32. Reference vectors: `webgpu/refvectors3d.json` (fp64, from
 `gen_refvectors3d.py`), inlined for self-test.
 
-Physics source of truth: `jax_rmhd/physics/rmhd.py` (`linear_matrix` z_spectral branch,
+Physics source of truth: `taranis/physics/rmhd.py` (`linear_matrix` z_spectral branch,
 `_kz_deriv`), `shared_physics.py` (`reconstruct_envelope` z_spectral branch,
 `perp_reduce` nz² norm), `grids.py` (`dealias_mask`, rfftn), `propagators.py`
 (Putzer2), plus docs/numerics.md.
@@ -109,11 +109,18 @@ mapping as 2D, applied on those two planes.
 grid with the z_spectral Parseval norm:
 
 ```
-P± = Σ_{kz,kx,ky} ksq_perp * Re( conj(z±) * F± ) * yfac / (nz² * (nx*ny)²)
+P±  = Σ_{kz,kx,ky} ksq_perp * Re( conj(z±) * F± ) * yfac / (nz² * (nx*ny)²)
+F2± = Σ_{kz,kx,ky} ksq_perp * |F±|²                * yfac / (nz² * (nx*ny)²)
 ```
 
-— only the two kz planes contribute, so the sum is 2 × (shell size) terms. Everything
-else (2·eps±/P clip, lagged per-step scale, s±=0 iff eps±=0) is unchanged.
+— only the two kz planes contribute, so each sum is 2 × (shell size) terms. Everything
+else (the self-energy quadratic and its guards, the ±scale_max clip, the lagged per-step
+dt, s±=0 iff eps±=0) is unchanged; `docs/numerics.md` is the authority. The nz factors
+cancel out of F2± exactly: Σ_planes |(nz/2)(A∓iB)|² = (nz²/2)(|A|²+|B|²) against the
+1/nz² norm, so F2± = Σ_shell ksq_perp·yfac·(|A|²+|B|²) / (2(nx·ny)²) — verified against
+jax to 1e-16 rel (the one place the two-plane sum is quadratic, not linear, in F: at
+nz = 2, where the planes coincide, the planes would have to be added BEFORE squaring;
+the app's smallest nz is 32, so that case is unreachable).
 **Every energy-like quantity shares the nz² norm**: E_kin/E_mag, the spectrum bins, P±.
 With that, `forcing_power` means the same thing as in 2D and as in jax.
 

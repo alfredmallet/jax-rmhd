@@ -9,16 +9,16 @@ bootstrap()
 import numpy as np
 import pytest
 
-# Imported for its side effect and as the template's point: `import jax_rmhd`
+# Imported for its side effect and as the template's point: `import taranis`
 # must come AFTER bootstrap(), which pins precision and installs the MPI stub.
-import jax_rmhd as jr  # noqa: F401
-from jax_rmhd import snapshot_io
+import taranis as jr  # noqa: F401
+from taranis import snapshot_io
 
 
 @pytest.mark.fp64
 def test_fp64_session():
     import jax
-    from jax_rmhd import _precision
+    from taranis import _precision
     assert jax.config.jax_enable_x64  # unconditional since A1 (PRECISION_PLAN)
     assert _precision.precision == "64"  # FIELD precision -- what actually varies
     rt, ct = snapshot_io.get_precision_types()
@@ -28,7 +28,7 @@ def test_fp64_session():
 @pytest.mark.fp32
 def test_fp32_session():
     import jax
-    from jax_rmhd import _precision
+    from taranis import _precision
     # x64 is unconditionally on since A1 -- RMHD_PRECISION only sets FIELD dtype now,
     # it no longer toggles jax_enable_x64.
     assert jax.config.jax_enable_x64

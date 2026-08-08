@@ -23,10 +23,10 @@ import jax.numpy as jnp
 import pytest
 from jax.sharding import PartitionSpec as P
 
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd import comms
-from jax_rmhd.physics import rmhd, shared_physics
+import taranis as jr
+import taranis.snapshot_io as sn
+from taranis import comms
+from taranis.physics import rmhd, shared_physics
 
 _KW = dict(nx=16, ny=16, nz=16, Lx=2 * np.pi, Ly=2 * np.pi, Lz=2 * np.pi,
            eqpars={"diss": (1e-4, 1e-4), "hyper": 2}, cfl_safety=0.5, dims=3,

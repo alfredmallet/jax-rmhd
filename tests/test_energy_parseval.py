@@ -12,8 +12,8 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-from jax_rmhd import _precision, comms, diagnostics, grids
-from jax_rmhd.physics.shared_physics import gradk, perp_inner_product
+from taranis import _precision, comms, diagnostics, grids
+from taranis.physics.shared_physics import gradk, perp_inner_product
 
 
 def _realspace_grad_meansq(fieldk, kgrid, params):

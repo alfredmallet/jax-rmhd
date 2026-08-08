@@ -1,7 +1,7 @@
 import os
 os.environ["RMHD_PRECISION"] = "64"
 import jax
-import jax_rmhd as jr
+import taranis as jr
 import jax.numpy as jnp
 #import matplotlib.pyplot as plt
 import time

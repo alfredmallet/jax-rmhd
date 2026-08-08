@@ -42,9 +42,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import jax_rmhd as jr
-from jax_rmhd import _precision, propagators
-from jax_rmhd.physics import gdi
+import taranis as jr
+from taranis import _precision, propagators
+from taranis.physics import gdi
 
 
 def _fp64():
@@ -190,7 +190,7 @@ def test_inertial_limit_matches_eq211():
 
 
 def test_propagator_growth_matches_L_eigenvalues():
-    # propagator vs dispersion cross-check: evolve a real jax_rmhd state through the actual
+    # propagator vs dispersion cross-check: evolve a real taranis state through the actual
     # putzer2 propagator and measure its growth rate from the field-norm time series; must
     # equal max Re(m +- s) read off kgrid.lin_m/lin_s2 at that mode (grids.setup_kgrids's
     # own precompute, not a hand recomputation).
@@ -236,8 +236,8 @@ def test_energy_budget_closure_nonlinear():
     if not _fp64():
         print("[SKIP] test_energy_budget_closure_nonlinear -- fp64 only (tight tolerance)")
         return
-    from jax_rmhd.run import block_of_steps
-    from jax_rmhd.timestepping import get_scheme
+    from taranis.run import block_of_steps
+    from taranis.timestepping import get_scheme
 
     params = _gdi_params(nx=16, ny=16, Ln=5.0, nu_in=0.2, v0=0.3, gpar_fac=1.0,
                         diss=1e-3, hyper=1, adaptive_timestep=False, dt=2e-4)
@@ -294,7 +294,7 @@ def test_energy_enstrophy_numpy_reference():
     phi_real = np.asarray(np.sin(2*x)*np.cos(y) + 0.1*np.cos(x - y))
     # dealiased IC: reproduce via the same fft/mask path gdi.py's dealiasing uses so this
     # is a check of the NORMALIZATION, not a rediscovery of the 2/3 rule.
-    from jax_rmhd.grids import fft, ifft, dealias_mask
+    from taranis.grids import fft, ifft, dealias_mask
     mask = np.asarray(dealias_mask(params))
     Nk_np = np.asarray(fft(jnp.asarray(N_real), params))*mask
     phik_np = np.asarray(fft(jnp.asarray(phi_real), params))*mask
@@ -519,8 +519,8 @@ def test_energy_budget_closure_nonlinear_3D():
     if not _fp64():
         print("[SKIP] test_energy_budget_closure_nonlinear_3D -- fp64 only (tight tolerance)")
         return
-    from jax_rmhd.run import block_of_steps
-    from jax_rmhd.timestepping import get_scheme
+    from taranis.run import block_of_steps
+    from taranis.timestepping import get_scheme
 
     params = _gdi_params_3d(nx=8, ny=8, nz=4, Ln=5.0, nu_in=0.2, v0=0.3, D_par=0.5,
                             gpar_fac=0.0, diss=1e-3, hyper=1, adaptive_timestep=False,

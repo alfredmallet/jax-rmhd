@@ -9,9 +9,9 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-import jax_rmhd as jr
-from jax_rmhd import _precision, snapshot_io
-from jax_rmhd.physics import shared_physics
+import taranis as jr
+from taranis import _precision, snapshot_io
+from taranis.physics import shared_physics
 
 _FORCING = dict(nx=32, ny=32, dims=2, diss=(0.0, 0.0), forcing=True,
                 forcing_power=1.0, forcing_power_elsasser=(0.5, 0.5),

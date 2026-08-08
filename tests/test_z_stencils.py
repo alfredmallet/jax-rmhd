@@ -10,9 +10,9 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-from jax_rmhd import _precision
-from jax_rmhd.grids import local_z_coords
-from jax_rmhd.physics.shared_physics import z_derivatives
+from taranis import _precision
+from taranis.grids import local_z_coords
+from taranis.physics.shared_physics import z_derivatives
 
 # nz sweep for the convergence study: kept away from both ends -- small enough that
 # a handful of points still resolves cos(2z) meaningfully, large enough (max nz=32,

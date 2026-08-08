@@ -51,7 +51,7 @@ export RMHD_PRECISION=64
 # process to its assigned GPU.
 
 PY=$HOME/.conda/envs/jax_gpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 # Single GPU -> single rank: no MPI-level parallelism benefit here (this codebase only
 # domain-decomposes in z across MPI ranks), but mpi4py/mpi4jax are still hard imports

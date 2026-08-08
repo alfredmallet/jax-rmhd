@@ -10,9 +10,9 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-import jax_rmhd as jr
-from jax_rmhd import _precision, snapshot_io
-from jax_rmhd.physics import rmhd, shared_physics
+import taranis as jr
+from taranis import _precision, snapshot_io
+from taranis.physics import rmhd, shared_physics
 
 _F = dict(diss=(0.0, 0.0), forcing=True, forcing_mode="momentum", forcing_power=1.0,
           forcing_tau=0.5, fshell=(1, 5), forcing_seed=1, forcing_norm_per_step=False)
@@ -58,6 +58,62 @@ def test_safe_scale_uncapped_and_capped():
             c.check(f"safe_scale: near-zero P={P_val:+.0e} is capped at +-scale_max, not blown up",
                     jnp.isfinite(scale) and abs(abs(scale) - scale_max) < 1e-12
                     and jnp.sign(scale) == expected_sign, f"scale={scale}")
+
+
+def test_selfnorm_scale_limits():
+    # selfnorm_scale (2026-08-08) solves 0.5*F2*dt*s^2 + P*s - target = 0 for the POSITIVE
+    # root instead of safe_scale's linear s = target/P, so the injection over one step is
+    # target*dt even at P = 0. Four limits + the sign convention + the clip.
+    tgt, F2, dt = 2.0, 30.0, 0.01
+    big = 1e9          # "no clip": lets the raw root through
+    fp64 = _precision.precision == "64"
+    tol = 1e-12 if fp64 else 1e-5      # relative, on the closed-form limits
+    rtol = 1e-9 if fp64 else 2e-2      # relative, on the realized-injection residual;
+    # the fp32 figure is dominated by cancellation in the RESIDUAL (at |P| = 100 the two
+    # terms are ~670 each and cancel to 0.02), not by any error in s itself -- which is the
+    # point of the two-branch root: neither branch cancels.
+    rel = lambda a, b: abs(a - b) / abs(b)
+    _ft = lambda v: jnp.array(v, dtype=_precision.ftype)   # P at FIELD precision, as in rmhd
+    with checks() as c:
+        # P -> 0: the quiescent limit safe_scale gets wrong (it pins at +-scale_max).
+        s0 = float(shared_physics.selfnorm_scale(tgt, _ft(0.0), F2, dt, big))
+        want0 = float(jnp.sqrt(2.0 * tgt / (F2 * dt)))
+        c.check(f"selfnorm_scale: P=0 gives sqrt(2*tgt/(F2*dt)) = {want0:.6f}",
+                rel(s0, want0) < tol, f"got {s0}")
+        # F2*dt -> 0 (no envelope drawn yet, or dt=0 at _refresh_forcing_scale): the
+        # self term vanishes and the guard hands over to safe_scale unchanged.
+        for label, f2_, dt_ in (("F2=0", 0.0, dt), ("dt=0", F2, 0.0)):
+            for P_val in (3.0, -3.0, 0.0):
+                got = float(shared_physics.selfnorm_scale(tgt, _ft(P_val), f2_, dt_, big))
+                want = float(shared_physics.safe_scale(tgt, _ft(P_val), big))
+                c.check(f"selfnorm_scale: {label}, P={P_val:+.0f} falls back to safe_scale "
+                        f"({want:.6g})", got == want, f"got {got}")
+        # every P, including strongly adverse ones: the root is POSITIVE (plan Decision 1 --
+        # no sign-following, hence no rectification of the OU process) and, unclipped, hits
+        # the target injection s*P*dt + 0.5*s^2*F2*dt^2 = tgt*dt exactly.
+        for P_val in (-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0):
+            s = float(shared_physics.selfnorm_scale(tgt, _ft(P_val), F2, dt, big))
+            got = s * P_val * dt + 0.5 * s * s * F2 * dt * dt
+            c.check(f"selfnorm_scale: P={P_val:+.0f} injects exactly tgt*dt "
+                    f"(got {got:.6e} vs {tgt * dt:.6e})", rel(got, tgt * dt) < rtol)
+            c.check(f"selfnorm_scale: P={P_val:+.0f} keeps s > 0 (positive root, not "
+                    f"sign(P))", s > 0.0, f"s={s}")
+        # the clip is now a last-resort safety rather than the everyday path, but it still
+        # engages symmetrically at +-scale_max.
+        # (== rather than a tolerance would fail at fp32, where 1e-3 is not representable
+        # and the clip returns the float32 neighbour.)
+        clipped = float(shared_physics.selfnorm_scale(tgt, _ft(0.0), F2, dt, 1e-3))
+        c.check("selfnorm_scale: result still clips at +scale_max",
+                rel(clipped, 1e-3) < tol, f"got {clipped}")
+        neg = float(shared_physics.selfnorm_scale(-tgt, _ft(0.0), F2, dt, 1e-3))
+        c.check("selfnorm_scale: a negative target clips at -scale_max",
+                rel(neg, -1e-3) < tol, f"got {neg}")
+        # target == 0 -> exactly 0, the same convention safe_scale uses (an unforced
+        # component must contribute nothing, whatever P and F2 are).
+        for P_val in (0.0, 3.0, -3.0):
+            z = float(shared_physics.selfnorm_scale(0.0, _ft(P_val), F2, dt, big))
+            c.check(f"selfnorm_scale: target=0 at P={P_val:+.0f} is exactly 0", z == 0.0,
+                    f"got {z}")
 
 
 def test_forcing_term_exact_noop_when_off():

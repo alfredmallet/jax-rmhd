@@ -9,11 +9,11 @@ bootstrap()
 import jax
 import jax.numpy as jnp
 
-from jax_rmhd import _precision, diagnostics, grids
-from jax_rmhd.physics import rmhd, shared_physics
-from jax_rmhd.physics.shared_physics import bracket, gradk
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+from taranis import _precision, diagnostics, grids
+from taranis.physics import rmhd, shared_physics
+from taranis.physics.shared_physics import bracket, gradk
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 _IDEAL2D = dict(dims=2, diss=(0.0, 0.0))
 

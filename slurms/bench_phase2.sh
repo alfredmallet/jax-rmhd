@@ -35,7 +35,7 @@ export OMPI_MCA_pml=ucx
 export RMHD_PRECISION=64
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 BENCH=$REPO/bench/bench_phase1.py
 # RMHD_PKG (not PYTHONPATH): the editable install's import finder beats PYTHONPATH; the

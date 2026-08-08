@@ -16,7 +16,7 @@ Written 2026-08-03, after the launcher itself was built and dry-run-verified (se
   service ever exists.
 - **Quota split.** GPU quota (~30 h/week) is consumed only by the P100 script kernel;
   CPU notebook sessions are unmetered against it. Analysis, linear theory, and plotting
-  are all cheap on CPU (jax_rmhd runs fine on CPU jax; snapshots load via orbax the
+  are all cheap on CPU (taranis runs fine on CPU jax; snapshots load via orbax the
   same way). The notebook is "mission control": launch, then do productive theory work
   while polling, then pull and analyze.
 - **Batch, not live.** A run is minutes-to-hours of wall clock; the notebook must be
@@ -39,7 +39,7 @@ Written 2026-08-03, after the launcher itself was built and dry-run-verified (se
   existing dry-run behavior must keep working unchanged (the local-checkout workflow is
   still the instructor's production path).
 - Kernel-side invariants from the existing template are untouched: `RMHD_PRECISION` set
-  before any jax_rmhd import; run in `/kaggle/tmp/<stem>`; finally-zip to
+  before any taranis import; run in `/kaggle/tmp/<stem>`; finally-zip to
   `/kaggle/working`; wall_budget-vs-session_budget warning.
 - Sandbox has no kaggle token or network to kaggle.com: implementation phases are
   verified by `--dry-run` + mocked-CLI tests only; every real push is a user step and
@@ -55,7 +55,7 @@ Written 2026-08-03, after the launcher itself was built and dry-run-verified (se
   `<username>/<dataset-slug>`; implies `--skip-dataset` (you can't version someone
   else's dataset). Mutually exclusive with `--dataset-slug`.
 - `--repo-root PATH`: where to resolve the run driver when there is no git checkout
-  (e.g. `/kaggle/input/jax-rmhd-src/...` mount). With `--repo-root`: skip
+  (e.g. `/kaggle/input/taranis-src/...` mount). With `--repo-root`: skip
   `git rev-parse`/`git ls-files` entirely, replace the git-tracked check with
   "driver exists under repo-root" (existence in the mount IS shipping — the mount is
   the dataset), and compute `run_relpath` relative to it. Without it: current behavior
@@ -95,7 +95,7 @@ already-required deps only.
   the placeholder CC0).
 - Run and publish a **precomputed reference output dataset** (public): the teaching
   run at full length, produced by the existing launcher, output zip re-uploaded as its
-  own dataset (`OWNER/jax-rmhd-classroom-reference`). Include in it a small
+  own dataset (`OWNER/taranis-classroom-reference`). Include in it a small
   `MANIFEST.json` (params, t_end, snapshot cadence, launcher/commit provenance) so the
   notebook can display where its fallback data came from.
 - Record the chosen dataset ids in one place the notebook imports (a constants cell or

@@ -1,6 +1,6 @@
 # Numerics notes
 
-The *reasoning* behind the numerical choices in `jax_rmhd`. CLAUDE.md states the rules;
+The *reasoning* behind the numerical choices in `taranis`. CLAUDE.md states the rules;
 this file says why they are what they are, so neither has to do both. Written for someone
 reading or extending the solver, not for someone running it (for that see
 `docs/performance.md`).
@@ -31,9 +31,9 @@ forcing power and the dissipation rate.
 
 ## Precision model
 
-`jax_enable_x64` is turned on unconditionally at import (`jax_rmhd/__init__.py`) — x64
+`jax_enable_x64` is turned on unconditionally at import (`taranis/__init__.py`) — x64
 availability and *field* precision are no longer the same question. `RMHD_PRECISION`
-(`"32"`/`"64"`, default `"32"`, read exactly once by `jax_rmhd/_precision.py` at import)
+(`"32"`/`"64"`, default `"32"`, read exactly once by `taranis/_precision.py` at import)
 sets `_precision.ftype`/`ctype`, the dtypes that `fields`/`forcing_state`/`forcing_scale`
 are pinned to; it does not touch `SimulationState.t`, which is float64 at *both* field
 precisions. This exists to fix a real failure mode: at fp32, `t + dt == t` exactly once
@@ -230,7 +230,7 @@ the size is machine- and version-dependent). Earlier notes in this repo claimed 
 identity — that claim was wrong, and `tests/test_scheme_equivalence.py` asserts agreement
 to a relative 1e-13 instead.
 
-### The linear propagator (`jax_rmhd/propagators.py`)
+### The linear propagator (`taranis/propagators.py`)
 
 The integrating factor above is one instance of a general hook. An equation set may
 declare `linear_matrix_func(kgrid, params) → L` in its `EquationRecipe`; `setup_kgrids`
@@ -292,14 +292,83 @@ anisotropically underforces exactly the modes that vary only in x.
 
 ### Cap the scale factor, never floor the denominator
 
-`safe_scale(target, P)` computes `target/P` and clips the *result* to `±forcing_scale_max`.
-The tempting alternative — flooring `P` away from zero — misbehaves whenever `P` is small
-but nonzero (enormous or sign-flipped scales) and has no principled floor value, because
-`P` carries units. Capping the scale bounds the worst case regardless of what `P` does,
-including the `P = 0` first step from a quiescent initial condition.
+The scale factor is always **clipped** to `±forcing_scale_max`, and the denominator is
+never floored. Flooring `P` away from zero misbehaves whenever `P` is small but nonzero
+(enormous or sign-flipped scales) and has no principled floor value, because `P` carries
+units. Capping the scale bounds the worst case regardless of what `P` does. That part is
+unchanged; what changed is what gets clipped.
 
-The cost is that while the cap is engaged the injection is *uncontrolled* rather than
-equal to the target — visible as a transient overshoot during spin-up from rest.
+### Normalize against the forcing's own self-energy (behaviour change 2026-08-08)
+
+Over one step of length `dt` the force `s·f_raw` acting on the fields `z` injects
+
+```
+ΔE = s·P·dt + ½·s²·F₂·dt²,     P = ⟨∇z·∇f_raw⟩,   F₂ = ⟨|∇f_raw|²⟩
+```
+
+— the linear cross term **plus** the forcing's self term. `safe_scale(target, P)` keeps
+only the first: `s = target/P`. That is right in saturation, and wrong from rest. From a
+quiescent start `P = 0` exactly, so `safe_scale` pinned at `±forcing_scale_max` and the
+first forced step injected `½·s_max²·F₂·dt²` — a quantity in which **`forcing_power` does
+not appear at all**, because ε enters the forcing *only* through the scale and the clamp
+erased it. Measured at 64², `fshell=(1,3)`, `cfl_safety=0.5` (where the quiescent velocity
+floor gives `dt = 0.491`): `E` after step 2 was `1.074e+01` for `ε_tot = 1e-4, 1e-3, 1e-2`
+and `1e-1` alike, identical to four digits, and at small dissipation that kick *was* the
+final state. Because `ΔE ∝ ½s_max²F₂dt²` with `⟨|f|²⟩ ∝ (1 − e^{−2dt/τ})`, it scales as
+`dt³`: measured 1.07e1 / 8.19e-2 / 7.08e-4 at `dt` = 0.49 / 0.098 / 0.020, versus the
+predicted ratio `5³ = 125`.
+
+`selfnorm_scale(target, P, F₂, dt)` (`shared_physics.py`) instead solves
+
+```
+½·F₂·dt·s² + P·s − target = 0        →        s = [−P + √(P² + 2·F₂·dt·target)] / (F₂·dt)
+```
+
+so `ΔE = target·dt` **exactly**, and then clips to `±forcing_scale_max` as before. Limits:
+`F₂·dt → 0` or `|P|` large gives `s → target/P` (saturation is unchanged); `P → 0` gives
+`s → √(2·target/(F₂·dt))` (the first kick is `target·dt` on the nose). The expression is
+continuous in `P` through zero, which matters because the same pinning recurred *mid-run*
+whenever `P` fluctuated through zero with a weak field — a fix special-cased on `t = 0`
+would not have covered that. The clip survives as a last-resort safety: it engages if
+`F₂·dt` underflows while `P ≈ 0`, or under a strongly adverse `P < 0` (there
+`s ~ 2|P|/(F₂·dt)`; a clipped step under-injects, transiently even net-negative through
+the linear term). Measured margins in developed runs sit more than an order of magnitude
+from the clip.
+
+Three details worth knowing:
+
+- **The positive root, not the sign-following one.** `safe_scale` follows `sign(P)`, so an
+  adverse phase flips the force to keep injecting — a rectification of the O-U process. The
+  positive root keeps `s > 0` and lets the exact solve absorb an adverse linear term
+  instead (still hitting the target unless the clip engages).
+- **Numerically, the root is evaluated in two branches.** `(−P + √D)/(F₂dt)` cancels
+  catastrophically for `P > 0` in the saturated regime `2F₂·dt·target ≪ P²`, and the
+  conjugate form `2·target/(P + √D)` cancels for `P < 0`. Each is used where it does not
+  cancel; both are algebraically identical.
+- **`dt` is lagged by one step.** `run._advance_forcing` passes the dt of the step just
+  completed, since that is what is known when the scale is stored. This is one more
+  `O(dt/τ)`-class approximation of exactly the kind `forcing_norm_per_step` already makes,
+  and it is *exact* under `cfl_every > 1`, where dt is frozen for the block.
+
+**Dated behaviour change.** Runs from before **2026-08-08** spin up differently from a
+quiescent (or weak-field) start: they take an ε-independent `O(½s_max²F₂dt²)` kick on step
+2 that later runs do not, and at low dissipation that kick can dominate the saturated
+state. Saturated statistics are affected only at `O(s²F₂dt/target)`. Same class of
+non-comparability as the 2026-07-31 elsasser factor-2 note below. `tests/test_forcing_spinup.py`
+pins the new behaviour; `tests/data/forcing_spinup_reference.npz` records the old one.
+
+**The per-stage path (`forcing_norm_per_step=False`) keeps `safe_scale`.** `ForcingTerm`
+has no `dt` — the RHS interface is deliberately dt-agnostic, `dt` is a stepper-local chosen
+once per step (and frozen per block under `cfl_every`), and recomputing it inside the term
+would repeat the CFL allreduce every stage *and* give the wrong value inside a block.
+Rather than thread `dt` through `construct_rhs` and every stepper, that path gets a
+mitigation instead: its clip is tightened to `min(s_max, √(2·target/(F₂·dt_q)))`, with
+`dt_q` the **params-static** bound on the quiescent step length (`params.dt` when
+`adaptive_timestep=False`, where it is exact; otherwise `cfl_safety·min(dx,dy)/0.1`,
+mirroring `rmhd.set_timestep`'s velocity floor — the two sites cross-reference each other).
+That bounds the from-rest kick at `~target·dt_q` instead of `~½s_max²F₂dt_q²`, and only
+binds when `P` is small, i.e. near-quiescent states. **From-rest starts that need exact
+normalization should use the production default.**
 
 ### Power conventions
 

@@ -33,12 +33,12 @@ export OMPI_MCA_pml=ucx
 export RMHD_PRECISION=64
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 OLD_REF=${OLD_REF:-origin/main}
 OLDDIR=$SLURM_SUBMIT_DIR/old_pkg_$SLURM_JOB_ID
 mkdir -p "$OLDDIR"
-git -C "$REPO" ls-files jax_rmhd | while read -r f; do
+git -C "$REPO" ls-files taranis | while read -r f; do
     mkdir -p "$OLDDIR/$(dirname "$f")"
     git -C "$REPO" show "$OLD_REF:$f" > "$OLDDIR/$f"
 done

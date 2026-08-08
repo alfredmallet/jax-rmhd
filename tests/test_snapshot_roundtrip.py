@@ -1,4 +1,4 @@
-# Checkpoint round-trip / invariant tests for jax_rmhd.snapshot_io.
+# Checkpoint round-trip / invariant tests for taranis.snapshot_io.
 # Everything here is self-contained: the legacy checkpoint
 # fixtures are SYNTHESIZED in a tmp dir, so there is no dependency on the untracked
 # tests/data tree.
@@ -28,8 +28,8 @@ import numpy as np
 import orbax.checkpoint as ocp
 from etils import epath
 
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
+import taranis as jr
+import taranis.snapshot_io as sn
 
 # orbax's item subdirectory inside a step dir, and the handler name its step-level
 # _CHECKPOINT_METADATA records (mirrors what a real CheckpointManager writes).

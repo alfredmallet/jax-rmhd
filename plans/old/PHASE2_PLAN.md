@@ -51,7 +51,7 @@ nz=512 for 128–256 ranks) before judging.
 
 ## A1 — T5: comm abstraction layer (pure refactor, blocks everything else)
 
-New `jax_rmhd/comms.py`:
+New `taranis/comms.py`:
 
 - `halo_exchange(f, params)` → returns `(recv_left, recv_right)` for a 2-wide halo
   (extract the sendrecv pair from `shared_physics.z_derivatives`);
@@ -201,7 +201,7 @@ MINOR-3 (numpy ints accepted for cfl_every), MINOR-4 (scale job 1h, `|| true` on
 grep pipe so one crashed case can't abort the matrix). Deferred: MINOR-5
 (estimate_good_nblock rounding — documented behavior).
 
-- A1 (T5): DONE — `jax_rmhd/comms.py` (`halo_exchange`/`allreduce_sum`/`allreduce_max`,
+- A1 (T5): DONE — `taranis/comms.py` (`halo_exchange`/`allreduce_sum`/`allreduce_max`,
   backend dispatch on new `params.comm_backend`, default/only `"mpi4jax"`); all 4 mpi4jax
   call sites ported (the three planned + `diagnostics.perpspec`); local battery ALL PASS;
   fp64 20-step forced 3D A/B vs pre-T5 code bitwise identical (max|diff| = 0.0).

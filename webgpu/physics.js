@@ -257,10 +257,15 @@ ${idx}  let decay: f32 = exp(-sc[0] / cfg.tau);
 // ---------------------------------------------------------------------------
 // once-per-step power normalization (lagged by design)
 // ---------------------------------------------------------------------------
-// P+- = sum ksq_perp * Re(conj(z+-) * F+-) * yfac * INVN2. In 3D only the two
-// kz = +-2pi/Lz planes carry F, so the sum is 2 x (shell size) terms and one
-// thread owns both planes of its column (nz = 2 then sums, as it must).
-// The scale FACTOR is capped (forcing_scale_max), never the denominator P.
+// Two reductions over the forcing shell, sharing one vec4 accumulator:
+//   .x/.y  P+-  = sum ksq_perp * Re(conj(z+-) * F+-) * yfac * INVN2   (cross term)
+//   .z/.w  F2+- = sum ksq_perp * |F+-|^2          * yfac * INVN2   (self term)
+// In 3D only the two kz = +-2pi/Lz planes carry F, so each sum is 2 x (shell size)
+// terms and one thread owns both planes of its column (nz = 2 then sums, as it must
+// -- exact for P, which is linear in F; the quadratic F2 would need the two planes
+// added BEFORE squaring there, but nz >= 32 in the UI so the planes never coincide).
+// The epilogue is shared_physics.selfnorm_scale: the scale FACTOR is capped
+// (forcing_scale_max), never the denominator P.
 function scaleWGSL(C) {
   const accum = C.hasZ
     ? `    let mp: u32 = shell[s];
@@ -275,8 +280,10 @@ function scaleWGSL(C) {
       let psi: vec2<f32> = fields[NM + m];
       let zp: vec2<f32> = phi + psi;
       let zm: vec2<f32> = phi - psi;
-      acc = acc + vec4<f32>(w * dot(zp, envelope(Ap, Bp, pl)),
-                            w * dot(zm, envelope(Am, Bm, pl)), 0.0, 0.0);
+      let fp: vec2<f32> = envelope(Ap, Bp, pl);
+      let fm: vec2<f32> = envelope(Am, Bm, pl);
+      acc = acc + vec4<f32>(w * dot(zp, fp), w * dot(zm, fm),
+                            w * dot(fp, fp), w * dot(fm, fm));
     }
 `
     : `    let m: u32 = shell[s];
@@ -285,7 +292,10 @@ function scaleWGSL(C) {
     let psi: vec2<f32> = fields[NM + m];
     let zp: vec2<f32> = phi + psi;
     let zm: vec2<f32> = phi - psi;
-    acc = acc + vec4<f32>(w * dot(zp, frc[m]), w * dot(zm, frc[NM + m]), 0.0, 0.0);
+    let fp: vec2<f32> = frc[m];
+    let fm: vec2<f32> = frc[NM + m];
+    acc = acc + vec4<f32>(w * dot(zp, fp), w * dot(zm, fm),
+                          w * dot(fp, fp), w * dot(fm, fm));
 `;
   return C.pre + (C.envFn || "") + `
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
@@ -297,6 +307,42 @@ function scaleWGSL(C) {
 @group(0) @binding(6) var<uniform> cfg: Cfg;
 var<workgroup> sh: array<vec4<f32>, 64>;
 const NS: u32 = ${C.ns}u;
+// shared_physics.selfnorm_scale, line for line (FORCING_SPINUP_PLAN Phase 3; the
+// derivation is docs/numerics.md "Normalize against the forcing's own self-energy").
+// Over one step of length dt the force s*f_raw injects dE = s*P*dt + 0.5*s^2*F2*dt^2;
+// requiring dE = target*dt gives 0.5*F2*dt*s^2 + P*s - target = 0. The old
+// s = target/P is its |P| -> large limit, and from a quiescent start P = 0 pinned it at
+// +-smax, injecting ~0.5*smax^2*F2*dt^2 INDEPENDENTLY of eps -- the spin-up kick this
+// removes. Same pinning recurs whenever P fluctuates through zero, so the fix has to be
+// continuous in P; the quadratic is.
+fn selfnormScale(target: f32, P: f32, F2: f32, dt: f32, smax: f32) -> f32 {
+  let F2dt: f32 = F2 * dt;
+  // max(): target >= 0 (an injection RATE) makes disc >= P^2 >= 0, so this is
+  // unreachable in practice -- it is there so a negative target returns a finite number
+  // rather than a NaN poisoning the whole field array.
+  let r: f32 = sqrt(max(P * P + 2.0 * F2dt * target, 0.0));
+  // POSITIVE root (plan Decision 1): the old form followed sign(P) and so flipped the
+  // force under an adverse phase, rectifying the OU process; the positive root keeps
+  // s > 0 and lets the exact solve absorb an adverse linear term.
+  // Two algebraically identical forms, each used where it does NOT suffer catastrophic
+  // cancellation -- which matters precisely in the saturated regime 2*F2*dt*target << P^2,
+  // where r -> |P| and one numerator cancels:
+  //   P >= 0: (r - P)/(F2*dt) cancels  ->  conjugate form 2*target/(P + r)
+  //   P <  0: 2*target/(P + r) cancels ->  direct form    (r - P)/(F2*dt)
+  // Both denominators are guarded so the UNSELECTED branch cannot produce an inf/NaN
+  // (select evaluates both operands): P + r > 0 for P >= 0 whenever target > 0, and the
+  // degenerate P = r = 0 case only arises for target == 0, short-circuited below.
+  let den: f32 = P + r;
+  var s: f32 = select((r - P) / select(1.0, F2dt, F2dt > 0.0),
+                      2.0 * target / select(1.0, den, den > 0.0),
+                      P >= 0.0);
+  // F2*dt == 0 (no envelope drawn yet, or dt == 0 at initialization -- see _uploadIC,
+  // which zeroes sc[0] and the forcing buffer): fall back to the old clamp, which is the
+  // same normalization minus the self term.
+  s = select(target / P, s, F2dt > 0.0);
+  s = select(s, 0.0, target == 0.0);
+  return clamp(s, -smax, smax);   // last-resort safety, not the normalization
+}
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid: u32 = lid.x;
@@ -313,10 +359,21 @@ ${accum}  }
     stride = stride >> 1u;
   }
   if (tid == 0u) {
+    // dt is sc[0], the step JUST COMPLETED (cflFinal wrote it before this step's stages,
+    // tick and ou already consumed it): the same LAGGED dt run._advance_forcing hands to
+    // rmhd.forcing_scale; under cfl_every > 1 (dt frozen per block) the lag vanishes
+    // within a block and reappears only across block boundaries.
+    // It is deliberately NOT a Cfg field -- dt never exists CPU-side here (Cfg is uploaded
+    // only on control changes, and sc is read back asynchronously), so sc[0] is both the
+    // closest mirror of the jax side and the only synchronous source.
+    let dt: f32 = sc[0];
     let Pp: f32 = sh[0].x * INVN2;
     let Pm: f32 = sh[0].y * INVN2;
-    sc[4] = select(clamp(2.0 * cfg.epsP / Pp, -cfg.smax, cfg.smax), 0.0, cfg.epsP == 0.0);
-    sc[5] = select(clamp(2.0 * cfg.epsM / Pm, -cfg.smax, cfg.smax), 0.0, cfg.epsM == 0.0);
+    let F2p: f32 = sh[0].z * INVN2;
+    let F2m: f32 = sh[0].w * INVN2;
+    // targets 2*eps+- : the factor 2 of rmhd._forcing_scale_from (E_tot = (E+ + E-)/2)
+    sc[4] = selfnormScale(2.0 * cfg.epsP, Pp, F2p, dt, cfg.smax);
+    sc[5] = selfnormScale(2.0 * cfg.epsM, Pm, F2m, dt, cfg.smax);
   }
 }`;
 }

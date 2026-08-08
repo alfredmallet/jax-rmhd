@@ -1,5 +1,5 @@
 # Installs fake mpi4py/mpi4jax modules for SINGLE-PROCESS test runs on machines without MPI.
-# Import this BEFORE jax_rmhd. Semantics are exact for size-1: sendrecv is a self-send
+# Import this BEFORE taranis. Semantics are exact for size-1: sendrecv is a self-send
 # (periodic topology, matching tags) and allreduce is the identity.
 # Usage: PYTHONPATH=.:tests python -c "import local_mpi_stub, runpy; runpy.run_path('tests/test_forcing_smoke.py', run_name='__main__')"
 import sys

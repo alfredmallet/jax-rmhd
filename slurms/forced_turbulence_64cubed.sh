@@ -26,8 +26,8 @@ export VECLIB_MAXIMUM_THREADS=1
 export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
-# Adjust these two if your checkout of jax_rmhd or conda env don't match this layout.
+# Adjust these two if your checkout of taranis or conda env don't match this layout.
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 time mpirun -n $SLURM_NTASKS "$PY" -u "$REPO/tests/forced_turbulence_64cubed.py"

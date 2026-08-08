@@ -15,7 +15,7 @@ below.
 
 - `width` must be a **static Python int** everywhere (it selects slice extents at trace
   time). Never a traced value, never under `lax.cond`.
-- Nothing outside `jax_rmhd/comms.py` imports mpi4jax. Keep it that way.
+- Nothing outside `taranis/comms.py` imports mpi4jax. Keep it that way.
 - `Parameters` is all-static aux_data; plain-Python branching on its attributes is the
   house style.
 - Both comm backends (`"mpi4jax"` sendrecv, `"jax"` ppermute inside shard_map) must get
@@ -105,9 +105,9 @@ Savio (see repo SLURM scripts). What the agent CAN and MUST do:
 
 ## Files touched
 
-- `jax_rmhd/comms.py` (halo_exchange signature + both backends + guard)
-- `jax_rmhd/physics/shared_physics.py` (z_derivatives offsets / assert + fallback call)
-- `jax_rmhd/physics/rmhd.py` (halo_start width + comment)
+- `taranis/comms.py` (halo_exchange signature + both backends + guard)
+- `taranis/physics/shared_physics.py` (z_derivatives offsets / assert + fallback call)
+- `taranis/physics/rmhd.py` (halo_start width + comment)
 - `tests/test_halo_width.py` (new, or extension of an existing script)
 - CLAUDE.md architecture section: one sentence noting halo width is now a parameter and
   the halo_start/z_derivatives width-agreement requirement.

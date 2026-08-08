@@ -1,13 +1,13 @@
-# Shared test infrastructure for jax_rmhd. Not a test file (leading underscore keeps
+# Shared test infrastructure for taranis. Not a test file (leading underscore keeps
 # pytest from collecting it).
 #
 # Import contract -- every test module begins with:
 #
 #     from _rmhd_testing import bootstrap; bootstrap()
-#     import jax_rmhd as jr
+#     import taranis as jr
 #
-# bootstrap() must run before jax_rmhd (or jax device work) happens anywhere in the
-# process: it sets RMHD_PRECISION (read once at jax_rmhd import), installs the local
+# bootstrap() must run before taranis (or jax device work) happens anywhere in the
+# process: it sets RMHD_PRECISION (read once at taranis import), installs the local
 # MPI stub when no real MPI toolchain is importable, and requests fake XLA host
 # devices for the shard_map ("jax" backend) tests. It is idempotent, so the double
 # call under pytest (conftest first, then the module header) is harmless.
@@ -44,17 +44,17 @@ _stub_active = False
 
 
 def bootstrap(precision=None, devices=None, stub=None):
-    """Prepare env + MPI stub. Must run before jax_rmhd is imported; idempotent.
+    """Prepare env + MPI stub. Must run before taranis is imported; idempotent.
 
     stub=True (default) installs tests/local_mpi_stub.py whenever no real MPI
     toolchain is importable -- the normal test-suite path, which keeps
     comm_backend='mpi4jax' testable single-process. stub=False (or env
-    RMHD_TEST_NO_STUB=1) skips the stub install even then, so jax_rmhd sees the
-    machine's TRUE absent-MPI state (jax_rmhd._mpi_compat.HAVE_MPI4PY/HAVE_MPI4JAX
+    RMHD_TEST_NO_STUB=1) skips the stub install even then, so taranis sees the
+    machine's TRUE absent-MPI state (taranis._mpi_compat.HAVE_MPI4PY/HAVE_MPI4JAX
     both really False, not faked) -- this is what exercises the real
     comm_backend=None -> 'serial' auto-resolve import path end to end, as opposed
     to the stub's simulation of a size-1 mpi4jax install. Only meaningful in a
-    process where bootstrap() (this call) is the first thing to touch jax_rmhd;
+    process where bootstrap() (this call) is the first thing to touch taranis;
     combine with a fresh subprocess if the current process already bootstrapped
     with the stub. Precision/XLA-device setup is identical either way -- only the
     `import local_mpi_stub` line is skipped.
@@ -68,8 +68,8 @@ def bootstrap(precision=None, devices=None, stub=None):
     global _bootstrapped, _stub_active
     if _bootstrapped:
         return
-    if "jax_rmhd" in sys.modules:
-        raise RuntimeError("bootstrap() called after jax_rmhd was imported -- call it "
+    if "taranis" in sys.modules:
+        raise RuntimeError("bootstrap() called after taranis was imported -- call it "
                            "as the first statement of the test module.")
 
     if precision is not None:
@@ -82,7 +82,7 @@ def bootstrap(precision=None, devices=None, stub=None):
         sys.path.insert(0, _HERE)
     # Script mode without `pip install -e .`: make the repo root importable too.
     import importlib.util
-    if importlib.util.find_spec("jax_rmhd") is None:
+    if importlib.util.find_spec("taranis") is None:
         sys.path.insert(0, os.path.dirname(_HERE))
 
     force_stub = os.environ.get("RMHD_TEST_FORCE_STUB") == "1"
@@ -190,7 +190,7 @@ def _ctor_kwargs(kw):
 
 def fresh_params(**overrides):
     """A new (uncached) Parameters. Use when the test mutates attributes."""
-    import jax_rmhd as jr
+    import taranis as jr
     return jr.Parameters(**_ctor_kwargs(_param_kwargs(overrides)))
 
 
@@ -205,7 +205,7 @@ def fake_ranked_params(rank, size, **overrides):
 
 @functools.lru_cache(maxsize=None)
 def _ctx_cached(key):
-    import jax_rmhd as jr
+    import taranis as jr
     p = jr.Parameters(**_ctor_kwargs(dict(key)))
     return p, jr.setup_kgrids(p)
 
@@ -221,7 +221,7 @@ def ctx(**overrides):
 
 def make_state(params, ic=None):
     """A FRESH state (never cached/shared -- buffer donation consumes states)."""
-    import jax_rmhd as jr
+    import taranis as jr
     if ic is None:
         ic = zero_ic if params.spatial_dimensions == 3 else zero_ic_2d
     return jr.initialize(ic, params)
@@ -279,7 +279,7 @@ def snap_dir(prefix="rmhd_test_"):
 def managed_manager(params, path, nsnap=2):
     """snapshot_manager_setup wrapper that ALWAYS drains async orbax writes before
     the caller (or snap_dir) removes the directory -- skipping this is a flake."""
-    import jax_rmhd as jr
+    import taranis as jr
     m = jr.snapshot_manager_setup(params, snap_path=path, nsnap=nsnap)
     try:
         yield m
@@ -306,9 +306,9 @@ def _script_skip_reason(fn):
     if not names:
         return None
     import jax
-    from jax_rmhd import _precision
+    from taranis import _precision
     # FIELD precision (RMHD_PRECISION), not the jax_enable_x64 config flag: that flag
-    # is now unconditionally on (jax_rmhd/__init__.py) -- only _precision knows
+    # is now unconditionally on (taranis/__init__.py) -- only _precision knows
     # whether this is an fp32 or fp64 session.
     x64 = _precision.precision == "64"
     if "fp32" in names and x64:

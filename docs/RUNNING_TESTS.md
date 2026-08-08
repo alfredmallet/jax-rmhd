@@ -1,6 +1,6 @@
 # Running the tests
 
-A guide for people working on jax_rmhd. Two minutes to read; covers running the
+A guide for people working on taranis. Two minutes to read; covers running the
 existing tests and writing new ones.
 
 ## The one command
@@ -42,7 +42,7 @@ and `savio` — you get the fast tier. Markers:
 | `fp32` / `fp64` | needs that precision session | run under matching `RMHD_PRECISION` |
 | `multidev` | needs ≥4 XLA devices | automatic (fake devices locally) |
 
-Precision is fixed once per process (read at `import jax_rmhd`), which is why
+Precision is fixed once per process (read at `import taranis`), which is why
 `make test` runs two separate pytest sessions rather than mixing precisions.
 
 **Cluster (scripts under mpirun).** Every test file is also a standalone script, and
@@ -100,10 +100,10 @@ Copy the shape of `tests/test_infra.py`. The skeleton:
 
 ```python
 from _rmhd_testing import bootstrap, checks, ctx, make_state, snap_dir
-bootstrap()                      # MUST be the first thing, before jax_rmhd
+bootstrap()                      # MUST be the first thing, before taranis
 
 import jax.numpy as jnp
-import jax_rmhd as jr
+import taranis as jr
 
 def test_my_thing():
     p, kgrid = ctx(nx=32, ny=32)          # cached (params, kgrid); don't mutate
@@ -120,8 +120,8 @@ if __name__ == "__main__":
 
 Rules that will save you a debugging afternoon (details in CLAUDE.md):
 
-- **`bootstrap()` before `jax_rmhd`.** Precision, the MPI stub, and XLA device
-  flags are all consumed at import time. Importing `jax_rmhd` first means they
+- **`bootstrap()` before `taranis`.** Precision, the MPI stub, and XLA device
+  flags are all consumed at import time. Importing `taranis` first means they
   silently don't apply.
 - **Never reuse a state after passing it to `simulate`/`simulate_scan`.** Buffer
   donation deletes the input arrays ("Array has been deleted"). Build a fresh one

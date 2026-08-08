@@ -1,6 +1,6 @@
 # Minimal multi-process NCCL reproducer for the jax backend hang (jobs 35861466/515/835:
 # bootstrap + rings connect, first collective never completes, all ranks blocked in _value).
-# No jax_rmhd imports — isolates infra from our code. Run 4-rank on 4 GPUs, interactively:
+# No taranis imports — isolates infra from our code. Run 4-rank on 4 GPUs, interactively:
 #
 #   salloc -A fc_kawturb -p savio4_gpu -q a5k_gpu4_normal -N1 -n4 -c4 --gres=gpu:A5000:4 -t 0:30:00
 #   # inside the allocation (module load anaconda3 gcc openmpi; source activate jax_gpu;

@@ -40,7 +40,7 @@ Verified problems found along the way:
 - `tests/savio_scaling/test_savio_scaling.py` is broken (calls
   `snapshot_manager_setup` without `params`, before `params` exists) and its
   `test_*.py` name makes it a pytest collection error. It's a benchmark, not a test.
-- `pyproject.toml` `packages = ["jax_rmhd"]` omits `jax_rmhd.physics` — non-editable
+- `pyproject.toml` `packages = ["taranis"]` omits `taranis.physics` — non-editable
   installs ship a package that can't import its own equation registry.
 - `test_advection.py` imports `mpi4jax` directly (violates the comms.py-only rule).
 - `test_forcing_smoke.py` reuses a kgrid with a different `Parameters` (lines 71-72).
@@ -61,8 +61,8 @@ correctness; z-stencil accuracy in isolation; standalone snapshot round-trip;
 `XLA_FLAGS` are consumed at import. Every test module starts:
 
 ```python
-from _rmhd_testing import bootstrap; bootstrap()   # env + stub, before jax_rmhd
-import jax_rmhd as jr
+from _rmhd_testing import bootstrap; bootstrap()   # env + stub, before taranis
+import taranis as jr
 ```
 
 Works in both modes: pytest's `tests/conftest.py` puts `tests/` on `sys.path` and calls
@@ -118,7 +118,7 @@ Create:
 - `Makefile`: `test` (fp64 fast tier + fp32 tier), `test-slow`, `lint`.
 
 Modify `pyproject.toml`: `[project.optional-dependencies] test = ["pytest>=7",
-"matplotlib"]`; **fix `packages` to include `jax_rmhd.physics`**;
+"matplotlib"]`; **fix `packages` to include `taranis.physics`**;
 `[tool.pytest.ini_options]` with testpaths/norecursedirs/markers and default
 `-m 'not mpi and not slow and not savio'`; minimal `[tool.ruff]` (F, E9 only).
 Update CLAUDE.md's "No pytest suite" paragraph with the new contract.
@@ -326,9 +326,9 @@ plus `ruff==0.16.1` in a new `lint` extra, notebooks/examples/a5k excluded. Ruff
 *default* ruleset widens between releases (0.16 both started linting notebooks and
 pulled in C408/UP/PL/SIM/...: 237 hits vs 20 for F alone), so inheriting defaults means
 an upgrade can turn CI red without a code change. Widening to `I` later is a one-line
-config change plus one mechanical `ruff check --fix` commit. The 9 `jax_rmhd/__init__.py`
+config change plus one mechanical `ruff check --fix` commit. The 9 `taranis/__init__.py`
 re-exports are declared in `__all__` rather than deleted; `tests/test_infra.py`'s
-`import jax_rmhd` is kept under `# noqa: F401` (it IS the bootstrap-ordering demo).
+`import taranis` is kept under `# noqa: F401` (it IS the bootstrap-ordering demo).
 `fast.yml` = jobs `lint` + `test`; the ruff version is read back out of pyproject by the
 workflow (tomllib) so CI and a local run cannot disagree. `mpi2.yml` reuses
 `tests/run_savio_suite.py --only halo_width --only energy_parseval` rather than
@@ -360,7 +360,7 @@ If Actions is unwanted, `make test` alone is the systematic one-command answer.
 
 | Risk | Mitigation |
 |---|---|
-| Import order (stub after jax_rmhd) | `bootstrap()` first statement everywhere; tests/ auto on sys.path both modes; idempotent stub |
+| Import order (stub after taranis) | `bootstrap()` first statement everywhere; tests/ auto on sys.path both modes; idempotent stub |
 | Precision fixed at import | two pytest sessions + fp32/fp64 auto-skip markers |
 | Buffer donation deletes shared states | never cache SimulationState; numpy copies for shared references |
 | jit retrace per fresh Parameters | lru_cached `ctx()` shares identity within a module; never mutate |
@@ -371,7 +371,7 @@ If Actions is unwanted, `make test` alone is the systematic one-command answer.
 | lsrk_scan bitwise claim maybe false | strict assert first; a failure is a documentation finding |
 | cfl_every quiescent-start NaN | unforced tiny-Alfvén IC pins dt constant |
 | t_end/snapshot overshoot | assert on `float(end_state.t)` and set membership, never counts |
-| `jax_rmhd.physics` missing from packages | fix in Phase 1 |
+| `taranis.physics` missing from packages | fix in Phase 1 |
 
 ## Effort
 

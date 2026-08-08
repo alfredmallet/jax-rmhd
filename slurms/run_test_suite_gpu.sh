@@ -51,7 +51,7 @@ MPI_MODE=${MPI_MODE:-pmix}  # probe job 35845619: this openmpi is --without-pmi 
 srun --mpi=$MPI_MODE --ntasks=1 --cpus-per-task=4 "$HOME/.conda/envs/jax_gpu/bin/python" -c "import os,sys,nvidia,jax; print('probe PYTHONPATH=',os.environ.get('PYTHONPATH')); print('probe nvidia=',nvidia.__path__); print('probe devices=',jax.devices())" || true
 
 PY=$HOME/.conda/envs/jax_gpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 export RMHD_PKG=$REPO          # printed in every result line, per the Phase 3 ground rules
 export RMHD_NX=64

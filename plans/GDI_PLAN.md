@@ -505,8 +505,8 @@ P3's tests are best run with P2 available — if parallelized, land P2 first.
   functions in tests/test_gdi_linear.py; one, the fp64-gated nonlinear energy test, prints
   [SKIP] internally and returns rather than using pytest.skip, so it still counts as a pass
   under pytest, matching the existing test_energy_budget_closure_nonlinear convention).
-  `ruff check .` clean. Files changed: `jax_rmhd/physics/gdi.py` (extended, no other
-  jax_rmhd/ files touched -- the propagator/kgrid/dealias/normalization machinery needed
+  `ruff check .` clean. Files changed: `taranis/physics/gdi.py` (extended, no other
+  taranis/ files touched -- the propagator/kgrid/dealias/normalization machinery needed
   for 3D GDI was already generic from P1-P3, exactly as the plan anticipated);
   `tests/test_gdi_linear.py` (extended); new `examples/gdi_3d_run.py`.
 - Review round 2 (P2+P3+P4b): DONE 2026-08-03, fresh Fable agent (not the overseer),

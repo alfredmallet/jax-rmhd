@@ -1,4 +1,4 @@
-# Linear-propagator machinery (jax_rmhd/propagators.py).
+# Linear-propagator machinery (taranis/propagators.py).
 #
 # The steppers only ever call the hook (apply_exp / solve_shifted / scaled) on the object
 # built from a recipe's linear_matrix_func, with the convention dt f = L f + N(f), i.e.
@@ -30,9 +30,9 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.linalg
 
-import jax_rmhd as jr
-from jax_rmhd import _precision, propagators
-from jax_rmhd.physics import rmhd
+import taranis as jr
+from taranis import _precision, propagators
+from taranis.physics import rmhd
 
 
 def _fp64():

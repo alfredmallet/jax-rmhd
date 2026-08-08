@@ -83,6 +83,8 @@ def set_timestep(grads,params):
     max_vy_eff = jnp.max(jnp.abs(gphi[0])+jnp.abs(gpsi[0]))
     max_vx_eff = jnp.max(jnp.abs(gphi[1])+jnp.abs(gpsi[1]))
     #velocity floor: caps dt at cfl_safety*min(dx,dy)/eps for a near-quiescent field
+    # NB: _quiescent_dt (below) mirrors this eps to bound the per-stage forcing scale cap --
+    # CHANGE BOTH SITES TOGETHER or the forcing mitigation silently stops being a bound.
     eps=0.1
     max_eps = jnp.maximum(eps/params.dx,eps/params.dy)
     max_all = jnp.maximum(max_vx_eff/params.dx, max_vy_eff/params.dy)
@@ -129,28 +131,86 @@ def LinearTerm(state,grads,kgrid,params,halo=None):
     df_dz_rmhd = jnp.stack([df_dz[1],df_dz[0]])
     return df_dz_rmhd - diss * d4f_dz4
 
-def _forcing_scale_from(fields, f_raw, kgrid, params):
+def _quiescent_dt(params):
+    # A params-STATIC upper bound on the step length the forcing can be integrated over
+    # from a quiescent state. Used only to bound the per-STAGE forcing path's scale cap
+    # (plans/FORCING_SPINUP_PLAN.md Decision 2) -- static is the whole point: the per-stage
+    # path has no dt to thread.
+    #   adaptive_timestep=False: the steppers use params.dt verbatim (dt_override only ever
+    #     comes from run._cfl_block, which requires adaptive_timestep), so this is EXACT,
+    #     not a bound. Getting this branch wrong makes the cap ~dt_q/dt times too tight and
+    #     visibly under-injects in the fixed-dt smoke tests.
+    #   adaptive_timestep=True: the LARGEST dt set_timestep can emit from rest, i.e. its
+    #     velocity floor (eps=0.1, see set_timestep above -- CHANGE BOTH SITES TOGETHER)
+    #     giving max_all = 0.1/min(dx,dy), hence dt = cfl_safety*min(dx,dy)/0.1.
+    if not params.adaptive_timestep:
+        return params.dt
+    return params.cfl_safety*min(params.dx,params.dy)/0.1
+
+def _forcing_scale_from(fields, f_raw, kgrid, params, dt=None):
     # (n_ou,) power-normalization scale factor(s) for the given fields and forcing envelope.
+    #
+    # dt is the step length the scale will be used over. Given one (the production
+    # forcing_norm_per_step path, where run._advance_forcing knows the step's dt), the
+    # normalization is the self-energy-aware quadratic solve, which hits the target
+    # injection exactly even from a quiescent start (P = 0). dt=None is the per-STAGE path
+    # (forcing_norm_per_step=False, reached through ForcingTerm), where the RHS interface is
+    # deliberately dt-agnostic: it keeps safe_scale, but with the scale cap tightened by the
+    # STATIC quiescent-dt bound so the from-rest kick is bounded at ~target*dt_q instead of
+    # ~0.5*smax^2*F2*dt_q^2 (plans/FORCING_SPINUP_PLAN.md Decision 2, flagged for review).
     phik = fields[0]
     psik = fields[1]
     if params.forcing_mode == "momentum":
         P = shared_physics.perp_inner_product(phik,f_raw[0],kgrid,params)
-        return jnp.reshape(shared_physics.safe_scale(params.forcing_power,P,params.forcing_scale_max),(1,))
+        # F2 = <|grad f_raw|^2>, the forcing's self-energy rate. One extra reduction of the
+        # same machinery as P; no RNG is involved, so forcing streams are untouched.
+        F2 = shared_physics.perp_inner_product(f_raw[0],f_raw[0],kgrid,params)
+        scale = _scale_epilogue(params.forcing_power,P,F2,dt,params)
+        return jnp.reshape(scale,(1,))
     za = jnp.stack([phik + psik, phik - psik])
     Ppm = shared_physics.perp_inner_product(za,f_raw,kgrid,params,batch=True)
+    # batched exactly like Ppm: one stacked reduce gives <|grad f+|^2>, <|grad f-|^2>
+    F2pm = shared_physics.perp_inner_product(f_raw,f_raw,kgrid,params,batch=True)
     #factor 2: E_tot = (E+ + E-)/2, so this makes each forcing_power_elsasser entry a
     #contribution to the TOTAL energy injection rate, in the same units as forcing_power
     # dtype=ftype: jnp.asarray of a python tuple is a strong float64 under x64, and this
     # scale ends up multiplying the forcing envelope (and is stored in state.forcing_scale,
     # which the dtype contract says is ftype).
     eps = 2.0*jnp.asarray(params.forcing_power_elsasser, dtype=_precision.ftype)
-    return shared_physics.safe_scale(eps,Ppm,params.forcing_scale_max)
+    return _scale_epilogue(eps,Ppm,F2pm,dt,params)
 
-def forcing_scale(state,kgrid,params):
+def _scale_epilogue(tgt,P,F2,dt,params):
+    # the two normalization paths, sharing the (tgt,P,F2) reductions computed above.
+    if dt is not None:
+        return shared_physics.selfnorm_scale(tgt,P,F2,dt,params.forcing_scale_max)
+    # per-stage path: safe_scale, but capped at the scale that would inject exactly tgt*dt_q
+    # in one quiescent step (0.5*s^2*F2*dt_q^2 = tgt*dt_q  =>  s = sqrt(2*tgt/(F2*dt_q))).
+    # Under adaptive_timestep it is CONSERVATIVE whenever the realized dt < dt_q -- but it
+    # only binds at all when P is small, i.e. near-quiescent states, where dt ~ dt_q anyway,
+    # so it is inert in any developed-field run (measured: the fixed-dt smoke tests'
+    # injection rates are unchanged, while a quiescent per-stage start drops from a 185x
+    # overshoot to ~0.7x of tgt*dt on the first kick). jnp.where guards F2 == 0 (no envelope
+    # drawn yet), where the bound is vacuous and the plain forcing_scale_max applies.
+    # jnp.abs(tgt): the cap is a MAGNITUDE bound, and a (nonsensical but representable)
+    # negative target would otherwise sqrt a negative and hand back NaN.
+    F2dtq = F2*_quiescent_dt(params)
+    cap = jnp.where(F2dtq > 0.0,
+                    jnp.sqrt(2.0*jnp.abs(tgt)/jnp.where(F2dtq > 0.0, F2dtq, 1.0)),
+                    params.forcing_scale_max)
+    return shared_physics.safe_scale(tgt,P,jnp.minimum(params.forcing_scale_max,cap))
+
+def forcing_scale(state,kgrid,params,dt):
     # Once-per-full-step scale for params.forcing_norm_per_step, called from run.py right
     # after ou_update (registered as forcing_scale_func in the equation registry).
+    # dt is the LAGGED step dt (the step just completed): the scale is computed once per
+    # step and reused across sub-stages anyway, so this is one more O(dt/tau)-class
+    # approximation of the kind norm_per_step already makes -- and under cfl_every blocks dt
+    # is frozen, so it is exact there. run._refresh_forcing_scale passes dt=0.0, which
+    # selfnorm_scale's F2*dt == 0 guard turns back into plain safe_scale (correct: a fresh
+    # initialize has f_raw == 0, and a restored checkpoint gets a proper dt-aware scale on
+    # its first _advance_forcing).
     f_raw = shared_physics.reconstruct_envelope(state.forcing_state,kgrid,params)
-    return _forcing_scale_from(state.fields,f_raw,kgrid,params)
+    return _forcing_scale_from(state.fields,f_raw,kgrid,params,dt)
 
 def ForcingTerm(state,grads,kgrid,params,halo=None):
     # RMHD-specific forcing: either in the momentum equation or elsasser forcing

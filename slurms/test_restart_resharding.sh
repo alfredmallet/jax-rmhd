@@ -26,9 +26,9 @@ export VECLIB_MAXIMUM_THREADS=1
 export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
-# Adjust these two if your checkout of jax_rmhd or conda env don't match this layout.
+# Adjust these two if your checkout of taranis or conda env don't match this layout.
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 
 # Both phases run in one job: save on 2 ranks, then restart on 4 ranks into the
 # same snap_path (relative to cwd). Wipe any previous run so phase detection

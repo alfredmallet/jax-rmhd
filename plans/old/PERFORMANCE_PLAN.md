@@ -1,4 +1,4 @@
-# jax_rmhd performance refactor plan
+# taranis performance refactor plan
 
 Target: better throughput and scaling on CPU clusters and GPU clusters.
 Structure: ranked findings, then a phased task list sized for handoff to Sonnet agents.
@@ -110,7 +110,7 @@ hermitian symmetrization at ky=0/Nyquist rows. (b) Stack Pp/Pm into a single all
 per full step (at stage 0) and reuse across sub-stages — document the approximation.
 
 ### Phase 2 — communication (sequential: T5 → T6, T7)
-**T5. Comm abstraction layer.** New `jax_rmhd/comms.py` defining `halo_exchange(f)`,
+**T5. Comm abstraction layer.** New `taranis/comms.py` defining `halo_exchange(f)`,
 `allreduce_sum(x)`, `allreduce_max(x)` selected by `params.comm_backend`; port
 `z_derivatives`, `_perp_reduce`, `set_timestep` onto it. mpi4jax backend reproduces
 current behavior exactly. Pure refactor.

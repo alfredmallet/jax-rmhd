@@ -60,7 +60,7 @@ export RMHD_PRECISION=32   # A40 fp64 is ~1/32 of fp32; the fp64 anchor is the V
 export MPI4JAX_USE_CUDA_MPI=${CUDA_MPI:-0}
 
 PY=$HOME/.conda/envs/jax_gpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 BENCH=$REPO/bench/bench_phase1.py
 export RMHD_PKG=$REPO   # bench prints pkg= so the imported package is verifiable
 

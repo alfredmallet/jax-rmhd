@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_rmhd import _precision, diagnostics
+from taranis import _precision, diagnostics
 
 _TOL = None  # set per-test: 1e-12 fp64 / 1e-5 fp32 (fft round-off floor)
 

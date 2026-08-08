@@ -1,4 +1,4 @@
-# jax-rmhd
+# taranis
 Code to solve nonlinear plasma models in jax.
 
 Requires jax (tested on 0.10.0), orbax_checkpoint (tested on 0.11.37), and python (tested on 3.11.5). You can get these with pip:

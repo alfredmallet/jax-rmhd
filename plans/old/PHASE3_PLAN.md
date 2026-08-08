@@ -65,7 +65,7 @@ Deliverables, all documentation/scripts — no solver-code changes:
 1. **Rewrite `SAVIO_GPU_SETUP.md`** as the complete from-scratch guide (env does NOT
    exist yet): conda env `jax_gpu` (python 3.11, `pip install -U "jax[cuda12]"`,
    mpi4py built against the system `openmpi` module, mpi4jax, orbax-checkpoint,
-   tensorstore, numpy, matplotlib, `pip install -e ~/jax_rmhd`); login-node import
+   tensorstore, numpy, matplotlib, `pip install -e ~/taranis`); login-node import
    sanity check; srun single-GPU device-visibility check. Add the multi-GPU sections:
    - **CUDA-aware MPI audit** (this decides how T8 is interpreted): a small probe
      script + instructions — `ompi_info --parameters | grep -i cuda`, and a 2-rank
@@ -180,7 +180,7 @@ keep what pays for itself on GPU, revert what doesn't:
 ## Sequencing
 
 A1 and A2 in parallel (disjoint files: A1 = SAVIO_GPU_SETUP.md, bench/, slurms/bench_*;
-A2 = jax_rmhd/*, tests/test_backend_jax.py, slurms/test_backend_jax_gpu.sh) → A3 review
+A2 = taranis/*, tests/test_backend_jax.py, slurms/test_backend_jax_gpu.sh) → A3 review
 + fixes → user creates env, runs probes + correctness job → benchmark round → gate.
 Each agent updates ONLY its own status line below.
 

@@ -37,13 +37,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-import jax_rmhd as jr
+import taranis as jr
 from _rmhd_testing import alfven_ic, checks, ctx, fit_order, make_state, multimode_ic
-from jax_rmhd import diagnostics
-from jax_rmhd.comms import allreduce_max
-from jax_rmhd.physics import rmhd
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+from taranis import diagnostics
+from taranis.comms import allreduce_max
+from taranis.physics import rmhd
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 # jitted exactly like run.py's mpi4jax path; no donation, so states stay alive.
 _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))

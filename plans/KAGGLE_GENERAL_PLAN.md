@@ -1,6 +1,6 @@
 # Kaggle general-code plan — running arbitrary simulation codes via kaggle_launcher
 
-Goal: generalize `kaggle_launcher/` from "jax_rmhd run drivers" to "any simulation code
+Goal: generalize `kaggle_launcher/` from "taranis run drivers" to "any simulation code
 on a single Kaggle GPU" — first targets a FORTRAN+OpenACC gyrokinetics code (architecture
 not yet known) and GX (CUDA C++/CMake gyrokinetics), with all analysis in Python on the
 kernel so only reduced data comes back. Written 2026-08-06. **Plan only — no
@@ -12,8 +12,8 @@ P1 launcher surgery (see G1).
 - **The launcher is already ~80% code-agnostic.** Everything in `launch.py` (staging via
   `git ls-files`, dataset version + readiness poll, kernel metadata/push/poll, output
   pull, the staging-sentinel and slug machinery) never looks inside the repo. The
-  jax_rmhd coupling is confined to `_kernel_template.py` in five places:
-  `pip_install_stack()` (hardcoded jax/orbax recipe), `REPO_MARKER` (`name = "jax-rmhd"`
+  taranis coupling is confined to `_kernel_template.py` in five places:
+  `pip_install_stack()` (hardcoded jax/orbax recipe), `REPO_MARKER` (`name = "taranis"`
   in pyproject.toml), `install_repo`/`enable_in_process_import` (Python-package
   assumptions), `set_precision` (`RMHD_PRECISION`), and the make_data/report driver
   contract — plus one `launch.py` nit (`--precision` and the default dataset slug).
@@ -48,9 +48,9 @@ P1 launcher surgery (see G1).
 
 ## Binding constraints (carry into every phase)
 
-- **jax_rmhd path unchanged.** The current CLI with no new flags must behave bitwise-
+- **taranis path unchanged.** The current CLI with no new flags must behave bitwise-
   identically (staging layout, metadata, template output), and the existing 32 tests in
-  `kaggle_launcher/test_launcher.py` stay green unmodified. jax_rmhd becomes the built-in
+  `kaggle_launcher/test_launcher.py` stay green unmodified. taranis becomes the built-in
   default project spec, not a special case in the code.
 - Sandbox has no kaggle token/network: everything verified by `--dry-run` + the hermetic
   stub-kaggle/fake-tree test fixtures; every real push is a user step, listed per phase.
@@ -70,19 +70,19 @@ P1 launcher surgery (see G1).
 ## G1 — project-spec refactor (the core surgery)
 
 A project declares itself in a JSON spec file (`launch.py push --spec gk.json ...`;
-stdlib-only parsing, validated before any upload). Absent `--spec`, the implied jax_rmhd
+stdlib-only parsing, validated before any upload). Absent `--spec`, the implied taranis
 spec reproduces today's behavior exactly. Fields (all optional except `name`):
 
 - `name`, `repo_marker`: marker file + content substring for `find_repo_root`
-  (replaces the hardcoded pyproject/`jax-rmhd` pair; e.g. `{"file": "Makefile",
+  (replaces the hardcoded pyproject/`taranis` pair; e.g. `{"file": "Makefile",
   "contains": "gx"}`).
 - `setup`: list of shell commands run before anything else (replaces
   `pip_install_stack`; apt/pip both legal — kernels run as root with internet).
-  jax_rmhd default: the current orbax→jax[cuda12] recipe.
-- `python_install`: bool (default true only for the jax_rmhd spec) — whether to
+  taranis default: the current orbax→jax[cuda12] recipe.
+- `python_install`: bool (default true only for the taranis spec) — whether to
   `pip install -e` the repo + do the in-process-import dance. Compiled projects: false.
 - `build`: shell command list producing artifacts under a declared `build_dir`
-  (build kernels only, see G2). Empty for jax_rmhd.
+  (build kernels only, see G2). Empty for taranis.
 - `run`: either `{"driver": "path.py"}` (today's make_data/main/__main__ contract,
   unchanged) or `{"command": ["./gx", "input.in"], "inputs": [...]}` — subprocess with
   cwd=workdir, env passthrough + spec-declared additions, streamed to the log.
@@ -94,10 +94,10 @@ spec reproduces today's behavior exactly. Fields (all optional except `name`):
   wrapped exactly like `maybe_report` (never kills the zip). Its imports come from
   `setup`.
 - `env`: dict of environment variables set before setup (generalizes `RMHD_PRECISION`;
-  the `--precision` flag becomes sugar that writes into it for the jax_rmhd spec).
+  the `--precision` flag becomes sugar that writes into it for the taranis spec).
 - `datasets`: extra `dataset_sources` ids to mount (binary cache, reference inputs).
 
-Implementation notes: the template keeps ONE code path — the jax_rmhd flow is the spec
+Implementation notes: the template keeps ONE code path — the taranis flow is the spec
 defaults, not an if/else fork. `CONFIG` grows a `spec` sub-dict via the existing
 sentinel substitution (still `json.loads`-wrapped). Shared with classroom P1:
 `--repo-root PATH` (stage a non-git tree or skip git checks) and `--dataset OWNER/SLug`
@@ -168,7 +168,7 @@ same flags, one review.
 
 1. Friend's code architecture — build system, I/O formats, restart story, MPI
    dependency, precision mix. Blocks only G3.3.
-2. Where the generalized launcher ultimately lives: it stops being jax_rmhd-specific
+2. Where the generalized launcher ultimately lives: it stops being taranis-specific
    after G1, so a standalone repo/pip package is natural — but splitting now costs the
    test harness conventions; propose deferring until after G3.2 proves the design.
 3. `kernel_sources` vs republished dataset as the default binary-cache transport

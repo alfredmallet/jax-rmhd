@@ -9,12 +9,16 @@ class EquationRecipe(NamedTuple):
     grad_func: Callable
     # number of evolved fields (sets the leading axis of state.fields)
     nfields: int
-    # per-equation once-per-step forcing scale (params.forcing_norm_per_step)
+    # per-equation once-per-step forcing scale (params.forcing_norm_per_step), called as
+    # forcing_scale_func(state, kgrid, params, dt) -> (n_ou,). dt is the length of the step
+    # the scale will be applied over (run._advance_forcing passes the just-completed step's
+    # dt; _refresh_forcing_scale passes 0.0) -- the normalization solves for the injected
+    # energy over one step, self term included, so it is dt-dependent since 2026-08-08.
     forcing_scale_func: Optional[Callable] = None
     # hook issuing the equation's halo exchange first
     halo_start_func: Optional[Callable] = None
     # (kgrid, params) -> the k-local LINEAR operator L, with dt f = L f + N(f). Built once
-    # in grids.setup_kgrids; the timesteppers apply exp(L*tau) through jax_rmhd.propagators
+    # in grids.setup_kgrids; the timesteppers apply exp(L*tau) through taranis.propagators
     # instead of summing it into the RHS. None: no linear operator (identity propagator).
     linear_matrix_func: Optional[Callable] = None
 

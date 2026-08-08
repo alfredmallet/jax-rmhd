@@ -30,10 +30,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import jax_rmhd as jr
-from jax_rmhd import _precision
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme, lsrk_advance, rk_advance
+import taranis as jr
+from taranis import _precision
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme, lsrk_advance, rk_advance
 
 # jitted exactly like run.py's mpi4jax path (params/nblock/scheme/stepper static);
 # no donation, so input states stay alive (they are fresh anyway).

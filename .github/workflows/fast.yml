@@ -65,7 +65,7 @@ jobs:
           print("no mpi4py: tests/conftest.py will install local_mpi_stub")
           PY
 
-      # Both precision sessions. Precision is read once at jax_rmhd import, so
+      # Both precision sessions. Precision is read once at taranis import, so
       # fp64 and fp32 cannot share a process -- see the Makefile.
       - name: make test
         run: make test

@@ -31,7 +31,7 @@ than the launcher; each rank would otherwise run the full domain independently.
 (This footgun exists in current code too; the guard fixes it for all backends.)
 
 Explicit `comm_backend="mpi4jax"`/`"jax"` without the imports → ImportError with the
-`pip install "jax-rmhd[mpi]"` hint. Explicit `"serial"` with size>1 → ValueError.
+`pip install "taranis[mpi]"` hint. Explicit `"serial"` with size>1 → ValueError.
 Auto-resolution to `"serial"` on a no-MPI machine is deliberately silent (the expected
 laptop case); the resolved backend is recorded in params.json.
 `"serial"` is valid for dims=2 and dims=3 (the dims-2 case is why `"jax"` alone can't
@@ -53,7 +53,7 @@ Size-1 periodic z topology: the only neighbor is self.
 
 ### Import layer
 
-New module `jax_rmhd/_mpi_compat.py`:
+New module `taranis/_mpi_compat.py`:
 - `try: from mpi4py import MPI / import mpi4jax` behind flags `HAVE_MPI4PY`,
   `HAVE_MPI4JAX`; exports `MPI`, `mpi4jax` (None when absent), `_NullComm`,
   `launcher_world_size()` (env sniff above).
@@ -92,7 +92,7 @@ never cp the repo inside the sandbox; no background processes; chunk runs ≤45 
 
 ### A1 — core implementation (opus)
 
-Files: `jax_rmhd/_mpi_compat.py` (new), `jax_rmhd/comms.py`, `jax_rmhd/config.py`.
+Files: `taranis/_mpi_compat.py` (new), `taranis/comms.py`, `taranis/config.py`.
 - `_mpi_compat` as specced; comms/config switch to it.
 - `comms.COMM_BACKENDS += ("serial",)`; serial branches in `halo_exchange`,
   `allreduce_sum`, `allreduce_max` (serial branch first; assert width bounds same as
@@ -104,12 +104,12 @@ Files: `jax_rmhd/_mpi_compat.py` (new), `jax_rmhd/comms.py`, `jax_rmhd/config.py
   the recorded `comm_backend` (re-resolves) unless overridden.
 - Acceptance: with real mpi4py installed, `git diff` of traced HLO for an mpi4jax run
   is empty (import indirection only); in the no-MPI sandbox,
-  `python -c "import jax_rmhd; jax_rmhd.Parameters(...)"` works with no stub, 2D and 3D.
+  `python -c "import taranis; taranis.Parameters(...)"` works with no stub, 2D and 3D.
 
 ### A2 — call-site audit (sonnet)
 
 - Grep every `params.comm`, `params.size`, `params.cart_comm`, `comm_backend`,
-  `MPI.`, `mpi4jax` use in `jax_rmhd/` and confirm serial correctness
+  `MPI.`, `mpi4jax` use in `taranis/` and confirm serial correctness
   (run.py:141 bcast, config.save bcast, snapshot_io branches at lines ~60/66/75,
   grids.py:83, physics/__init__.py `_halo_start_enabled` — decide: serial in
   `_HALO_START_BACKENDS`? Answer: yes, halo_start is free serial, but verify the
@@ -130,7 +130,7 @@ Files: `tests/test_backend_serial.py` (new), `tests/_rmhd_testing.py`,
     ImportError; fake `OMPI_COMM_WORLD_SIZE=4` in env + no mpi4py → RuntimeError;
     fake `OMPI_COMM_WORLD_SIZE=4` + (stub) mpi4py reporting size 1 → RuntimeError
     (mismatched-MPI guard). (Monkeypatch env + reload-safe: test via
-    `_resolve_backend` directly, not by re-importing jax_rmhd.)
+    `_resolve_backend` directly, not by re-importing taranis.)
   - snapshot roundtrip serial→serial and cross-restore serial↔(stub) mpi4jax size-1
     (flat layout both ways); `from_snapshot` of a params.json recording "mpi4jax"
     resolves to serial on the stub-free path.
@@ -184,7 +184,7 @@ Files: `tests/test_backend_serial.py` (new), `tests/_rmhd_testing.py`,
 
 Audited every `params.comm`/`params.size`/`params.rank`/`params.cart_comm`/
 `left_neighbor`/`right_neighbor`/`comm_backend`/`MPI.`/`mpi4jax`/`halo_start` site in
-`jax_rmhd/` (production package; `bench/`/`tests/` excluded per scope, flagged below).
+`taranis/` (production package; `bench/`/`tests/` excluded per scope, flagged below).
 `grep -rn` found sites in 8 files outside `comms.py`/`config.py`/`_mpi_compat.py`:
 `run.py`, `snapshot_io.py`, `grids.py`, `diagnostics.py`, `physics/__init__.py`,
 `physics/rmhd.py`, `physics/shared_physics.py` (`timestepping.py`/`__init__.py` matched
@@ -211,7 +211,7 @@ the grep only in comments — not real sites).
 | `config.py` `Parameters.save` backfill of missing ctor keys | **fixed** | see below |
 
 ### halo_start decision: **yes**, added `"serial"` to `_HALO_START_BACKENDS`
-(`jax_rmhd/physics/__init__.py`). Rationale: `comms.halo_exchange`'s serial branch is a
+(`taranis/physics/__init__.py`). Rationale: `comms.halo_exchange`'s serial branch is a
 pure array slice (no collective, no token ordering) — pre-issuing it at the top of the
 RHS instead of inside `z_derivatives` cannot change results, only *when* the slice
 happens. `tests/test_halo_width.py`'s two invariance tests already establish this
@@ -227,7 +227,7 @@ backend, not the stub): built a forced 3D `Parameters`/`kgrid`, jitted
 `inspect.signature(...).default` for every key, including `comm_backend` (default
 `None`), so a legacy record predating this feature would gain `"comm_backend": null`
 instead of documenting what actually wrote the backfilled file. Fixed in
-`jax_rmhd/config.py::Parameters.save`: for keys in `_TRANSPORT_KEYS`, backfill from
+`taranis/config.py::Parameters.save`: for keys in `_TRANSPORT_KEYS`, backfill from
 `rec[k]` (this save's resolved value, e.g. `"serial"`) instead of the signature default;
 every other key keeps using the signature default as before (that's intentionally "what
 old code used", not "what this run uses" — `comm_backend` is the one ctor arg where the
@@ -238,8 +238,8 @@ stays in `_TRANSPORT_KEYS`, never compared. Verified in the sandbox: wrote a
 `params.save()` — backfilled value is `"serial"`, not `null`.
 
 ### Fixes made
-1. `jax_rmhd/physics/__init__.py`: `_HALO_START_BACKENDS = ("jax",)` → `("jax", "serial")`, with a comment citing the invariance tests.
-2. `jax_rmhd/config.py`: `Parameters.save`'s backfill loop special-cases `_TRANSPORT_KEYS` to use the resolved value instead of the ctor signature default.
+1. `taranis/physics/__init__.py`: `_HALO_START_BACKENDS = ("jax",)` → `("jax", "serial")`, with a comment citing the invariance tests.
+2. `taranis/config.py`: `Parameters.save`'s backfill loop special-cases `_TRANSPORT_KEYS` to use the resolved value instead of the ctor signature default.
 
 No other fixes were needed — every other site was already correct by construction (A1's
 serial-first dispatch ordering in `comms.py` and the `_NullComm`/`cart_comm=None`/
@@ -260,7 +260,7 @@ serial, matching A1's handoff expectations).
   `ctx()`/ `fresh_params()` always route through the stub-or-real MPI resolution inside
   `bootstrap()`; A3's `bootstrap(stub=False)` (or equivalent) needs to exercise
   `_resolve_backend` truly stub-free the way this audit's sandbox script did (direct
-  `jax_rmhd.Parameters(...)` construction after `sys.path` insertion, no
+  `taranis.Parameters(...)` construction after `sys.path` insertion, no
   `local_mpi_stub` import) to actually cover the no-MPI import path end to end.
 
 ## Verification run (sandbox, no MPI toolchain present)
@@ -359,12 +359,12 @@ no production code changed by A5.
   which is exactly right.
 - **A3's config-copies-by-value seam: works, acceptably fragile.** `config.py` does
   `from ._mpi_compat import HAVE_MPI4PY, ...`, so `_resolve_backend` reads *config's* module
-  globals and patching `jax_rmhd.config.HAVE_MPI4PY` is observed (patching `_mpi_compat`
+  globals and patching `taranis.config.HAVE_MPI4PY` is observed (patching `_mpi_compat`
   would not be). The test asserts on `_resolve_backend`'s return value / exception type, so
   it really does exercise the resolution logic, not a mock of it. The coupling is documented
   at the top of the test module; anyone switching config to `from . import _mpi_compat` must
   update the test.
-- **`_NullComm` completeness.** The complete set of `params.comm` call sites in `jax_rmhd/`
+- **`_NullComm` completeness.** The complete set of `params.comm` call sites in `taranis/`
   is `Get_rank`/`Get_size` (config), `Create_cart` (config, inside the non-serial branch),
   `bcast` (config.save and run._start_snapshots, both under `size>1`), `Split_type`
   (comms._local_device_ids, `"jax"` only). `_NullComm` covers the three reachable ones; no

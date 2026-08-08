@@ -9,21 +9,21 @@ import sys, os, re, time, contextlib
 
 # Select the package version via RMHD_PKG=<dir>, robustly: a PEP-660 editable install
 # (pip install -e) registers a meta-path finder that silently beats PYTHONPATH, so we
-# drop any such finder for jax_rmhd and put the requested dir first, then verify.
+# drop any such finder for taranis and put the requested dir first, then verify.
 _pkgdir = os.environ.get("RMHD_PKG")
 if _pkgdir:
     sys.meta_path = [f for f in sys.meta_path
-                     if "jax_rmhd" not in (getattr(f, "__module__", "") or "")]
+                     if "taranis" not in (getattr(f, "__module__", "") or "")]
     sys.path.insert(0, _pkgdir)
 
 import numpy as np, jax, jax.numpy as jnp
-import jax_rmhd as jr
-from jax_rmhd import run as jrun
-from jax_rmhd.timestepping import get_scheme
+import taranis as jr
+from taranis import run as jrun
+from taranis.timestepping import get_scheme
 
 if _pkgdir:
     assert jr.__file__.startswith(os.path.abspath(_pkgdir) + os.sep), \
-        f"wrong jax_rmhd imported: {jr.__file__} (wanted {_pkgdir})"
+        f"wrong taranis imported: {jr.__file__} (wanted {_pkgdir})"
 
 getattr(jr, "init_cluster", lambda: None)()  # old packages (RMHD_PKG A/B) still define it
 label, case, donate = sys.argv[1], sys.argv[2], sys.argv[3] == "donate"
@@ -67,7 +67,7 @@ halo_late = "halo_late" in sys.argv
 if halo_late:
     # revert T7 within the new package: rebuild the RMHD recipe without the early-halo hook
     # (in-place registry assignment, before any construct_rhs/jit trace)
-    from jax_rmhd.physics import equation_registry
+    from taranis.physics import equation_registry
     _rec = equation_registry["RMHD"]
     assert hasattr(_rec, "halo_start_func"), "halo_late requires a package with T7"
     equation_registry["RMHD"] = _rec._replace(halo_start_func=None)
@@ -77,7 +77,7 @@ if halo_early:
     # force T7's early-halo hook on; the T7 on/off pair on GPU is halo_early vs halo_late.
     # p.halo_start overrides the new package's per-backend gate, which otherwise makes this
     # flag a silent no-op under comm_backend="mpi4jax" (measuring the baseline twice).
-    from jax_rmhd.physics import equation_registry, rmhd as _rmhd
+    from taranis.physics import equation_registry, rmhd as _rmhd
     _rec = equation_registry["RMHD"]
     assert hasattr(_rec, "halo_start_func"), "halo_early requires a package with T7"
     equation_registry["RMHD"] = _rec._replace(halo_start_func=_rmhd.halo_start)
@@ -96,14 +96,30 @@ kg = jr.setup_kgrids(p)
 # A/B isolation switches (new package only), to attribute any forced-path regression:
 if "sep" in sys.argv:
     # revert T4b: per-stage Pp/Pm as two separate scalar reductions/allreduces
-    from jax_rmhd.physics import rmhd, shared_physics
-    def _sep(fields, f_raw, kgrid, params):
+    from taranis.physics import rmhd, shared_physics
+    def _sep(fields, f_raw, kgrid, params, dt=None):
         phik, psik = fields[0], fields[1]
         Pp = shared_physics.perp_inner_product(phik + psik, f_raw[0], kgrid, params)
         Pm = shared_physics.perp_inner_product(phik - psik, f_raw[1], kgrid, params)
+        # the self-energy reductions the 2026-08-08 normalization needs, also unbatched
+        F2p = shared_physics.perp_inner_product(f_raw[0], f_raw[0], kgrid, params)
+        F2m = shared_physics.perp_inner_product(f_raw[1], f_raw[1], kgrid, params)
         eps_p, eps_m = (2.0*e for e in params.forcing_power_elsasser)
-        return jnp.stack([shared_physics.safe_scale(eps_p, Pp, params.forcing_scale_max),
-                          shared_physics.safe_scale(eps_m, Pm, params.forcing_scale_max)])
+        smax = params.forcing_scale_max
+        if dt is None:   # per-stage path; this A/B switch is only ever used with the default
+            # mirror rmhd._scale_epilogue's dt_q-tightened cap (same jnp.where guard) so
+            # the unbatched revert stays behavior-identical to the real per-stage path
+            # (review F5)
+            def _cap(tgt, F2):
+                F2dtq = F2*rmhd._quiescent_dt(params)
+                cap = jnp.where(F2dtq > 0.0,
+                                jnp.sqrt(2.0*jnp.abs(tgt)/jnp.where(F2dtq > 0.0, F2dtq, 1.0)),
+                                smax)
+                return jnp.minimum(smax, cap)
+            return jnp.stack([shared_physics.safe_scale(eps_p, Pp, _cap(eps_p, F2p)),
+                              shared_physics.safe_scale(eps_m, Pm, _cap(eps_m, F2m))])
+        return jnp.stack([shared_physics.selfnorm_scale(eps_p, Pp, F2p, dt, smax),
+                          shared_physics.selfnorm_scale(eps_m, Pm, F2m, dt, smax)])
     rmhd._forcing_scale_from = _sep
 if "fullrng" in sys.argv and hasattr(kg, "fidx_x"):
     # revert T4a: drop the shell index set so ou_update falls back to the full-grid draw
@@ -122,7 +138,7 @@ for a in sys.argv:
 # stepper is wrapped in the z-mesh context here exactly as run.simulate_scan does; the
 # mpi4jax path keeps the historical static-argnums jit verbatim.
 if getattr(p, "comm_backend", "mpi4jax") == "jax":
-    from jax_rmhd import comms
+    from taranis import comms
     _adv = jax.jit(comms.shard_call(
         lambda s, kgr: jrun.block_of_steps(s, kgr, p, nblock, scheme, stepper), p, kg),
         **({"donate_argnums": (0,)} if donate else {}))

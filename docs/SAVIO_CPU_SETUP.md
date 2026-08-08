@@ -1,11 +1,11 @@
-# Setting up and running jax_rmhd on Savio (CPU)
+# Setting up and running taranis on Savio (CPU)
 
 Student-oriented guide: build the `jax_cpu` conda env once, then run 2D interactively and
 3D under MPI via Slurm. GPU setup is separate — see `SAVIO_GPU_SETUP.md`. Official cluster
 docs: https://docs-research-it.berkeley.edu/services/high-performance-computing/user-guide/
 
 Prerequisites: a Savio account under the group's allocation (`fc_kawturb`), one-time-password
-login working (`ssh <user>@hpc.brc.berkeley.edu`), and a clone of this repo at `~/jax_rmhd`.
+login working (`ssh <user>@hpc.brc.berkeley.edu`), and a clone of this repo at `~/taranis`.
 
 ## 1. Build the `jax_cpu` env (login node, once)
 
@@ -40,7 +40,7 @@ pip install orbax-checkpoint tensorstore numpy matplotlib
 # NOT `pip install -e ".[mpi]"` here: the extra would let pip resolve its own mpi4py/mpi4jax
 # wheels, bypassing the MPICC-pinned from-source builds above and their build ordering
 # (mpi4py before mpi4jax). Both are already satisfied, so plain `-e .` picks them up as-is.
-cd ~/jax_rmhd && pip install -e .
+cd ~/taranis && pip install -e .
 ```
 
 Verify (still on the login node — fine for imports, never for real runs):
@@ -49,7 +49,7 @@ Verify (still on the login node — fine for imports, never for real runs):
 # every path must be under ~/.conda/envs/jax_cpu, NEVER ~/.local
 python -c "import mpi4py, mpi4jax; print(mpi4py.__file__); print(mpi4jax.__file__)"
 python -c "from mpi4py import MPI; print(MPI.Get_library_version().splitlines()[0])"  # must name the module's openmpi (e.g. 'Open MPI v4.1.6')
-python -c "import jax, jax_rmhd, orbax.checkpoint; print(jax.__version__)"
+python -c "import jax, taranis, orbax.checkpoint; print(jax.__version__)"
 ```
 
 ## 2. Things this codebase does differently (read before running)
@@ -61,7 +61,7 @@ python -c "import jax, jax_rmhd, orbax.checkpoint; print(jax.__version__)"
   three ranks.
 - **Always launch through `mpirun`, even for one rank**: `mpirun -n 1 python script.py`.
 - Editable install caveat: `pip install -e .` means jobs import whatever is currently
-  checked out in `~/jax_rmhd` — switching git branches changes what your queued jobs run.
+  checked out in `~/taranis` — switching git branches changes what your queued jobs run.
   For A/B benchmarking use the `RMHD_PKG` mechanism in `bench/bench_phase1.py`, never
   PYTHONPATH.
 
@@ -72,7 +72,7 @@ Login nodes are shared — anything heavier than imports belongs in a job. Inter
 ```bash
 srun --pty -A fc_kawturb -p savio3 -N 1 -t 00:30:00 bash
 source activate jax_cpu && export PYTHONNOUSERSITE=1 RMHD_PRECISION=64
-cd ~/jax_rmhd && mpirun -n 1 python tests/test_forcing_smoke.py   # ends "ALL PASS"
+cd ~/taranis && mpirun -n 1 python tests/test_forcing_smoke.py   # ends "ALL PASS"
 ```
 
 `examples/orzag-tang-2D.ipynb` and `forced-turbulence-2D.ipynb` are current worked
@@ -112,7 +112,7 @@ export OMPI_MCA_pml=ucx
 export RMHD_PRECISION=64
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
-REPO=$HOME/jax_rmhd
+REPO=$HOME/taranis
 time mpirun -n $SLURM_NTASKS "$PY" -u "$REPO/tests/forced_turbulence_64cubed.py"
 ```
 

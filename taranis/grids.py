@@ -30,7 +30,7 @@ class K_Grids(NamedTuple):
     # parallel wavenumbers, shape (nz,1,1) so it broadcasts onto a (nz,nkx,nky) field.
     # Only built when params.z_spectral (axis 1 of the fields is then kz, not z); None otherwise.
     kz: Optional[jnp.ndarray] = None
-    # linear-propagator entries (jax_rmhd.propagators): the equation set's k-local linear
+    # linear-propagator entries (taranis.propagators): the equation set's k-local linear
     # operator L (dt f = L f + N(f)) and, for the putzer2 backend, its precomputed
     # half-trace and discriminant. None when the recipe declares no linear_matrix_func.
     lin_L: Optional[jnp.ndarray] = None    # (nfields, nz-or-1, nkx, nky) or (2, 2, nz-or-1, nkx, nky)

@@ -65,7 +65,12 @@ def _advance_forcing(new_state, prev_t, kgrid, params):
     new_state = new_state._replace(forcing_state=new_forcing_state, forcing_key=new_forcing_key)
     if params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
-        new_state = new_state._replace(forcing_scale=scale_func(new_state, kgrid, params))
+        # the SAME dt is handed to the scale: the normalization now solves for the injection
+        # over one step (self term included), so it needs a step length. This is the dt of
+        # the step just completed and the scale is used on the NEXT one -- the lagged-dt
+        # approximation documented in rmhd.forcing_scale (exact under cfl_every blocks,
+        # where dt is frozen).
+        new_state = new_state._replace(forcing_scale=scale_func(new_state, kgrid, params, dt))
     return new_state
 
 def _refresh_forcing_scale(state, kgrid, params):
@@ -74,12 +79,17 @@ def _refresh_forcing_scale(state, kgrid, params):
     # zeros and hand-built states may be stale — so recomputes.
     if params.forcing and params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
+        # dt=0.0: there is no "step just completed" here, and none is needed. A state from
+        # initialize has forcing_state == 0 (so f_raw == 0 and the scale multiplies nothing
+        # on step 1 whatever it is), and a restored checkpoint gets a proper dt-aware scale
+        # from the first _advance_forcing. The F2*dt == 0 guard in selfnorm_scale turns this
+        # into plain safe_scale, i.e. exactly the pre-2026-08-08 refresh behaviour.
         if params.comm_backend == "jax":
             # the psum inside needs a shard_map context (eager call, so jit it here)
-            f = comms.shard_call(lambda s,kg: scale_func(s,kg,params), params, kgrid, out_specs=P())
+            f = comms.shard_call(lambda s,kg: scale_func(s,kg,params,0.0), params, kgrid, out_specs=P())
             state = state._replace(forcing_scale=jax.jit(f)(state, kgrid))
         else:
-            state = state._replace(forcing_scale=scale_func(state, kgrid, params))
+            state = state._replace(forcing_scale=scale_func(state, kgrid, params, 0.0))
     return state
 
 #this can be used to estimate a good nblock. You can set the minimum higher.

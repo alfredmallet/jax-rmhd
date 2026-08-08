@@ -48,7 +48,7 @@ def _lists_to_tuples(v):
         return {k: _lists_to_tuples(x) for k, x in v.items()}
     return v
 
-_MPI_HINT = ('install the MPI extra: pip install "jax-rmhd[mpi]" (or use '
+_MPI_HINT = ('install the MPI extra: pip install "taranis[mpi]" (or use '
              "comm_backend='serial'/None for single-process runs)")
 
 def _resolve_backend(requested):
@@ -162,7 +162,7 @@ class Parameters():
         else:
             self.nz=1
         #MPI
-        # transport used by jax_rmhd.comms for halos/allreduces (static: dispatched in plain python)
+        # transport used by taranis.comms for halos/allreduces (static: dispatched in plain python)
         # comm_backend=None auto-resolves to mpi4jax (MPI present) or serial (no MPI toolchain)
         if comm_backend is not None and comm_backend not in comms.COMM_BACKENDS:
             raise ValueError(f"comm_backend must be one of {comms.COMM_BACKENDS} or None (auto), "

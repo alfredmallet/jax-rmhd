@@ -22,7 +22,7 @@ import sys
 
 import numpy as np
 
-import jax_rmhd as jr
+import taranis as jr
 
 N_STEPS = 10
 

@@ -1,7 +1,7 @@
 # 3D GDI production run (plans/GDI_PLAN.md P4b), examples/gdi_2d_run.py's pattern.
 #
 # Sized for a laptop/sandbox demonstration, NOT production (see the sizing note in
-# jax_rmhd/physics/gdi.py's module docstring for the 512^3 single-GPU estimate): 64x64x16,
+# taranis/physics/gdi.py's module docstring for the 512^3 single-GPU estimate): 64x64x16,
 # fp32 fine here. z_spectral=True (required for GDI dims==3), eqpars D_par-only (gpar_fac=0,
 # the P4b default -- see gdi.py's module docstring for the "floor not retired, default off"
 # decision), production scheme imexcb3e (CB-IMEX, the P4b-recommended L-stable scheme).
@@ -20,11 +20,11 @@ import time
 import numpy as np
 import jax.numpy as jnp
 
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd.physics import gdi
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+import taranis as jr
+import taranis.snapshot_io as sn
+from taranis.physics import gdi
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 NX = NY = 64
 NZ = 16

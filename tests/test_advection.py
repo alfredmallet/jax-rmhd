@@ -28,11 +28,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-import jax_rmhd as jr
+import taranis as jr
 from _rmhd_testing import alfven_ic, checks, ctx, fit_order
-from jax_rmhd.comms import allreduce_sum
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+from taranis.comms import allreduce_sum
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 _DT = 1e-3
 _NSTEPS = round(0.1 / _DT)  # exact step count; the end time is read back from state.t

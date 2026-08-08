@@ -31,7 +31,7 @@ says so.
 ## Self-test
 
 The **Self-test** button runs the 32² reference vectors (inlined from
-`refvectors.json`, generated at fp64 by `gen_refvectors.py` against `jax_rmhd` itself)
+`refvectors.json`, generated at fp64 by `gen_refvectors.py` against `taranis` itself)
 through the same GPU pipelines as production: FFT layout, static grids, nonlinear term,
 forcing term + normalization scales, energy, CFL dt, and one full deterministic LSRK33
 step (recorded state → recorded dt and scales → compare), plus a statistical
@@ -124,7 +124,7 @@ is the default and is what the chart drew before they existed):
 
 The Elsasser energies are E<sup>±</sup> = E_kin + E_mag ± H_c with the cross helicity
 H_c = ⟨u·b⟩, i.e. E<sup>±</sup> = ½⟨|z<sup>±</sup>|²⟩ and E_tot = (E⁺+E⁻)/2 — the
-convention `jax_rmhd/physics/rmhd.py` uses for the forcing powers, which is what lets all
+convention `taranis/physics/rmhd.py` uses for the forcing powers, which is what lets all
 three curves share one axis. H_c costs nothing extra: it rides in the fourth (previously
 zero) lane of `energyPartial`'s vec4 accumulator, and the spectra kernels bin it as a
 third lane, so E<sup>±</sup>(k) = E_u(k) + E_b(k) ± H_c(k) needs no second kernel.
@@ -472,6 +472,11 @@ need one (ν/a² ≪ γ there: 3.6 %).
 ε⁺ and ε⁻ are separate log sliders with a lock checkbox (on by default); they are in the
 same units — each is a contribution to dE/dt, so the total injection rate is their sum
 (`rmhd._forcing_scale_from`'s convention). Unlocking them drives an imbalanced cascade.
+The scale that realizes those rates solves `½·F₂·dt·s² + P·s = ε` for its positive root
+(`shared_physics.selfnorm_scale`, mirrored in `physics.js` `scaleWGSL`), so a quiescent
+start injects `ε·dt` on the first forced step (the second step overall — the O-U
+envelope is still zero on step one) instead of an ε-independent kick; `smax` is only a
+last-resort clip. Derivation and the dated behaviour change: `docs/numerics.md`.
 The **band n** pair of handles sets the forcing shell [n_min, n_max) in units of the box
 wavenumber; they cannot cross. The band is baked into the grid (`fmask`) *and* into the
 OU kernel's `NS`, so changing it triggers the ordinary rebuild path on handle release —

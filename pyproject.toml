@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jax-rmhd"
+name = "taranis"
 version = "0.1.0"
 description = "Spectral RMHD solver in JAX"
 dependencies = [
@@ -27,9 +27,9 @@ test = ["pytest>=7", "matplotlib"]
 lint = ["ruff==0.16.1"]
 
 [tool.setuptools]
-# NB: jax_rmhd.physics must be listed -- an install without it ships a package
+# NB: taranis.physics must be listed -- an install without it ships a package
 # that cannot import its own equation registry (editable installs mask this).
-packages = ["jax_rmhd", "jax_rmhd.physics"]
+packages = ["taranis", "taranis.physics"]
 
 [tool.ruff]
 # Rule scope is PINNED deliberately, and so is the ruff version (see the `lint`

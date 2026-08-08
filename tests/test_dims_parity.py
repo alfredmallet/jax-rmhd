@@ -23,9 +23,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_rmhd import _precision
-from jax_rmhd.run import block_of_steps
-from jax_rmhd.timestepping import get_scheme
+from taranis import _precision
+from taranis.run import block_of_steps
+from taranis.timestepping import get_scheme
 
 _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
 _NSTEPS = 20

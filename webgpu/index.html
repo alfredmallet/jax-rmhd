@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebGPU reduced MHD — jax_rmhd in the browser</title>
+<title>WebGPU reduced MHD — taranis in the browser</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <h1>Reduced MHD in the browser — WebGPU pseudospectral solvers</h1>
 <div class="sub">a browser port of the
-  <a href="https://github.com/alfredmallet/jax_rmhd" target="_blank" rel="noopener">jax_rmhd</a>
+  <a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>
   solver &middot; fp32 &middot; no server, no build step
-  &middot; <a href="https://github.com/alfredmallet/jax_rmhd/blob/main/webgpu/README.md"
+  &middot; <a href="https://github.com/alfredmallet/taranis/blob/main/webgpu/README.md"
        target="_blank" rel="noopener">about / README</a></div>
 
 <p class="lead">Two live pseudospectral solvers for reduced MHD, running entirely on
 your GPU through WebGPU: the same equations, dealiasing, LSRK33 integrating-factor stepper
 and (optional) Elsasser Ornstein&ndash;Uhlenbeck forcing as the JAX code they were ported
 from. Both
-pages ship the fp64 reference vectors generated from <code>jax_rmhd</code> itself and a
+pages ship the fp64 reference vectors generated from <code>taranis</code> itself and a
 <b>Self-test</b> button that runs them through the same GPU pipelines as production. They
 are demos, not science runs: WebGPU has no float64.</p>
 
@@ -52,7 +52,7 @@ adjustable; presets are configurations, not separate programs
   Needs a WebGPU-capable browser (Chrome/Edge 113+, recent Firefox and Safari). Source,
   implementation contracts (<code>SPEC.md</code>, <code>SPEC3D.md</code>) and the reference-vector
   generators live in <code>webgpu/</code> of the
-  <a href="https://github.com/alfredmallet/jax_rmhd" target="_blank" rel="noopener">jax_rmhd repository</a>.
+  <a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis repository</a>.
 </div>
 
 <div class="hint" id="acknowledgements" style="margin-top:18px">

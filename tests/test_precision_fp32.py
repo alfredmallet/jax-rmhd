@@ -1,4 +1,4 @@
-# fp32 coverage: RMHD_PRECISION defaults to 32 (jax_rmhd/__init__.py), so this is the
+# fp32 coverage: RMHD_PRECISION defaults to 32 (taranis/__init__.py), so this is the
 # production default. Everything here is @fp32-marked, so it runs in the
 # `RMHD_PRECISION=32` session of `make test` and prints [SKIP] in the fp64 session
 # (script mode included).
@@ -23,9 +23,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import jax_rmhd as jr
-import jax_rmhd.snapshot_io as sn
-from jax_rmhd import _precision, diagnostics
+import taranis as jr
+import taranis.snapshot_io as sn
+from taranis import _precision, diagnostics
 
 _FORCED = dict(nx=16, ny=16, nz=16, diss=(1e-4, 1e-4), hyper=2,
                adaptive_timestep=True, dt=0.1,
@@ -36,7 +36,7 @@ _FORCED = dict(nx=16, ny=16, nz=16, diss=(1e-4, 1e-4), hyper=2,
 
 @pytest.mark.fp32
 def test_default_precision_is_32():
-    # import jax_rmhd with NO RMHD_PRECISION in the environment and read back
+    # import taranis with NO RMHD_PRECISION in the environment and read back
     # _precision.precision -- the honest check of the production default FIELD
     # precision. jax_enable_x64 is unconditionally on since A1 (PRECISION_PLAN) and
     # no longer distinguishes fp32 from fp64 sessions -- checked here too, as the
@@ -51,8 +51,8 @@ def test_default_precision_is_32():
         "    from mpi4py import MPI  # noqa: F401\n"
         "except Exception:\n"
         "    import local_mpi_stub  # noqa: F401\n"
-        "import jax_rmhd, jax\n"
-        "from jax_rmhd import _precision\n"
+        "import taranis, jax\n"
+        "from taranis import _precision\n"
         "print('X64_IS', bool(jax.config.jax_enable_x64))\n"
         "print('PRECISION_IS', _precision.precision)\n"
     )
