@@ -2145,6 +2145,26 @@ async function autoDissHook(sv) {
                                         Math.pow(10, parseFloat(e.min)),
                                         Math.pow(10, parseFloat(e.max)))));
 }
+// A HYPER change re-parameterizes the operator: nu_targ ~ k_d^(1-2*hyper) moves by many
+// decades at once (1 <-> 4 at 256^2 is ~13), and the factor-2-per-update cap -- which is
+// for measurement noise, not for a changed exponent -- would leave the run
+// mis-dissipated for ~15 s while the controller walked over. So the hyper select JUMPS:
+// one fresh measurement, the clamped target written outright. Runs after applyControls,
+// so the slider range (dissRangeSync via syncLabels) and sv.p.hyper are already the new
+// hyper's; a state with nothing measurable yet falls back to the marginal seed for the
+// NEW hyper instead. Manual (unticked) diss is the user's own and is never touched.
+async function autoDissRetarget() {
+  const sv = solver;
+  if (!sv || !autoDissOn()) return;
+  autoDissAt = performance.now();                  // the jump IS this period's update
+  const sp = await sv.readSpectrum();
+  if (sv !== solver) return;                       // retired while we were awaiting
+  const e = el("rDiss");
+  const t = autoDissTarget(sp.perp, sv.nb, sv.g.kunit, sv.p.hyper);
+  if (t > 0) dissWriteLog(Math.log10(Math.min(Math.pow(10, parseFloat(e.max)),
+                                              Math.max(Math.pow(10, parseFloat(e.min)), t))));
+  else autoDissSeed();
+}
 
 // ---------------------------------------------------------------------------
 // presets (the in-app dropdown; ?demo=NAME is the same thing as a deep link)
@@ -2268,7 +2288,10 @@ function wireCommonControls(opts) {
   // ones included -- pause, move the slider, Reset really does rescale.
   lockPair("rAmpP", "rAmpM", "cbAmpLock", syncLabels, () => { if (!icDraw.on) applyIC(); });
   lockPair("rEpsP", "rEpsM", "cbEpsLock", applyControls);
-  el("selHyper").onchange = applyControls;
+  // hyper first uploads live (applyControls), then the controller jumps to the new
+  // hyper's target rather than crawling there under its per-update cap (see
+  // autoDissRetarget); fire-and-forget is the event-handler contract for readbacks here
+  el("selHyper").onchange = () => { applyControls(); autoDissRetarget(); };
   // auto-diss (item 6): ticking hands the slider to the controller and lets it act on the
   // next frame; unticking gives the slider back exactly where the controller left it.
   el("cbAutoDiss").onchange = () => { autoDissAt = 0; syncLabels(); };

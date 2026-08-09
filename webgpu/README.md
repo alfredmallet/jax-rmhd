@@ -524,7 +524,11 @@ take a readback of its own — so there is no new kernel and no new buffer, and 
 one spectrum pass is ever added.
 
 While ticked the slider is disabled and *follows* the controller, so the level is always
-visible and unticking simply leaves the manual slider where the controller left it. The
+visible and unticking simply leaves the manual slider where the controller left it.
+Changing **hyper** makes the controller jump straight to the new exponent's target (one
+fresh measurement, no relaxation cap — the cap is for measurement noise, not for a
+re-parameterized operator); with the box unticked a hyper change never touches your
+slider. The
 pure core (`autoDissShellE` / `autoDissTarget` / `autoDissRelax`) takes state in and
 returns ν, which is what `devtools/checks.js` §6 drives — including a closed-loop cascade
 model whose fixed point is ν_marg to within a decade. Before the first measurement a

@@ -644,8 +644,48 @@ setTimeout(async () => {
       if (a1.dis) fail("unticking auto-diss left the slider disabled");
       if (Math.abs(a1.v - held[1]) > 1e-9)
         fail("unticking auto-diss moved the value: " + a1.v + " vs " + held[1]);
+      // a hyper change must JUMP the ticked controller to the new hyper's target
+      // (autoDissRetarget), not crawl there under the factor-2 cap
+      run(`function(){ const e = document.getElementById("cbAutoDiss"); e.checked = true; e.onchange(); }`);
+      const jump = await run(`async function(){
+        const sv = solver, bins = new Float32Array(3 * sv.nb);
+        for (let b = 1; b < sv.nb; b++) { bins[b] = 1e-2; bins[sv.nb + b] = 1e-2; }
+        const rs = sv.readSpectrum.bind(sv);
+        sv.readSpectrum = async () => ({ perp: bins, par: null, parKfac: 1 });
+        const hs = document.getElementById("selHyper"), h0 = hs.value;
+        const before = +document.getElementById("rDiss").value;
+        hs.value = h0 === "1" ? "4" : "1"; hs.onchange();
+        await new Promise(r => setTimeout(r, 0));       // the handler's readback settles
+        const e = document.getElementById("rDiss");
+        const after = +e.value, hNew = +hs.value;
+        const t = autoDissTarget(bins, sv.nb, sv.g.kunit, hNew);
+        const want = Math.min(+e.max, Math.max(+e.min, Math.log10(t)));
+        hs.value = h0; hs.onchange();                   // restore for later exercises
+        await new Promise(r => setTimeout(r, 0));
+        sv.readSpectrum = rs;
+        return [before, after, want];
+      }`);
+      if (Math.abs(jump[1] - jump[2]) > 0.051)          // one 0.05 quantization notch
+        fail("hyper change did not jump auto-diss to the new target: " + JSON.stringify(jump));
+      if (Math.abs(jump[1] - jump[0]) <= Math.log10(2) + 1e-9)
+        fail("the hyper-change move never exceeded the per-update cap -- jump untested: " + JSON.stringify(jump));
+      // ... and a hyper change must leave a MANUAL (unticked) slider alone
+      const manual = await run(`async function(){
+        const e = document.getElementById("cbAutoDiss"); e.checked = false; e.onchange();
+        const before = +document.getElementById("rDiss").value;
+        const hs = document.getElementById("selHyper"), h0 = hs.value;
+        hs.value = h0 === "1" ? "4" : "1"; hs.onchange();
+        await new Promise(r => setTimeout(r, 0));
+        const after = +document.getElementById("rDiss").value;
+        hs.value = h0; hs.onchange();
+        await new Promise(r => setTimeout(r, 0));
+        return [before, after];
+      }`);
+      if (manual[0] !== manual[1])
+        fail("hyper change moved a MANUAL diss slider: " + JSON.stringify(manual));
       console.log(tag + " auto-diss: tick -> tracks (" + moved[0] + " -> " + moved[1] +
-                  "), empty shell holds, no-card readback OK, untick keeps " + a1.v);
+                  "), empty shell holds, no-card readback OK, untick keeps " + a1.v +
+                  ", hyper jump " + jump[0] + " -> " + jump[1]);
     }
 
     // --- the IC editor as its own view (Phase G.7) -----------------------------
