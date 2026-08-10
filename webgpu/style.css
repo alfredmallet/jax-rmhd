@@ -67,8 +67,14 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
    them, and the canvas must never be pushed down to make space for prose */
 #rail { flex: 1 1 100%; min-width: 0; max-width: 780px; margin: 0; }
 @media (min-width: 1400px) { #rail { flex: 0 1 300px; max-width: 340px; } }
-#rail .railtitle { color: #a9c7e8; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-#rail .lead { margin: 0 0 10px; }
+/* the intro pane under the subtitle: one line closed (the price everyone pays), the two
+   lead paragraphs open (the first visit, until dismissed once). Width-capped for
+   readability, like the rail. */
+#intro { max-width: 780px; margin: 0 0 10px; }
+#intro summary { cursor: pointer; color: #a9c7e8; font-size: 13px; font-weight: 600;
+                 padding: 2px 0; }
+#intro summary:hover { color: #cfe0f2; }
+#intro .lead { margin: 6px 0 10px; }
 
 /* ---- cards ---- */
 .card.disp, .card.chart { background: #181b21; border: 1px solid #252a33; border-radius: 6px;

@@ -189,17 +189,17 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   the guided-preset text still showing with the panel hidden, and `setRunning`'s
   flag/label/`.stop` coherence in both directions. Phase B: the shared tab strip, asserted
   as what a visitor sees (the current page a filled `<span>`, the other one an `<a href>`),
-  the what-is rail — a title, a lead and the five panes, every one filled and COLLAPSED —
+  the intro pane under the subtitle (open first visit, dismissal remembered, forced open
+  on the no-GPU page), the what-is rail — the five panes, every one filled and COLLAPSED —
   plus a grep of all four html files proving the pane text lives only in `common.js`, then
   the no-WebGPU path driven for real through `stubenv(..., {noGpu: true})`: one `poster.png`
   node with alt text inside the display area, the browser advice moved under it with its
   `#status` id intact, every pane forced open, and NO poster node at all on a working boot.
-  Phase C (autoplay): a plain visit boots RUNNING on both pages — flag, "Pause" label and
-  `.stop` class, on the default preset at its ratified size — while `?demo=kh` and
-  `?demo=collision` still boot paused with a "Run" label, and the no-WebGPU boot starts no
-  clock at all (initGPU returned false, so `bootApply` was never reached). The one-shot-ness
-  of the autorun is checked from the other side too: a later preset switch must leave the
-  run state exactly as the user left it, paused or running.
+  Run state: EVERY visit boots paused with the green "Run" label (the Phase C autoplay
+  was reversed by Alfred 2026-08-10 — the hero button is the call to action), on the
+  default preset at its ratified size; a later preset switch must leave the run state
+  exactly as the user left it, paused or running, and the no-WebGPU boot starts no
+  clock at all.
   Finally index.html's redirect, read as markup (there is no script to boot): meta refresh,
   canonical, `location.replace`, the no-JS link, and the two strings `pages.yml` seds.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue

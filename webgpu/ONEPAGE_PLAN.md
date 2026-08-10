@@ -56,11 +56,12 @@ the "what is…" panes already exist as `<details>` on index.html.
   red ≈ `#7a3d3d` backgrounds with the existing `#d8dee6` text, never pure `#0f0`/
   `#f00`. Two constants in `style.css` so retuning after on-device is a two-line edit.
   No other topbar button grows.
-- **Autoplay on a plain visit** (ratified). A visit with no `?demo=` boots the default
-  forced-turbulence preset at **256²** (ratified; 3D keeps its current default size)
-  and starts running (`running = true`, button shows red "Pause"). Any `?demo=` visit
-  keeps today's paused boot — lessons want the visitor to read first. Trim the h1 +
-  `.sub` to one line each so title → tabs → topbar → canvas fits one laptop screen.
+- **~~Autoplay on a plain visit~~ REVERSED by Alfred 2026-08-10 (after build):** every
+  visit boots PAUSED on the default forced-turbulence preset at **256²** (2D; 3D keeps
+  its current default size); the big green Run is the call to action. The autorun seam
+  (bootApply's first call) is documented in a comment there if it ever comes back.
+  Trim the h1 + `.sub` to one line each so title → tabs → topbar → canvas fits one
+  laptop screen (unchanged).
 - **index.html redirects immediately** (ratified; no splash).
 - **No-WebGPU fallback is IN scope** (consequence of the redirect: today a failed
   `initGPU` leaves dead black canvases plus one `#status` line, acceptable behind an
@@ -132,9 +133,33 @@ checks/layout/names/dup green, WGSL byte-identical (120/159126 B, 240/357390 B).
 Alfred's on-device list above stands, plus: color-mix rendering of the Run tones,
 poster page in a real non-WebGPU browser (Firefox mac/Linux).
 
+## Round 2 (Alfred, 2026-08-10, after the build was committed as 0286eee)
+
+1. **Autoplay REVERSED** — every visit boots paused; the big green Run is the call to
+   action (see the struck-through decision above; seam documented at `bootApply`).
+2. **Original lead text restored VERBATIM** — Phase B's condensed rewrite of the index
+   essay's two lead paragraphs was worse than Alfred's original; all five panes had
+   gone over verbatim and stay. One deliberate exception kept: the technical-details
+   pane says "the preset dropdown in the top bar" instead of the original "each app has
+   a preset dropdown in its top bar" (the text now lives ON the app page).
+3. **Intro moved under the subtitle** — the two lead paragraphs are now a
+   "what is all this?" `<details>` (`#intro`, built by `chromeBuild`) directly under
+   the h1/.sub, ABOVE the tabs: open until the visitor closes it once (localStorage
+   `taranisIntro`, same pattern as the params toggle), forced open on the no-WebGPU
+   page. The rail keeps just the five background panes. Chosen over Alfred's
+   floated "intro preset" idea (two paragraphs riding the STICKY topbar would stay
+   glued to the top of a phone screen) and over an always-visible block (permanent
+   ~150 px canvas push).
+4. **rmhdvars hint** now opens its second sentence with "Press show params above," —
+   the walkthrough needs `edit IC`, which lives in the hidden panel.
+
+Gates after round 2: checkonepage 74/74 (paused-boot + intro legs), bootstub 6 legs
+re-run green, checks/layout/names green, WGSL byte-identical.
+
 ## Decisions ratified (Alfred, 2026-08-10)
 
-1. Autoplay, not pulsing-Run (revisit only if it feels rude on-device).
+1. ~~Autoplay, not pulsing-Run.~~ REVERSED after build (2026-08-10, on-device): boots
+   paused; `bootAutorun` removed, gates flipped to assert the paused boot.
 2. Plain-visit default: forced-turbulence preset at 256².
 3. index.html: immediate redirect, no splash.
 4. No-WebGPU poster fallback: in scope, Phase B (see decision above). Alfred supplies

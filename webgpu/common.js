@@ -2704,14 +2704,23 @@ const TABS = [{ t: "2D", href: "rmhd2d.html", is3d: false },
 // The essay index.html used to carry MOVED here rather than going in the bin (the front
 // door is now rmhd2d.html, and an essay nobody reaches is worse than one beside the
 // picture it describes): two sentences of lead, then the five panes, all collapsed.
-const RAIL_LEAD =
-  "this is a browser port of the plasma turbulence code "
-  + '<a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>'
-  + ", running on your gpu with the same numerical algorithms as the parent code: it solves"
-  + " Reduced MagnetoHydroDynamics (RMHD), a simplified model for a plasma threaded by a"
-  + " strong magnetic field, as most of our solar system is. change anything you like, pick"
-  + " a preset, and get a feel for how this turbulence works &mdash; the panes below say"
-  + " what any of it means.";
+// Alfred's original index.html lead, VERBATIM (review follow-up: a condensed rewrite
+// was worse) -- two paragraphs, the body of the #intro pane under the subtitle
+const RAIL_LEAD = [
+  `this is a browser port of the jax plasma turbulence code
+  <a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>,
+  running on your gpu and using the same numerical algorithms as the parent code. Reduced
+  MagnetoHydroDynamics (RMHD) is the equation set solved here: a simplified model for the
+  behavior of a plasma when there is a strong magnetic field present (as is the case in our
+  solar system). it is useful because it encodes the physics of Alfv&eacute;n waves traveling
+  along magnetic field lines, as well as complex nonlinear interactions between the waves. it
+  does a surprisingly good job at describing plasma turbulence in a wide range of systems.`,
+  `we hope you can use these solvers to get a feel for how this turbulence
+  works. you can change parameters freely, and explore various setups: forced and decaying
+  turbulence, collisions between waves, and plasma instabilities. both two-dimensional and
+  three-dimensional solvers are provided. for more details on what this all means, please
+  click on some of the demonstrations. have fun!`
+];
 const RAIL_PANES = [
   { summary: "what is turbulence?", html: `
     <blockquote>&ldquo;When I meet God, I am going to ask him two questions: Why relativity?
@@ -2773,11 +2782,28 @@ const RAIL_PANES = [
 ];
 // the built panes, kept so the no-GPU path can open them without a DOM query
 let railPanes = [];
-// the two markup hooks (#tabs, #rail) are empty on both pages, exactly as #topbar and
-// #controls are. Called first in each app's boot(), so the chrome is on the page even
-// when initGPU is about to fail.
+// the three markup hooks (#intro, #tabs, #rail) are empty on both pages, exactly as
+// #topbar and #controls are. Called first in each app's boot(), so the chrome is on the
+// page even when initGPU is about to fail.
 function chromeBuild(o) {
   const is3d = !!(o && o.is3d);
+  // the intro rides directly under the subtitle so a first-timer is told what the page
+  // IS before anything else (Alfred/Charlotte follow-up) -- but as a <details>, so the
+  // cost to everyone who has read it is one line, not two paragraphs of canvas push.
+  // It boots OPEN and stays open until the visitor closes it once; the choice is
+  // remembered exactly like the params toggle (absent/throwing storage = "no memory").
+  const intro = el("intro");
+  if (intro) {
+    _mk("summary", null, intro).innerHTML = "what is all this?";
+    const bod = _mk("div", null, intro);
+    for (const par of RAIL_LEAD) _mk("p", "lead", bod).innerHTML = par;
+    let open = true;
+    try { open = localStorage.getItem("taranisIntro") !== "0"; } catch (e) {}
+    intro.open = open;
+    intro.ontoggle = () => {
+      try { localStorage.setItem("taranisIntro", intro.open ? "1" : "0"); } catch (e) {}
+    };
+  }
   const nav = el("tabs");
   if (nav) {
     for (const t of TABS) {
@@ -2790,8 +2816,6 @@ function chromeBuild(o) {
   const rail = el("rail");
   railPanes = [];
   if (!rail) return;
-  _mk("div", "railtitle", rail).innerHTML = "what is all this?";
-  _mk("p", "lead", rail).innerHTML = RAIL_LEAD;
   for (const p of RAIL_PANES) {
     const d = _mk("details", null, rail);
     _mk("summary", null, d).innerHTML = p.summary;
@@ -2829,7 +2853,10 @@ function gpuFallback() {
     const b = el(id);
     if (b) b.disabled = true;
   }
-  // with no run to watch, the explanation is the whole page: open it
+  // with no run to watch, the explanation is the whole page: open all of it, the
+  // intro included (and never mind a remembered dismissal -- this visit is different)
+  const intro = el("intro");
+  if (intro) intro.open = true;
   for (const d of railPanes) d.open = true;
 }
 
@@ -3239,27 +3266,17 @@ function syncForceEnabled() {
   for (const id of ["rEpsP", "rEpsM", "cbEpsLock"]) el(id).disabled = !el("cbForce").checked;
 }
 
-// bring the page into the state a preset (or a fresh boot) asks for
+// bring the page into the state a preset (or a fresh boot) asks for.
+// NB every visit boots PAUSED (Alfred reversed ONEPAGE_PLAN C's autoplay on 2026-08-10:
+// the big green Run is the call to action, and nothing moves before it's pressed) -- if
+// autoplay ever comes back, the seam is this function's FIRST call, which is exactly the
+// boot one on both pages, past a successful initGPU, with the solver freshly rebuilt.
 function bootApply(pre) {
   syncIC();
   syncLabels();
   syncForceEnabled();
   rebuild();
   cardsLayout(pre && pre.layout);
-  bootAutorun();
-}
-// Autoplay on a plain visit (ONEPAGE_PLAN C, ratified): the visitor gets moving pictures
-// with zero clicks. The seam is bootApply's FIRST call, which is exactly the boot one --
-// both apps end boot() in it, past a successful initGPU (the no-GPU poster path returns
-// before it, so a device-less visit never starts a clock), and rebuild() has just made
-// the solver the run needs. Every LATER bootApply is a user already on the page turning
-// the preset dropdown; it must not touch `running`, hence the one-shot flag. A ?demo=
-// lesson still boots paused: its hint is there to be read first.
-let autorunDone = false;
-function bootAutorun() {
-  if (autorunDone) return;
-  autorunDone = true;
-  if (!demoNameFromURL()) setRunning(true);
 }
 // `running` is flipped from several places (topbar click, IC editor enter/leave). The
 // hero Run button carries the state as COLOUR as well as text (green = will run, red =

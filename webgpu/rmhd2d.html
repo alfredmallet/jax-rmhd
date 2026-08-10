@@ -11,8 +11,9 @@
 <div class="sub"><a href="docs.html"><b>how to use this page</b></a>
   &middot; 2D RMHD &middot; rfft2 spectral &middot; LSRK33 integrating factor &middot; fp32</div>
 
-<!-- the 2D/3D tab strip and the "what is all this?" rail below are BUILT by common.js
-     (chromeBuild): shared chrome, and the rail's prose, exist once -->
+<!-- the intro, the 2D/3D tab strip and the "what is…" rail below are BUILT by common.js
+     (chromeBuild): shared chrome, and all the prose, exist once -->
+<details id="intro"></details>
 <nav id="tabs"></nav>
 
 <!-- the sticky bar and the control panel are BUILT from a spec (common.js
@@ -1107,7 +1108,8 @@ const PRESETS = {
            rAmpP: "0", rAmpM: "0", cbAmpLock: false, rCflEvery: "4" },
     layout: { disp: [{ sel: 2, cont: 2, nlev: 16 }], charts: [] },
     hint: "&phi; and &psi; are the two fields the solver evolves: u = z&#770;&times;&nabla;&phi; "
-      + "and b = z&#770;&times;&nabla;&psi;. Press <b>edit IC</b>, click once in the middle of "
+      + "and b = z&#770;&times;&nabla;&psi;. Press <b>show params</b> above, press <b>edit IC</b>, "
+      + "click once in the middle of "
       + "the editor and <b>save &amp; run</b> &mdash; a single &phi; blob is a vortex that just "
       + "sits there with the flow circling around it, and the contours drawn over the display "
       + "are contours of &phi;, which are the streamlines of u. Switch the display to "

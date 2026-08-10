@@ -13,9 +13,11 @@ closed-form 2×2 wave propagator, no wave CFL; z-slice or three-face cube displa
 resolutions 64²×32 to 256²×64 plus the long-box 64²×128 / 64²×256, free Lz,
 `z_diss_k` kz⁴ dissipation with auto). `rmhd2d.html` is the front door: `index.html` is an
 immediate redirect to it (ONEPAGE_PLAN B), the two apps carry the same 2D/3D tab strip,
-and the background essay that used to be the landing page is the collapsed "what is all
-this?" rail beside the canvas — tabs, rail and no-WebGPU poster all built by `chromeBuild`
-in `common.js`, so that text exists once. The preconfigured runs are presets *inside* each
+and the background essay that used to be the landing page now lives in two places: its
+lead paragraphs are the "what is all this?" pane right under the subtitle (open until
+dismissed once — remembered like the params toggle), and the five background panes are
+the rail beside the canvas — intro, tabs, rail and no-WebGPU poster all built by
+`chromeBuild` in `common.js`, so every piece of that text exists once. The preconfigured runs are presets *inside* each
 app (dropdown, or `?demo=` as a deep link), not separate pages. The 3D contract is `SPEC3D.md`; its reference vectors are
 `refvectors3d.json` from `gen_refvectors3d.py` (16²×8, fp64, including a dedicated
 exp(L·τ) propagator vector). The rest of this README describes the 2D app; everything
@@ -37,10 +39,9 @@ WebGPU-capable browser (Chrome, Firefox, Safari — 2026 versions all ship it). 
 `file://`, no server or build step: `<script src>` and `<link rel=stylesheet>` are allowed
 there, which is why the reference vectors stay *inlined* in each app (`fetch` is not). If
 no adapter is found the page says so and shows `poster.png` — a still of a real run — in
-place of the live one, with the what-is rail opened. A plain visit **starts running** on
-the default forced-turbulence preset (ONEPAGE_PLAN C: pictures move with zero clicks; the
-Run button boots red, saying **Pause**); a `?demo=` deep link boots paused, so the lesson's
-text can be read first.
+place of the live one, with the what-is rail opened. Every visit boots **paused** on its
+preset (plain visits get the default forced-turbulence one at 256²): the big green **Run**
+in the top bar is the call to action, and turns into a red **Pause** while running.
 
 ## Self-test
 
@@ -94,8 +95,8 @@ programmatically; do not try to hand-edit a 180 kB line).
   inactive side is a plain link, the `RAIL_LEAD` / `RAIL_PANES` text of the what-is rail,
   and `gpuFallback`, the poster + opened rail an engine with no WebGPU gets), the preset
   machinery (`presetBoot`,
-  `presetWrite`) and the boot wiring both apps share (`bootApply`, whose first call is
-  also the autoplay seam `bootAutorun`, `wireCommonControls`, the locked slider pairs,
+  `presetWrite`) and the boot wiring both apps share (`bootApply`,
+  `wireCommonControls`, the locked slider pairs,
   `syncCommonLabels`), the CPU-side IC
   construction (glyph raster, periodic gaussian blur, the ζ± → (φ,ψ) normalization
   `icZetaFields`, gaussian z-envelope, packet placement + χ, and the whole `custom` blob
