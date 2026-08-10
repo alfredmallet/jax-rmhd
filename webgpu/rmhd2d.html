@@ -8,11 +8,10 @@
 </head>
 <body>
 <h1>2D RMHD — WebGPU pseudospectral solver</h1>
-<div class="sub">rfft2 spectral &middot; LSRK33 integrating factor &middot; fp32
+<div class="sub"><a href="docs.html"><b>how to use this page</b></a>
+  &middot; rfft2 spectral &middot; LSRK33 integrating factor &middot; fp32
   &middot; <a href="rmhd3d.html">3D (spectral z) &rarr;</a>
-  &middot; <a href="index.html">overview</a>
-  &middot; <a href="https://github.com/alfredmallet/taranis/blob/main/webgpu/README.md"
-       target="_blank" rel="noopener">about / README</a></div>
+  &middot; <a href="index.html">overview</a></div>
 
 <!-- the sticky bar and the control panel are BUILT from a spec (common.js
      controlsBuild): every row the two apps share exists once, in common.js -->
@@ -1042,12 +1041,17 @@ function wireDrawEditor() {
 // display cards: the quantity list of this app (physics.js modes 0..9)
 // ---------------------------------------------------------------------------
 const DISP_FIELDS = [
-  { v: 4, t: "velocity |u|" }, { v: 5, t: "magnetic |b|" },
+  { v: 4, t: "velocity |u|", d: "u = z&#770;&times;&nabla;&phi;" },
+  { v: 5, t: "magnetic |b|", d: "b = z&#770;&times;&nabla;&psi;" },
   { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
-  { v: 0, t: "vorticity" }, { v: 1, t: "current" },
-  { v: 6, t: "Elsasser |z&#8314;|" }, { v: 7, t: "Elsasser |z&#8315;|" },
-  { v: 8, t: "cross helicity &sigma;_c" },
-  { v: 9, t: "residual energy &sigma;_r" }
+  { v: 0, t: "vorticity", d: "&omega; = &nabla;&sup2;&phi; = z&#770;&middot;&nabla;&times;u" },
+  { v: 1, t: "current", d: "j = &nabla;&sup2;&psi; = z&#770;&middot;&nabla;&times;b" },
+  { v: 6, t: "Elsasser |z&#8314;|", d: "z&#8314; = u + b" },
+  { v: 7, t: "Elsasser |z&#8315;|", d: "z&#8315; = u &minus; b" },
+  { v: 8, t: "cross helicity &sigma;_c",
+    d: "&sigma;_c = 2u&middot;b / (|u|&sup2;+|b|&sup2;)" },
+  { v: 9, t: "residual energy &sigma;_r",
+    d: "&sigma;_r = (|u|&sup2;&minus;|b|&sup2;) / (|u|&sup2;+|b|&sup2;)" }
 ];
 
 // ---------------------------------------------------------------------------
@@ -1063,9 +1067,8 @@ const PRESETS = {
            selIC: "modes", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 4 }], charts: ["energy", "spectrum", "cut"] },
     hint: "Random power &epsilon; added into the &zeta;<sup>+</sup> and &zeta;<sup>&minus;</sup> "
-      + "fields via an Ornstein&ndash;Uhlenbeck process, with correlation time &tau;. "
-      + "You can change the wavenumber band of the injection: what does the magnetic "
-      + "spectrum do if you inject at smaller scales?"
+      + "fields via an Ornstein&ndash;Uhlenbeck process, with correlation time &tau;, "
+      + "in a chosen wave number band."
   },
   decay: {
     label: "decaying A / B packets",
@@ -1080,10 +1083,33 @@ const PRESETS = {
       + "potentials at 512&sup2;, forcing off &mdash; press <b>Run</b> and watch these very "
       + "ordered initial conditions collapse into a universal turbulent cascade. See if you "
       + "can also spot the inverse cascade and the development of dynamic alignment and "
-      + "stable magnetically-dominated vortices. "
-      + "Ideal 2D RMHD is self-similar in amplitude ((a,t) &rarr; (a/&lambda;, &lambda;t)), and "
-      + "dt is adaptive, so the per-frame dynamics look the same at any amplitude &mdash; "
-      + "amplitude only matters against the fixed dissipation (in 3D it is &chi;)."
+      + "stable magnetically-dominated vortices."
+  },
+  // FEEDBACK_2026-08-10 item 16. The only preset that opens on an EMPTY drawing: what it
+  // demonstrates is the variables themselves, so the user's own single click is the
+  // initial condition. Deliberately minimal -- one display of phi with its own contours
+  // (which are the streamlines), no charts to look at instead of the box. Fixed diss, no
+  // auto-diss: a laminar vortex has nothing at the dissipation scale for the controller to
+  // measure, and nothing here is quoted against a dissipation anyway.
+  rmhdvars: {
+    label: "rmhd variables (φ, ψ)",
+    set: { selRes: "256", selBox: "sq", selHyper: "4", nPm: "1", cbForce: false,
+           rDiss: "-13", cbAutoDiss: false,
+           selIC: "custom", selPaint: "phi", rSigP: "0.125", cbNeg: false,
+           rAmpP: "0", rAmpM: "0", cbAmpLock: false, rCflEvery: "4" },
+    layout: { disp: [{ sel: 2, cont: 2, nlev: 16 }], charts: [] },
+    hint: "&phi; and &psi; are the two fields the solver evolves: u = z&#770;&times;&nabla;&phi; "
+      + "and b = z&#770;&times;&nabla;&psi;. Press <b>edit IC</b>, click once in the middle of "
+      + "the editor and <b>save &amp; run</b> &mdash; a single &phi; blob is a vortex that just "
+      + "sits there with the flow circling around it, and the contours drawn over the display "
+      + "are contours of &phi;, which are the streamlines of u. Switch the display to "
+      + "<b>vorticity</b> for &omega; = &nabla;&sup2;&phi;, the local rate of spin of the flow: "
+      + "one blob of it, where you clicked. Then do the same with <b>paint &psi;</b> instead "
+      + "&mdash; that is a magnetic island, and contours of &psi; are the field lines of "
+      + "B<sub>&perp;</sub>. While a drawing is painted in &phi; or &psi; the two amp sliders "
+      + "are <b>&phi; amp</b> = max |u| and <b>&psi; amp</b> = max |b|, so for the last "
+      + "exercise paint a big &phi; blob at &phi; amp = 1 and some &psi; structure at "
+      + "&psi; amp &asymp; 0.05, then <b>Run</b> and see what happens."
   },
   // ---- the two equilibrium demos (REFINE_PLAN J.3 / J.5) --------------------
   // Both run in the 4pi x 2pi box at 512 x 128. TEARING locks hyper to 1 through its IC
@@ -1128,13 +1154,14 @@ const PRESETS = {
     hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "
       + "&phi;<sub>eq</sub> = 0: b<sub>y</sub> vanishes on x = L<sub>x</sub>/2, so that is the "
       + "resonant surface of the k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed. Watch the &psi; "
-      + "contours (= B<sub>&perp;</sub> field lines) over the current sheet reconnect into an "
-      + "island chain; the <b>island width</b> chart is log&nbsp;W(t), so the linear stage is a "
+      + "contours (= B<sub>&perp;</sub> field lines) over the current sheet reconnect into a "
+      + "magnetic island; the <b>island width</b> chart is log&nbsp;W(t), so the linear stage is a "
       + "straight line and the Rutherford stage bends over. The diss slider is &eta; and "
       + "<b>Pm</b> = &nu;/&eta; (1 here). Linear reference &gamma; &asymp; 0.0287 at "
       + "&eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4, &gamma; &prop; "
       + "&eta;<sup>3/5</sup>), which <b>maintain equilibrium flux</b> reproduces: it adds the "
-      + "static source S = &minus;&eta;&nabla;&sup2;&psi;<sub>eq</sub> that holds the layer. "
+      + "static source S = &minus;&eta;&nabla;&sup2;&psi;<sub>eq</sub> that holds the layer &mdash; "
+      + "the island chart's fitted &gamma; is what you compare against it. "
       + "Switch it off and &psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, dropping the "
       + "measured slope some 30&ndash;40% below the reference."
   }

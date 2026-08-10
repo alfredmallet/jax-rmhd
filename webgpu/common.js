@@ -459,6 +459,9 @@ function shaderModuleFactory(device) {
 
 let device = null, canvasFormat = "bgra8unorm";
 let solver = null, running = false, stepsPerFrame = 1, spsSmooth = 0;
+// the sim time of the last stats readback: the readout prints it, and the save/record
+// filenames stamp it (item 13), so it is kept once here rather than parsed back out
+let simT = 0;
 
 // a display card's canvas -> a configured WebGPU context (cards are created and
 // destroyed at runtime, so this is not part of initGPU)
@@ -760,12 +763,12 @@ function legend(c, x, y, items, xmax) {
 }
 
 // The two energy-trace modes (REFINE_PLAN H.2), from the SAME history:
-//   kmt  E_kin, E_mag, E_tot                          (the default: unchanged)
-//   pmt  E+, E-, E_tot with E+- = E_kin + E_mag +- H_c
+//   kmt  E_u, E_b, E_tot                              (the default: unchanged)
+//   pmt  E+, E-, E_tot with E+- = E_u + E_b +- H_c
 // so E_tot = (E+ + E-)/2, which is the repo's Elsasser convention (taranis
 // physics/rmhd.py) and what puts all three curves on one comparable axis.
 const ENERGY_MODES = {
-  kmt: [["E_kin", COL.ek, i => hist.ek[i]], ["E_mag", COL.em, i => hist.em[i]],
+  kmt: [["E_u", COL.ek, i => hist.ek[i]], ["E_b", COL.em, i => hist.em[i]],
         ["E_tot", COL.et, i => hist.ek[i] + hist.em[i]]],
   pmt: [["E+", COL.zp, i => hist.ek[i] + hist.em[i] + hist.hc[i]],
         ["E-", COL.zm, i => hist.ek[i] + hist.em[i] - hist.hc[i]],
@@ -857,7 +860,6 @@ function drawEnergy(c, o) {
 // Rutherford stage bends over to algebraic, and saturation flattens.
 const islandHist = { t: [], w: [] };
 function islandReset() { islandHist.t.length = 0; islandHist.w.length = 0; }
-const ISLAND_SERIES = [["W", COL.zp, i => islandHist.w[i]]];
 function drawIsland(c) {
   if (!c) return;
   if (!icEq.on) {
@@ -866,7 +868,13 @@ function drawIsland(c) {
     c.fillText("island width — needs the tearing IC preset", PADC.l + 6, PADC.t + 13);
     return;
   }
-  drawTimeSeries(c, CW, EH, PADC, islandHist.t, ISLAND_SERIES,
+  // the same instrument the KH mode chart carries (FEEDBACK_2026-08-10 item 9), on the
+  // same trailing window and the same R^2 gate; the factor 2 is islandFitGamma's, since
+  // W ~ psitilde^(1/2) ~ e^(gamma t / 2).
+  const g = islandFitGamma(islandHist.t, islandHist.w);
+  drawTimeSeries(c, CW, EH, PADC, islandHist.t,
+                 [["W" + (isFinite(g) ? "   γ_fit ≈ " + g.toFixed(4) : ""), COL.zp,
+                   i => islandHist.w[i]]],
                  { log: true, empty: "island width W(t) — collecting…" });
 }
 
@@ -897,6 +905,28 @@ const MODE_FIT_DT = 10;
 // number that is an average of neither.
 const MODE_FIT_RISE = 1.0;
 const MODE_FIT_R2 = 0.98;
+// The island chart's own rise gate (FEEDBACK_2026-08-10 item 9). The window and the R^2
+// gate are shared; only this number can be, because the two demos run four times a
+// decade apart in rate and the gate is a statement about ONE window's worth of growth:
+//
+//   KH       gamma = 0.267, the fitted quantity is A itself, so a MODE_FIT_DT window
+//            rises gamma*DT = 2.67 ln-units. The gate 1.0 is 0.37 of that.
+//   tearing  gamma = 0.0287 AND the fitted quantity is W ~ psitilde^(1/2), so the same
+//            window rises gamma*DT/2 = 0.143 ln-units -- a factor 19 less. MODE_FIT_RISE
+//            would never be met inside a linear stage that only spans ~2.7 ln-units of W
+//            in total (W0 ~ 0.09 at the preset's 1e-3 seed, saturation at W ~ a ~ 1.3),
+//            i.e. ~190 t-units: the legend would simply never show a number.
+//
+// So the gate is MODE_FIT_RISE scaled to the tearing demo's own rate: 0.37 * 0.143 = 0.05.
+// That keeps the SAME margin over the gate the KH chart has (~2.7x), so the fit still
+// arms promptly with maintain-flux OFF too, where the measured slope drops 30-40%
+// (0.094 ln-units per window, still ~1.9x the gate), while an oscillating saturated W
+// -- which is what the gate exists to reject -- has to clear 5% of coherent, R^2 >= 0.98
+// rise across the whole window to fake it.
+// It is a LOCAL rate by construction: through the Rutherford stage (W ~ t, so
+// d ln W/dt = 1/t) the quoted gamma falls away from the linear value and eventually
+// blanks, which is the honest reading of a chart whose y is log W.
+const ISLAND_FIT_RISE = 0.05;
 function drawMode(c) {
   if (!c) return;
   if (!icEq.kh) {
@@ -1426,15 +1456,15 @@ const CHART_TYPES = {
   energy: {
     label: "energy trace", w: EW, h: EH,
     opts: () => [{ id: "emode", ti: "which energies to trace",
-                   o: [["kmt", "E_kin / E_mag"], ["pmt", "E&#8314; / E&#8315;"]] }],
+                   o: [["kmt", "E_u, E_b"], ["pmt", "E&#8314;, E&#8315;"]] }],
     draw: (c, d, o) => drawEnergy(c, o),
-    hint: "vs t (2000 points, decimated 2:1 when full); E<sup>&plusmn;</sup> = E<sub>kin</sub> + "
-      + "E<sub>mag</sub> &plusmn; H<sub>c</sub>, so E<sub>tot</sub> = (E<sup>+</sup>+E<sup>&minus;</sup>)/2"
+    hint: "vs t; E<sup>&plusmn;</sup> = E<sub>u</sub> + "
+      + "E<sub>b</sub> &plusmn; H<sub>c</sub>, so E<sub>tot</sub> = (E<sup>+</sup>+E<sup>&minus;</sup>)/2"
   },
   spectrum: {
     label: "spectra", w: SW, h: SH,
     opts: cfg => [{ id: "sq", ti: "which spectra to bin",
-                    o: [["ub", "E_u / E_b"], ["pm", "E&#8314; / E&#8315;"], ["both", "both"]] }]
+                    o: [["ub", "E_u, E_b"], ["pm", "E&#8314;, E&#8315;"], ["both", "both"]] }]
       .concat(cfg.zslice
         ? [{ id: "sd", ti: "perpendicular (solid) / parallel (dashed) spectra; "
                + "\"field line\" measures k_par ALONG B, not along z",
@@ -1462,16 +1492,15 @@ const CHART_TYPES = {
            vis: (v, c) => c.pins.length > 0,
            ti: "clear every pinned ghost on this card" }]),
     draw: (c, d, o, pins) => drawSpectrum(c, d, o, pins),
-    hint: "shell-binned, ~3&times;/s; E<sup>&plusmn;</sup>(k) = E<sub>u</sub>+E<sub>b</sub>&plusmn;H<sub>c</sub>. "
-      + "The y range follows the &perp; spectra. <b>pin</b> freezes the current curves as "
-      + "ghosts for before/after comparison; ghosts keep their physical k if the box changes."
+    hint: "shell-binned; E<sup>&plusmn;</sup>(k) = E<sub>u</sub>+E<sub>b</sub>&plusmn;H<sub>c</sub>. "
+      + "<b>pin</b> freezes the current curves as ghosts for before/after comparison."
   },
   cut: {
     label: "cut trace", w: CW, h: CH, zslice: true,
     opts: () => [{ id: "pair", ti: "which pair of components to trace",
                    o: [["u", "u_x, u_y"], ["b", "b_x, b_y"], ["z", "|z&#8314;|, |z&#8315;|"]] }],
     draw: (c, d, o) => drawCut(c, d, o),
-    hint: "its own line along y at x = L<sub>x</sub>/2, ~10&times;/s (independent of the displays)"
+    hint: "cut along y at x = L<sub>x</sub>/2"
   },
   // REFINE_PLAN J.4. `src: "cut"` says it feeds off the cut readback -- the X and O points
   // live on the resonant surface x = Lx/2, which is the line cutPrep already prepares, so
@@ -1480,7 +1509,10 @@ const CHART_TYPES = {
     label: "island width", w: CW, h: EH, src: "cut", avail: cfg => !cfg.zslice,
     draw: c => drawIsland(c),
     hint: "W = 4&radic;(&Delta;&psi;/2|&psi;&Prime;|) from the &psi; extrema on x = L<sub>x</sub>/2, "
-      + "with &psi;&Prime; measured on the equilibrium; log y, so the linear stage is a straight line"
+      + "with &psi;&Prime; measured on the equilibrium; log y, so the linear stage is a straight line "
+      + "whose slope the legend fits as &gamma; = 2&times;d(ln W)/dt (W &prop; e<sup>&gamma;t/2</sup>). "
+      + "It is a LOCAL rate: it falls away from the linear value once the Rutherford stage bends the "
+      + "curve over."
   },
   // the KH counterpart of the island trace, and on the SAME readback (`src: "cut"`): the
   // k_y = 2pi/Ly Fourier amplitude of u_x / b_x on x = Lx/2. Also 2D only -- the
@@ -1565,6 +1597,92 @@ const _contOpts = () => [{ v: "0", t: "no contours" }, { v: String(DISP_PSI), t:
                          { v: "both", t: "&psi; + &phi;" }];
 const CONT_LEVELS = [8, 16, 32];
 
+// ---------------------------------------------------------------------------
+// the per-card colorbar (FEEDBACK_2026-08-10 item 12)
+// ---------------------------------------------------------------------------
+// The STRIP is always the full colormap swept over t in [0,1], because that is exactly
+// what `dispX` produces for every display mode: a signed scalar maps -s..+s onto 0..1, a
+// magnitude 0..s onto 0..1, and the two sigma modes -1..+1 onto 0..1. So one strip serves
+// all ten modes and only the three LABELS differ -- which is what keeps this off the GPU
+// entirely. It is painted on a small 2D canvas through `cmapRGB`, the same CMAP_COEF
+// table `physics.js` expands into the WGSL at emit time, so the bar cannot drift from the
+// pixels above it and NO kernel text changes.
+//
+// The RANGE the labels quote is the one the GPU colorize actually used: the per-chain
+// `maxVal` buffer that maxFinal writes every render (identically named and shaped in both
+// apps -- 4 bytes, per display chain -- and it is the *cube-face* maximum in the cube
+// view, which is what those pixels were made with too). The CPU never learned it before,
+// and no existing readback carries it (readStats is energies, not extrema), so the card
+// takes its own: one 4-byte map round trip per card at CBAR_PERIOD, an order of magnitude
+// cheaper than the arrow gather already in that loop, skipped entirely for the sigma
+// modes (fixed +-1, no autoscale at all) and while the editor view owns the screen.
+const CBAR_W = 132, CBAR_H = 9;
+const CBAR_PERIOD = 350;                 // ms between label refreshes, per card
+const dispMaxRead = (sv, ci) => readBuf(sv.device, sv.chain(ci).buf.maxVal, 4);
+// paint the gradient: one 1-logical-px column per step, in the card's own colormap
+function cbarPaint(c, which) {
+  if (!c) return;
+  c.clearRect(0, 0, CBAR_W, CBAR_H);
+  for (let i = 0; i < CBAR_W; i++) {
+    const rgb = cmapRGB(which, (i + 0.5) / CBAR_W);
+    c.fillStyle = "rgb(" + rgb.map(v => Math.round(255 * v)).join(",") + ")";
+    c.fillRect(i, 0, 1, CBAR_H);
+  }
+}
+// a tick label: short enough for the 11 px hint font at a 132 px bar
+function cbarFmt(v) {
+  if (!isFinite(v)) return "";
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  return (a >= 1e4 || a < 1e-2) ? v.toExponential(1) : v.toPrecision(3);
+}
+
+// ---------------------------------------------------------------------------
+// save / record (FEEDBACK_2026-08-10 item 13)
+// ---------------------------------------------------------------------------
+// PNG: the composited view (WebGPU canvas + the overlay canvas + the colorbar) drawn
+// into an offscreen 2D canvas and handed to toBlob. WebGPU has no preserveDrawingBuffer:
+// `getCurrentTexture` is transient and the canvas keeps only its last PRESENTED image, so
+// the card re-renders first and composites in the same task -- what lands in the file is
+// then the frame on screen, not a cleared buffer.
+// WebM: MediaRecorder over `captureStream(30)` of the WebGPU canvas. Feature-detected
+// (iOS Safari has no MediaRecorder), and where it is missing the button is simply absent
+// -- Alfred's "degrade silently", with save unaffected. The stream is the field canvas
+// alone -- captureStream takes ONE canvas -- so the arrows, the field lines and the
+// colorbar are in the PNG but not in the video.
+const REC_FPS = 30;
+const REC_MAX_MS = 30000;                // hard stop, so a forgotten recording stays small
+const REC_MIME = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+const recSupported = cv =>
+  typeof window !== "undefined" && !!window.MediaRecorder && !!(cv && cv.captureStream);
+const recMime = () => {
+  const M = window.MediaRecorder;
+  for (const m of REC_MIME) if (!M.isTypeSupported || M.isTypeSupported(m)) return m;
+  return "";
+};
+// hand a blob to the browser's downloader. A detached <a> is enough in every engine that
+// ships WebGPU; the object URL is released once the download has had time to start.
+function dlBlob(blob, name) {
+  if (!blob) return;
+  const u = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = u; a.download = name;
+  a.click();
+  setTimeout(() => window.URL.revokeObjectURL(u), 10000);
+}
+// taranis-<page>-<field>-t<time>.<ext>
+const DISP_SLUG = ["vorticity", "current", "phi", "psi", "u", "b", "zplus", "zminus",
+                   "sigma_c", "sigma_r"];
+function appSlug() {
+  const m = /([^/\\?#]+?)(?:\.html?)?(?:[?#]|$)/.exec(String(location.href || ""));
+  const s = m && m[1] ? m[1].replace(/[^A-Za-z0-9_-]/g, "") : "";
+  return s || "rmhd";
+}
+function shotName(mode, ext) {
+  return "taranis-" + appSlug() + "-" + (DISP_SLUG[mode] || "field") +
+         "-t" + (isFinite(simT) ? simT.toFixed(3) : "0") + "." + ext;
+}
+
 class DisplayCard {
   constructor(ci) {
     const cfg = cards.cfg;
@@ -1595,7 +1713,25 @@ class DisplayCard {
     this.wrap = wrap;
     this.cv = _mk("canvas", "cvmain", wrap);
     this.cvVec = _mk("canvas", "cvvec", wrap);
-    this.cap = _mk("div", "viewcap", root);
+    // The caption line doubles as the card's FOOTER: the colorbar and the two capture
+    // buttons are right-aligned on it, under the field and never over it (items 12/13).
+    // It wraps, so a narrow card drops them onto their own line instead of squeezing
+    // the caption.
+    const foot = _mk("div", "viewfoot", root);
+    this.cap = _mk("div", "viewcap", foot);
+    this.bar = _mk("div", "cbar", foot);
+    this.barCv = _mk("canvas", "cbarcv", this.bar);
+    const tk = _mk("div", "cbartk", this.bar);
+    this.barT = [_mk("span", null, tk), _mk("span", null, tk), _mk("span", null, tk)];
+    this.bar.title = "colour range of the displayed quantity";
+    this.btnSave = _mk("button", "capbtn", foot);
+    this.btnSave.innerHTML = "save";
+    this.btnSave.title = "save this view (field + overlay + colorbar) as a PNG";
+    this.btnRec = _mk("button", "capbtn", foot);
+    this.btnRec.innerHTML = "rec";
+    this.btnRec.title = "record the field canvas to a WebM file (stops itself after 30 s)";
+    if (!recSupported(this.cv)) this.btnRec.style.display = "none";
+
     this.gw = 0; this.gh = 0;
     this._resize();                       // sizes both canvases BEFORE the GPU context
     this.ctx = gpuCanvasCtx(this.cv);
@@ -1603,6 +1739,11 @@ class DisplayCard {
     this.lines = null;                    // two sources, one overlay canvas (see overlay())
     this.arrowAt = 0;
     this.wasLines = false;                // edge-trigger for the lines view's psi default
+    // colorbar state: the strip's context, the mode its labels belong to, the last
+    // autoscale read back for it, and that readback's throttle clock
+    this.barCx = chartCtx(this.barCv, CBAR_W, CBAR_H);
+    this.barMode = -1; this.barMax = NaN; this.barAt = 0; this.barCmap = -1;
+    this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
     this.selField.onchange = apply;
@@ -1614,6 +1755,8 @@ class DisplayCard {
     if (this.selZSrc) this.selZSrc.onchange = apply;
     if (this.rSlice) this.rSlice.oninput = apply;
     this.btnClose.onclick = () => cardClose(this);
+    this.btnSave.onclick = () => this.saveShot();
+    this.btnRec.onclick = () => this.recToggle();
   }
   sel() { return parseInt(this.selField.value, 10) | 0; }
   cmap() { return parseInt(this.selCmap.value, 10) | 0; }
@@ -1666,10 +1809,108 @@ class DisplayCard {
     this.selLev.style.display = this.contOn() ? "" : "none";
     this.selBg.style.display = (this.contOn() && !lines) ? "" : "none";   // lines: always plain
     // the field selector is inert in the lines view (the lines are psi lines), so the
-    // caption is the app's alone there
+    // caption is the app's alone there. A field record may carry `d`, a one-line HTML
+    // definition of the displayed quantity (FEEDBACK 2026-08-10 item 1) -- it rides the
+    // caption line so it sits under the display, next to the app's own caption.
     const o = this.selField.options[this.selField.selectedIndex];
-    this.cap.innerHTML = (o && !lines ? o.innerHTML : "") + (cfg.caption ? cfg.caption(this) : "");
+    const fr = !lines && cfg.fields.find(f => String(f.v) === this.selField.value);
+    this.cap.innerHTML = (o && !lines ? o.innerHTML : "")
+      + (fr && fr.d ? " &nbsp;&mdash;&nbsp; " + fr.d : "")
+      + (cfg.caption ? cfg.caption(this) : "");
+    this.barSync();                       // ... and so may have retired / relabelled the bar
     this.overlay();                       // the quantity / view may have retired an overlay
+  }
+  // ---- colorbar (item 12) --------------------------------------------------
+  // shown for anything that renders a field; the lines view renders none (its GPU canvas
+  // carries contour ink over the plate and skips the whole mode chain), so it has no
+  // colour range to legend and the bar goes away with the field selector's meaning.
+  barOn() { return !this.linesView(); }
+  // ... and it only needs the autoscale readback when the range IS the autoscale: the
+  // sigma modes are pinned to +-1 in the kernel, and nothing renders while the editor
+  // owns the screen.
+  barNeedsMax() {
+    return this.barOn() && !icDraw.on && !!solver && !dispIsSigma(solver.modeOf(this.ci));
+  }
+  setBarRange(s) { this.barMax = s; this.barLabel(); }
+  // repaint the strip when the colormap changed, and drop a stale range when the MODE
+  // did (|u| and psi do not share an autoscale) -- the next readback is <= CBAR_PERIOD away
+  barSync() {
+    this.bar.style.display = this.barOn() ? "" : "none";
+    const m = solver ? solver.modeOf(this.ci) : this.sel();
+    if (m !== this.barMode) { this.barMode = m; this.barMax = NaN; this.barAt = 0; }
+    if (this.cmap() !== this.barCmap) { this.barCmap = this.cmap(); cbarPaint(this.barCx, this.barCmap); }
+    this.barLabel();
+  }
+  // [left, middle, right] under the strip, in the convention the kernel renders:
+  // sigma modes fixed +-1, magnitudes 0..max, everything else symmetric +-max
+  barTicks() {
+    const m = this.barMode, s = this.barMax;
+    if (dispIsSigma(m)) return ["&minus;1", "0", "+1"];
+    if (!(isFinite(s) && s > 0)) return ["", "", ""];
+    if (dispIsVector(m)) return ["0", cbarFmt(0.5 * s), cbarFmt(s)];
+    return ["&minus;" + cbarFmt(s), "0", "+" + cbarFmt(s)];
+  }
+  barLabel() {
+    const t = this.barTicks();
+    for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
+  }
+  // ---- save / record (item 13) ---------------------------------------------
+  // Re-render first: with WebGPU the canvas holds only its last PRESENTED image, so the
+  // capture has to be taken in the same task as a fresh present -- there is no
+  // preserveDrawingBuffer to ask for. Then one 2D composite of the three layers.
+  saveShot() {
+    this.render();
+    const w = this.gw, h = this.gh;
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    const c = cv.getContext("2d");
+    if (!c || !cv.toBlob) return;
+    c.drawImage(this.cv, 0, 0, w, h);                  // the field
+    c.drawImage(this.cvVec, 0, 0, w, h);               // arrows / field lines / box frame
+    if (this.barOn()) this.barStamp(c, w, h);
+    cv.toBlob(b => dlBlob(b, shotName(this.barMode, "png")), "image/png");
+  }
+  // the colorbar, scaled onto the saved image's bottom right over a translucent plate
+  barStamp(c, w, h) {
+    const sc = Math.max(1, w / 400), bw = CBAR_W * sc, bh = CBAR_H * sc;
+    const px = 6 * sc, x = w - bw - 2 * px, y = h - bh - 3.4 * px;
+    c.fillStyle = "rgba(20,22,26,0.72)";
+    c.fillRect(x - px, y - px, bw + 2 * px, bh + 4.4 * px);
+    c.drawImage(this.barCv, x, y, bw, bh);
+    c.fillStyle = "#d8dee6";
+    c.font = Math.round(9 * sc) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
+    c.textBaseline = "top";
+    const t = this.barTicks().map(s => String(s).replace(/&minus;/g, "−"));
+    const ty = y + bh + 0.5 * px;
+    c.textAlign = "left";   c.fillText(t[0], x, ty);
+    c.textAlign = "center"; c.fillText(t[1], x + bw / 2, ty);
+    c.textAlign = "right";  c.fillText(t[2], x + bw, ty);
+    c.textAlign = "left";
+  }
+  // toggle: start a MediaRecorder over the field canvas, or stop the live one. The 30 s
+  // timer is a hard stop, not a pause -- an unattended recording must not grow without
+  // bound -- and `onstop` is the single place the file is written, so the timer and the
+  // button press land in exactly the same path.
+  recToggle() {
+    if (this.rec) { this.rec.stop(); return; }
+    if (!recSupported(this.cv)) return;
+    const mime = recMime(), chunks = [];
+    const r = new window.MediaRecorder(this.cv.captureStream(REC_FPS),
+                                       mime ? { mimeType: mime } : undefined);
+    const name = shotName(this.barMode, "webm");
+    r.ondataavailable = e => { if (e && e.data && e.data.size) chunks.push(e.data); };
+    r.onstop = () => {
+      clearTimeout(this.recStop);
+      this.rec = null; this.recStop = 0;
+      this.btnRec.innerHTML = "rec";
+      this.btnRec.classList.remove("reclive");
+      dlBlob(new window.Blob(chunks, { type: mime || "video/webm" }), name);
+    };
+    this.rec = r;
+    r.start();
+    this.btnRec.innerHTML = "stop";
+    this.btnRec.classList.add("reclive");
+    this.recStop = setTimeout(() => { if (this.rec === r) r.stop(); }, REC_MAX_MS);
   }
   showArrows() {
     return !!(this.cbArrow.checked && !this.linesView() &&
@@ -1710,7 +1951,12 @@ class DisplayCard {
     }
     if (this.arr && this.showArrows()) drawArrows(c, this.arr.a, this.arr.nax, this.arr.nay, this.arrowFrame());
   }
-  destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
+  // closing a card mid-recording writes what it has: the stream dies with the canvas,
+  // and losing the file silently would be worse than a short one
+  destroy() {
+    if (this.rec) { clearTimeout(this.recStop); try { this.rec.stop(); } catch (e) {} }
+    if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
+  }
 }
 
 class ChartCard {
@@ -2101,17 +2347,24 @@ const ctrlGrpIC = o => ({
      { k: "sel", id: "selIC", o: [["modes", "large-scale modes"], ["letters", o.letters],
                                   ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]]
                                  .concat(o.presets || []) }],
-    [{ k: "lab", t: "&zeta;&#8314; amp" },
+    // the two amplitude labels and titles are REWRITTEN by ampBasisSync (item 15): while a
+    // drawing is being painted in phi/psi they are the (phi, psi) knobs, not the zeta+- ones
+    [{ k: "lab", id: "labAmpP", t: "&zeta;&#8314; amp" },
      { k: "rng", id: "rAmpP", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpP" },
      { k: "cbl", id: "cbAmpLock", t: "lock", v: true, ti: "move the two potential amplitudes together" }],
-    [{ k: "lab", t: "&zeta;&#8315; amp" },
+    [{ k: "lab", id: "labAmpM", t: "&zeta;&#8315; amp" },
      { k: "rng", id: "rAmpM", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpM" }]
   ].concat(o.extra || [], [
     { id: "rowDraw", hide: true, items: [
       { k: "btn", id: "btnEdit", t: "edit IC", ti: "pause the run and open the IC editor" },
       { k: "lab", t: "paint" },
-      { k: "sel", id: "selPaint", o: [["zp", "&zeta;&#8314;"], ["zm", "&zeta;&#8315;"],
-                                      ["phi", "&phi;"], ["psi", "&psi;"]] },
+      // ORDER (FEEDBACK_2026-08-10 item 14): the evolved variables first, the Elsasser
+      // potentials after. Nothing indexes these options positionally -- icEditCaption
+      // reads options[selectedIndex] and IC_TARGETS is keyed by the VALUE.
+      { k: "sel", id: "selPaint", o: [["phi", "&phi;"], ["psi", "&psi;"],
+                                      ["zp", "&zeta;&#8314;"], ["zm", "&zeta;&#8315;"]],
+        ti: "which field a stroke deposits into; phi and psi are painted through "
+          + "zeta+- = phi +- psi, and they make the two amp sliders phi / psi knobs" },
       { k: "lab", t: "&sigma;&perp;" },
       { k: "rng", id: "rSigP" }, { k: "val", id: "vSigP" },
       { k: "lab", t: "negative" },
@@ -2505,6 +2758,25 @@ function syncCommonLabels() {
   el("vAmpP").textContent = amp[0].toPrecision(3);
   el("vAmpM").textContent = amp[1].toPrecision(3);
   el("vSigP").textContent = icSigmaPerp().toPrecision(3);
+  ampBasisSync();
+}
+// The two amp sliders say what they MEAN (FEEDBACK_2026-08-10 item 15). Labels and titles
+// only -- icAmpBasis is what actually changes the arithmetic, and it reads the same
+// predicate. In the (phi, psi) basis the knobs are the two physical field strengths,
+// which is what lets a drawing carry a strong vortex and a weak island at once.
+const AMP_TI_Z = ["initial max |z⁺| = max |∇ζ⁺|, the amplitude the stored "
+                  + "drawing / glyph is rescaled to at apply time",
+                  "initial max |z⁻| = max |∇ζ⁻|, likewise"];
+const AMP_TI_PP = ["initial max |u| = max |∇φ|, i.e. the peak flow speed the painted "
+                   + "φ is rescaled to at apply time (0 if nothing was painted into φ)",
+                   "initial max |b| = max |∇ψ|, i.e. the peak perpendicular field "
+                   + "strength the painted ψ is rescaled to (0 if nothing was painted into ψ)"];
+function ampBasisSync() {
+  const pp = icAmpBasis() === "pp", ti = pp ? AMP_TI_PP : AMP_TI_Z;
+  el("labAmpP").innerHTML = pp ? "&phi; amp" : "&zeta;&#8314; amp";
+  el("labAmpM").innerHTML = pp ? "&psi; amp" : "&zeta;&#8315; amp";
+  el("rAmpP").title = ti[0]; el("labAmpP").title = ti[0];
+  el("rAmpM").title = ti[1]; el("labAmpM").title = ti[1];
 }
 // forcing on/off: the two eps sliders and their lock follow the checkbox
 function syncForceEnabled() {
@@ -2746,21 +3018,58 @@ function icShearStats(f, g) {
 // zero-mean each stored potential plane by plane, scale it so that max |grad_perp zeta|
 // is exactly that field's amplitude slider, and map zeta+- -> (phi, psi). The inputs are
 // left untouched, so one drawing can be re-applied at any amplitude, any number of times.
-function icZetaFields(zp, zm, g, ampP, ampM) {
+//
+// BASIS (FEEDBACK_2026-08-10 item 15). Which PAIR the two sliders normalize is a choice,
+// and both choices are exact linear maps of the same stored (zeta+, zeta-):
+//   undefined / "zeta"  the historical one -- ampP = max |z+| = max |grad zeta+|, likewise
+//                       for ampM. Every preset but a phi/psi drawing uses it.
+//   "pp"                normalize the COMBINATIONS instead: ampP = max |u| = max |grad phi|
+//                       and ampM = max |b| = max |grad psi|. This is the only way to set
+//                       the two independently once a drawing carries BOTH phi and psi
+//                       strokes -- normalizing zeta+- then rescales an inseparable mixture.
+// A drawing with only phi strokes (or only psi ones) comes out numerically identical under
+// the two, with the amp lock on: that is the case the old labels happened to describe.
+function icZetaFields(zp, zm, g, ampP, ampM, basis) {
   const nrs = g.nx * g.ny, n = g.nz * nrs;
   const phi = new Float32Array(n), psi = new Float32Array(n);
-  const P = icShearStats(zp, g), M = icShearStats(zm, g);
+  const pp = basis === "pp";
+  let A = zp, B = zm;
+  if (pp) {                                  // form (phi, psi) FIRST, then normalize those
+    A = new Float32Array(n); B = new Float32Array(n);
+    for (let i = 0; i < n; i++) { A[i] = 0.5 * (zp[i] + zm[i]); B[i] = 0.5 * (zp[i] - zm[i]); }
+  }
+  const P = icShearStats(A, g), M = icShearStats(B, g);
   const kp = P.gradMax > 0 ? ampP / P.gradMax : 0;
   const km = M.gradMax > 0 ? ampM / M.gradMax : 0;
   for (let k = 0; k < g.nz; k++) {
     const o = k * nrs, mp = P.mean[k], mm = M.mean[k];
     for (let i = 0; i < nrs; i++) {
-      const a = kp * (zp[o + i] - mp), b = km * (zm[o + i] - mm);
-      phi[o + i] = 0.5 * (a + b);
-      psi[o + i] = 0.5 * (a - b);
+      const a = kp * (A[o + i] - mp), b = km * (B[o + i] - mm);
+      phi[o + i] = pp ? a : 0.5 * (a + b);
+      psi[o + i] = pp ? b : 0.5 * (a - b);
     }
   }
   return { phi: phi, psi: psi };
+}
+// Is the drawing being painted in the (phi, psi) basis? -- the ONE predicate behind the
+// basis above, the slider labels and the 3D chi line, so those three cannot disagree.
+// The paint target is the switch: it is what the user is thinking in, it is only visible
+// while the drawing IS the preset (icSyncRows hides #rowDraw otherwise), and it is what
+// the caption over the editor already announces.
+function icPaintPP() {
+  const t = el("selPaint").value;
+  return t === "phi" || t === "psi";
+}
+// ... and only the drawing HAS a paint target, so only the drawing can be in that basis
+function icAmpBasis() { return el("selIC").value === "custom" && icPaintPP() ? "pp" : "zeta"; }
+// the pair of ZETA amplitudes the sliders imply, whatever basis they are in -- what a
+// chi estimate (3D) needs, since chi is written in Elsasser amplitudes. In the (phi, psi)
+// basis z+- = u +- b, so co-located strokes of the same shape give max |z+-| =
+// |amp_phi +- amp_psi| exactly; for a general drawing it is an estimate, like the k_perp
+// that goes into chi beside it.
+function icAmpZeta() {
+  const a = uiAmp();
+  return icAmpBasis() === "pp" ? [a[0] + a[1], Math.abs(a[0] - a[1])] : a;
 }
 
 // smooth non-degenerate stand-in when there is no canvas or the glyph drew nothing
@@ -2885,7 +3194,8 @@ function icPresetFields(q, preset, ampP, ampM, env) {
   const z = preset === "custom" ? { zp: icDraw.zp, zm: icDraw.zm }
           : preset === IC_SINE ? icSineZeta(g, env)
           : icLetterZeta(g, env);
-  return icZetaFields(z.zp, z.zm, g, ampP, ampM);
+  // only the DRAWING has a paint target, so only it can be in the (phi, psi) basis
+  return icZetaFields(z.zp, z.zm, g, ampP, ampM, preset === "custom" ? icAmpBasis() : null);
 }
 
 // ---------------------------------------------------------------------------
@@ -3081,14 +3391,14 @@ function modeAmp1(f, off, n) {
 function modeAmps(vals, ny) {
   return { u: modeAmp1(vals, 0, ny), b: modeAmp1(vals, 2 * ny, ny) };
 }
-// Least-squares slope of ln A vs t over the trailing MODE_FIT_DT of sim-time -- the
-// number to compare with the linear reference gamma = 0.267 U0 k_y. Only finite,
-// positive samples count (a log has nothing to say about the others); the window must
-// span time, must RISE by MODE_FIT_RISE (a flat, decaying, jittering or saturated trace
-// has no growth rate to quote), and the fit must actually describe it (R^2 >=
-// MODE_FIT_R2 -- a straddle of two stages is not a rate). Otherwise NaN, and the legend
-// simply omits the readout.
-function modeFitGamma(ts, as) {
+// Least-squares slope of ln(y) vs t over the trailing MODE_FIT_DT of sim-time -- ONE
+// implementation, shared by the KH mode chart and the island-width chart (the two log-y
+// growth traces). Only finite, positive samples count (a log has nothing to say about the
+// others); the window must span time, must RISE by `riseMin` (a flat, decaying, jittering
+// or saturated trace has no growth rate to quote), and the fit must actually describe it
+// (R^2 >= MODE_FIT_R2 -- a straddle of two stages is not a rate). Otherwise NaN, and the
+// legend simply omits the readout.
+function fitLogSlope(ts, as, riseMin) {
   const t = [], y = [];
   let tl = NaN;
   for (let i = Math.min(ts.length, as.length) - 1; i >= 0; i--) {
@@ -3098,7 +3408,7 @@ function modeFitGamma(ts, as) {
     t.unshift(ts[i]); y.unshift(Math.log(as[i]));
   }
   const m = t.length;
-  if (m < 4 || !(t[m - 1] > t[0]) || !(y[m - 1] - y[0] >= MODE_FIT_RISE)) return NaN;
+  if (m < 4 || !(t[m - 1] > t[0]) || !(y[m - 1] - y[0] >= riseMin)) return NaN;
   let mt = 0, my = 0;
   for (let i = 0; i < m; i++) { mt += t[i]; my += y[i]; }
   mt /= m; my /= m;
@@ -3110,6 +3420,13 @@ function modeFitGamma(ts, as) {
   const g = sxx > 0 ? sxy / sxx : NaN;
   return g > 0 && sxy * sxy >= MODE_FIT_R2 * sxx * syy ? g : NaN;
 }
+// the KH chart's gamma: the mode amplitude A grows as e^(gamma t), so the slope IS gamma
+// -- the number to compare with the linear reference gamma = 0.267 U0 k_y.
+function modeFitGamma(ts, as) { return fitLogSlope(ts, as, MODE_FIT_RISE); }
+// the island chart's gamma: in the linear tearing stage psitilde ~ e^(gamma t) and
+// W = 4 sqrt(psitilde/|psi''|), so W ~ e^(gamma t / 2) and gamma is TWICE the slope --
+// the number to compare with the linear reference 0.0287 quoted in the preset hint.
+function islandFitGamma(ts, ws) { return 2 * fitLogSlope(ts, ws, ISLAND_FIT_RISE); }
 function modePush(t, vals, ny) {
   const a = modeAmps(vals, ny), H = modeHist;
   if (!(a.u > 0) || !isFinite(a.u) || !isFinite(a.b)) return;   // the log axis needs A_u > 0
@@ -3607,7 +3924,13 @@ function icDrawWire(cfg) {
   icEditBuild(cfg);
   icDrawAttach();
   el("btnEdit").onclick = icEditEnter;
-  el("selPaint").onchange = () => { if (icDraw.on) { icEditCaption(); icDrawPreview(); } };
+  // the paint target also picks the amplitude BASIS (item 15), so a change of it relabels
+  // the two sliders and -- outside the editor, where there is nothing to save first --
+  // genuinely changes the initial condition, exactly as moving an amp slider does
+  el("selPaint").onchange = () => {
+    syncLabels();
+    if (icDraw.on) { icEditCaption(); icDrawPreview(); } else applyIC();
+  };
   for (const id of (cfg.sliders || [])) {
     el(id).oninput = () => { syncLabels(); if (icDraw.on) icEditCaption(); };
   }
@@ -3727,6 +4050,7 @@ async function loop() {
     const s = await solver.readStats();
     if (frameHook) await frameHook(solver);
     if (!solver) continue;                    // retired while we were awaiting
+    if (isFinite(s[1])) simT = s[1];          // what the capture filenames stamp
     const extra = readoutExtra ? readoutExtra() : "";
     // the sticky bar carries the one line that must always be visible; the rest
     // goes under the displays. Both come from this one stats readback.
@@ -3734,7 +4058,7 @@ async function loop() {
       "t " + s[1].toFixed(3) + "  step " + solver.nsteps +
       "  dt " + s[0].toExponential(2) + "  " + (running ? spsSmooth.toFixed(0) + " steps/s" : "paused");
     el("readout").textContent =
-      "Ekin = " + s[2].toExponential(5) + "  Emag = " + s[3].toExponential(5) +
+      "E_u = " + s[2].toExponential(5) + "  E_b = " + s[3].toExponential(5) +
       "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3) +
       (extra ? "\n" + extra : "");
 
@@ -3752,14 +4076,24 @@ async function loop() {
     // (snapshot: a close button can splice cards.disp while we are awaiting. A card that
     // is not showing arrows is simply skipped -- overlay() gates on showArrows(), so the
     // stale gather cannot reappear, and apply() has already redrawn the canvas.)
+    // ... and, on the same snapshot and the same guard, the colorbar's tick labels
+    // (FEEDBACK_2026-08-10 item 12): 4 bytes of the per-chain `maxVal` buffer, i.e. the
+    // autoscale the colorize kernel of the frame just drawn actually divided by. Its own
+    // (slower) throttle, and skipped for the fixed +-1 modes, which need no number at all.
     for (const d of cards.disp.slice()) {
-      if (!d.showArrows()) continue;
       const tnow = performance.now();
-      if (tnow - d.arrowAt <= 100) continue;
-      d.arrowAt = tnow;
-      const sv = solver;
-      const av = await sv.readArrows(d.ci);
-      if (sv === solver && cards.disp.indexOf(d) >= 0) d.setArrows(av, sv.nax, sv.nay);
+      if (d.showArrows() && tnow - d.arrowAt > 100) {
+        d.arrowAt = tnow;
+        const sv = solver;
+        const av = await sv.readArrows(d.ci);
+        if (sv === solver && cards.disp.indexOf(d) >= 0) d.setArrows(av, sv.nax, sv.nay);
+      }
+      if (d.barNeedsMax() && performance.now() - d.barAt > CBAR_PERIOD) {
+        d.barAt = performance.now();
+        const sv = solver;
+        const mv = await dispMaxRead(sv, d.ci);
+        if (sv === solver && cards.disp.indexOf(d) >= 0) d.setBarRange(mv[0]);
+      }
     }
 
     // cut trace: same throttle / guard idiom as the arrows. SELF-CONTAINED since

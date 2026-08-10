@@ -1,5 +1,12 @@
 # WebGPU RMHD (2D + 3D)
 
+**This file is repo-facing**: how the thing is built, what the contracts are, why each
+piece is the way it is, and how to verify a change. The **user-facing** documentation —
+every button and every chart, in plain language — is `docs.html`, which is a page of the
+app set itself and is what `rmhd2d.html` / `rmhd3d.html` / `index.html` link at the top.
+Nothing here is linked from those pages. When a control changes, `docs.html` changes with
+it; when the *reason* for a control changes, this file does.
+
 Two browser apps over one shared core: `rmhd2d.html` (2D) and `rmhd3d.html` (3D
 spectral-z, the `z_spectral=True` path — Alfvén coupling applied exactly via the
 closed-form 2×2 wave propagator, no wave CFL; z-slice or three-face cube display,
@@ -52,6 +59,11 @@ programmatically; do not try to hand-edit a 180 kB line).
 ## Files
 
 - `index.html` — landing page (links, description, contributors). No solver code.
+- `docs.html` — the user-facing manual: the topbar, every control group, the display and
+  chart cards and their options, the colorbar, save/record, and one plain line per preset.
+  Same stylesheet, no script, no build step. It is the page the apps link at the top; the
+  accuracy rule when editing it is that every control named there must exist by id in the
+  built panel (`controlsBuild`'s spec fragments and each app's own spec).
 - `rmhd2d.html`, `rmhd3d.html` — the two apps. Each holds ONLY its inlined reference
   vectors, its dimension-specific WGSL and `Solver`, and its UI layout and defaults, on
   top of `<script src="common.js">` and `<script src="physics.js">` (in that order).
@@ -95,34 +107,40 @@ programmatically; do not try to hand-edit a 180 kB line).
   read these before touching the math.
 - `gen_refvectors.py`, `refvectors.json`, `gen_refvectors3d.py`, `refvectors3d.json` —
   reference-vector generators and their output.
+- `devtools/` — the sandbox verification tooling (no GPU needed): the shared DOM+WebGPU
+  stub every tool boots a real page on, the WGSL byte-diff harness, the fp64 physics and
+  arithmetic checks, the clone detector and the layout audit. `devtools/README.md` says
+  what each one covers; the standing rule is that a phase captures a FRESH WGSL baseline
+  from clean git state before editing and diffs against it at the end.
 
 ## Cards: displays and charts
 
 The UI is built from **cards**. A *display card* is one WebGPU canvas plus its own
 quantity selector, colormap, arrows checkbox, contour-overlay selectors and — in 3D — its
 own z slice / view select (manual slider, `track z⁺ / z⁻`, the same three with the
-cube-faces view, or the field-lines view); "+ display" adds one (up to three), the × on its header
-closes it. Card index *is* the solver's display-chain index, so N cards cost exactly N
-chains (scratch, bind groups, gather targets, textures), each built lazily on first use.
+cube-faces view, or the field-lines view). Card index *is* the solver's display-chain
+index, so N cards cost exactly N chains (scratch, bind groups, gather targets, textures),
+each built lazily on first use.
 *Any* card can be closed down to the last one (whose × goes disabled) — the IC editor has
 its own view and anchors nothing. A *chart card* is one 2D canvas with a type selector — energy trace / spectra / cut — plus that
-type's own options, and "+ chart" adds another; several cards of the same type are
+type's own options; several cards of the same type are
 allowed and share one throttled readback per frame. Nothing here is a special case of
-anything else: there is no dual-view flag and no fixed chart stack.
+anything else: there is no dual-view flag and no fixed chart stack. (What each control
+*does* is `docs.html`; below is why it is built this way.)
 
 **Chart options** (each is a small select in the card's header; the first value of each
 is the default and is what the chart drew before they existed):
 
 | chart | option | values |
 | --- | --- | --- |
-| energy trace | which energies | `E_kin / E_mag` (with E_tot) · `E⁺ / E⁻` (with E_tot) |
-| spectra | which spectra | `E_u / E_b` · `E⁺ / E⁻` · both |
+| energy trace | which energies | `E_u, E_b` (with E_tot) · `E⁺, E⁻` (with E_tot) |
+| spectra | which spectra | `E_u, E_b` · `E⁺, E⁻` · both |
 | spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only · ⊥ + k∥ (field line) |
 | spectra | fit line | `pin to field` · `set A` · `off`, plus a numeric index `p` and amplitude `A` |
 | spectra | pin / unpin | buttons, not selects: freeze the drawn curves as ghosts, or clear them |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
-| island width (2D) | — | log W(t); needs the tearing IC (see below) |
+| island width (2D) | — | log W(t) with a fitted γ = 2·d(ln W)/dt; needs the tearing IC (see below) |
 | k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
 
 **The spectrum fit line** (FEEDBACK item 8) is a straight E = A k<sup>p</sup> from just
@@ -136,11 +154,9 @@ box is empty; `off` hides the line and both boxes. NaN in either box is ignored.
 
 **Pinned ghost spectra.** `pin` freezes the curves the spectrum card is *drawing* as faint
 ghosts under the live ones, so the next thing you do can be compared against the last
-thing you did: lower the dissipation and watch the inertial range stretch, change ε and
-watch the whole spectrum shift, pin the decayed spectrum and restart forced, or pin at
-t = 0 and watch E_b pile up leftward of the forcing shell. It costs nothing on the GPU —
-the snapshot is the CPU-side `[points, colour, dash, label]` list `specCurves` just built,
-deep-copied.
+thing you did (the workflows it exists for are in `docs.html`). It costs nothing on the
+GPU — the snapshot is the CPU-side `[points, colour, dash, label]` list `specCurves` just
+built, deep-copied.
 
 Because it is the *drawn* curves that are frozen, a pin taken as `E⁺ / E⁻` stays E⁺/E⁻
 however the card's own `sq` / `sd` selectors are switched afterwards: the ghost is a record
@@ -208,6 +224,42 @@ and 0.040; both clamped, since a fit overshoots slightly at the ends). The coeff
 live once, in `common.js: CMAP_COEF` — `physics.js` expands them into the WGSL at emit
 time and the IC editor's CPU preview reads the same table through `cmapRGB`, so the two
 cannot drift.
+
+**The colorbar** (FEEDBACK_2026-08-10 item 12) is a third consumer of that same table, and
+deliberately not a fourth code path: the STRIP is always the full colormap swept over
+t ∈ [0,1], because that is exactly what `dispX` produces for every mode (signed −s…+s →
+0…1, magnitude 0…s → 0…1, σ_c/σ_r −1…+1 → 0…1), so one 132×9 2D canvas painted through
+`cmapRGB` serves all ten modes and **no WGSL changes** — the gate on the whole feature was
+both dumps staying byte-identical. Only the three LABELS branch, on the same three
+classes. It lives at the right of the card's caption line (`.viewfoot`, which wraps), so
+it never covers the field canvas, and it is hidden in the 3D lines view, which renders no
+colour field at all.
+
+The number it quotes is the one the kernel used, not a CPU estimate of it: the autoscale
+lives only in the per-chain `maxVal` buffer that `maxFinal` writes every render (the same
+buffer in both apps, and the three-face maximum in the cube view — which is what those
+pixels were divided by too), and no existing readback carries it, `readStats` being
+energies rather than extrema. So the frame loop takes its own, on the arrow readback's
+snapshot-and-guard idiom: 4 bytes per card at `CBAR_PERIOD` = 350 ms, an order of
+magnitude cheaper than the 8 kB arrow gather beside it, skipped entirely for the σ modes
+(fixed ±1, no autoscale exists) and while the editor view owns the screen. A field change
+drops the stale range rather than relabelling the new mode with it.
+
+**Save / record** (item 13) are per display card, in the same footer. `save` composites
+the WebGPU canvas, the overlay canvas and the colorbar into an offscreen 2D canvas and
+hands it to `toBlob`; the card **re-renders first**, because WebGPU has no
+`preserveDrawingBuffer` — `getCurrentTexture` is transient and the canvas holds only its
+last *presented* image, so the capture has to be taken in the same task as a fresh
+present. `rec` is `MediaRecorder` over `captureStream(30)` of the WebGPU canvas, WebM,
+with a 30 s hard stop; `onstop` is the single place the file is written, so the timer and
+the button press take the identical path. It is feature-detected and the button is simply
+absent where `MediaRecorder` is not (iOS Safari) — which also means the video is the field
+canvas alone, `captureStream` taking one canvas. Filenames are
+`taranis-<page>-<field>-t<time>.{png,webm}`. `devtools/stubenv.js` stubs `toBlob`,
+`captureStream`, `MediaRecorder`, `Blob` and `URL.createObjectURL` and logs every blob and
+every `<a download>` click, so `bootstub.js` asserts that pressing the buttons really
+produces a blob-shaped download (and that removing `MediaRecorder` removes the button and
+nothing else).
 
 **Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
 field lines), φ contours (= the streamlines), or **both at once** (ψ + φ — the alignment
@@ -325,7 +377,8 @@ the current one.
 What the letter and blob ICs build is the Elsasser **potential** ζ±; the Elsasser
 *fields* are z± = ẑ×∇ζ±, and the evolved variables are φ = (ζ⁺+ζ⁻)/2, ψ = (ζ⁺−ζ⁻)/2.
 The UI says ζ± wherever a potential is meant (paint target, amplitude sliders) and z±
-wherever a field is (display modes, tracking). Identifiers stay `zp`/`zm`.
+wherever a field is (display modes, tracking) — except in the (φ, ψ) paint basis below.
+Identifiers stay `zp`/`zm`.
 
 Stored ICs are kept at their natural scale and normalized **only at apply time**, by
 `common.js: icZetaFields`: each potential is zero-meaned plane by plane (a pure gauge for
@@ -338,6 +391,22 @@ Consequences worth knowing: the amplitude is a property of the whole drawing, no
 blob, so overlapping strokes redistribute instead of stacking past it; and a ζ⁺ drawing
 and a ζ⁻ drawing are normalized independently, so their *relative* size is set by the two
 sliders, not by how hard you scribbled.
+
+**The (φ, ψ) basis.** *Which* pair those two sliders normalize follows the **paint**
+target (`icAmpBasis`, and only while `custom` — the drawing — is the selected IC, since
+nothing else has a paint target). Painting ζ⁺/ζ⁻ keeps the historical basis above.
+Painting φ or ψ switches `icZetaFields` to normalize the *combinations* instead: the
+labels become **φ amp** and **ψ amp**, and they mean max |∇φ| = max |u| and
+max |∇ψ| = max |b| — the peak flow speed and the peak perpendicular field strength,
+independently. Both are exact linear maps of the same stored ζ± pair, and a drawing with
+only φ strokes (or only ψ ones) comes out *bitwise identical* under either basis with the
+amp lock on. The basis exists for the mixed case: a drawing carrying both φ and ψ strokes
+stores ζ± = P ± Q, so normalizing ζ± can only rescale an inseparable mixture — "a strong
+vortex plus a weak island" is not expressible in that basis at all, and it is what the
+`rmhd variables` demo closes with. χ (3D) is written in Elsasser amplitudes, so its
+readout goes through `icAmpZeta`, which maps a (φ, ψ) pair back to
+(a⁺, a⁻) = (a_φ+a_ψ, |a_φ−a_ψ|) — exact for co-located strokes of the same shape,
+an estimate otherwise, like the k̄⊥ beside it.
 
 The **letters** preset builds one potential per field from a rasterized glyph
 (A → ζ⁺, B → ζ⁻; fixed, `common.js: IC_LETTERS` — the free-text input was dropped in the
@@ -421,6 +490,15 @@ Everything stays adjustable afterwards. There are no separate demo pages.
   do here: ideal 2D RMHD is self-similar in amplitude ((a,t) → (a/λ, λt)), and dt is
   adaptive, so the per-frame dynamics are amplitude-independent — amplitude only matters
   against the fixed dissipation. (In 3D it matters through χ.)
+- **2D `rmhd variables (φ, ψ)`** (`rmhd2d.html?demo=rmhdvars`) — the only preset that
+  opens on an **empty** drawing: 256², forcing off, fixed ν (no auto-diss — a laminar
+  vortex has nothing at the dissipation scale to measure), IC `custom` with **paint** on
+  φ and a big blob (σ⊥ = L_x/8), one display of φ with its own contours and no chart
+  cards. The user's single click *is* the initial condition, and the hint walks the
+  variables from there: φ blob → a stationary vortex whose φ contours are the streamlines
+  of u; the same field as vorticity ω = ∇²φ; then the same click in ψ → a magnetic island
+  whose ψ contours are the B⊥ field lines; then a strong φ blob plus a weak ψ one, which
+  is what the (φ, ψ) amplitude basis above exists for.
 - **2D `Kelvin–Helmholtz shear layers`** (`rmhd2d.html?demo=kh`) and
   **2D `tearing mode`** (`rmhd2d.html?demo=tearing`) — the two equilibrium demos; see
   the next section.
@@ -504,11 +582,27 @@ spectral integration of that line (`icLineIntegrate`, exact for a band-limited p
 line where a quadrature rule would be second order; the k = 0 gauge drops out because
 only max − min is used).
 
+Its legend carries the same fitted growth rate the k_y mode card does, through the same
+helper (`fitLogSlope`): the trailing `MODE_FIT_DT` = 10 t-units of ln W, least squares,
+R² ≥ `MODE_FIT_R2`, quoted as **γ = 2 × d(ln W)/dt** because W ∝ ψ̃^½ ∝ e^{γt/2} in the
+linear stage. Only the *rise* gate is its own number (`ISLAND_FIT_RISE` = 0.05 against
+`MODE_FIT_RISE` = 1.0): the tearing demo runs an order of magnitude slower than KH *and*
+plots the square root, so one window of its linear stage rises γ·Δt/2 = 0.14 ln-units,
+19× less than KH's 2.67 — the KH gate would blank the legend for the whole run. 0.05 is
+`MODE_FIT_RISE` scaled to the tearing rate, keeping the same ~2.7× margin over the gate,
+which is still ~1.9× with **maintain equilibrium flux** off (where the measured slope
+drops 30–40%). It is a *local* rate by construction, so it falls away from 0.0287 and
+eventually blanks as the Rutherford stage (W ∼ t) bends the curve over. The fp64 mirror
+(`devtools/checkj.js` §4c) drives the app's own `islandWidth` + `islandFitGamma` off the
+pseudospectral solver and gets 0.0278 against the 1D eigenvalue's 0.0287 (3.2%).
+
 **The k_y = 2π/L_y mode.** KH's counterpart of the island chart, and on the same readback:
 the `k_y = 2π/L_y mode` card (2D only, so it is off the 3D page exactly as `island width`
 is) plots the m = 1 Fourier amplitude of u_x — and of b_x — along x = L_x/2 on a log
-axis, and fits γ over the trailing 32 samples into its legend (`γ_fit`, blank unless the
-window is finite, positive and growing). It exists because the **energy trace cannot show
+axis, and fits γ over the trailing `MODE_FIT_DT` = 10 t-units of *sim* time into its
+legend (`γ_fit`, blank unless that window is finite, positive, rose by `MODE_FIT_RISE`
+and fits with R² ≥ `MODE_FIT_R2`; a sample count would span wildly different stretches of
+t on different devices, since the cut readback is wall-clock throttled). It exists because the **energy trace cannot show
 the linear stage at all**: the equilibrium shear carries ~10⁶ times the seed's energy, so
 E(t) is flat while the mode grows through six decades. u_x = −∂_yφ and b_x = −∂_yψ are the
 two rows of the cut stack with *exactly zero* equilibrium content (the equilibrium is

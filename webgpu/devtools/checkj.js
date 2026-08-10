@@ -458,6 +458,41 @@ console.log("4. tearing linear growth rate vs the eigenvalue reference (J physic
        rel(g, r) < 0.05, "maintained " + g.toPrecision(5) + " vs 1D eigenvalue " + r +
        "  (" + (100 * rel(g, r)).toFixed(2) + "%)");
   }
+
+  console.log("4c. the island chart's gamma_fit (FEEDBACK_2026-08-10 item 9)");
+  // What the chart actually quotes, end to end, on physics rather than on a synthetic
+  // exponential: the app's OWN islandWidth over the app's OWN cut line, sampled off this
+  // fp64 solver at the cut card's cadence, then the app's OWN islandFitGamma over its
+  // trailing window. Nothing here is compared against itself -- the trace comes from the
+  // pseudospectral run 4b just pinned to the 1D eigenvalue, and the target is that
+  // eigenvalue. This is also where the ISLAND_FIT_RISE gate is shown to ARM at all: the
+  // whole reason it is not MODE_FIT_RISE (see common.js) is that 10 t-units of this stage
+  // only rise gamma*DT/2 = 0.14 ln-units of W.
+  {
+    const appIslandWidth = env.run("function(){ return islandWidth; }");
+    const appIslandFit = env.run("function(){ return islandFitGamma; }");
+    const s = mk(1e-3, 1e-3, { maintain: true });   // also (re)arms icEq for islandWidth
+    const dt = 0.02, every = 25;                    // ~0.5 t-units/sample, the cut throttle
+    const ts = [], ws = [];
+    for (let n = 0; n * dt <= 80 + 1e-9; n++) {
+      if (n % every === 0 && n * dt >= 30) { ts.push(n * dt); ws.push(appIslandWidth(s.cutLine(), ny, Ly)); }
+      s.step(dt);
+    }
+    const gi = appIslandFit(ts, ws), r = REF.tear.g["1e-3"];
+    const rise = Math.log(ws[ws.length - 1] / ws[ws.length - 21]);   // the fitted window
+    ok("the island chart's gamma_fit reproduces the linear reference rate",
+       isFinite(gi) && rel(gi, r) < 0.05,
+       "chart gamma_fit " + gi.toPrecision(5) + " vs 1D eigenvalue " + r +
+       "  (" + (100 * rel(gi, r)).toFixed(2) + "%)");
+    ok("... and its rise gate arms on that window (which MODE_FIT_RISE would not)",
+       rise >= 0.05 && rise < 1.0,
+       "ln W rose " + rise.toFixed(4) + " over the trailing 10 t-units");
+    // W really is psitilde^(1/2): the fit's factor 2 is not a fudge
+    const gW = growthRate(ts, ws);
+    ok("W grows at HALF the psitilde rate, which is why gamma = 2 x the slope",
+       rel(2 * gW, r) < 0.05, "d(ln W)/dt = " + gW.toPrecision(5) + ", x2 = " +
+       (2 * gW).toPrecision(5));
+  }
 }
 
 console.log("5. KH growth and its magnetic suppression (J physics target)");

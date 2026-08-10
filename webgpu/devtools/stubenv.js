@@ -31,6 +31,47 @@ module.exports = function makeEnv(dir, page, demo) {
     while ((m = re.exec(tag))) a[m[1].toLowerCase()] = m[2] === undefined ? "" : m[2];
     return a;
   }
+  // ---- capture log (FEEDBACK_2026-08-10 item 13) ------------------------------
+  // Everything the save / record path hands to the browser lands here, so a consumer can
+  // assert that pressing the buttons really produced a blob-shaped download rather than
+  // that the handler merely ran: `caps.blobs` (what toBlob / new Blob made),
+  // `caps.downloads` ({name, blob} per <a download>.click()), `caps.recs` (MediaRecorders).
+  const caps = { blobs: [], downloads: [], recs: [], urls: new Map() };
+  let urlN = 0;
+  const mkBlob = (type, size) => { const b = { type: type || "", size: size || 0, __blob: 1 }; caps.blobs.push(b); return b; };
+  function BlobStub(parts, o) {
+    let n = 0;
+    for (const p of (parts || [])) n += (p && p.size) || 0;
+    const b = mkBlob(o && o.type, n);
+    this.type = b.type; this.size = b.size; this.__blob = 1;
+    caps.blobs[caps.blobs.length - 1] = this;
+  }
+  function MediaRecorderStub(stream, o) {
+    this.stream = stream; this.mimeType = (o && o.mimeType) || "video/webm";
+    this.state = "inactive"; this.ondataavailable = null; this.onstop = null;
+    caps.recs.push(this);
+  }
+  MediaRecorderStub.isTypeSupported = m => m === "video/webm;codecs=vp9";
+  MediaRecorderStub.prototype.start = function () {
+    if (this.state === "recording") fail("MediaRecorder.start() while already recording");
+    this.state = "recording";
+  };
+  MediaRecorderStub.prototype.stop = function () {
+    if (this.state !== "recording") return fail("MediaRecorder.stop() while not recording");
+    this.state = "inactive";
+    if (this.ondataavailable) this.ondataavailable({ data: mkBlob(this.mimeType, 4096) });
+    if (this.onstop) this.onstop();
+  };
+  const URLStub = {
+    createObjectURL(b) {
+      if (!b || !b.__blob) fail("createObjectURL of something that is not a blob");
+      const u = "blob:stub/" + (++urlN);
+      caps.urls.set(u, b);
+      return u;
+    },
+    revokeObjectURL(u) { caps.urls.delete(u); }
+  };
+
   const allEls = [];
   function mkEl(id, kind, at) {
     const e = {
@@ -44,6 +85,16 @@ module.exports = function makeEnv(dir, page, demo) {
       hasAttribute(a) { return a in this.attrs; },
       setAttribute(a, v) { this.attrs[a] = v === undefined ? "" : String(v); },
       addEventListener() {}, setPointerCapture() {},
+      // the capture path (item 13): a canvas is a PNG source and a video source, and the
+      // <a download> the blob is handed to is an ordinary element too
+      toBlob(cb, type) { setTimeout(() => cb(mkBlob(type || "image/png", 4 * (this.width | 0) * (this.height | 0))), 0); },
+      captureStream(fps) { return { __stream: 1, fps: fps }; },
+      click() {
+        if (this.download === undefined) return;
+        const b = caps.urls.get(this.href);
+        if (!b) fail('<a download="' + this.download + '"> clicked with no live object URL');
+        caps.downloads.push({ name: this.download, blob: b });
+      },
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 512, height: 512 }),
       appendChild(c) {
         c.parentNode = this; this.children.push(c);
@@ -238,7 +289,11 @@ module.exports = function makeEnv(dir, page, demo) {
       querySelectorAll: sel => (sel === "#controls details" ? descendants(getEl("controls"), "details") : [])
     },
     window: { addEventListener() {}, devicePixelRatio: 1,
-              matchMedia: q => ({ matches: /min-width/.test(q) }) },
+              matchMedia: q => ({ matches: /min-width/.test(q) }),
+              // item 13: the three browser globals the capture path feature-detects and
+              // uses. Present here, so the stub exercises the SUPPORTED branch; a page
+              // that must survive their absence is checked by deleting them (bootstub).
+              URL: URLStub, Blob: BlobStub, MediaRecorder: MediaRecorderStub },
     location: { search, href: "file:///x/" + page + search },
     URLSearchParams, navigator: {
       gpu: {
@@ -251,7 +306,8 @@ module.exports = function makeEnv(dir, page, demo) {
     requestAnimationFrame: () => {},
     Path2D: Path2DStub,
     console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8ClampedArray, Map, Set,
-    Error, Promise, setTimeout, Number, String, Array, Object, isFinite, parseInt, parseFloat,
+    Error, Promise, setTimeout, clearTimeout, Number, String, Array, Object, isFinite,
+    parseInt, parseFloat,
     GPUBufferUsage: { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, UNIFORM: 8, MAP_READ: 16 },
     GPUTextureUsage: { STORAGE_BINDING: 1, TEXTURE_BINDING: 2 },
     GPUMapMode: { READ: 1 }
@@ -262,5 +318,6 @@ module.exports = function makeEnv(dir, page, demo) {
   vm.runInContext(script, sandbox, { filename: page });   // boot() runs at the end
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
-  return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, is3d: page.indexOf("3d") >= 0 };
+  return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, caps,
+           is3d: page.indexOf("3d") >= 0 };
 };

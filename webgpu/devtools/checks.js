@@ -65,7 +65,8 @@ Object.assign(C, vm.runInContext("({ icSigmaLetter, IC_SIGMA_PERP_FRAC, IC_SIGMA
   + " IC_SIGMA_Z_MAX_FRAC, TRACK_HYST, IC_LETTERS, DISS_KD_FRAC, dissKd, DISS_STEP,"
   + " DISS_DECADES_BELOW, DISS_LG_OPEN, AUTODISS_SHELL_W, AUTODISS_SMOOTH,"
   + " AUTODISS_MAX_FACTOR, AUTODISS_PERIOD, IC_SINE, IC_SINE_N, icSigmaSine, icIsPacketIC,"
-  + " FIT_FRACS, FIT_SNAP, MODE_FIT_DT, MODE_FIT_RISE, MODE_FIT_R2 })", sandbox));
+  + " FIT_FRACS, FIT_SNAP, MODE_FIT_DT, MODE_FIT_RISE, MODE_FIT_R2, ISLAND_FIT_RISE })",
+  sandbox));
 const L = 2 * Math.PI;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +116,48 @@ console.log("1. normalized-IC rescale exactness (G.3)");
   let same = true;
   for (let i = 0; i < zp.length; i++) if (p1.phi[i] !== p2.phi[i] || p1.psi[i] !== p2.psi[i]) same = false;
   ok("re-applying the same drawing is bitwise reproducible (inputs not mutated)", same);
+
+  // --- the (phi, psi) amplitude basis (FEEDBACK_2026-08-10 item 15) -----------
+  // A drawing painted in phi AND psi stores zeta+- = P +- Q (icDrawBlob's weights), so the
+  // two structures are inseparable once the zeta+- pair is what gets normalized. The "pp"
+  // basis normalizes the COMBINATIONS instead, which is the only way the demo's closing
+  // exercise -- a strong vortex plus a weak island -- can be asked for at all.
+  const n2 = 64 * 64, g2 = { nx: 64, ny: 64, nz: 1, Lx: L, Ly: L, Lz: 0 };
+  const zpM = new Float32Array(n2), zmM = new Float32Array(n2), P = new Float32Array(n2);
+  for (let i = 0; i < 64; i++) for (let j = 0; j < 64; j++) {
+    const x = 2 * Math.PI * i / 64, y = 2 * Math.PI * j / 64, o = i * 64 + j;
+    P[o] = 0.7 + Math.sin(x) * Math.sin(y);                       // the "phi" strokes
+    const Q = 1.9 * Math.cos(2 * x + 0.3) * Math.cos(y);          // the "psi" strokes
+    zpM[o] = P[o] + Q; zmM[o] = P[o] - Q;
+  }
+  const gradMax = f => C.icShearStats(f, g2).gradMax;
+  const pp = C.icZetaFields(zpM, zmM, g2, 1.0, 0.05, "pp");
+  ok("pp basis: max |grad phi| IS the first slider", Math.abs(gradMax(pp.phi) - 1.0) < 1e-5,
+     "got " + gradMax(pp.phi).toPrecision(8));
+  ok("pp basis: max |grad psi| IS the second slider, independently",
+     Math.abs(gradMax(pp.psi) - 0.05) < 1e-6, "got " + gradMax(pp.psi).toPrecision(8));
+  // ... which the zeta basis genuinely cannot do on the same drawing
+  const zz = C.icZetaFields(zpM, zmM, g2, 1.0, 0.05);
+  ok("... and the zeta basis cannot ask for that pair at all",
+     Math.abs(gradMax(zz.psi) - 0.05) > 0.05,
+     "zeta basis leaves max |grad psi| = " + gradMax(zz.psi).toPrecision(4));
+  // the G.3 rescale contract holds in the new basis too
+  const pp3 = C.icZetaFields(zpM, zmM, g2, 3.0, 0.15, "pp");
+  let e3 = 0, mx3 = 0;
+  for (let i = 0; i < n2; i++) {
+    e3 = Math.max(e3, Math.abs(3 * pp.phi[i] - pp3.phi[i]), Math.abs(3 * pp.psi[i] - pp3.psi[i]));
+    mx3 = Math.max(mx3, Math.abs(pp3.phi[i]), Math.abs(pp3.psi[i]));
+  }
+  ok("pp basis: scaling both sliders by 3 scales (phi,psi) by exactly 3", e3 <= 1e-6 * mx3,
+     "max abs dev " + e3.toExponential(2));
+  // and on a drawing with ONLY phi strokes the two bases are the same arithmetic, with
+  // the amp lock on -- the case the old zeta+- labels happened to describe correctly
+  const ppP = C.icZetaFields(P, P, g2, 0.4, 0.9, "pp");
+  const zzP = C.icZetaFields(P, P, g2, 0.4, 0.4);
+  let bit = true;
+  for (let i = 0; i < n2; i++) if (ppP.phi[i] !== zzP.phi[i] || ppP.psi[i] !== zzP.psi[i]) bit = false;
+  ok("a phi-only drawing comes out bitwise identical in either basis (psi == 0)", bit,
+     "max |grad psi| = " + gradMax(ppP.psi));
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +862,124 @@ console.log("10. k_y = 2pi/Ly mode extraction and its gamma fit (KH chart)");
      "got " + C.modeFitGamma(H.t, H.u).toPrecision(10));
   C.modeReset();
   ok("modeReset clears all three columns", H.t.length === 0 && H.u.length === 0 && H.b.length === 0);
+}
+
+// ---------------------------------------------------------------------------
+console.log("11. the island-width chart's gamma_fit (FEEDBACK_2026-08-10 item 9)");
+// ---------------------------------------------------------------------------
+// The island chart borrows the mode chart's instrument: ONE fitting helper, the same
+// trailing window and R^2 gate, its OWN rise gate, and a factor 2 because the plotted
+// quantity is W ~ psitilde^(1/2) ~ e^(gamma t / 2).
+{
+  const GT = 0.0287;                               // the tearing preset's linear reference
+  // W(t) exactly as the linear stage produces it, sampled at the cut throttle's ~10 Hz
+  // against a run that is slow in sim-time (dt-ish 0.5 t-units per sample here)
+  const mkW = (g, n, dt, w0) => {
+    const t = [], w = [];
+    for (let i = 0; i < n; i++) { t.push(dt * i); w.push((w0 || 0.0875) * Math.exp(0.5 * g * dt * i)); }
+    return [t, w];
+  };
+  const [tw, ww] = mkW(GT, 200, 0.5);
+  const gI = C.islandFitGamma(tw, ww);
+  ok("islandFitGamma returns 2 x the slope of ln W (W ~ e^{gamma t/2})",
+     Math.abs(gI / GT - 1) < 1e-6, "got " + gI.toPrecision(10) + " vs " + GT);
+  // it is the SHARED helper, not a copy: both wrappers must BE fitLogSlope at their own
+  // gate, on a trace each of them arms on and on one neither does (NaN !== NaN, so the
+  // blank case is compared as "both blank")
+  const same = (a, b) => (a === b) || (!isFinite(a) && !isFinite(b));
+  const [tq, wq] = mkW(2 * C.MODE_FIT_RISE / C.MODE_FIT_DT, 200, 0.5);   // arms both gates
+  const wflat = tw.map(() => 0.3);                                       // arms neither
+  let shared = true;
+  for (const [tt, aa] of [[tw, ww], [tq, wq], [tw, wflat]]) {
+    shared = shared && same(C.modeFitGamma(tt, aa), C.fitLogSlope(tt, aa, C.MODE_FIT_RISE))
+                    && same(C.islandFitGamma(tt, aa), 2 * C.fitLogSlope(tt, aa, C.ISLAND_FIT_RISE));
+  }
+  ok("both wrappers are the ONE fitLogSlope at their own rise gate", shared);
+  // THE reason the gate had to be its own number: the tearing demo's window rise is 19x
+  // smaller than the KH one's, and MODE_FIT_RISE would blank the legend for the whole run
+  const rise = 0.5 * GT * C.MODE_FIT_DT;
+  ok("a MODE_FIT_DT window of the tearing linear stage rises " + rise.toFixed(3) + " ln-units of W",
+     Math.abs(rise - 0.1435) < 1e-9);
+  ok("... which MODE_FIT_RISE would reject outright", rise < C.MODE_FIT_RISE &&
+     !isFinite(C.modeFitGamma(tw, ww)), "MODE_FIT_RISE = " + C.MODE_FIT_RISE);
+  ok("... and ISLAND_FIT_RISE accepts with the same ~2.7x margin the KH chart has",
+     rise >= 2.5 * C.ISLAND_FIT_RISE && rise <= 3.5 * C.ISLAND_FIT_RISE,
+     "margin " + (rise / C.ISLAND_FIT_RISE).toFixed(2) + "x over " + C.ISLAND_FIT_RISE);
+  // the source-OFF case the preset hint quotes (30-40% slower) must still arm
+  const [tf, wf] = mkW(0.62 * GT, 200, 0.5);
+  ok("... and still arms at the 'maintain flux off' rate (0.62 x gamma)",
+     Math.abs(C.islandFitGamma(tf, wf) / (0.62 * GT) - 1) < 1e-6,
+     "got " + C.islandFitGamma(tf, wf).toPrecision(8));
+  // below the gate it blanks rather than quoting: a decade-slower island is not a linear
+  // stage anyone should read a rate off in a 10 t-unit window
+  const [ts2, ws2] = mkW(0.15 * GT, 200, 0.5);
+  ok("a rate too slow to clear the gate in one window is blanked",
+     !isFinite(C.islandFitGamma(ts2, ws2)), "got " + C.islandFitGamma(ts2, ws2));
+  // and the guards the mode chart has are inherited verbatim through the shared helper
+  const tsat = [], wsat = [];
+  for (let i = 0; i < 200; i++) { tsat.push(0.5 * i); wsat.push(1.2 * (1 + 0.05 * Math.sin(0.7 * 0.5 * i))); }
+  ok("a saturated, oscillating W has no growth rate", !isFinite(C.islandFitGamma(tsat, wsat)),
+     "got " + C.islandFitGamma(tsat, wsat));
+  const [td, wd] = mkW(-GT, 200, 0.5);
+  ok("a shrinking island has no growth rate", !isFinite(C.islandFitGamma(td, wd)));
+  ok("W = 0 (nothing reconnected yet) is not logged as a rate",
+     !isFinite(C.islandFitGamma(tw, ww.map(() => 0))));
+  // the trailing window really is trailing: an older, steeper stage must not leak in
+  const tk = [], wk = [];
+  for (let i = 0; i < 300; i++) {
+    const t = 0.5 * i, tb = 0.5 * 260;
+    tk.push(t);
+    wk.push(0.0875 * Math.exp(t < tb ? 0.5 * 4 * GT * t : 0.5 * (4 * GT * tb + GT * (t - tb))));
+  }
+  ok("only the trailing " + C.MODE_FIT_DT + " t-units are fitted",
+     Math.abs(C.islandFitGamma(tk, wk) / GT - 1) < 1e-6, "got " + C.islandFitGamma(tk, wk).toPrecision(10));
+}
+
+// ---------------------------------------------------------------------------
+console.log("12. the amplitude basis switch and its labels (FEEDBACK_2026-08-10 item 15)");
+// ---------------------------------------------------------------------------
+// The UI half of section 1's arithmetic: ONE predicate (icPaintPP / icAmpBasis) drives the
+// basis, the two slider labels and the 3D chi line, so they cannot disagree. Needs
+// remembering controls -- ampBasisSync WRITES the labels it is checked on.
+{
+  ELS = {};
+  const set = (id, v) => { C.document.getElementById(id).value = String(v); };
+  const lab = id => C.document.getElementById(id).innerHTML;
+  set("rAmpP", 0); set("rAmpM", -1);              // 10^0 = 1 and 10^-1 = 0.1
+  // the paint target only means anything while the DRAWING is the preset
+  for (const [ic, paint, want] of [["custom", "phi", "pp"], ["custom", "psi", "pp"],
+                                   ["custom", "zp", "zeta"], ["custom", "zm", "zeta"],
+                                   ["letters", "phi", "zeta"], ["modes", "psi", "zeta"],
+                                   ["tearing", "phi", "zeta"]]) {
+    set("selIC", ic); set("selPaint", paint);
+    ok("selIC=" + ic + " + paint " + paint + " -> " + want + " basis", C.icAmpBasis() === want,
+       "got " + C.icAmpBasis());
+  }
+  // the labels and their titles follow, and say what the number MEANS
+  set("selIC", "custom"); set("selPaint", "phi");
+  C.ampBasisSync();
+  ok("painting phi/psi relabels the two sliders phi amp / psi amp",
+     lab("labAmpP") === "&phi; amp" && lab("labAmpM") === "&psi; amp",
+     lab("labAmpP") + " / " + lab("labAmpM"));
+  const ti = id => C.document.getElementById(id).title;
+  ok("... and both tooltips document the semantics (max |u| / max |b|)",
+     ti("rAmpP").indexOf("max |u|") >= 0 && ti("rAmpM").indexOf("max |b|") >= 0 &&
+     ti("labAmpP") === ti("rAmpP") && ti("labAmpM") === ti("rAmpM"),
+     ti("rAmpP") + "  ||  " + ti("rAmpM"));
+  // ... and the pair the chi line needs: z+- = u +- b for co-located strokes
+  const az = C.icAmpZeta();
+  ok("icAmpZeta maps (phi, psi) amps back to (a+, a-) = (a_phi+a_psi, |a_phi-a_psi|)",
+     Math.abs(az[0] - 1.1) < 1e-12 && Math.abs(az[1] - 0.9) < 1e-12, JSON.stringify(az));
+  set("selPaint", "zp");
+  C.ampBasisSync();
+  ok("painting zeta+- puts the zeta labels back",
+     lab("labAmpP") === "&zeta;&#8314; amp" && lab("labAmpM") === "&zeta;&#8315; amp" &&
+     ti("rAmpP").indexOf("max |z") >= 0,
+     lab("labAmpP") + " / " + lab("labAmpM"));
+  const az2 = C.icAmpZeta();
+  ok("... and icAmpZeta is then the sliders themselves",
+     az2[0] === C.uiAmp()[0] && az2[1] === C.uiAmp()[1], JSON.stringify(az2));
+  ELS = null;
 }
 
 console.log(bad ? "\n" + bad + " CHECK(S) FAILED" : "\nall GATE G node checks passed");

@@ -56,6 +56,10 @@ setTimeout(async () => {
     await frame();
 
     // --- add display cards up to the cap, and one of every chart type ---------
+    // measured against what the BOOT layout left, not against a constant: a preset may
+    // legitimately open with no chart cards at all (the rmhd-variables demo does), and
+    // what this checks is that the three added ones ACCUMULATE on top of whatever was there
+    const chart0 = state().charts.length;
     run(`function(){
       addDisplayCard({ sel: 6, cmap: 1 }); addDisplayCard({ sel: 8, cmap: 2 });
       addDisplayCard({ sel: 4 });                       // one past the cap -> refused
@@ -64,7 +68,8 @@ setTimeout(async () => {
     }`);
     let st = state();
     if (st.disp.length !== 3) fail("expected 3 display cards, got " + st.disp.length);
-    if (st.charts.length < 4) fail("chart cards did not accumulate: " + st.charts.join(","));
+    if (st.charts.length !== chart0 + 3)
+      fail("chart cards did not accumulate: " + chart0 + " + 3 -> " + st.charts.join(","));
     console.log(tag + " 3 displays + " + st.charts.length + " charts: " + JSON.stringify(st.disp));
     await frame();
 
@@ -428,7 +433,27 @@ setTimeout(async () => {
       if (!isl.eq || !(isl.curv > 0)) fail("the tearing preset left no equilibrium record: " + JSON.stringify(isl));
       if (!(isl.n >= 1) || !isFinite(isl.w)) fail("the island card collected no W(t): " + JSON.stringify(isl));
       console.log(tag + " island card: " + JSON.stringify(isl));
-      run(`function(){ let c; while ((c = cards.chart.filter(x => x.type() === "island")[0])) cardClose(c); }`);
+      // ... and its gamma_fit (FEEDBACK_2026-08-10 item 9), the same way the k_y mode card's
+      // is driven below: the stub readback is all zeros, so W(t) is flat and the legend must
+      // stay blank; a synthetic LINEAR-STAGE island (psitilde ~ e^{gamma t}, hence
+      // W ~ e^{gamma t/2}) must then be fitted back at gamma, not at gamma/2.
+      const isl2 = run(`function(){
+        const ny = solver.p.ny, Ly = solver.p.Ly, k = 2 * Math.PI / Ly, G = 0.0287;
+        const line = pt => { const v = new Float32Array(4 * ny);
+          for (let j = 0; j < ny; j++) v[2 * ny + j] = pt * k * Math.sin(k * j * Ly / ny);
+          return v; };
+        const flat = islandFitGamma(islandHist.t, islandHist.w);
+        islandReset();
+        for (let i = 0; i < 60; i++) islandPush(i, line(1e-3 * Math.exp(G * i)), ny, Ly);
+        for (const c of cards.chart) if (c.type() === "island") c.draw({ vals: line(1e-3), Ly: Ly });
+        return { flat: flat, n: islandHist.t.length, w: islandHist.w.slice(-1)[0],
+                 g: islandFitGamma(islandHist.t, islandHist.w) };
+      }`);
+      if (isFinite(isl2.flat)) fail("the island fit quoted a rate for a flat W(t): " + JSON.stringify(isl2));
+      if (isl2.n !== 60 || !(isl2.w > 0) || !(Math.abs(isl2.g - 0.0287) < 1e-6))
+        fail("the island card did not fit a synthetic linear stage: " + JSON.stringify(isl2));
+      console.log(tag + " island gamma_fit: " + JSON.stringify(isl2));
+      run(`function(){ islandReset(); let c; while ((c = cards.chart.filter(x => x.type() === "island")[0])) cardClose(c); }`);
       if (run(`function(){ return cards.chart.some(c => c.type() === "island"); }`))
         fail("the island card would not close");
       // ... and it must not be offered at all in 3D (checked from this side by its absence
@@ -812,6 +837,100 @@ setTimeout(async () => {
     if (!run(`function(){ let p = icDraw.cv; while (p.parentNode) p = p.parentNode;
                           return p === document.getElementById("editview"); }`))
       fail("the editor canvas is not inside #editview");
+    // --- colorbar + save / record (FEEDBACK_2026-08-10 items 12, 13) -----------
+    // LABELS first: the three range conventions the colorize kernel implements, driven
+    // off a range handed in by hand (every stub readback is zeros, so a real number has
+    // to come from somewhere). The strip itself is one cmapRGB sweep -- what matters here
+    // is that the numbers under it follow the mode, and that changing the field DROPS the
+    // previous mode's range instead of relabelling the new one with it.
+    const bar = run(`function(){
+      const d = cards.disp[0], out = { lab: {}, stale: null };
+      if (d.selZSrc) { d.selZSrc.value = "manual"; d.apply(); }
+      for (const [k, sel] of [["signed", 2], ["mag", 4], ["sigma", 8]]) {
+        d.selField.value = String(sel); d.apply();
+        d.setBarRange(2.5);
+        out.lab[k] = d.barT.map(s => s.innerHTML);
+      }
+      d.selField.value = "3"; d.apply();          // psi: a DIFFERENT autoscale
+      out.stale = d.barT.map(s => s.innerHTML).join("|");
+      out.needsSigned = d.barNeedsMax();
+      d.selField.value = "8"; d.apply();
+      out.needsSigma = d.barNeedsMax();           // fixed +-1: no readback at all
+      d.selField.value = "4"; d.apply();
+      d.selCmap.value = "1"; d.apply();
+      out.cmap = d.barCmap;
+      out.shown = d.bar.style.display;
+      return out;
+    }`);
+    if (bar.lab.signed.join(",") !== "&minus;2.50,0,+2.50")
+      fail("signed colorbar labels are not +-max: " + JSON.stringify(bar.lab.signed));
+    if (bar.lab.mag.join(",") !== "0,1.25,2.50")
+      fail("magnitude colorbar labels are not 0..max: " + JSON.stringify(bar.lab.mag));
+    if (bar.lab.sigma.join(",") !== "&minus;1,0,+1")
+      fail("sigma colorbar labels are not the fixed +-1: " + JSON.stringify(bar.lab.sigma));
+    if (bar.stale !== "||") fail("a field change kept the old mode's range: " + bar.stale);
+    if (!bar.needsSigned || bar.needsSigma)
+      fail("the autoscale readback gate is wrong: signed=" + bar.needsSigned + " sigma=" + bar.needsSigma);
+    if (bar.cmap !== 1) fail("the strip did not follow the card's colormap: " + bar.cmap);
+    if (bar.shown === "none") fail("the colorbar is hidden on a plain slice card");
+    // 3D: the lines view renders no field, so it legends no range
+    if (page.indexOf("3d") >= 0) {
+      const lv = run(`function(){ const d = cards.disp[0];
+        d.selZSrc.value = "lines"; d.apply(); const h = d.bar.style.display;
+        d.selZSrc.value = "manual"; d.apply(); return [h, d.bar.style.display]; }`);
+      if (lv[0] !== "none" || lv[1] === "none") fail("colorbar in the lines view: " + JSON.stringify(lv));
+      console.log(tag + " colorbar hidden in the lines view, back on the slice");
+    }
+    console.log(tag + " colorbar labels: " + JSON.stringify(bar.lab));
+
+    // SAVE: the handler must reach toBlob and hand a real blob to a real <a download>.
+    const nDl = env.caps.downloads.length;
+    run(`function(){ cards.disp[0].btnSave.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));       // toBlob is async, as in a browser
+    const png = env.caps.downloads[nDl];
+    if (!png) fail("save produced no download");
+    else {
+      if (!/^taranis-[a-z0-9]+-[a-z_]+-t[-0-9.]+\.png$/.test(png.name))
+        fail("save filename is off pattern: " + png.name);
+      if (!png.blob || png.blob.type !== "image/png" || !(png.blob.size > 0))
+        fail("save produced no PNG blob: " + JSON.stringify(png.blob));
+      console.log(tag + " save -> " + png.name + " (" + png.blob.type + ", " + png.blob.size + " B)");
+    }
+    // RECORD: a toggle. Start -> live recorder + relabelled button; stop -> the file.
+    const rec1 = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
+      return { live: !!d.rec, label: d.btnRec.innerHTML, mime: d.rec && d.rec.mimeType,
+               fps: d.rec && d.rec.stream && d.rec.stream.fps, hot: d.btnRec.classList.contains("reclive") }; }`);
+    if (!rec1.live || rec1.label !== "stop" || !rec1.hot)
+      fail("record did not start: " + JSON.stringify(rec1));
+    if (rec1.fps !== run("function(){ return REC_FPS; }")) fail("captureStream fps: " + rec1.fps);
+    if (rec1.mime !== "video/webm;codecs=vp9") fail("record picked " + rec1.mime);
+    const rec2 = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
+      return { live: !!d.rec, label: d.btnRec.innerHTML, hot: d.btnRec.classList.contains("reclive") }; }`);
+    if (rec2.live || rec2.label !== "rec" || rec2.hot)
+      fail("record did not stop: " + JSON.stringify(rec2));
+    const webm = env.caps.downloads[env.caps.downloads.length - 1];
+    if (!webm || !/\.webm$/.test(webm.name) || !(webm.blob && webm.blob.size > 0))
+      fail("record produced no webm download: " + JSON.stringify(webm));
+    else console.log(tag + " record -> " + webm.name + " (" + webm.blob.type + ", " + webm.blob.size + " B)");
+    // ... and with MediaRecorder absent (iOS Safari) the button is simply not there
+    const noRec = run(`function(){
+      const M = window.MediaRecorder;
+      window.MediaRecorder = undefined;
+      const off = recSupported(cards.disp[0].cv);
+      while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
+      const d = addDisplayCard(); cardsSync();
+      const hid = d.btnRec.style.display, sav = d.btnSave.style.display;
+      cardClose(d); cardsSync();
+      window.MediaRecorder = M;
+      return { off: off, hid: hid, sav: sav, back: recSupported(cards.disp[0].cv) };
+    }`);
+    if (noRec.off !== false || noRec.back !== true)
+      fail("MediaRecorder feature detection: " + JSON.stringify(noRec));
+    if (noRec.hid !== "none") fail("no MediaRecorder, but the rec button is shown: " + noRec.hid);
+    if (noRec.sav === "none") fail("no MediaRecorder took the SAVE button away too");
+    console.log(tag + " no MediaRecorder -> rec button absent, save button intact");
+    await frame();
+
     // --- the self-test path still runs end to end ------------------------------
     // the numbers are meaningless on a stub GPU (every readback is zeros); what this
     // checks is that the path survives the Phase-H buffer changes -- writeBuffer

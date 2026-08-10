@@ -46,6 +46,9 @@ function itemWidth(e) {
   }
   if (e.kind === "label") return ["label", tw(e.innerHTML)];
   if (cls.indexOf("val") >= 0) return ["val", 64];
+  // the colorbar block is a fixed-width flex item (strip + tick row), so it must fit
+  if (cls.indexOf("cbar") >= 0) return ["colorbar", 134];
+  if (cls.indexOf("viewcap") >= 0) return ["caption", 0];  // wraps as text
   if (cls.indexOf("hint") >= 0) return ["hint", 0];   // wraps as text, not a fixed item
   return null;
 }
@@ -66,12 +69,15 @@ function rowsOf(env) {
   }
   return out;
 }
-// the widest single item of the card header the card system builds at runtime
+// the widest single item of the flex rows the card system builds at runtime: the header,
+// and (FEEDBACK_2026-08-10 items 12/13) the display card's FOOTER, which carries the
+// colorbar and the save / record buttons on the caption line
+const CARD_ROWS = ["cardhead", "viewfoot"];
 function cardHeadItems(env) {
   const heads = [];
   for (const host of [env.getEl("displays"), env.getEl("charts")]) {
     for (const d of env.descendants(host, "div")) {
-      if ((d.className || "") !== "cardhead") continue;
+      if (CARD_ROWS.indexOf(d.className || "") < 0) continue;
       const items = [];
       for (const c of d.children) { const w = itemWidth(c); if (w) items.push(w); }
       if (items.length) heads.push(items);

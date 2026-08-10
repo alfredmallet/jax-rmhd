@@ -8,12 +8,11 @@
 </head>
 <body>
 <h1>3D RMHD (spectral z) — WebGPU pseudospectral solver</h1>
-<div class="sub">rfftn over (z,x,y) &middot; LSRK33 with the exact 2&times;2 Alfv&eacute;n propagator
+<div class="sub"><a href="docs.html"><b>how to use this page</b></a>
+  &middot; rfftn over (z,x,y) &middot; LSRK33 with the exact 2&times;2 Alfv&eacute;n propagator
   &middot; fp32
   &middot; <a href="rmhd2d.html">&larr; 2D version</a>
-  &middot; <a href="index.html">overview</a>
-  &middot; <a href="https://github.com/alfredmallet/taranis/blob/main/webgpu/README.md"
-       target="_blank" rel="noopener">about / README</a></div>
+  &middot; <a href="index.html">overview</a></div>
 
 <!-- the sticky bar and the control panel are BUILT from a spec (common.js
      controlsBuild): every row the two apps share exists once, in common.js -->
@@ -1789,7 +1788,10 @@ function syncLabels() {
 function icInfoLine(sz) {
   const p = el("selIC").value;
   if (!icIsPacketIC(p) && p !== "custom") return "";
-  const q = liveParams(), a = uiAmp();
+  // chi is written in ELSASSER amplitudes, so it reads icAmpZeta, not the raw sliders:
+  // a drawing painted in phi/psi puts (max |u|, max |b|) on those sliders instead
+  // (FEEDBACK_2026-08-10 item 15) and icAmpZeta maps them back.
+  const q = liveParams(), a = icAmpZeta();
   // the perpendicular scale is the structure's own: sigma_letter for the glyphs, the
   // blob-width slider for a drawing (they share a default -- REFINE_PLAN G.2), and for
   // the sinusoids the single mode's own gradient scale 1/k1 = Lx/2pi (item 9), which is
@@ -1970,12 +1972,17 @@ function planeReadout() {
 // every quantity here renders as a cube -- so there are no cube entries in it.
 // ---------------------------------------------------------------------------
 const DISP_FIELDS = [
-  { v: 4, t: "velocity |u|" }, { v: 5, t: "magnetic |b|" },
+  { v: 4, t: "velocity |u|", d: "u = z&#770;&times;&nabla;&phi;" },
+  { v: 5, t: "magnetic |b|", d: "b = z&#770;&times;&nabla;&psi;" },
   { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
-  { v: 0, t: "vorticity" }, { v: 1, t: "current" },
-  { v: 6, t: "Elsasser |z&#8314;|" }, { v: 7, t: "Elsasser |z&#8315;|" },
-  { v: 8, t: "cross helicity &sigma;_c" },
-  { v: 9, t: "residual energy &sigma;_r" }
+  { v: 0, t: "vorticity", d: "&omega; = &nabla;&sup2;&phi; = z&#770;&middot;&nabla;&times;u" },
+  { v: 1, t: "current", d: "j = &nabla;&sup2;&psi; = z&#770;&middot;&nabla;&times;b" },
+  { v: 6, t: "Elsasser |z&#8314;|", d: "z&#8314; = u + b" },
+  { v: 7, t: "Elsasser |z&#8315;|", d: "z&#8315; = u &minus; b" },
+  { v: 8, t: "cross helicity &sigma;_c",
+    d: "&sigma;_c = 2u&middot;b / (|u|&sup2;+|b|&sup2;)" },
+  { v: 9, t: "residual energy &sigma;_r",
+    d: "&sigma;_r = (|u|&sup2;&minus;|b|&sup2;) / (|u|&sup2;+|b|&sup2;)" }
 ];
 
 // ---------------------------------------------------------------------------

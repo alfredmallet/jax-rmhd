@@ -10,7 +10,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   Phase H.0 the control panel is BUILT from a spec, so every tool that needs to see a
   control has to boot the page — hence one stub, three consumers. Its `Path2D` stub
   counts the points the overlays (arrows, field lines) push into a path and fails on any
-  non-finite coordinate.
+  non-finite coordinate. Since FEEDBACK_2026-08-10 item 13 it also stubs the CAPTURE path
+  — `canvas.toBlob` / `canvas.captureStream`, `MediaRecorder` (with `isTypeSupported`),
+  `Blob` and `URL.createObjectURL`, plus `click()` on an `<a download>` — and logs every
+  blob and every download it produces on `env.caps`, so a consumer can assert on the file
+  that came out rather than on the handler having run.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
   kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
   clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
@@ -42,7 +46,19 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   readback, and unticking leaves the value alone. The KH `k_y = 2pi/Ly mode` card is driven
   beside the island one: the preset must OPEN with it, the stub's all-zero readback must
   leave the log-y history EMPTY, a synthetic exponential line must trace and fit, a zero
-  b_x line must drop its series rather than the axis, and only the KH IC may arm it.
+  b_x line must drop its series rather than the axis, and only the KH IC may arm it. The
+  island card is driven the same way since FEEDBACK_2026-08-10 item 9: a flat W(t) must
+  quote NO rate, and a synthetic linear-stage island (psitilde ~ e^{gamma t}, so
+  W ~ e^{gamma t/2}) must come back at gamma, not gamma/2. The chart-count assertion is
+  taken against the BOOT layout, not a constant -- the `rmhdvars` preset opens with none.
+  FEEDBACK_2026-08-10 items 12/13 add the display card's colorbar and capture buttons: the
+  three label conventions (signed +-max, magnitude 0..max, sigma fixed +-1) off a range
+  handed in by hand, that a FIELD change drops the previous mode's range instead of
+  relabelling with it, the readback gate (sigma modes take none), the strip following the
+  card's colormap, its absence in the 3D lines view, and then `save` / `rec` end to end --
+  filename pattern, a real PNG / WebM blob on a real `<a download>`, the toggle's two
+  states, the vp9 pick and the 30 fps stream, and that deleting `MediaRecorder` removes
+  the rec button and leaves `save` alone.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
@@ -70,7 +86,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   (known m = 1 amplitude and phase under a constant offset, an m = 2 contamination and
   6-decades-louder junk in the rows it must not read), `modeFitGamma` on exponentials
   (even/uneven sampling, trailing-window only, and NaN on flat / decaying / nonpositive
-  data), and the `modeHist` record through HIST_MAX halving and a paused clock.
+  data), and the `modeHist` record through HIST_MAX halving and a paused clock. Sections
+  11-12 (FEEDBACK_2026-08-10 items 9 and 15) add the island chart's `islandFitGamma` (the
+  factor 2, that both wrappers ARE the one `fitLogSlope` at their own rise gate, that a
+  MODE_FIT_DT window of the tearing stage clears ISLAND_FIT_RISE but not MODE_FIT_RISE,
+  and the inherited saturated / decaying / trailing-window guards) and the (phi, psi)
+  amplitude basis -- `icZetaFields(..., "pp")` normalizing the combinations exactly and
+  independently on a MIXED drawing, bitwise agreement with the zeta basis on a phi-only
+  one, and the `icAmpBasis` / label / `icAmpZeta` truth table on remembering controls.
 - `checkpin.js [dir]` — the PINCURVE gates (pinned ghost spectra): `specCurves` against the
   PRE-REFACTOR inline loop, ported verbatim into the file, over every (bin stack × `sq` ×
   `sd`) combination, plus — with `PINCURVE_REF=<a pre-refactor common.js>` — a byte-diff of
@@ -98,6 +121,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   against itself. Section 4b (GATE J2) adds the maintained equilibrium flux: the same
   solver with the app's source term, checking that psi_eq is then stationary to round-off
   and that the free-running growth rate is the frozen-equilibrium eigenvalue again.
+  Section 4c runs the app's OWN `islandWidth` + `islandFitGamma` over that maintained run's
+  cut line, at the cut card's cadence, against the same eigenvalue -- so the number the
+  island chart's legend quotes is checked on physics, not on a synthetic exponential.
   Section 5 also runs the app's OWN `modeAmps` (what the `k_y = 2pi/Ly mode` chart plots)
   over a cut line built from those fp64 fields on x = Lx/2, at the same tolerance as the
   KH rate beside it.
@@ -138,7 +164,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   extracted app scripts (the standing-rule duplication audit). Run it over the extracted
   HTML *bodies* too: markup twins are what H.0 was about.
 - `layout.js [dir]` — control-row wrap audit at 360/768/1200 px, off the BUILT element
-  tree of a booted page (controls + every card header).
+  tree of a booted page (controls + every card header, and since items 12/13 the display
+  card's `.viewfoot` too — the colorbar block is a fixed-width flex item and the save /
+  rec buttons sit beside it).
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`).
 - `cmapcheck.js` — colormap table vs emitted WGSL vs matplotlib reference.

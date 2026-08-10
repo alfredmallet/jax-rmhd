@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>how to use the WebGPU RMHD apps</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>how to use these pages</h1>
+<div class="sub">every button and every chart in the 2D and 3D RMHD apps
+  &middot; <a href="rmhd2d.html">2D app</a>
+  &middot; <a href="rmhd3d.html">3D app</a>
+  &middot; <a href="index.html">overview</a></div>
+
+<p class="lead">Both apps have the same shape: a bar at the top that is always visible, a
+panel of settings under it, and below that a column of <b>display cards</b> (pictures of
+the field) beside a column of <b>chart cards</b> (graphs against time or against scale).
+Nothing is modal &mdash; you can change any setting at any time, and the run keeps going.
+The 3D app adds the things a third dimension needs; everything else is identical.</p>
+
+<p class="lead">A good first move is to pick a <b>preset</b> from the bar at the top,
+press <b>Run</b>, and change one thing at a time.</p>
+
+<div class="panes">
+
+<details open>
+  <summary>the bar at the top</summary>
+  <p><b>Run</b> starts the simulation and turns into <b>Pause</b>. Pausing freezes time;
+    the displays and charts stay where they are and every control still works, so you can
+    set something up while paused and then run.</p>
+  <p><b>Reset</b> rebuilds the initial condition and puts the clock back to zero, using
+    whatever the initial-condition settings currently say. It does not touch your
+    displays or charts.</p>
+  <p><b>preset</b> is a drop-down of ready-made configurations. Picking one sets the
+    controls <i>and</i> opens the displays and charts that go with it, then prints a
+    one-paragraph note about what to look for. Presets are configurations, not separate
+    programs: everything stays adjustable afterwards. Each one also has a direct link
+    &mdash; for example <code>rmhd2d.html?demo=kh</code> &mdash; which opens the page
+    already set up that way.</p>
+  <p><b>hide params</b> collapses the whole settings panel, for when you want more room
+    for the pictures. It hides, it does not reset.</p>
+  <p>On the right of the bar is a readout of the simulation time <b>t</b>, the step
+    number, the current time step <b>dt</b>, and how many steps per second your GPU is
+    managing. Under the displays there is a second readout with the kinetic and magnetic
+    energies and the two forcing scales.</p>
+</details>
+
+<details>
+  <summary>simulation settings</summary>
+  <p><b>resolution</b> is the number of grid points across the box. Higher is sharper and
+    slower. Changing it restarts the run.</p>
+  <p><b>box</b> (2D only) is the shape of the box: square 2&pi;&times;2&pi;, or wide
+    4&pi;&times;2&pi;. The wide box exists for the shear-layer and tearing demos, which
+    need room along x for one unstable wavelength along y.</p>
+  <p><b>L<sub>z</sub></b> (3D only) is the length of the box along the strong background
+    magnetic field, which points along z. Longer boxes hold longer wave packets.</p>
+  <p><b>seed</b> is the random seed. The same seed gives the same run.</p>
+  <p><b>cfl_safety</b> and <b>cfl_every</b> control the time step. The solver picks dt
+    from how fast the field is moving; cfl_safety is the fraction of the largest stable
+    step it takes (smaller = safer and slower), and cfl_every is how many steps it waits
+    before recomputing it. The defaults are fine unless a run blows up.</p>
+</details>
+
+<details>
+  <summary>dissipation</summary>
+  <p>Dissipation is what removes energy at small scales, so the cascade has somewhere to
+    end. Too little and the smallest scales pile up into noise; too much and there is no
+    turbulence, just a slow smooth decay.</p>
+  <p><b>hyper</b> chooses how sharply dissipation switches on with scale. 1 is ordinary
+    viscosity and resistivity. Higher values leave the large scales almost untouched and
+    then bite hard at the grid scale, which buys a wider clean range of scales &mdash;
+    useful for looking at spectra, less honest if you care about the physics of the
+    dissipation itself.</p>
+  <p><b>diss</b> is the strength, on a logarithmic slider. Its range is recomputed for
+    the current resolution and hyper value, so one sweep of the slider always goes from
+    "too thick to be turbulent" at the top to "too thin for this grid" at the bottom.</p>
+  <p><b>auto</b> (ticked by default) sets <b>diss</b> for you, continuously, from the
+    amount of energy actually measured near the smallest resolved scale. While it is
+    ticked the slider is disabled but still shows the value it has chosen, so you can
+    watch it move; untick it and the slider stays exactly where the controller left it.
+    The tearing and rmhd-variables presets turn it off: tearing quotes a growth rate
+    against a fixed resistivity.</p>
+  <p><b>Pm</b> (2D only) is the magnetic Prandtl number. The <b>diss</b> slider is the
+    resistivity &eta; (acting on &psi;), and the viscosity acting on &phi; is
+    Pm&times;&eta;. 1 means both are equal. 0 means no viscosity at all.</p>
+  <p><b>z_diss_k</b> (3D only) damps structure along the background field. It has its own
+    <b>auto</b> button, which sets it from the grid.</p>
+</details>
+
+<details>
+  <summary>forcing</summary>
+  <p>Forcing is how energy gets put in. With the checkbox off the run is decaying
+    turbulence: it starts with whatever the initial condition gave it and runs down.</p>
+  <p><b>&epsilon;<sup>+</sup></b> and <b>&epsilon;<sup>&minus;</sup></b> are the rates at
+    which energy is injected into the two Elsasser fields, on logarithmic sliders. They
+    are in the same units and the total injection rate is their sum. The <b>lock</b>
+    checkbox moves them together; unlock them to drive an imbalanced cascade, where more
+    energy travels one way along the field than the other.</p>
+  <p><b>tau</b> is the correlation time of the random forcing: how long a given random
+    kick stays pointing the same way before it is refreshed.</p>
+  <p><b>band n</b> is a pair of handles setting which scales are forced, in units of the
+    box wavenumber &mdash; the default 1&ndash;3 forces the largest few scales and lets
+    everything smaller be produced by the cascade. They cannot cross. Moving them
+    restarts the solver when you let go.</p>
+</details>
+
+<details>
+  <summary>initial condition</summary>
+  <p>The <b>preset</b> drop-down inside this group chooses what the run starts from.
+    <b>Reset</b> re-applies it.</p>
+  <ul>
+    <li><b>large-scale modes</b> &mdash; a fixed pattern of a few big waves. The default,
+      and the state the self-test is defined on.</li>
+    <li><b>letters A / B</b> &mdash; an A-shaped and a B-shaped blob, one in each Elsasser
+      field, smoothed to a physical width. In 3D they are wave packets: the same shapes
+      wrapped in a bell-shaped envelope along z, placed to collide head-on.</li>
+    <li><b>custom (drawn blobs)</b> &mdash; whatever you paint. See the next section.</li>
+    <li><b>quiescent (zero)</b> &mdash; exactly nothing. Useful with forcing on, to watch
+      turbulence build from a standing start.</li>
+    <li><b>Kelvin&ndash;Helmholtz shear layers</b> and <b>tearing mode</b> (2D only)
+      &mdash; two equilibria plus a small seed perturbation, which then grow. They bring
+      their own physical knobs (below).</li>
+    <li><b>sinusoidal z&plusmn; packets</b> (3D only) &mdash; the textbook wave collision:
+      one packet is a single wave in x, the other a single wave in y, so their interaction
+      is one clean beat instead of a spectrum of them.</li>
+  </ul>
+  <p>The two <b>amp</b> sliders set how strong the starting fields are. Normally they are
+    labelled <b>&zeta;<sup>+</sup> amp</b> and <b>&zeta;<sup>&minus;</sup> amp</b> and set
+    the peak strength of each Elsasser field separately; <b>lock</b> moves them together.
+    They rescale the <i>stored</i> initial condition, so you can pause, move a slider and
+    press <b>Reset</b> to get the same shape at a different strength, any number of
+    times.</p>
+  <p>While you are painting a <b>custom</b> drawing in &phi; or &psi;, the same two
+    sliders are relabelled <b>&phi; amp</b> and <b>&psi; amp</b> and mean something more
+    direct: &phi; amp is the peak flow speed max&nbsp;|u|, and &psi; amp is the peak
+    perpendicular field strength max&nbsp;|b|. That is the only way to ask for something
+    like "a strong vortex plus a weak magnetic island", which is not expressible as a
+    pair of Elsasser amplitudes. Painting &zeta;<sup>+</sup>/&zeta;<sup>&minus;</sup>
+    puts the old labels back.</p>
+  <p><b>&sigma;<sub>z</sub></b> (3D only) is the length of the wave packets along the
+    background field. It also sets how nonlinear the collision is: the line under these
+    controls prints <b>&chi;<sup>&plusmn;</sup></b> (well below 1 = a weak collision, the
+    packets pass through each other nearly unchanged; around 1 or more = a strong one,
+    a single collision already shreds them) together with the time at which the two
+    packets meet. There is a cap on &sigma;<sub>z</sub>; increase L<sub>z</sub> if you
+    want longer packets.</p>
+  <p>The equilibrium demos add their own row:
+    <b>a / L<sub>x</sub></b> is the width of the layer, <b>seed</b> the size of the
+    perturbation that grows out of it, <b>U<sub>0</sub></b> the shear-flow strength and
+    <b>b<sub>0</sub></b> the in-plane magnetic field for Kelvin&ndash;Helmholtz, and
+    <b>&psi;<sub>0</sub></b> the current-sheet strength for tearing.
+    <b>maintain equilibrium flux</b> (tearing) holds the equilibrium against its own slow
+    decay, so what you measure is the instability and not the layer spreading out; switch
+    it off and the measured growth rate drops noticeably.</p>
+</details>
+
+<details>
+  <summary>drawing your own initial condition</summary>
+  <p>Choose IC <b>custom (drawn blobs)</b> and press <b>edit IC</b>. The run pauses and
+    the displays are replaced by a single drawing canvas. Click or drag: each stroke
+    deposits a smooth round blob.</p>
+  <p><b>paint</b> chooses which field the stroke goes into: <b>&phi;</b> (a vortex),
+    <b>&psi;</b> (a magnetic island), or the two Elsasser potentials
+    <b>&zeta;<sup>+</sup></b> and <b>&zeta;<sup>&minus;</sup></b> (a wave travelling one
+    way or the other along the field). <b>&sigma;&perp;</b> is the blob width, as a
+    fraction of the box. <b>negative</b> flips the sign of a stroke &mdash; so does
+    dragging with the right mouse button. In 3D the editor has its own z-plane slider,
+    and each blob is also given a length along z.</p>
+  <p>Leaving the editor: <b>save &amp; run</b> keeps the drawing, applies it and resumes;
+    <b>save</b> keeps it and stays paused; <b>cancel</b> throws away everything drawn
+    since you opened the editor. <b>clear</b> empties the canvas without leaving. There
+    is no undo.</p>
+  <p>The strength of what you drew is set by the amp sliders afterwards, not by how hard
+    you scribbled: the whole drawing is rescaled to the amplitude you ask for. The
+    drawing is dropped if you change the resolution, because it is stored on the grid.</p>
+</details>
+
+<details>
+  <summary>display cards &mdash; the pictures</summary>
+  <p><b>+ display</b> in the "displays &amp; charts" group adds a card (up to three);
+    the <b>&times;</b> on a card's header closes it. Every card is independent, so you
+    can watch three different quantities of the same run side by side.</p>
+  <p>The first drop-down is <b>what is drawn</b>. The caption under the picture repeats
+    it with its definition:</p>
+  <ul>
+    <li><b>velocity |u|</b> &mdash; how fast the plasma is moving, u = z&#770;&times;&nabla;&phi;.</li>
+    <li><b>magnetic |b|</b> &mdash; the strength of the field in the plane, b = z&#770;&times;&nabla;&psi;.</li>
+    <li><b>&phi;</b> and <b>&psi;</b> &mdash; the two potentials the solver actually
+      evolves. Contours of &phi; are the streamlines of the flow; contours of &psi; are
+      the perpendicular magnetic field lines.</li>
+    <li><b>vorticity</b> &mdash; &omega; = &nabla;&sup2;&phi;, the local rate of spin of
+      the flow.</li>
+    <li><b>current</b> &mdash; j = &nabla;&sup2;&psi;, the electric current. Thin bright
+      sheets of it are where reconnection happens.</li>
+    <li><b>Elsasser |z<sup>+</sup>|</b> and <b>|z<sup>&minus;</sup>|</b> &mdash;
+      z<sup>&plusmn;</sup> = u &plusmn; b, the two waves travelling in opposite directions
+      along the background field. Turbulence needs both: a lone z<sup>+</sup> travels
+      unchanged.</li>
+    <li><b>cross helicity &sigma;<sub>c</sub></b> &mdash;
+      2u&middot;b/(|u|&sup2;+|b|&sup2;), how aligned the flow and the field are, between
+      &minus;1 and +1. Turbulence tends to align them, which weakens the interaction.</li>
+    <li><b>residual energy &sigma;<sub>r</sub></b> &mdash;
+      (|u|&sup2;&minus;|b|&sup2;)/(|u|&sup2;+|b|&sup2;), which of the two dominates
+      locally: +1 all flow, &minus;1 all field, 0 equal.</li>
+  </ul>
+  <p><b>arrows</b> overlays the direction of the field on the magnitude modes
+    (|u|, |b|, |z<sup>&plusmn;</sup>|).</p>
+  <p><b>contours</b> draws in-plane field lines over the picture: <b>&psi; contours</b>
+    are magnetic field lines, <b>&phi; contours</b> are streamlines, and
+    <b>&psi;&nbsp;+&nbsp;&phi;</b> draws both at once in two colours, which is how you see
+    whether flow and field are aligned. Two more drop-downs appear with them: the number
+    of contour <b>levels</b>, and whether to draw them over the colour field or over a
+    <b>plain bg</b> &mdash; a blank plate, for when the colours underneath are in the
+    way. The lines are evenly spaced in value, so they crowd together where the field is
+    strong.</p>
+  <p>The last drop-down is the <b>colormap</b>: afmhot, viridis, RdBu or grayscale, per
+    card.</p>
+  <p>In 3D each card also has a <b>view</b> drop-down. <b>z slice</b> shows one plane,
+    picked by the slider beside it. <b>track z<sup>+</sup></b> and
+    <b>track z<sup>&minus;</sup></b> follow a wave packet as it moves, so the display
+    rides along with it. <b>cube faces</b> draws the three visible outer faces of the box
+    instead of one plane (the top face is the card's own plane, so a tracking cube card
+    puts the collision on top). <b>field lines</b> draws the magnetic field lines
+    themselves through the whole box, with the box outline; the field selector and the
+    arrows do nothing in that view, but the contour selector still inks the top face.
+    Next to <b>+ display</b> / <b>+ chart</b> there is a page-wide <b>tracking</b>
+    drop-down deciding how those trackers follow a packet: <b>energy centroid</b>
+    (smooth, the default) or <b>peak plane</b> (the single strongest plane, which jumps
+    about more).</p>
+  <p>Along the bottom of each card, on the caption line: a <b>colorbar</b> showing the
+    card's colormap and the range the colours currently mean, and the <b>save</b> and
+    <b>rec</b> buttons.</p>
+</details>
+
+<details>
+  <summary>the colorbar</summary>
+  <p>The strip on the right of the caption line is the card's own colormap, with three
+    numbers under it: the value at the left end, in the middle, and at the right end.</p>
+  <p>Which range it shows follows the quantity:</p>
+  <ul>
+    <li>signed quantities (&phi;, &psi;, vorticity, current) are drawn symmetrically about
+      zero, so the bar reads &minus;max, 0, +max.</li>
+    <li>magnitudes (|u|, |b|, |z<sup>&plusmn;</sup>|) can only be positive, so it reads 0
+      to max.</li>
+    <li>&sigma;<sub>c</sub> and &sigma;<sub>r</sub> are always drawn on a fixed
+      &minus;1&hellip;+1 scale, so their colours mean the same thing from frame to frame
+      and between runs.</li>
+  </ul>
+  <p>Everything else rescales itself continuously to whatever is in the picture, which is
+    why the numbers move while the run does. That is worth remembering when comparing two
+    moments: the colours are the same, the numbers are not. The bar is hidden in the 3D
+    field-lines view, which draws no colour field.</p>
+</details>
+
+<details>
+  <summary>chart cards &mdash; the graphs</summary>
+  <p><b>+ chart</b> adds one; the drop-down in its header chooses the type, and the
+    <b>&times;</b> closes it. You can have several of the same type with different
+    options.</p>
+  <p><b>energy trace</b> &mdash; energies against time. The option chooses
+    <b>E_u, E_b</b> (kinetic and magnetic) or
+    <b>E<sup>+</sup>, E<sup>&minus;</sup></b> (the two Elsasser energies, which is what
+    tells you whether the cascade is imbalanced). The total is drawn in both.</p>
+  <p><b>spectra</b> &mdash; how energy is distributed across scales, on log axes, so a
+    power law is a straight line. Options:</p>
+  <ul>
+    <li><b>which spectra</b>: E_u, E_b &middot; E<sup>+</sup>, E<sup>&minus;</sup> &middot; both.</li>
+    <li><b>direction</b> (3D): across the field (&perp;), along it (&#8741;, dashed), both,
+      or <b>&perp; + k&#8741; (field line)</b>, which measures the parallel spectrum along
+      the actual curved magnetic field rather than along the z axis.</li>
+    <li><b>fit</b>: a straight reference line E = A k<sup>p</sup>. <b>pin to field</b>
+      places it on the spectrum itself, <b>set A</b> lets you type the amplitude, and
+      <b>off</b> hides it. The index box next to it defaults to &minus;5/3; type
+      &minus;1.5 and it is labelled &minus;3/2.</li>
+    <li><b>pin</b> freezes the curves currently drawn as faint grey ghosts, so the next
+      thing you do can be compared against the last thing you did &mdash; lower the
+      dissipation and watch the straight range stretch, or pin at t = 0 and watch the
+      spectrum fill in. Up to four; <b>unpin</b> clears them.</li>
+  </ul>
+  <p><b>cut trace</b> &mdash; a slice through the field along a single line (along y, at
+    the middle of the box). The option picks which pair of components:
+    u_x,&nbsp;u_y &middot; b_x,&nbsp;b_y &middot;
+    |z<sup>+</sup>|,&nbsp;|z<sup>&minus;</sup>|. In 3D it has its own z-plane source.</p>
+  <p><b>island width</b> (2D, for the tearing demo) &mdash; the width W of the magnetic
+    island against time, on a log axis, so the early growth is a straight line and the
+    later slow stage bends over. The legend fits the slope of that straight part and
+    quotes it as a growth rate &gamma;, which is the number to compare against the linear
+    theory value in the preset's note. It goes blank once the curve stops being a straight
+    line, which is not a fault: the rate is genuinely local.</p>
+  <p><b>k_y = 2&pi;/L_y mode</b> (2D, for the Kelvin&ndash;Helmholtz demo) &mdash; the
+    size of the growing mode against time, again on a log axis with a fitted &gamma;. It
+    exists because the energy trace cannot show this at all: the equilibrium shear carries
+    about a million times more energy than the seed, so the total energy sits flat while
+    the instability grows through six decades.</p>
+</details>
+
+<details>
+  <summary>saving a picture or a video</summary>
+  <p><b>save</b> writes the card's current view to a PNG file: the field, the arrows or
+    field lines drawn over it, and the colorbar. The file is named after the page, the
+    quantity and the simulation time, for example
+    <code>taranis-rmhd2d-vorticity-t12.500.png</code>.</p>
+  <p><b>rec</b> starts recording that card to a WebM video and turns into <b>stop</b>.
+    Press it again to stop and save, or leave it: it stops itself after 30 seconds so a
+    forgotten recording cannot grow without bound. The video is the field canvas alone
+    &mdash; arrows, field lines and the colorbar are in the PNG but not in the video.
+    Recording is a browser feature that not every browser has (notably Safari on iOS); if
+    yours does not, the button is simply not there, and <b>save</b> still works.</p>
+  <p>Both write straight to your downloads folder. Nothing is uploaded anywhere: the whole
+    simulation runs on your own machine.</p>
+</details>
+
+<details>
+  <summary>the presets, in one line each</summary>
+  <p><b>2D</b></p>
+  <ul>
+    <li><b>forced turbulence</b> &mdash; energy fed in continuously at the largest scales;
+      the standard picture of a turbulent cascade, and the one to use for spectra.</li>
+    <li><b>decaying A / B packets</b> &mdash; two letter-shaped blobs, no forcing: watch a
+      very ordered initial condition collapse into the same universal cascade anyway.</li>
+    <li><b>rmhd variables (&phi;, &psi;)</b> &mdash; opens with an empty drawing and asks
+      you to make the initial condition yourself, one click at a time, to see what &phi;
+      and &psi; each do on their own.</li>
+    <li><b>Kelvin&ndash;Helmholtz shear layers</b> &mdash; two opposing streams roll up
+      into vortices; raise <b>b<sub>0</sub></b> past <b>U<sub>0</sub></b> and the magnetic
+      field's tension suppresses the whole thing.</li>
+    <li><b>tearing mode (magnetic islands)</b> &mdash; a current sheet reconnects into a
+      magnetic island, with a growth rate you can measure against linear theory.</li>
+  </ul>
+  <p><b>3D</b></p>
+  <ul>
+    <li><b>forced turbulence</b> &mdash; the same forced cascade with the background field
+      along z, so the parallel and perpendicular spectra can differ.</li>
+    <li><b>Alfven-wave collision</b> &mdash; two wave packets travelling towards each
+      other along the field, meeting head-on in the middle of the box. This is the
+      elementary event that turbulence in a magnetised plasma is built out of.</li>
+  </ul>
+</details>
+
+<details>
+  <summary>the self-test, and what to do when something looks wrong</summary>
+  <p>At the bottom of each app is a <b>Self-test</b> button. It runs a small fixed problem
+    through the same GPU code the live run uses and compares the answers against values
+    computed at higher precision by the original research code, printing a table of
+    relative errors against their tolerances. It is there so you can check for yourself
+    that the browser is solving the same equations.</p>
+  <p>If a run turns into noise or the numbers go blank, the usual cause is too little
+    dissipation for the resolution: tick <b>auto</b>, or push the <b>diss</b> slider up a
+    little, and press <b>Reset</b>. If the page says it cannot find a GPU, the browser
+    does not have WebGPU enabled.</p>
+  <p>These apps run in single precision, which is right for looking at things and not a
+    substitute for a research run.</p>
+</details>
+
+</div>
+
+<div class="hint" style="margin-top:14px">
+  Implementation notes, the numerical contracts and the verification tooling are in the
+  <a href="https://github.com/alfredmallet/taranis/tree/main/webgpu" target="_blank" rel="noopener">repository</a>,
+  not here.
+</div>
+</body>
+</html>

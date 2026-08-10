@@ -51,6 +51,20 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 .cardhead .zslider { flex: 1 1 70px; min-width: 60px; width: auto; }
 .cardhead button.x { margin-left: auto; padding: 1px 7px; line-height: 1.2; color: #9aa5b4; }
 .viewcap { color: #7a8494; font-size: 11.5px; margin-top: 5px; }
+/* a display card's FOOTER: the caption, then the colorbar and the two capture buttons
+   pushed to the right edge. It wraps, so on a narrow card they drop onto their own line
+   rather than squeezing the caption; nothing here is ever drawn over the field canvas. */
+.viewfoot { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 10px; }
+.viewfoot .viewcap { flex: 1 1 160px; min-width: 0; }
+.cbar { flex: 0 0 auto; margin-left: auto; }
+.cbarcv { display: block; width: 132px; height: 9px; border: 1px solid #2b303a;
+          box-sizing: content-box; }
+.cbartk { display: flex; justify-content: space-between; width: 134px;
+          color: #7a8494; font-size: 10px; font-variant-numeric: tabular-nums;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.3; }
+.viewfoot .capbtn { flex: 0 0 auto; padding: 1px 6px; font-size: 11px; line-height: 1.4;
+                    color: #9aa5b4; margin-bottom: 1px; }
+.viewfoot .capbtn.reclive { color: #ff8b8b; border-color: #6b2a2a; }
 
 /* the border lives on the wrapper, so the absolutely-positioned overlays
    (inset 0 of the padding box) line up with the WebGPU canvas exactly at every scale */
