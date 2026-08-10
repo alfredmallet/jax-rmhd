@@ -36,14 +36,27 @@ module.exports = function makeEnv(dir, page, demo) {
   // assert that pressing the buttons really produced a blob-shaped download rather than
   // that the handler merely ran: `caps.blobs` (what toBlob / new Blob made),
   // `caps.downloads` ({name, blob} per <a download>.click()), `caps.recs` (MediaRecorders).
-  const caps = { blobs: [], downloads: [], recs: [], urls: new Map() };
+  const caps = { blobs: [], downloads: [], recs: [], urls: new Map(),
+                 encs: [], frames: [], timeouts: [] };
   let urlN = 0;
   const mkBlob = (type, size) => { const b = { type: type || "", size: size || 0, __blob: 1 }; caps.blobs.push(b); return b; };
+  // A blob part is either another stub blob (the MediaRecorder leg) or a Uint8Array (the
+  // WebCodecs leg, whose whole point is the BYTES it wrote) -- so the bytes are kept, and
+  // a consumer can walk the mp4 the muxer produced box by box.
   function BlobStub(parts, o) {
     let n = 0;
-    for (const p of (parts || [])) n += (p && p.size) || 0;
+    const keep = [];
+    for (const p of (parts || [])) {
+      if (p && p.byteLength !== undefined) { n += p.byteLength; keep.push(p); }
+      else n += (p && p.size) || 0;
+    }
     const b = mkBlob(o && o.type, n);
     this.type = b.type; this.size = b.size; this.__blob = 1;
+    if (keep.length) {
+      this.bytes = new Uint8Array(n);
+      let at = 0;
+      for (const p of keep) { this.bytes.set(p, at); at += p.byteLength; }
+    }
     caps.blobs[caps.blobs.length - 1] = this;
   }
   function MediaRecorderStub(stream, o) {
@@ -62,6 +75,112 @@ module.exports = function makeEnv(dir, page, demo) {
     if (this.ondataavailable) this.ondataavailable({ data: mkBlob(this.mimeType, 4096) });
     if (this.onstop) this.onstop();
   };
+  // ---- WebCodecs: the preferred recording leg --------------------------------
+  // A deterministic fake encoder: one chunk per encode() call, sizes and bytes derived
+  // from the frame index, and the avcC-shaped decoderConfig.description on the first
+  // chunk -- enough for the app's VideoEncoder -> mp4Mux path (pump, forced keyframes,
+  // flush, download) to run end to end with no GPU and no browser. Two knobs a consumer
+  // drives the awkward branches with: `stall` (hold the outputs back, so encodeQueueSize
+  // grows and the drop-frame guard fires) and `noAvcC` (an engine that never sends a
+  // description, which must make the app bail to MediaRecorder).
+  const WC_AVCC = new Uint8Array([1, 0x42, 0x00, 0x1e, 0xff, 0xe1, 0, 4,
+                                  0x67, 0x42, 0x00, 0x1e, 1, 0, 4, 0x68, 0xce, 0x3c, 0x80]);
+  function VideoFrameStub(src, o) {
+    if (!src || !src.getContext) fail("VideoFrame built from something that is not a canvas");
+    this.timestamp = (o && o.timestamp) | 0;
+    this.duration = o && o.duration;
+    this.codedWidth = (src && src.width) | 0; this.codedHeight = (src && src.height) | 0;
+    this.closed = false;
+    caps.frames.push(this);
+  }
+  VideoFrameStub.prototype.close = function () { this.closed = true; };
+  function EncodedVideoChunkStub(o) {
+    this.type = (o && o.type) || "key"; this.timestamp = (o && o.timestamp) | 0;
+    this.data = (o && o.data) || new Uint8Array(0);
+    this.byteLength = this.data.byteLength;
+  }
+  EncodedVideoChunkStub.prototype.copyTo = function (d) { d.set(this.data); };
+  function VideoEncoderStub(init) {
+    this.state = "unconfigured"; this.encodeQueueSize = 0;
+    this.stall = false; this.noAvcC = false;
+    this.config = null; this.frames = 0; this.keys = 0; this.sent = 0;
+    this._out = init && init.output; this._err = init && init.error; this._q = [];
+    caps.encs.push(this);
+  }
+  VideoEncoderStub.isConfigSupported = cfg => Promise.resolve({
+    supported: /^avc1\.42/.test((cfg && cfg.codec) || "") && cfg.width > 0 && cfg.height > 0,
+    config: cfg });
+  VideoEncoderStub.prototype.configure = function (cfg) {
+    if (!cfg || !cfg.avc || cfg.avc.format !== "avc")
+      fail("VideoEncoder.configure without avc {format:'avc'}: there would be no avcC");
+    if (!(cfg.width > 0) || !(cfg.height > 0)) fail("VideoEncoder.configure with no frame size");
+    this.config = cfg; this.state = "configured";
+  };
+  VideoEncoderStub.prototype.encode = function (frame, opt) {
+    if (this.state !== "configured") return fail("VideoEncoder.encode before configure()");
+    if (!frame || frame.closed) return fail("VideoEncoder.encode of a closed VideoFrame");
+    const key = !!(opt && opt.keyFrame);
+    this.frames++; if (key) this.keys++;
+    const n = key ? 400 : 120;
+    const d = new Uint8Array(n);
+    d[0] = ((n - 4) >>> 24) & 255; d[1] = ((n - 4) >>> 16) & 255;   // a length-prefixed
+    d[2] = ((n - 4) >>> 8) & 255;  d[3] = (n - 4) & 255;            // "NAL", as the real
+    d[4] = key ? 0x65 : 0x41;                                       // encoder emits
+    for (let i = 5; i < n; i++) d[i] = (i + this.frames) & 255;
+    this._q.push(new EncodedVideoChunkStub({ type: key ? "key" : "delta", timestamp: frame.timestamp, data: d }));
+    this.encodeQueueSize = this._q.length;
+    this.pump();
+  };
+  VideoEncoderStub.prototype.pump = function () {
+    if (this.stall) return;
+    while (this._q.length) {
+      const c = this._q.shift();
+      this.encodeQueueSize = this._q.length;
+      const meta = (this.sent++ === 0 && !this.noAvcC) ? { decoderConfig: { description: WC_AVCC } } : {};
+      if (this._out) this._out(c, meta);
+    }
+  };
+  VideoEncoderStub.prototype.flush = function () {
+    return Promise.resolve().then(() => { this.stall = false; this.pump(); });
+  };
+  VideoEncoderStub.prototype.close = function () { this.state = "closed"; this._q.length = 0; };
+  VideoEncoderStub.prototype.reset = function () { this._q.length = 0; this.encodeQueueSize = 0; };
+
+  // ---- timers ----------------------------------------------------------------
+  // setInterval is the recorder's frame pump, so it is NOT armed for real: the stub keeps
+  // the callbacks in a list and `env.tick(n)` fires exactly n frames -- deterministic, and
+  // a 30 s recording costs no wall clock. setTimeout stays real (the page awaits it), but
+  // every pending one is remembered so a consumer can fire the 30 s hard stop by hand.
+  const ivals = new Map();
+  let ivalN = 0;
+  const setIntervalStub = (fn, ms) => { ivals.set(++ivalN, { fn, ms }); return ivalN; };
+  const clearIntervalStub = id => { ivals.delete(id); };
+  function tick(n) {
+    for (let i = 0; i < (n === undefined ? 1 : n); i++) {
+      for (const e of caps.encs) e.pump();          // the encoder made progress meanwhile
+      for (const t of Array.from(ivals.values())) t.fn();
+    }
+  }
+  const setTimeoutStub = (fn, ms) => {
+    const rec = { ms: ms, fn: fn, fired: false };
+    rec.id = setTimeout(() => { rec.fired = true; fn(); }, ms);
+    caps.timeouts.push(rec);
+    return rec.id;
+  };
+  const clearTimeoutStub = id => {
+    clearTimeout(id);
+    const i = caps.timeouts.findIndex(t => t.id === id);
+    if (i >= 0) caps.timeouts.splice(i, 1);
+  };
+  // fire the newest pending timeout of a given delay by hand (the 30 s recording cap)
+  function fireTimeout(ms) {
+    const t = caps.timeouts.filter(x => x.ms === ms && !x.fired).pop();
+    if (!t) return false;
+    clearTimeoutStub(t.id);
+    t.fired = true; t.fn();
+    return true;
+  }
+
   const URLStub = {
     createObjectURL(b) {
       if (!b || !b.__blob) fail("createObjectURL of something that is not a blob");
@@ -290,10 +409,13 @@ module.exports = function makeEnv(dir, page, demo) {
     },
     window: { addEventListener() {}, devicePixelRatio: 1,
               matchMedia: q => ({ matches: /min-width/.test(q) }),
-              // item 13: the three browser globals the capture path feature-detects and
-              // uses. Present here, so the stub exercises the SUPPORTED branch; a page
-              // that must survive their absence is checked by deleting them (bootstub).
-              URL: URLStub, Blob: BlobStub, MediaRecorder: MediaRecorderStub },
+              // item 13: the browser globals the capture path feature-detects and uses --
+              // both recording legs. Present here, so the stub exercises the SUPPORTED
+              // branch of each; a page that must survive their absence is checked by
+              // deleting them (bootstub).
+              URL: URLStub, Blob: BlobStub, MediaRecorder: MediaRecorderStub,
+              VideoEncoder: VideoEncoderStub, VideoFrame: VideoFrameStub,
+              EncodedVideoChunk: EncodedVideoChunkStub },
     location: { search, href: "file:///x/" + page + search },
     URLSearchParams, navigator: {
       gpu: {
@@ -305,9 +427,10 @@ module.exports = function makeEnv(dir, page, demo) {
     performance: { now: (function () { let t = 1000; return () => (t += 250); })() },
     requestAnimationFrame: () => {},
     Path2D: Path2DStub,
-    console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8ClampedArray, Map, Set,
-    Error, Promise, setTimeout, clearTimeout, Number, String, Array, Object, isFinite,
-    parseInt, parseFloat,
+    console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8Array, Uint8ClampedArray,
+    Map, Set, Error, Promise, Number, String, Array, Object, isFinite, parseInt, parseFloat,
+    setTimeout: setTimeoutStub, clearTimeout: clearTimeoutStub,
+    setInterval: setIntervalStub, clearInterval: clearIntervalStub,
     GPUBufferUsage: { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, UNIFORM: 8, MAP_READ: 16 },
     GPUTextureUsage: { STORAGE_BINDING: 1, TEXTURE_BINDING: 2 },
     GPUMapMode: { READ: 1 }
@@ -319,5 +442,5 @@ module.exports = function makeEnv(dir, page, demo) {
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
   return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, caps,
-           is3d: page.indexOf("3d") >= 0 };
+           tick, fireTimeout, is3d: page.indexOf("3d") >= 0 };
 };

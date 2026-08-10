@@ -14,7 +14,13 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   — `canvas.toBlob` / `canvas.captureStream`, `MediaRecorder` (with `isTypeSupported`),
   `Blob` and `URL.createObjectURL`, plus `click()` on an `<a download>` — and logs every
   blob and every download it produces on `env.caps`, so a consumer can assert on the file
-  that came out rather than on the handler having run.
+  that came out rather than on the handler having run. The WebCodecs recording leg is
+  stubbed the same way: a deterministic `VideoEncoder` (one chunk per `encode()`, an
+  avcC-shaped `decoderConfig.description` on the first, and two knobs — `stall` to grow
+  `encodeQueueSize` into the app's drop-frame guard, `noAvcC` to force the bail back to
+  `MediaRecorder`), `VideoFrame`, `EncodedVideoChunk`, a `Blob` that KEEPS the bytes, and
+  `setInterval` as a hand-driven pump — `env.tick(n)` fires exactly n frames, so a "30 s"
+  recording costs no wall clock, and `env.fireTimeout(ms)` fires the armed 30 s hard stop.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
   kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
   clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
@@ -56,9 +62,17 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   handed in by hand, that a FIELD change drops the previous mode's range instead of
   relabelling with it, the readback gate (sigma modes take none), the strip following the
   card's colormap, its absence in the 3D lines view, and then `save` / `rec` end to end --
-  filename pattern, a real PNG / WebM blob on a real `<a download>`, the toggle's two
-  states, the vp9 pick and the 30 fps stream, and that deleting `MediaRecorder` removes
-  the rec button and leaves `save` alone.
+  filename pattern, a real PNG blob on a real `<a download>`, and the toggle's two states
+  on BOTH recording legs. Leg 1 (WebCodecs): the async config probe gating the start, the
+  encoder config, 45 pumped frames with forced keyframes at 0 and 30, timestamps an exact
+  1/30 s apart, every `VideoFrame` closed, the drop-frame guard under a stalled encoder
+  and the recovery after it, a downloaded `.mp4` whose bytes really are `ftyp+mdat+moov`
+  with no `moof`, the 30 s hard stop fired by hand, destroy-mid-record, and the no-avcC
+  bail to leg 2. Leg 2 (MediaRecorder, which the bail has just switched the page to): the
+  vp9 pick and the 30 fps stream, the MP4 negotiation on an engine that offers it, that
+  deleting `MediaRecorder` with WebCodecs off removes the rec button and leaves `save`
+  alone, and that WebCodecs alone (no `MediaRecorder`: the iOS case this is all for) still
+  offers it.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
@@ -155,6 +169,18 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   / `faceExtract` are pure gathers — which is what makes the one-plane fp64 mirror the
   whole story in 3D too. It does not execute WGSL: what it pins is the wiring and the
   composition.
+- `checkmp4.js [dir]` — the progressive-MP4 muxer (`mp4Mux`), driven with REAL H.264 and
+  needing ffmpeg + ffprobe on PATH. ffmpeg encodes a synthetic Baseline stream at 30 fps
+  with a keyframe every 30 frames; the script cuts the Annex-B into length-prefixed
+  samples and builds the avcC from the stream's own SPS/PPS (the only Annex-B code in the
+  project, deliberately in the test and not in the app), `mp4Mux` writes the file, and
+  ffprobe/ffmpeg say what it is: top level exactly `ftyp+mdat+moov` with no slack, no
+  `moof`/`mvex`/`trun`/`ctts`/`sdtp`/`co64` anywhere in the box tree, `stbl` complete,
+  sync samples exactly on the forced indices, equal pts deltas of 1000 media ticks,
+  `r_frame_rate 30/1`, size and codec preserved, and `ffmpeg -v error -f null -` decoding
+  with zero stderr. Three cases — a square 512×512 take, the non-square 1024×256 wide box,
+  and a one-frame file — plus the refusals (no samples / no avcC) and the codec-string
+  level table. This is the gate that says the recording will play on a phone.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

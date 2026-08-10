@@ -305,10 +305,13 @@ press <b>Run</b>, and change one thing at a time.</p>
     <code>taranis-rmhd2d-vorticity-t12.500.png</code>.</p>
   <p><b>rec</b> starts recording that card to a short video and turns into <b>stop</b>.
     Press it again to stop and save, or leave it: it stops itself after 30 seconds so a
-    forgotten recording cannot grow without bound. The file is an MP4 wherever the
-    browser can record one (Safari, and current Chrome) and a WebM otherwise &mdash;
-    MP4 is the one phones open happily. The video is the field canvas alone
-    &mdash; arrows, field lines and the colorbar are in the PNG but not in the video.
+    forgotten recording cannot grow without bound. The file is a plain MP4 at 30 frames a
+    second: the page encodes it and assembles it itself, one keyframe every second, which
+    is what makes it play on a phone as well as on a laptop. (Left to record the video for
+    us, the browser writes a fancier kind of MP4 that iPhones and iPads show as a handful
+    of stills.) Where the browser is too old for that, the video is recorded the old way
+    instead and may come out as a WebM. The video is the field canvas alone &mdash;
+    arrows, field lines and the colorbar are in the PNG but not in the video.
     Recording is a browser feature that not every browser has; if
     yours does not, the button is simply not there, and <b>save</b> still works.</p>
   <p>Both write straight to your downloads folder. Nothing is uploaded anywhere: the whole

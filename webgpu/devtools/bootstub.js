@@ -896,9 +896,152 @@ setTimeout(async () => {
         fail("save produced no PNG blob: " + JSON.stringify(png.blob));
       console.log(tag + " save -> " + png.name + " (" + png.blob.type + ", " + png.blob.size + " B)");
     }
-    // RECORD: a toggle. Start -> live recorder + relabelled button; stop -> the file.
-    // The stub engine supports only WebM/vp9, so this leg exercises the WebM FALLBACK
-    // of REC_MIME; the MP4-preferred leg is tested right after.
+    // RECORD, leg 1 (WebCodecs -> mp4Mux): the preferred path, and the whole reason the
+    // muxer exists -- MediaRecorder's fragmented mp4 is what iOS refused to play. The
+    // stub encoder hands back deterministic chunks with an avcC-shaped description, and
+    // env.tick() drives the frame pump by hand, so a "30 s" recording costs no wall clock.
+    const boxesOf = u8 => {
+      const out = [];
+      let o = 0;
+      while (o + 8 <= u8.length) {
+        const sz = ((u8[o] << 24) | (u8[o + 1] << 16) | (u8[o + 2] << 8) | u8[o + 3]) >>> 0;
+        out.push(String.fromCharCode(u8[o + 4], u8[o + 5], u8[o + 6], u8[o + 7]));
+        if (sz < 8) break;
+        o += sz;
+      }
+      return out;
+    };
+    // "moof" ANYWHERE in the file, sample payloads included: the stub's sample bytes are
+    // a ramp, so the four-byte sequence cannot occur in them by accident
+    const hasMoof = u8 => {
+      for (let i = 0; i + 3 < u8.length; i++)
+        if (u8[i] === 0x6d && u8[i + 1] === 0x6f && u8[i + 2] === 0x6f && u8[i + 3] === 0x66) return true;
+      return false;
+    };
+    const mp4File = what => {
+      const dl = env.caps.downloads[env.caps.downloads.length - 1];
+      if (!dl || !/\.mp4$/.test(dl.name) || !dl.blob || dl.blob.type !== "video/mp4")
+        return fail(what + ": no mp4 download (" + JSON.stringify(dl && dl.name) + ")"), null;
+      const b = dl.blob.bytes;
+      if (!b || !b.length) return fail(what + ": the mp4 download carried no bytes"), null;
+      const bx = boxesOf(b);
+      if (bx.join(",") !== "ftyp,mdat,moov")
+        fail(what + ": the file is not ftyp+mdat+moov but " + bx.join(","));
+      if (hasMoof(b)) fail(what + ": the file contains a moof -- it is FRAGMENTED");
+      return { name: dl.name, size: b.length, boxes: bx.join("+") };
+    };
+    const wcPress = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
+      return { busy: d.recBusy, live: !!d.wc, mr: !!d.rec }; }`);
+    if (!wcPress.busy || wcPress.live || wcPress.mr)
+      fail("the WebCodecs config probe did not gate the start: " + JSON.stringify(wcPress));
+    await new Promise(r => setTimeout(r, 5));          // the probe is async, as in a browser
+    const wcOn = run(`function(){ const d = cards.disp[0];
+      return { live: !!d.wc, mr: !!d.rec, label: d.btnRec.innerHTML, cap: !!d.recStop,
+               hot: d.btnRec.classList.contains("reclive"), busy: d.recBusy,
+               codec: d.wc && d.wc.enc.config.codec, w: d.wc && d.wc.w, h: d.wc && d.wc.h,
+               fmt: d.wc && d.wc.enc.config.avc.format, fps: d.wc && d.wc.enc.config.framerate }; }`);
+    if (!wcOn.live || wcOn.mr || wcOn.label !== "stop" || !wcOn.hot || wcOn.busy || !wcOn.cap)
+      fail("the WebCodecs recording did not start: " + JSON.stringify(wcOn));
+    if (!/^avc1\.4200/.test(wcOn.codec || "") || wcOn.fmt !== "avc" || wcOn.fps !== 30)
+      fail("the encoder config is wrong: " + JSON.stringify(wcOn));
+    const nFr = env.caps.frames.length;
+    env.tick(45);                                      // 45 pumped frames = 1.5 s
+    const wcPump = run(`function(){ const d = cards.disp[0], W = d.wc;
+      return { n: W.n, frames: W.enc.frames, keys: W.enc.keys, chunks: W.chunks.length,
+               sync: W.chunks.map((c, i) => (c.key ? i : -1)).filter(i => i >= 0),
+               avcC: !!(W.avcC && W.avcC.length), drop: W.drop }; }`);
+    if (wcPump.n !== 45 || wcPump.frames !== 45 || wcPump.chunks !== 45)
+      fail("the frame pump did not produce 45 frames: " + JSON.stringify(wcPump));
+    // FORCED keyframes once a second: the cadence MediaRecorder would not give, and the
+    // one iOS needs to show anything but stills
+    if (JSON.stringify(wcPump.sync) !== "[0,30]" || wcPump.keys !== 2)
+      fail("the forced keyframe cadence is wrong: " + JSON.stringify(wcPump));
+    if (!wcPump.avcC) fail("no avcC arrived from the encoder metadata");
+    const fr = env.caps.frames.slice(nFr);
+    if (fr.length !== 45) fail("the pump built " + fr.length + " VideoFrames, not 45");
+    if (fr.some(f => !f.closed)) fail("a VideoFrame was never closed (that leaks GPU memory)");
+    const wantTs = fr.map((f, i) => f.timestamp === Math.round(i * 1e6 / 30));
+    if (wantTs.indexOf(false) >= 0)
+      fail("frame timestamps are not a fixed 1/30 s apart: " + JSON.stringify(fr.slice(0, 3).map(f => f.timestamp)));
+    if (fr[0].codedWidth !== wcOn.w || fr[0].codedHeight !== wcOn.h)
+      fail("the frames are not the canvas size: " + fr[0].codedWidth + "x" + fr[0].codedHeight);
+    console.log(tag + " WebCodecs " + wcOn.codec + " " + wcOn.w + "x" + wcOn.h +
+                ", 45 frames, sync at " + JSON.stringify(wcPump.sync));
+    // BACKPRESSURE: with the encoder stalled the queue grows, and past REC_QMAX the pump
+    // must DROP frames instead of queueing them -- and must not advance the frame index,
+    // or the timestamps would stop matching the sample table's constant delta.
+    run(`function(){ cards.disp[0].wc.enc.stall = true; }`);
+    env.tick(20);
+    const wcDrop = run(`function(){ const W = cards.disp[0].wc;
+      return { n: W.n, drop: W.drop, q: W.enc.encodeQueueSize, qmax: REC_QMAX }; }`);
+    if (!(wcDrop.drop > 0) || wcDrop.n !== 45 + wcDrop.q || wcDrop.q > wcDrop.qmax + 1)
+      fail("the stalled encoder was not backpressured: " + JSON.stringify(wcDrop));
+    run(`function(){ cards.disp[0].wc.enc.stall = false; }`);
+    env.tick(5);
+    const wcAfter = run(`function(){ const W = cards.disp[0].wc;
+      return { n: W.n, chunks: W.chunks.length, q: W.enc.encodeQueueSize }; }`);
+    if (wcAfter.q !== 0 || wcAfter.chunks !== wcAfter.n || wcAfter.n !== wcDrop.n + 5)
+      fail("the pump did not recover after the stall: " + JSON.stringify(wcAfter));
+    console.log(tag + " backpressure: " + wcDrop.drop + " frames dropped at queue " +
+                wcDrop.q + ", " + wcAfter.n + " kept");
+    // STOP by button: flush, mux, one download -- and the button back to its idle state
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));          // flush() is a promise
+    const wcOff = run(`function(){ const d = cards.disp[0];
+      return { live: !!d.wc, label: d.btnRec.innerHTML, cap: d.recStop,
+               hot: d.btnRec.classList.contains("reclive") }; }`);
+    if (wcOff.live || wcOff.label !== "rec" || wcOff.hot || wcOff.cap)
+      fail("the WebCodecs recording did not stop: " + JSON.stringify(wcOff));
+    const wcMp4 = mp4File("WebCodecs stop");
+    if (wcMp4) console.log(tag + " record (WebCodecs) -> " + wcMp4.name + " " +
+                           wcMp4.boxes + ", " + wcMp4.size + " B");
+    // the 30 s HARD STOP takes the same path: fire the armed timeout by hand
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    env.tick(3);
+    if (!env.fireTimeout(run("function(){ return REC_MAX_MS; }")))
+      fail("no 30 s hard stop was armed for the WebCodecs recording");
+    await new Promise(r => setTimeout(r, 5));
+    const capped = run(`function(){ const d = cards.disp[0];
+      return { live: !!d.wc, label: d.btnRec.innerHTML }; }`);
+    if (capped.live || capped.label !== "rec") fail("the 30 s cap did not stop it: " + JSON.stringify(capped));
+    if (mp4File("30 s cap")) console.log(tag + " 30 s hard stop -> file written, button reset");
+    // DESTROY mid-recording: closing the card writes what it has rather than losing it
+    const destroyed = await (async () => {
+      run(`function(){ while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
+                       addDisplayCard(); cardsSync();
+                       cards.disp[cards.disp.length - 1].btnRec.onclick(); }`);
+      await new Promise(r => setTimeout(r, 5));
+      env.tick(4);
+      const n = env.caps.downloads.length;
+      run(`function(){ cardClose(cards.disp[cards.disp.length - 1]); cardsSync(); }`);
+      await new Promise(r => setTimeout(r, 5));
+      return env.caps.downloads.length > n;
+    })();
+    if (!destroyed) fail("closing a card mid-recording lost the file");
+    else if (mp4File("destroy mid-record")) console.log(tag + " card closed mid-record -> file still written");
+    // NO avcC: an engine whose metadata never carries a decoder description cannot give
+    // us a playable mp4, so the app must bail to MediaRecorder on the spot -- one frame
+    // in, still recording -- and leave WebCodecs off for the rest of the session.
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    run(`function(){ cards.disp[0].wc.enc.noAvcC = true; }`);
+    env.tick(1);
+    const bail = run(`function(){ const d = cards.disp[0];
+      return { wc: !!d.wc, mr: !!d.rec, mime: d.rec && d.rec.mimeType, off: recWCOff,
+               label: d.btnRec.innerHTML, hot: d.btnRec.classList.contains("reclive") }; }`);
+    if (bail.wc || !bail.mr || !bail.off || bail.label !== "stop" || !bail.hot)
+      fail("a missing avcC did not fall back to MediaRecorder: " + JSON.stringify(bail));
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    console.log(tag + " no avcC -> bailed to MediaRecorder mid-press, WebCodecs off");
+
+    // RECORD, leg 2 (MediaRecorder): the fallback, reached here because the bail above
+    // turned WebCodecs off -- exactly the state an engine without it boots in.
+    // A toggle: start -> live recorder + relabelled button; stop -> the file. The stub
+    // engine supports only WebM/vp9, so this leg exercises the WebM FALLBACK of REC_MIME;
+    // the MP4-preferred leg is tested right after.
+    if (run("function(){ return recWCSupported(cards.disp[0].cv); }"))
+      fail("leg 2 is not being tested: WebCodecs is still on");
     const rec1 = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
       return { live: !!d.rec, label: d.btnRec.innerHTML, mime: d.rec && d.rec.mimeType,
                fps: d.rec && d.rec.stream && d.rec.stream.fps, hot: d.btnRec.classList.contains("reclive") }; }`);
@@ -927,7 +1070,8 @@ setTimeout(async () => {
     if (!mp4 || !/\.mp4$/.test(mp4.name) || !(mp4.blob && mp4.blob.type.indexOf("mp4") >= 0 && mp4.blob.size > 0))
       fail("mp4 record download wrong: " + JSON.stringify(mp4 && mp4.name));
     else console.log(tag + " record (mp4 engine) -> " + mp4.name + " (" + mp4.blob.type + ")");
-    // ... and with MediaRecorder absent (iOS Safari) the button is simply not there
+    // ... and with NEITHER leg available the button is simply not there (an engine with
+    // no MediaRecorder and no WebCodecs; WebCodecs is still off from the bail above)
     const noRec = run(`function(){
       const M = window.MediaRecorder;
       window.MediaRecorder = undefined;
@@ -941,9 +1085,25 @@ setTimeout(async () => {
     }`);
     if (noRec.off !== false || noRec.back !== true)
       fail("MediaRecorder feature detection: " + JSON.stringify(noRec));
-    if (noRec.hid !== "none") fail("no MediaRecorder, but the rec button is shown: " + noRec.hid);
+    if (noRec.hid !== "none") fail("neither recording leg, but the rec button is shown: " + noRec.hid);
     if (noRec.sav === "none") fail("no MediaRecorder took the SAVE button away too");
-    console.log(tag + " no MediaRecorder -> rec button absent, save button intact");
+    console.log(tag + " no MediaRecorder, no WebCodecs -> rec button absent, save intact");
+    // ... whereas MediaRecorder absent but WebCodecs present (iOS Safari 16.4+, which is
+    // the case this whole feature is for) must still offer the button
+    const wcOnly = run(`function(){
+      const M = window.MediaRecorder;
+      window.MediaRecorder = undefined; recWCOff = false;
+      const any = recAnySupported(cards.disp[0].cv);
+      while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
+      const d = addDisplayCard(); cardsSync();
+      const hid = d.btnRec.style.display;
+      cardClose(d); cardsSync();
+      window.MediaRecorder = M; recWCOff = true;
+      return { any: any, hid: hid };
+    }`);
+    if (!wcOnly.any || wcOnly.hid === "none")
+      fail("WebCodecs alone did not keep the rec button: " + JSON.stringify(wcOnly));
+    console.log(tag + " WebCodecs but no MediaRecorder -> rec button still offered");
     await frame();
 
     // --- the self-test path still runs end to end ------------------------------

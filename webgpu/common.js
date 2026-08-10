@@ -1645,23 +1645,92 @@ function cbarFmt(v) {
 // `getCurrentTexture` is transient and the canvas keeps only its last PRESENTED image, so
 // the card re-renders first and composites in the same task -- what lands in the file is
 // then the frame on screen, not a cleared buffer.
-// WebM: MediaRecorder over `captureStream(30)` of the WebGPU canvas. Feature-detected
-// (iOS Safari has no MediaRecorder), and where it is missing the button is simply absent
-// -- Alfred's "degrade silently", with save unaffected. The stream is the field canvas
-// alone -- captureStream takes ONE canvas -- so the arrows, the field lines and the
-// colorbar are in the PNG but not in the video.
+// VIDEO: the field canvas alone (the arrows, the field lines and the colorbar are in the
+// PNG but not in the video), recorded by whichever of TWO legs the engine can run.
+//
+//   1. WebCodecs (Chrome; Safari since 16.4). We encode the canvas ourselves with a
+//      VideoEncoder and write the .mp4 file ourselves -- see mp4Mux below.
+//   2. MediaRecorder, the old leg, kept as the fallback for engines without WebCodecs.
+//      It may hand back WebM.
+//
+// The button is shown when EITHER leg can run and is simply absent otherwise (Alfred's
+// "degrade silently", with save unaffected).
+//
+// WHY leg 1 exists. Chrome's MediaRecorder "video/mp4" writes a FRAGMENTED mp4 -- a moov
+// with an empty mvex sample table plus one moof per fragment -- whose delta samples carry
+// trun default_sample_flags 0x10000, i.e. "not a sync sample, dependency UNKNOWN", and it
+// only emits a keyframe about every 1.4 s. Desktop players ignore the flags and decode
+// the lot; iOS AVFoundation believes them, drops every delta sample, and Alfred's iPhone
+// played a 30 s recording as about three stills. The codec was never at fault (avc1
+// Constrained Baseline with a well-formed avcC). So leg 1: fixed 30 fps timestamps, a
+// FORCED keyframe every second, and a PLAIN PROGRESSIVE file -- ftyp + mdat + moov with
+// honest sample tables (stts/stss/stsc/stsz/stco) and no moof, no mvex, no trun anywhere.
+// That is the shape QuickTime has opened since 2001, and what a phone will play.
 const REC_FPS = 30;
 const REC_MAX_MS = 30000;                // hard stop, so a forgotten recording stays small
-// MP4 (H.264) first: it is the one container everything opens, phones included --
-// Alfred's iPhone would not play the VP9 WebM his laptop recorded. Safari's
-// MediaRecorder only does MP4; Chrome has recorded video/mp4 since ~126; engines
-// that cannot record MP4 fall through to WebM as before.
+const REC_BITRATE = 5e6;                 // 5 Mbit/s constant: ~19 MB for a full 30 s take
+const REC_QMAX = 8;                      // encoder backlog (frames) past which we drop
+// H.264 levels as [level, MaxFS (macroblocks per frame), MaxMBPS (macroblocks per
+// second)]. The codec string has to name a level the frame actually fits in or the
+// encoder rejects the config; both 512x512 and the 1024x256 wide box are 1024 MBs, which
+// is level 3.0, and the 3D cube views are no larger.
+const REC_LEVELS = [[0x1e, 1620, 40500], [0x1f, 3600, 108000], [0x20, 5120, 216000],
+                    [0x28, 8192, 245760], [0x2a, 8704, 522240], [0x32, 22080, 589824],
+                    [0x33, 36864, 983040], [0x34, 36864, 2073600]];
+// "avc1.4200<level>": profile_idc 66 (Baseline) with no constraint flags asserted, which
+// is the widest thing every H.264 decoder in a phone accepts. No B-frames follow from
+// Baseline, hence no reordering, hence no ctts box in the file at all.
+function recCodec(w, h) {
+  const mb = Math.ceil(w / 16) * Math.ceil(h / 16);
+  for (const L of REC_LEVELS) if (mb <= L[1] && mb * REC_FPS <= L[2]) return "avc1.4200" + L[0].toString(16);
+  return "avc1.420034";
+}
+// `avc: { format: "avc" }` is what makes the encoder hand back LENGTH-PREFIXED samples
+// and, with the first chunk, a decoderConfig.description holding the avcC payload -- the
+// SPS/PPS the stsd box needs. Without it we would get Annex-B and no avcC, and nothing
+// would play; the recording bails to leg 2 if a first chunk ever arrives without one.
+const recWCConfig = cv =>
+  ({ codec: recCodec(cv.width, cv.height), width: cv.width, height: cv.height,
+     framerate: REC_FPS, bitrate: REC_BITRATE, bitrateMode: "constant",
+     avc: { format: "avc" } });
+let recWCOff = false;                    // set when this engine proves the leg unusable
+const recProbes = new Map();             // "codec WxH" -> Promise<config|null>, probed once
+// ENGINE-level: whether the leg can run at all. The frame size is not part of it -- the
+// button's visibility is decided in the card's constructor, before the canvas has been
+// sized -- so a size the encoder dislikes is caught by the probe instead, which is
+// exactly the path an unsupported config already takes.
+const recWCSupported = cv =>
+  typeof window !== "undefined" && !recWCOff && !!window.VideoEncoder && !!window.VideoFrame && !!cv;
+// VideoEncoder.isConfigSupported is async, so the probe cannot happen inside a click
+// handler's synchronous part: it runs on the first press, is cached per config, and a
+// rejection (or a throw, on an engine whose isConfigSupported is missing or fussy) means
+// a silent fall back to leg 2 rather than a dead button.
+function recWCProbe(cv) {
+  if (!(cv.width > 0) || !(cv.height > 0)) return Promise.resolve(null);
+  const cfg = recWCConfig(cv), key = cfg.codec + " " + cfg.width + "x" + cfg.height;
+  let p = recProbes.get(key);
+  if (!p) {
+    p = Promise.resolve()
+      .then(() => (window.VideoEncoder.isConfigSupported
+                   ? window.VideoEncoder.isConfigSupported(cfg) : { supported: true }))
+      .then(r => (r && r.supported === false ? null : cfg))
+      .catch(() => null);
+    recProbes.set(key, p);
+  }
+  return p;
+}
+// MP4 (H.264) first on leg 2 as well: it is the one container everything opens, phones
+// included -- Alfred's iPhone would not play the VP9 WebM his laptop recorded. Safari's
+// MediaRecorder only does MP4; Chrome has recorded video/mp4 since ~126; engines that
+// cannot record MP4 fall through to WebM as before.
 const REC_MIME = ["video/mp4;codecs=avc1", "video/mp4",
                   "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
 // the saved file's extension follows the mime actually negotiated
 const recExt = mime => (mime && mime.indexOf("mp4") >= 0 ? "mp4" : "webm");
 const recSupported = cv =>
   typeof window !== "undefined" && !!window.MediaRecorder && !!(cv && cv.captureStream);
+// either leg: what the rec button's visibility is decided by
+const recAnySupported = cv => recWCSupported(cv) || recSupported(cv);
 const recMime = () => {
   const M = window.MediaRecorder;
   for (const m of REC_MIME) if (!M.isTypeSupported || M.isTypeSupported(m)) return m;
@@ -1688,6 +1757,125 @@ function appSlug() {
 function shotName(mode, ext) {
   return "taranis-" + appSlug() + "-" + (DISP_SLUG[mode] || "field") +
          "-t" + (isFinite(simT) ? simT.toFixed(3) : "0") + "." + ext;
+}
+
+// ---------------------------------------------------------------------------
+// the MP4 muxer (leg 1 of the recorder)
+// ---------------------------------------------------------------------------
+// An MP4 is a tree of boxes, each [uint32 size][4-char type][payload]. Everything here
+// is written by hand because the whole point of the exercise is to control what the
+// sample tables say: iOS threw the MediaRecorder file away on the strength of its flags
+// (see the note above), so ours state, in the oldest and least surprising way possible,
+// that the samples are contiguous, evenly spaced and that these particular ones are sync
+// samples. Boxes are assembled bottom-up -- children first, parent size from theirs --
+// so no offset in this code is written by hand except stco's, and mdat is emitted before
+// moov precisely so that one is known when moov is built. (moov-last is what every
+// muxer that cannot seek backwards does; players handle it everywhere. Progressive
+// download over HTTP would want it first, but this file goes straight to disk.)
+const mp4U32 = n => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+const mp4U16 = n => [(n >>> 8) & 255, n & 255];
+const mp4Type = s => [s.charCodeAt(0), s.charCodeAt(1), s.charCodeAt(2), s.charCodeAt(3)];
+// flatten byte arrays and Uint8Arrays, in whatever order a box wants them
+function mp4Cat(parts) {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+function mp4Box(type, ...parts) {
+  const body = mp4Cat(parts);
+  return mp4Cat([mp4U32(body.length + 8), mp4Type(type), body]);
+}
+// a "full box" carries a version byte and 24 flag bits ahead of its payload
+function mp4Full(type, ver, flags, ...parts) {
+  return mp4Box(type, [ver & 255, (flags >>> 16) & 255, (flags >>> 8) & 255, flags & 255], ...parts);
+}
+// an ArrayBuffer or any view of one, as bytes (VideoEncoder metadata is either)
+function mp4Bytes(v) {
+  if (!v) return null;
+  return v.buffer ? new Uint8Array(v.buffer, v.byteOffset || 0, v.byteLength) : new Uint8Array(v);
+}
+// the unity display matrix, as 9 fixed-point entries
+const MP4_MATRIX = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+
+// ({width, height, fps, avcC, chunks: [{data: Uint8Array, key: bool}, ...]}) -> Uint8Array
+// holding a complete, plain, progressive MP4; null if there is nothing playable to write.
+// `data` is exactly what the encoder produced under avc: {format: "avc"} -- length-
+// prefixed NAL units, which IS the mp4 sample format, so there is no Annex-B conversion
+// anywhere in this file.
+function mp4Mux(o) {
+  const S = (o && o.chunks) || [], n = S.length;
+  const avcC = o && mp4Bytes(o.avcC);
+  if (!n || !avcC || !avcC.length) return null;
+  const w = o.width | 0, h = o.height | 0, fps = o.fps || REC_FPS;
+  // media timescale = 1000*fps, so one frame is exactly 1000 ticks and stts is a single
+  // run with no rounding drift over 30 s; the movie timescale stays the customary 1000.
+  const ts = 1000 * fps, dt = 1000;
+  const durMs = Math.round(1000 * n / fps);
+
+  const ftyp = mp4Box("ftyp", mp4Type("isom"), mp4U32(0x200),
+                      mp4Type("isom"), mp4Type("iso2"), mp4Type("avc1"), mp4Type("mp41"));
+  let mdatN = 0;
+  for (const c of S) mdatN += c.data.length;
+  const mdatOff = ftyp.length + 8;            // file offset of the FIRST sample's byte
+  // stco is 32-bit. 30 s at 5 Mbit/s is ~19 MB, so co64 would be dead code; assert
+  // instead of writing a branch that could never be exercised.
+  if (mdatOff + mdatN > 0xffffffff) return null;
+
+  // per-sample tables. stss lists the 1-based indices of the SYNC samples -- the forced
+  // keyframes -- and its presence is the statement "the samples not listed are not sync
+  // samples, and everything else about them is ordinary": no sdtp, no dependency-unknown.
+  const sizes = [], sync = [];
+  let nsync = 0;
+  for (let i = 0; i < n; i++) {
+    sizes.push(mp4U32(S[i].data.length));
+    if (S[i].key) { sync.push(mp4U32(i + 1)); nsync++; }
+  }
+  const avc1 = mp4Box("avc1",
+    [0, 0, 0, 0, 0, 0], mp4U16(1),             // reserved, data_reference_index = 1
+    mp4U16(0), mp4U16(0), mp4U32(0), mp4U32(0), mp4U32(0),   // pre_defined / reserved
+    mp4U16(w), mp4U16(h),
+    mp4U32(0x00480000), mp4U32(0x00480000),    // 72 dpi horizontal / vertical, by custom
+    mp4U32(0), mp4U16(1),                      // reserved, frame_count = 1
+    new Uint8Array(32),                        // compressorname: empty Pascal string
+    mp4U16(0x0018), mp4U16(0xffff),            // depth 24, pre_defined = -1
+    mp4Box("avcC", avcC));                     // VERBATIM from the encoder's metadata
+  const stbl = mp4Box("stbl",
+    mp4Full("stsd", 0, 0, mp4U32(1), avc1),
+    mp4Full("stts", 0, 0, mp4U32(1), mp4U32(n), mp4U32(dt)),
+    mp4Full("stss", 0, 0, mp4U32(nsync), mp4Cat(sync)),
+    mp4Full("stsc", 0, 0, mp4U32(1), mp4U32(1), mp4U32(n), mp4U32(1)),
+    mp4Full("stsz", 0, 0, mp4U32(0), mp4U32(n), mp4Cat(sizes)),
+    mp4Full("stco", 0, 0, mp4U32(1), mp4U32(mdatOff)));
+  const minf = mp4Box("minf",
+    mp4Full("vmhd", 0, 1, mp4U16(0), mp4U16(0), mp4U16(0), mp4U16(0)),
+    // one data reference, flagged self-contained: the samples are in THIS file
+    mp4Box("dinf", mp4Full("dref", 0, 0, mp4U32(1), mp4Full("url ", 0, 1))),
+    stbl);
+  const mdia = mp4Box("mdia",
+    mp4Full("mdhd", 0, 0, mp4U32(0), mp4U32(0), mp4U32(ts), mp4U32(n * dt),
+            mp4U16(0x55c4), mp4U16(0)),        // language "und", pre_defined
+    mp4Full("hdlr", 0, 0, mp4U32(0), mp4Type("vide"), mp4U32(0), mp4U32(0), mp4U32(0),
+            mp4Type("Vide"), mp4Type("oHan"), mp4Type("dler"), [0]),
+    minf);
+  const trak = mp4Box("trak",
+    // flags 7 = track enabled, in the movie, in the preview
+    mp4Full("tkhd", 0, 7, mp4U32(0), mp4U32(0), mp4U32(1), mp4U32(0), mp4U32(durMs),
+            mp4U32(0), mp4U32(0), mp4U16(0), mp4U16(0), mp4U16(0), mp4U16(0),
+            mp4Cat(MP4_MATRIX.map(mp4U32)),
+            mp4U32(w * 65536), mp4U32(h * 65536)),   // display size, 16.16 fixed point
+    mdia);
+  const moov = mp4Box("moov",
+    mp4Full("mvhd", 0, 0, mp4U32(0), mp4U32(0), mp4U32(1000), mp4U32(durMs),
+            mp4U32(0x00010000), mp4U16(0x0100), mp4U16(0), mp4U32(0), mp4U32(0),
+            mp4Cat(MP4_MATRIX.map(mp4U32)),
+            mp4U32(0), mp4U32(0), mp4U32(0), mp4U32(0), mp4U32(0), mp4U32(0),
+            mp4U32(2)),                        // next_track_ID
+    trak);
+  return mp4Cat([ftyp, mp4U32(mdatN + 8), mp4Type("mdat")]
+                .concat(S.map(c => c.data)).concat([moov]));
 }
 
 class DisplayCard {
@@ -1736,8 +1924,8 @@ class DisplayCard {
     this.btnSave.title = "save this view (field + overlay + colorbar) as a PNG";
     this.btnRec = _mk("button", "capbtn", foot);
     this.btnRec.innerHTML = "rec";
-    this.btnRec.title = "record the field canvas to a WebM file (stops itself after 30 s)";
-    if (!recSupported(this.cv)) this.btnRec.style.display = "none";
+    this.btnRec.title = "record the field canvas to an MP4 file (stops itself after 30 s)";
+    if (!recAnySupported(this.cv)) this.btnRec.style.display = "none";
 
     this.gw = 0; this.gh = 0;
     this._resize();                       // sizes both canvases BEFORE the GPU context
@@ -1751,6 +1939,9 @@ class DisplayCard {
     this.barCx = chartCtx(this.barCv, CBAR_W, CBAR_H);
     this.barMode = -1; this.barMax = NaN; this.barAt = 0; this.barCmap = -1;
     this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
+    this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
+    this.recBusy = false;                 // a config probe is in flight
+    this.dead = false;                    // set by destroy(), so a late probe cannot start
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
     this.selField.onchange = apply;
@@ -1894,13 +2085,36 @@ class DisplayCard {
     c.textAlign = "right";  c.fillText(t[2], x + bw, ty);
     c.textAlign = "left";
   }
-  // toggle: start a MediaRecorder over the field canvas, or stop the live one. The 30 s
+  // toggle: start recording the field canvas, or stop the live recording -- on whichever
+  // leg the engine supports (WebCodecs preferred; see the note by REC_FPS). The 30 s
   // timer is a hard stop, not a pause -- an unattended recording must not grow without
-  // bound -- and `onstop` is the single place the file is written, so the timer and the
-  // button press land in exactly the same path.
+  // bound -- and each leg has exactly ONE place that writes the file, so the timer, the
+  // button press and destroy() all land in the same path.
   recToggle() {
-    if (this.rec) { this.rec.stop(); return; }
-    if (!recSupported(this.cv)) return;
+    if (this.wc || this.rec) { this.recEnd(); return; }
+    if (this.recBusy) return;                   // a probe is already in flight
+    if (recWCSupported(this.cv)) {
+      this.recBusy = true;
+      recWCProbe(this.cv).then(cfg => {
+        this.recBusy = false;
+        if (this.dead || this.wc || this.rec) return;
+        if (cfg && recWCSupported(this.cv)) this.recStartWC(cfg);
+        else if (recSupported(this.cv)) this.recStartMR();
+      });
+      return;
+    }
+    if (recSupported(this.cv)) this.recStartMR();
+  }
+  recEnd() {
+    if (this.wc) this.recStopWC(false);
+    else if (this.rec) this.rec.stop();
+  }
+  // button state in one place, so both legs and every stop route agree on it
+  recLive() { this.btnRec.innerHTML = "stop"; this.btnRec.classList.add("reclive"); }
+  recIdle() { this.btnRec.innerHTML = "rec"; this.btnRec.classList.remove("reclive"); }
+
+  // ---- leg 2: MediaRecorder (the fallback, unchanged in behaviour) ----------
+  recStartMR() {
     const mime = recMime(), chunks = [];
     const r = new window.MediaRecorder(this.cv.captureStream(REC_FPS),
                                        mime ? { mimeType: mime } : undefined);
@@ -1909,15 +2123,92 @@ class DisplayCard {
     r.onstop = () => {
       clearTimeout(this.recStop);
       this.rec = null; this.recStop = 0;
-      this.btnRec.innerHTML = "rec";
-      this.btnRec.classList.remove("reclive");
+      this.recIdle();
       dlBlob(new window.Blob(chunks, { type: mime || "video/mp4" }), name);
     };
     this.rec = r;
     r.start();
-    this.btnRec.innerHTML = "stop";
-    this.btnRec.classList.add("reclive");
+    this.recLive();
     this.recStop = setTimeout(() => { if (this.rec === r) r.stop(); }, REC_MAX_MS);
+  }
+
+  // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
+  recStartWC(cfg) {
+    const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
+                w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
+    W.enc = new window.VideoEncoder({
+      output: (chunk, meta) => {
+        const d = meta && meta.decoderConfig && meta.decoderConfig.description;
+        if (d && !W.avcC) W.avcC = mp4Bytes(d);
+        // avcC is the ONLY place a progressive file keeps the SPS/PPS -- there is no
+        // in-band parameter set to fall back on -- so a first chunk without one means we
+        // can never write a playable mp4. Bail to leg 2 NOW, one frame in, rather than
+        // at flush time holding 30 s of unusable samples.
+        if (!W.avcC) { this.recBailWC(W); return; }
+        if (W.bailed) return;
+        const b = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(b);
+        W.chunks.push({ data: b, key: chunk.type === "key" });
+      },
+      // encoder dead: write what we have. Guarded on ownership -- a stale encoder's
+      // error callback can land AFTER this recording stopped and the NEXT one began,
+      // and must not terminate the newcomer (adversarial review 2026-08-10, MINOR 1).
+      error: () => { if (this.wc === W) this.recStopWC(true); }
+    });
+    W.enc.configure(cfg);
+    this.wc = W;
+    // setInterval, not requestAnimationFrame: rAF is throttled to a crawl (or stopped)
+    // in a background tab, which would silently stretch the recording; the interval is
+    // the cadence the fixed timestamps promise.
+    W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
+    this.recLive();
+    this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
+  }
+  recTick(W) {
+    if (this.wc !== W || W.done) return;
+    // backpressure: when the encoder is behind, DROP this frame instead of queueing it.
+    // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
+    // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
+    // wall clock, rather than a file whose sample table lies about its own timing.
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
+    this.render();      // same reason as saveShot: getCurrentTexture is transient
+    const f = new window.VideoFrame(this.cv, { timestamp: Math.round(W.n * 1e6 / REC_FPS),
+                                              duration: Math.round(1e6 / REC_FPS) });
+    // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
+    // give. It is also every seek point the file has, stss being built from these.
+    try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
+    W.n++;
+  }
+  // the ONE place a WebCodecs recording ends: button, 30 s timer, destroy(), or encoder
+  // error (`broken`, where flushing a dead encoder would only throw).
+  recStopWC(broken) {
+    const W = this.wc;
+    if (!W || W.done) return;
+    W.done = true;
+    clearInterval(W.timer); clearTimeout(this.recStop);
+    this.wc = null; this.recStop = 0;
+    this.recIdle();
+    const fin = () => {
+      try { W.enc.close(); } catch (e) {}
+      const mp4 = mp4Mux({ width: W.w, height: W.h, fps: REC_FPS, avcC: W.avcC, chunks: W.chunks });
+      if (mp4) dlBlob(new window.Blob([mp4], { type: "video/mp4" }), W.name);
+    };
+    // flush() delivers the frames the encoder is still holding, so it has to complete
+    // before the mux -- and its rejection is not a reason to lose the file either.
+    if (broken) fin();
+    else { try { W.enc.flush().then(fin, fin); } catch (e) { fin(); } }
+  }
+  // no avcC: this engine's WebCodecs leg is unusable, so switch legs mid-press and turn
+  // it off for the rest of the session rather than hand back an unplayable file.
+  recBailWC(W) {
+    if (W.bailed || this.wc !== W) return;
+    W.bailed = true; W.done = true;
+    clearInterval(W.timer); clearTimeout(this.recStop);
+    this.wc = null; this.recStop = 0;
+    recWCOff = true;
+    try { W.enc.close(); } catch (e) {}
+    if (recSupported(this.cv) && !this.dead) this.recStartMR();
+    else this.recIdle();
   }
   showArrows() {
     return !!(this.cbArrow.checked && !this.linesView() &&
@@ -1958,9 +2249,12 @@ class DisplayCard {
     }
     if (this.arr && this.showArrows()) drawArrows(c, this.arr.a, this.arr.nax, this.arr.nay, this.arrowFrame());
   }
-  // closing a card mid-recording writes what it has: the stream dies with the canvas,
-  // and losing the file silently would be worse than a short one
+  // closing a card mid-recording writes what it has: the stream (or the canvas the
+  // encoder is reading) dies with the card, and losing the file silently would be worse
+  // than a short one
   destroy() {
+    this.dead = true;
+    if (this.wc) this.recStopWC(false);
     if (this.rec) { clearTimeout(this.recStop); try { this.rec.stop(); } catch (e) {} }
     if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
   }

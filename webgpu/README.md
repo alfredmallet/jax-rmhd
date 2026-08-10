@@ -250,18 +250,50 @@ the WebGPU canvas, the overlay canvas and the colorbar into an offscreen 2D canv
 hands it to `toBlob`; the card **re-renders first**, because WebGPU has no
 `preserveDrawingBuffer` — `getCurrentTexture` is transient and the canvas holds only its
 last *presented* image, so the capture has to be taken in the same task as a fresh
-present. `rec` is `MediaRecorder` over `captureStream(30)` of the WebGPU canvas — MP4
-(H.264) where `isTypeSupported` allows it (Safari, Chrome ≥126; VP9 WebM does not open
-on phones, which is why MP4 leads the mime list), WebM otherwise —
-with a 30 s hard stop; `onstop` is the single place the file is written, so the timer and
-the button press take the identical path. It is feature-detected and the button is simply
-absent where `MediaRecorder` is not (older iOS Safari) — which also means the video is the
-field canvas alone, `captureStream` taking one canvas. Filenames are
-`taranis-<page>-<field>-t<time>.{png,mp4,webm}`. `devtools/stubenv.js` stubs `toBlob`,
-`captureStream`, `MediaRecorder`, `Blob` and `URL.createObjectURL` and logs every blob and
-every `<a download>` click, so `bootstub.js` asserts that pressing the buttons really
-produces a blob-shaped download (and that removing `MediaRecorder` removes the button and
-nothing else).
+present. `rec` records the field canvas (that canvas alone: the arrows, the field lines
+and the colorbar are in the PNG only) with a 30 s hard stop, on whichever of **two legs**
+the engine supports.
+
+**Leg 1, WebCodecs (preferred).** A `VideoEncoder` configured as `avc1.4200<level>`
+Constrained-Baseline-class H.264, `avc: {format:"avc"}` (so the chunks are length-prefixed
+samples and the first chunk's `metadata.decoderConfig.description` is the avcC payload the
+`stsd` box needs), 5 Mbit/s constant, level picked from the frame's macroblock count.
+A `setInterval` at 1000/30 ms — not rAF, which a background tab throttles to a stop —
+re-renders the card, wraps it in a `VideoFrame` at `round(n·10⁶/30)` µs and encodes it
+with `keyFrame: n % 30 === 0`; if `encodeQueueSize` runs past `REC_QMAX` the frame is
+*dropped* and `n` is not advanced, so the timestamps stay an exact 1/30 s apart. On stop
+(button, timer, `destroy()`, encoder error) it flushes and `mp4Mux` writes the file.
+
+**Why we mux it ourselves.** Chrome's `MediaRecorder` `video/mp4` is a *fragmented* MP4:
+`moov` + `mvex`, one `moof` per fragment, `trun default_sample_flags 0x10000` — "not a
+sync sample, dependency unknown" — and a keyframe only every ~1.4 s. Desktop players
+ignore the flags; iOS AVFoundation believes them, drops every delta sample, and plays a
+30 s recording as about three stills. The codec was never the problem. `mp4Mux` writes the
+plain progressive shape instead: `ftyp` + `mdat` + `moov`, real `stts`/`stss`/`stsc`/
+`stsz`/`stco` tables (media timescale 1000·fps, so one frame is exactly 1000 ticks),
+`avcC` verbatim in `stsd`, `stco` 32-bit with an assert instead of a `co64` branch that
+30 s could never reach, and no `moof`, `mvex`, `trun`, `ctts`, `edts` or `sdtp` anywhere.
+`moov` comes last, which is why `mdat`'s offset is known when the tables are built.
+
+**Leg 2, `MediaRecorder`** over `captureStream(30)`, unchanged, for engines without
+WebCodecs: MP4 (H.264) where `isTypeSupported` allows it, WebM otherwise, `onstop` the
+single write path. It is also where leg 1 bails to, mid-press and for the rest of the
+session, if a first chunk ever arrives without a `decoderConfig.description` — without an
+avcC there is no playable progressive file to write. The button is shown when **either**
+leg can run and is simply absent otherwise. Filenames are
+`taranis-<page>-<field>-t<time>.{png,mp4,webm}`.
+
+`devtools/stubenv.js` stubs `toBlob`, `captureStream`, `MediaRecorder`, `VideoEncoder` /
+`VideoFrame` / `EncodedVideoChunk`, `Blob` (keeping the *bytes*), `URL.createObjectURL`,
+and `setInterval` as a hand-driven pump (`env.tick(n)`) with `env.fireTimeout(ms)` for the
+30 s cap — so `bootstub.js` runs the whole WebCodecs path headlessly (pump, forced
+keyframes, backpressure, flush, an `ftyp+mdat+moov` download with no `moof`, the 30 s cap,
+destroy-mid-record, the no-avcC bail) and then the same MediaRecorder legs as before.
+`devtools/checkmp4.js` drives `mp4Mux` with **real** H.264: ffmpeg encodes a test pattern,
+the script cuts it into samples and builds the avcC (the only Annex-B code in the project,
+and it is in the test), and ffprobe/ffmpeg check the result — top-level boxes, sync samples
+exactly on the forced indices, equal pts deltas, `30/1`, and a decode with zero errors, for
+a square canvas, the 1024×256 wide box and a one-frame file.
 
 **Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
 field lines), φ contours (= the streamlines), or **both at once** (ψ + φ — the alignment
