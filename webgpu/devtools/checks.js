@@ -514,7 +514,7 @@ console.log("7. the diss slider's dynamic range (FEEDBACK item 7)");
 
   // EVERY value a preset writes must survive the open-then-narrow sequence presetWrite
   // and the following syncLabels perform -- byte for byte, no snapping, no clamping.
-  const PRESET_DISS = [["2D forced", GEOM.sq256, 4, "-13"], ["2D kh", GEOM.wide512, 1, "-3.5"],
+  const PRESET_DISS = [["2D forced", GEOM.sq256, 4, "-13"], ["2D kh seed", GEOM.wide512, 4, "-10.40"],
                        ["2D tearing", GEOM.wide512, 1, "-3"], ["3D forced", GEOM.d3_128, 4, "-10.65"],
                        ["2D 512^2 decay seed", GEOM.sq512, 4, "-14.75"]];
   for (const [nm, g, h, v] of PRESET_DISS) {

@@ -71,6 +71,19 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   6-decades-louder junk in the rows it must not read), `modeFitGamma` on exponentials
   (even/uneven sampling, trailing-window only, and NaN on flat / decaying / nonpositive
   data), and the `modeHist` record through HIST_MAX halving and a paused clock.
+- `checkpin.js [dir]` — the PINCURVE gates (pinned ghost spectra): `specCurves` against the
+  PRE-REFACTOR inline loop, ported verbatim into the file, over every (bin stack × `sq` ×
+  `sd`) combination, plus — with `PINCURVE_REF=<a pre-refactor common.js>` — a byte-diff of
+  the whole `drawSpectrum` CANVAS CALL LOG against that reference (the no-GPU stand-in for
+  the plan's "draws pixel-identically by eye"). Then the pin arithmetic on the real
+  `pinDraw` / `specFloor` (deep-copy independence, the `kunit_pin / kunit_live` rescale, the
+  age-alpha ladder, the range union), the waiting-early-out truth table and the draw ORDER
+  and alphas off a recording 2D context, and finally the four motivating workflows driven
+  through booted `rmhd2d` / `rmhd3d` pages: pin then move `rDiss`, pin then move `rEpsP`,
+  the 4-pin cap and its refusal, per-card independence, retype clearing, the
+  `?demo=decay` → `forced` preset switch with the `cardsLayout` transplant, a pin at
+  t = 0, and the 3D `sd = both` card's dashed pinned-parallel ghosts (which must not stretch
+  the axis). No GPU, no pixels — it asserts on the pins arrays and the drawn call log.
 - `checksh.js` — GATE H fp64 checks against the pages' inlined reference A states:
   the H_c accumulator lane, E± = E_kin+E_mag±H_c = ½⟨|z±|²⟩, the spectra lanes summing
   back to the energies, and cutPrep+rowsC2R reproducing (u_x,u_y,b_x,b_y) on x = Lx/2 —
@@ -98,6 +111,15 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   kernel against itself — and the kernel's own dz/dx, dz/dy constants are read out of the
   emitted WGSL. Section 0 also pins `cubeTopXform` to its pre-K pixels and checks the
   box frame against all twelve projected face corners.
+- `sigrcheck.js [dir]` — the residual-energy display mode (2D `sigma_r`, mode 9): boots
+  rmhd2d on the stub and records, off the stub device, the Mode uniforms each selected
+  field writes (mode 9 + its pinned mate 5 = b, against sigma_c's 8 + 7) and the whole
+  encoded frame as an ordered bind-group list (identical to sigma_c's, no autoscale
+  reduction, no arrow gather). Then it PARSES the emitted WGSL — prepDisp's mode ->
+  potential branch chain, its -i*ky / +i*kx components, sigmaCombine's ratio and floor,
+  colorize's fixed +-1 predicate — and drives an fp64 mirror of that parsed chain on an
+  analytic (phi, psi), comparing against sigma_r computed directly from the analytic
+  gradients. It does not execute WGSL: what it pins is the wiring and the composition.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

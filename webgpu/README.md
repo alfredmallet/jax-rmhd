@@ -119,6 +119,7 @@ is the default and is what the chart drew before they existed):
 | spectra | which spectra | `E_u / E_b` · `E⁺ / E⁻` · both |
 | spectra (3D) | direction | ⊥ + ∥ · ⊥ only · ∥ only · ⊥ + k∥ (field line) |
 | spectra | fit line | `pin to field` · `set A` · `off`, plus a numeric index `p` and amplitude `A` |
+| spectra | pin / unpin | buttons, not selects: freeze the drawn curves as ghosts, or clear them |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
 | island width (2D) | — | log W(t); needs the tearing IC (see below) |
@@ -132,6 +133,41 @@ it, so the legend reads `k^-5/3` / `k^-3/2` and anything else reads as the numbe
 `pin to field` takes A off the spectrum itself, exactly as the old fixed guide did;
 `set A` uses the amplitude box (A at k = 1) and falls back to the pinned anchor while the
 box is empty; `off` hides the line and both boxes. NaN in either box is ignored.
+
+**Pinned ghost spectra.** `pin` freezes the curves the spectrum card is *drawing* as faint
+ghosts under the live ones, so the next thing you do can be compared against the last
+thing you did: lower the dissipation and watch the inertial range stretch, change ε and
+watch the whole spectrum shift, pin the decayed spectrum and restart forced, or pin at
+t = 0 and watch E_b pile up leftward of the forcing shell. It costs nothing on the GPU —
+the snapshot is the CPU-side `[points, colour, dash, label]` list `specCurves` just built,
+deep-copied.
+
+Because it is the *drawn* curves that are frozen, a pin taken as `E⁺ / E⁻` stays E⁺/E⁻
+however the card's own `sq` / `sd` selectors are switched afterwards: the ghost is a record
+of a moment, not a live view. Details:
+
+- **Per card**, like the fit line, and at most **4**; a fifth press is refused. `unpin`
+  appears only when there is something to clear and clears all of them in one press
+  (pins are cheap to retake).
+- **Physical k.** A pin remembers the `kunit` it was taken under, and every ghost x is
+  redrawn at `kunit_pin / kunit_live`, so changing the box (standard ↔ wide 4π × 2π) leaves
+  the ghost at the same physical k instead of the same bin. An unchanged box is a factor of
+  exactly 1. Resolution changes need nothing — the axis is log k/kunit out to the live
+  `nb` and the clip rect crops any ghost tail beyond it.
+- **Range.** Pinned ⊥ curves join the y-range pool and the `specFloor` knee walk exactly as
+  live ⊥ curves do (otherwise the comparison can sit off the axis); pinned ∥ curves never
+  stretch it, the same rule live ∥ obeys.
+- **Drawing.** Under the live curves and under the fit line, at `lineWidth` 1 and
+  `globalAlpha` 0.45 / 0.34 / 0.26 / 0.20 by age, each keeping its own hue and dash (so a
+  pinned parallel spectrum stays dashed). Forcing markers and the fit line are not pinned.
+  The legend gets **one** collapsed entry, `2 pinned @t=8.1, 12.3` — a 3D card on both × both
+  draws eight curves, so one entry per pinned curve would cost eight legend items per pin.
+- **Lifetime.** Pins survive parameter changes, IC resets, `chartsReset`, pause and
+  rebuilds, and a preset switch transplants them onto the incoming spectrum cards
+  positionally (`cardsLayout`) — which is what makes "pin the decayed spectrum, pick the
+  forced preset" work. They are cleared by `unpin`, by retyping the card, and by closing
+  it. Nothing is persisted across a reload. A card with ghosts but no live data yet draws
+  axes and ghosts instead of `spectra — waiting…`.
 
 The Elsasser energies are E<sup>±</sup> = E_kin + E_mag ± H_c with the cross helicity
 H_c = ⟨u·b⟩, i.e. E<sup>±</sup> = ½⟨|z<sup>±</sup>|²⟩ and E_tot = (E⁺+E⁻)/2 — the
@@ -200,6 +236,12 @@ falls below 1e-4 × its maximum over the displayed field, σ_c is rendered as ex
 in quiet regions the ratio is pure noise. It costs four inverse transforms per frame
 (both components of both z±) instead of the vector modes' two — display cost only, no
 physics buffer is touched.
+
+**Residual energy σ_r** = (|u|²−|b|²)/(|u|²+|b|²) (2D app only) is the same two-half
+machinery with the u and b vectors as the pair, and shares σ_c's fixed ±1 range and
+relative quiet-region floor. Note the floor's rendering convention: quiet pixels show
+the neutral mid-colour, which for σ_r is also the equipartition colour — a grey quiet
+region means "too little energy to measure", not "measured equipartition".
 
 3D only: **cube faces** are a *view*, not a field — three of the last four entries of a
 display card's z-source select ("cube faces", "cube + track z⁺", "cube + track z⁻"; the

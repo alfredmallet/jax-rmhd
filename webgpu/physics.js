@@ -413,7 +413,7 @@ ${body}
 // Display modes (the `mode` field of the app's Mode uniform):
 //   0 vorticity   1 current   2 phi   3 psi       signed scalars, autoscaled +-max
 //   4 |u|   5 |b|   6 |z+|   7 |z-|               vector magnitudes (+ arrows)
-//   8 sigma_c                                     signed, FIXED range +-1
+//   8 sigma_c   9 sigma_r                         signed, FIXED range +-1
 // The vector modes show |zhat x grad f| = |grad f| for f = phi, psi, phi+psi,
 // phi-psi: u, b and the two Elsasser fields z+- = u +- b. Cross helicity
 //   sigma_c = (|z+|^2 - |z-|^2) / (|z+|^2 + |z-|^2)
@@ -421,15 +421,28 @@ ${body}
 // (mode 8 -> the z+ half; a second Mode uniform pinned to DISP_ZMINUS -> the z-
 // half) and then combined. That costs 4 inverse transforms per frame, which is
 // display cost only -- no physics buffer is touched.
-const DISP_VEC0 = 4;        // first vector-magnitude mode
+// Residual energy
+//   sigma_r = (|u|^2 - |b|^2) / (|u|^2 + |b|^2)
+// is the SAME machinery with the other pair of vectors: mode 9 -> the u half (its
+// prepDisp branch picks phi, exactly as mode 4 does) and the second Mode uniform
+// pinned to DISP_BVEC -> the b half. Everything after the two halves -- the squared
+// magnitudes, the quiet-region floor, the ratio and the fixed +-1 colour range -- is
+// shared with sigma_c, which is why dispIsSigma covers both. It is offered by the 2D
+// app only (`C.sigR`); the 3D app's field list stops at mode 8, so its kernels never
+// learn mode 9 and stay byte-identical.
+const DISP_VEC0 = 4;        // first vector-magnitude mode -- also the u vector
+const DISP_BVEC = 5;        // b vector: also the pinned mode of the sigma_r 2nd half
 const DISP_ZMINUS = 7;      // z- vector: also the pinned mode of the sigma_c 2nd half
 const DISP_SIGMA = 8;       // sigma_c
+const DISP_SIGMA_R = 9;     // sigma_r (2D app only)
 // the two POTENTIALS, as display modes: the contour overlay (REFINE_PLAN I2.4) prepares
 // one of them through the same prepDisp kernel, so its selector value IS its mode.
 const DISP_PHI = 2;         // phi -> streamlines
 const DISP_PSI = 3;         // psi -> B_perp field lines
 const dispIsVector = m => m >= DISP_VEC0 && m <= DISP_ZMINUS;  // magnitude + arrows
-const dispIsSigma = m => m === DISP_SIGMA;
+const dispIsSigma = m => m === DISP_SIGMA || m === DISP_SIGMA_R;
+// which vector the sigma chain's SECOND half is pinned to: z- for sigma_c, b for sigma_r
+const dispSigmaMate = m => (m === DISP_SIGMA_R ? DISP_BVEC : DISP_ZMINUS);
 // (the colour range is decided in the colorize kernel, which branches on the mode
 // itself -- there is no CPU-side signedness predicate any more)
 // modes whose display chain needs BOTH components inverse-transformed
@@ -445,6 +458,11 @@ const dispTwoComp = m => dispIsVector(m) || dispIsSigma(m);
 // and one z slice is extracted from the real-space result (sliceExtract) -- or its
 // three boundary faces are (faceExtract, the cube modes).
 function prepDispWGSL(C) {
+  // sigma_r's FIRST half is the u vector, so mode 9 has to pick phi like mode 4 does --
+  // one extra branch, emitted only where the mode exists (the 2D app).
+  const sigR = C.sigR
+    ? `    else if (md.mode == ${DISP_SIGMA_R}u) { f = phi; }   // 9 -> phi (sigma_r's u half)\n`
+    : "";
   return C.pre + `
 ${MODE_STRUCT}
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
@@ -469,7 +487,7 @@ ${_mpDecl(C)}  var v: vec2<f32> = vec2<f32>(0.0, 0.0);
     var f: vec2<f32> = phi;
     if (md.mode == 5u) { f = psi; }
     else if (md.mode == ${DISP_ZMINUS}u) { f = phi - psi; }
-    else if (md.mode > 5u) { f = phi + psi; }
+${sigR}    else if (md.mode > 5u) { f = phi + psi; }
     let kx: f32 = gridA[${_mpName(C)}].x;
     let ky: f32 = gridA[${_mpName(C)}].y;
     v  = vec2<f32>( ky * f.y, -ky * f.x);   // -i*ky*f  =  -d_y f
@@ -736,9 +754,12 @@ const CONT_ACCENT = "vec3<f32>(1.0, 0.15, 0.85)";      // set 1's fixed ink
 const _contArgs = a => `${a}[gid.x * NY + gid.y], ${a}[((gid.x + 1u) % NX) * NY + gid.y], ` +
                        `${a}[gid.x * NY + ((gid.y + 1u) % NY)]`;
 const CONT_ARGS = `${_contArgs("cp")}, ${_contArgs("cp2")}`;
-const DISP_SHADE_WGSL = `
+// One shade block, two texts: the sigma modes are the ones rendered on the FIXED +-1
+// range, and which modes those are is per app (sigma_r exists in the 2D app only), so
+// the predicate is the single parameter. `dispShade(C)` picks the right one.
+const _dispShadeWGSL = sig => `
 fn dispX(raw: f32, s: f32, mode: u32) -> f32 {
-  if (mode == ${DISP_SIGMA}u) { return 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
+  if (${sig}) { return 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
   let v: f32 = raw / max(s, 1e-30);
   if (mode >= ${DISP_VEC0}u) { return v; }
   return 0.5 * (clamp(v, -1.0, 1.0) + 1.0);
@@ -757,6 +778,10 @@ fn contInk(col: vec3<f32>, a0: f32, au: f32, av: f32, b0: f32, bu: f32, bv: f32)
   if (contHit(b0, bu, bv, cd2[1])) { c = mix(c, ${CONT_ACCENT}, 0.85); }
   return c;
 }`;
+// the historical text -- what the 3D app (which has no sigma_r) inlines directly
+const DISP_SHADE_WGSL = _dispShadeWGSL(`mode == ${DISP_SIGMA}u`);
+const DISP_SHADE_SIGR_WGSL = _dispShadeWGSL(`mode == ${DISP_SIGMA}u || mode == ${DISP_SIGMA_R}u`);
+const dispShade = C => (C.sigR ? DISP_SHADE_SIGR_WGSL : DISP_SHADE_WGSL);
 
 // the contour level table, one thread: max |pot| over the displayed plane -> a slowly
 // adapting range -> the uniform spacing delta = 2*range/nlev. Adapting on the GPU (rather
@@ -793,7 +818,7 @@ ${MODE_STRUCT}
 @group(0) @binding(6) var<storage, read> cp2: array<f32>;
 @group(0) @binding(7) var<storage, read> cd2: array<f32>;
 ${CMAP_WGSL}
-${DISP_SHADE_WGSL}
+${dispShade(C)}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= NX || gid.y >= NY) { return; }

@@ -1103,13 +1103,20 @@ function fitAnchor(pts, kA, p) {
   for (let i = 0; i < pts.length; i += 2) if (pts[i] >= kA) return pts[i + 1] * Math.pow(pts[i], -p);
   return 0;
 }
-function drawSpectrum(c, d, o) {
-  if (!c) return;
-  const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
-  chartFrame(c, SW, SH, P);
-  c.textAlign = "left"; c.fillStyle = COL.txt;
+// ---------------------------------------------------------------------------
+// the spectrum chart's CURVES, as data (PINCURVE Phase A)
+// ---------------------------------------------------------------------------
+// The front half of drawSpectrum -- series selection, the perpendicular / parallel
+// point assembly, the two range pools -- with no canvas and no DOM in it. That seam
+// is what lets a PIN snapshot exactly what the card is about to draw (Phase B) and
+// what lets node test the assembly directly.
+// Returns `curves` as [points (k, v pairs), colour, dash, label] with the
+// PERPENDICULAR ones first (`nPerp` of them, so a caller can tell the two apart),
+// the perpendicular extremes hiP/loP, and hi/lo -- the parallel extremes, overwritten
+// by the perpendicular pair whenever that carries anything, which IS the y-range rule
+// below.
+function specCurves(d, o) {
   const bins = (d && d.perp) || new Float32Array(3), nb = (d && d.nb) || 1;
-  const fshell = (d && d.fshell) || [1, 3];
   const parKfac = (d && d.parKfac) || 1;
   const set = specSeries(o && o.sq);
   const sd = (o && o.sd) || "both";
@@ -1147,11 +1154,99 @@ function drawSpectrum(c, d, o) {
     }
   }
   if (hiP > 0) { hi = hiP; lo = loP; }
+  return { curves, hiP, loP, hi, lo, nPerp: wantPerp ? set.length : 0 };
+}
+// one polyline per curve, in the caller's current alpha / width: the live set and the
+// pinned ghosts differ only in those two, so the stroking is written once
+function specStroke(c, curves, X, Y) {
+  for (const cv of curves) {
+    const a = cv[0];
+    if (a.length < 4) continue;
+    c.strokeStyle = cv[1]; c.setLineDash(cv[2] || []); c.beginPath();
+    for (let i = 0; i < a.length; i += 2) {
+      const x = X(a[i]), y = Y(a[i + 1]);
+      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    c.stroke(); c.setLineDash([]);
+  }
+}
+// ---------------------------------------------------------------------------
+// pinned ghost spectra (PINCURVE)
+// ---------------------------------------------------------------------------
+// A pin freezes the card's drawn curves as ghosts under the live ones -- the comparison
+// primitive the lessons need (lower the dissipation and compare, change eps and compare,
+// pin the decayed spectrum and restart forced, pin at t = 0 and watch the inverse
+// cascade). Entirely CPU-side: no kernel, no buffer, no readback of its own.
+// Four is the cap (a fifth press is refused, like a fifth display card); each ghost keeps
+// its own hue, faded by AGE -- index 0 is the newest.
+const PIN_MAX = 4;
+const PIN_ALPHA = [0.45, 0.34, 0.26, 0.20];
+// Ghosts re-registered on PHYSICAL k: pinned x values are in k/kunit of the pin-time
+// grid, so a box change (standard <-> wide 4pi x 2pi) that moves kunit moves them by
+// kunit_pin / kunit_live and they stay where the physics put them. With an unchanged box
+// the factor is exactly 1. With no live grid to register against (a card drawing ghosts
+// alone inside the spectrum throttle) it is 1 as well -- there is nothing to move onto.
+// Returns the drawable form of `pins`: rescaled curves + the alpha its age earns.
+function pinDraw(pins, kuLive) {
+  const out = [];
+  const n = pins ? pins.length : 0;
+  for (let i = 0; i < n; i++) {
+    const p = pins[i];
+    const f = (kuLive > 0 && p.kunit > 0) ? p.kunit / kuLive : 1;
+    out.push({
+      curves: p.curves.map(cv => {
+        const a = cv[0].slice();
+        if (f !== 1) for (let j = 0; j < a.length; j += 2) a[j] *= f;
+        return [a, cv[1], cv[2], cv[3]];
+      }),
+      nPerp: p.nPerp, t: p.t,
+      alpha: PIN_ALPHA[Math.min(n - 1 - i, PIN_ALPHA.length - 1)]
+    });
+  }
+  return out;
+}
+// the largest k/kunit any ghost reaches, i.e. the x axis a ghosts-only card needs
+function pinKmax(P) {
+  let m = 0;
+  for (const p of P) for (const cv of p.curves) if (cv[0].length) m = Math.max(m, cv[0][cv[0].length - 2]);
+  return m;
+}
+function drawSpectrum(c, d, o, pins) {
+  if (!c) return;
+  const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
+  chartFrame(c, SW, SH, P);
+  c.textAlign = "left"; c.fillStyle = COL.txt;
+  const nbLive = (d && d.nb) || 1;
+  const fshell = (d && d.fshell) || [1, 3];
+  const S = specCurves(d, o);
+  const curves = S.curves, nPerp = S.nPerp;
+  // the ghosts, already registered on the live grid's physical k
+  const G = pinDraw(pins, (d && d.kunit) || 0);
+  // Pinned series join the y-range pools exactly as live ones do -- the comparison the pin
+  // exists for must not sit off the axis. Which means pinned PARALLEL ghosts never stretch
+  // the range either, for the same reason live parallel never does (Alfred 2026-08-06):
+  // the perpendicular pool WINS whenever it carries anything, live or pinned. They pool
+  // with the live parallel curves only on a par-only card, where the parallel curves are
+  // the range-setters -- without that, such a card would fall back to "waiting…" the
+  // moment its live data lapsed, with ghosts sitting right there.
+  // (a pin whose own hiP > 0 also contributes its perpendicular hi/lo to the parallel
+  // pool here; harmless, because hiP > 0 is exactly when the override discards that pool.)
+  let hiP = S.hiP, loP = S.loP, hi = S.hi, lo = S.lo;
+  for (const p of pins || []) {
+    hiP = Math.max(hiP, p.hiP); loP = Math.min(loP, p.loP);
+    hi = Math.max(hi, p.hi); lo = Math.min(lo, p.lo);
+  }
+  if (hiP > 0) { hi = hiP; lo = loP; }
+  // A card with ghosts but no live data yet (just after an IC reset, inside the ~300 ms
+  // spectrum throttle, or straight after a preset transplant) draws axes + ghosts alone,
+  // out to the largest k the ghosts reach.
+  const nb = nbLive >= 2 ? nbLive : Math.max(2, Math.ceil(pinKmax(G)));
   if (nb < 2 || !(hi > 0)) { c.fillText("spectra — waiting…", x0 + 6, y0 + 13); return; }
   // the curves the y range is read off: the perpendicular ones whenever they carry
   // anything, else (par-only cards) the parallel ones, which are the tail of `curves`
-  const nPerp = wantPerp ? set.length : 0;
-  const rc = hiP > 0 ? curves.slice(0, nPerp) : curves.slice(nPerp);
+  const rc = hiP > 0
+    ? curves.slice(0, nPerp).concat(...G.map(p => p.curves.slice(0, p.nPerp)))
+    : curves.slice(nPerp).concat(...G.map(p => p.curves.slice(p.nPerp)));
   const ymax = Math.log10(hi) + 0.3;
   // at least one decade always, so a flat or single-valued spectrum still has an axis
   const ymin = Math.min(ymax - 1,
@@ -1183,6 +1278,14 @@ function drawSpectrum(c, d, o) {
     }
   }
   c.setLineDash([]);
+  // the ghosts, UNDER everything live: oldest first, so the newest pin lies on top. Each
+  // keeps its own hue and its own dash (pinned parallel stays dashed) and is drawn thin
+  // and faded, so it reads as a record and never competes with the live curve over it.
+  // Forcing markers and the fit line are NOT pinned: the fit line already answers "what
+  // slope should this be", the ghost answers "where was the curve".
+  c.lineWidth = 1;
+  for (const p of G) { c.globalAlpha = p.alpha; specStroke(c, p.curves, X, Y); }
+  c.globalAlpha = 1;
   // the fit line E = A k^p, from kA (just above the forcing shell, where the old fixed
   // guide was anchored) to the last bin. `fit` = pin / amp / off; in "amp" mode an empty
   // or non-positive amplitude box falls back to the pinned anchor, so switching to it
@@ -1192,7 +1295,7 @@ function drawSpectrum(c, d, o) {
   const fitP = fitIndex(o && o.fitp);
   let anch = 0;
   if (fitMode !== "off") {
-    anch = fitAnchor(wantPerp && curves.length ? curves[0][0] : [], kA, fitP);
+    anch = fitAnchor(nPerp && curves.length ? curves[0][0] : [], kA, fitP);
     const A = parseFloat(o && o.fita);
     // "amp" only ever draws over a DRAWN perpendicular series (hiP > 0): on a par-only
     // card the axis is k_par*parKfac, where a perp-bin fit line would be meaningless
@@ -1206,19 +1309,18 @@ function drawSpectrum(c, d, o) {
     c.stroke(); c.setLineDash([]);
   }
   c.lineWidth = 1.4;
-  for (const cv of curves) {
-    const a = cv[0];
-    if (a.length < 4) continue;
-    c.strokeStyle = cv[1]; c.setLineDash(cv[2] || []); c.beginPath();
-    for (let i = 0; i < a.length; i += 2) {
-      const x = X(a[i]), y = Y(a[i + 1]);
-      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
-    }
-    c.stroke(); c.setLineDash([]);
-  }
+  specStroke(c, curves, X, Y);
   c.restore();
   const items = curves.filter(cv => cv[0].length >= 4).map(cv => [cv[3], cv[1], cv[2]]);
   if (anch > 0) items.push([fitLabel(fitP), COL.guide, [4, 3]]);
+  // ONE collapsed entry for the ghosts, not one per pinned curve. The plan left this open
+  // "after seeing it at SW x SH": a 3D card on "both" x "perp + par" draws eight curves,
+  // and pushing `label @t=12.3` per pinned curve through this legend's own wrap at
+  // SW = 420 takes it from 2 rows to 5 (one pin) and to 14 (four) -- a baseline at y = 178
+  // in a panel whose plot ends at y = 218. Collapsed it is 2 rows to 3, worst case. The
+  // ghosts already carry the live curves' colours, so the only thing the legend has to add
+  // is WHICH MOMENTS are frozen.
+  if (G.length) items.push([G.length + " pinned @t=" + G.map(p => p.t.toFixed(1)).join(", "), COL.txt]);
   legend(c, x0 + 6, y0 + 12, items, x1 - 30);
 }
 
@@ -1348,10 +1450,21 @@ const CHART_TYPES = {
            vis: v => v.fit !== "off" },
          { id: "fita", k: "num", w: 74, step: "any", min: 0,
            ti: "fit-line amplitude A at k = 1 in E = A k^p; blank pins it to the spectrum",
-           vis: v => v.fit === "amp" }]),
-    draw: (c, d, o) => drawSpectrum(c, d, o),
+           vis: v => v.fit === "amp" },
+        // the pins (PINCURVE Phase B). Per card, like the fit line: two cards can carry
+        // different frozen states over the same run. `pin` is dead until the card has
+        // been handed data; `unpin` only exists while there is something to clear.
+         { id: "pin", k: "btn", t: "pin", onClick: c => c.pinAdd(),
+           dis: (v, c) => !c.lastData,
+           ti: "freeze the curves this card is drawing as grey ghosts, to compare what "
+             + "comes next against (at most " + PIN_MAX + ")" },
+         { id: "unpin", k: "btn", t: "unpin", onClick: c => c.pinClear(),
+           vis: (v, c) => c.pins.length > 0,
+           ti: "clear every pinned ghost on this card" }]),
+    draw: (c, d, o, pins) => drawSpectrum(c, d, o, pins),
     hint: "shell-binned, ~3&times;/s; E<sup>&plusmn;</sup>(k) = E<sub>u</sub>+E<sub>b</sub>&plusmn;H<sub>c</sub>. "
-      + "The y range follows the &perp; spectra."
+      + "The y range follows the &perp; spectra. <b>pin</b> freezes the current curves as "
+      + "ghosts for before/after comparison; ghosts keep their physical k if the box changes."
   },
   cut: {
     label: "cut trace", w: CW, h: CH, zslice: true,
@@ -1626,16 +1739,23 @@ class ChartCard {
   }
   type() { return this.selType.value; }
   zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
-  // the option selects, as { id: value } -- what the type's draw() branches on
+  // the option selects, as { id: value } -- what the type's draw() branches on.
+  // Buttons (k: "btn") are actions, not values, so they contribute nothing.
   optVals() {
     const o = {};
-    for (const s of this.optEls) o[s.__optId] = s.value;
+    for (const s of this.optEls) if (!s.__optBtn) o[s.__optId] = s.value;
     return o;
   }
-  // show/hide the options whose meaning depends on another one (the fit line's boxes)
+  // show/hide the options whose meaning depends on another one (the fit line's boxes),
+  // and enable/disable the ones that depend on the card's STATE (the pin button, which
+  // has nothing to snapshot before the card has been handed data). Both hooks see the
+  // card, so a button's meaning can depend on more than the other options' values.
   _optSync() {
     const v = this.optVals();
-    for (const s of this.optEls) if (s.__optVis) s.style.display = s.__optVis(v) ? "" : "none";
+    for (const s of this.optEls) {
+      if (s.__optVis) s.style.display = s.__optVis(v, this) ? "" : "none";
+      if (s.__optDis) s.disabled = !!s.__optDis(v, this);
+    }
   }
   build() {
     const T = CHART_TYPES[this.type()];
@@ -1644,10 +1764,17 @@ class ChartCard {
     for (const s of this.optEls) this.head.removeChild(s);
     if (this.rSlice) { this.head.removeChild(this.selZSrc); this.head.removeChild(this.rSlice); }
     this.optEls = []; this.selZSrc = null; this.rSlice = null;
-    const redraw = () => { this._optSync(); this.draw(null); cardsThrottle.spec = 0; cardsThrottle.cut = 0; };
-    // an option is a <select> over `o`, or (k: "num") a small number box -- both end up
-    // in optEls with the same __optId, so optVals() and the type's draw() see one shape.
-    // `vis(vals)` optionally hides one when another option makes it meaningless.
+    // retyping the card is what drops its spectrum state (PINCURVE): the pins belonged
+    // to a chart this card no longer is, and the cache belonged to that chart's data.
+    this.pins = []; this.lastData = null;
+    const redraw = d => { this._optSync(); this.draw(d || null); cardsThrottle.spec = 0; cardsThrottle.cut = 0; };
+    // an option is a <select> over `o`, (k: "num") a small number box, or (k: "btn") a
+    // small header BUTTON -- all three end up in optEls with the same __optId, so
+    // optVals() and the type's draw() see one shape. A button carries no value: it calls
+    // `onClick(card)` and the card redraws from its own last data (a press must not blank
+    // the live curves for the rest of the spectrum throttle window).
+    // `vis(vals, card)` optionally hides one when another option or the card's state makes
+    // it meaningless; `dis(vals, card)` disables it instead.
     for (const spec of (T.opts ? T.opts(cards.cfg || {}) : [])) {
       let s;
       if (spec.k === "num") {
@@ -1657,14 +1784,21 @@ class ChartCard {
         if (spec.step !== undefined) s.step = String(spec.step);
         if (spec.w) s.style.width = spec.w + "px";
         if (spec.ti) s.title = spec.ti;
-        s.oninput = redraw;
+        s.oninput = () => redraw();
+      } else if (spec.k === "btn") {
+        s = _mk("button", "optbtn", this.head);
+        s.innerHTML = spec.t;
+        if (spec.ti) s.title = spec.ti;
+        s.__optBtn = true;
+        s.onclick = () => { spec.onClick(this); redraw(this.lastData); };
       } else {
         s = _sel(this.head, spec.o.map(x => ({ v: x[0], t: x[1] })), spec.ti);
-        s.onchange = redraw;
+        s.onchange = () => redraw();
       }
       if (spec.v !== undefined) s.value = String(spec.v);
       s.__optId = spec.id;
       s.__optVis = spec.vis || null;
+      s.__optDis = spec.dis || null;
       this.optEls.push(s);
     }
     this._optSync();
@@ -1686,7 +1820,46 @@ class ChartCard {
     this.rSlice.max = String(Math.max(0, cards.cfg.nz() - 1));
     this.rSlice.disabled = this.zsrc() !== "manual";
   }
-  draw(data) { CHART_TYPES[this.type()].draw(this.cx, data, this.optVals()); }
+  // The last non-null data this card was handed, kept for the spectrum type alone: it is
+  // what `pin` snapshots. It deliberately OUTLIVES chartsReset (which draws every card
+  // with null) -- an IC reset is exactly the moment a pin is about to be taken.
+  draw(data) {
+    if (data && this.type() === "spectrum") {
+      const first = !this.lastData;
+      this.lastData = data;
+      // the pin button is dead until the card HAS something to snapshot, and the frame
+      // loop's readback is what ends that -- so the first one re-runs the opt sync. Only
+      // the first: nothing about the buttons changes on the ones after it.
+      if (first) this._optSync();
+    }
+    CHART_TYPES[this.type()].draw(this.cx, data, this.optVals(), this.pins);
+  }
+  // ---- pinned ghost spectra (PINCURVE Phase B) -------------------------------
+  // A pin is a snapshot of the curves this card is DRAWING -- post specSeries /
+  // parKfac -- so it is immune to later changes of the card's own sq / sd selectors:
+  // a pin taken as "E+ / E-" stays E+/E- however the live view is switched. `kunit`
+  // rides along so the ghost can be re-registered on physical k if the box changes,
+  // and `t` is the simulation time the legend reports.
+  pinAdd() {
+    if (this.type() !== "spectrum" || !this.lastData) return;
+    if (this.pins.length >= PIN_MAX) {
+      showStatus("at most " + PIN_MAX + " pinned spectra — unpin first", "info");
+      return;
+    }
+    const s = specCurves(this.lastData, this.optVals());
+    // an all-zero spectrum (quiescent IC before the first injection) would pin an
+    // invisible ghost that still burns a cap slot and a legend entry — refuse it
+    // (reviewer NOTE, 2026-08-09)
+    if (!(s.hi > 0)) { showStatus("nothing to pin yet — spectrum is empty", "info"); return; }
+    this.pins.push({
+      // deep copy to plain Arrays: the live bins are a reused Float32Array
+      curves: s.curves.map(cv => [Array.from(cv[0]), cv[1], cv[2] ? cv[2].slice() : null, cv[3]]),
+      nPerp: s.nPerp, hiP: s.hiP, loP: s.loP, hi: s.hi, lo: s.lo,
+      t: hist.t.length ? hist.t[hist.t.length - 1] : 0,
+      kunit: this.lastData.kunit || 0
+    });
+  }
+  pinClear() { this.pins.length = 0; }
   destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
 }
 
@@ -1751,12 +1924,30 @@ function cardsSync() {
 }
 // replace the whole layout (used by the presets and by boot)
 function cardsLayout(L) {
+  // A preset switch rebuilds every card, and that must NOT silently eat the pinned
+  // ghosts: "pin the decayed spectrum, pick the forced preset, compare" is the whole
+  // universality lesson (PINCURVE Phase C). So the spectrum cards' pins and their
+  // last-data cache are carried across POSITIONALLY -- outgoing spectrum cards in DOM
+  // order to incoming ones in DOM order, extras dropped, a shortfall simply unfilled.
+  // No identity matching: the cards are new objects and the user's mental model is
+  // "the spectrum chart", not "that particular card".
+  const carry = cards.chart.filter(c => c.type() === "spectrum")
+                           .map(c => ({ pins: c.pins, lastData: c.lastData }));
   for (const d of cards.disp.slice()) { d.destroy(); }
   for (const c of cards.chart.slice()) { c.destroy(); }
   cards.disp.length = 0; cards.chart.length = 0;
   for (const s of (L && L.disp) || [{}]) addDisplayCard(s);
   while (cards.disp.length < CARD_MIN_DISP) addDisplayCard();
   for (const t of (L && L.charts) || ["energy", "spectrum", "cut"]) addChartCard(t);
+  const inc = cards.chart.filter(c => c.type() === "spectrum");
+  for (let i = 0; i < inc.length && i < carry.length; i++) {
+    inc[i].pins = carry[i].pins;
+    inc[i].lastData = carry[i].lastData;
+    // draw the ghosts NOW (not the transplanted live data -- the run it came from is
+    // gone); the next readback fills the live curves back in
+    inc[i]._optSync();
+    inc[i].draw(null);
+  }
   cardsSync();
 }
 // the card the single-instance overlays (IC editor, cut trace) hang off
@@ -3608,8 +3799,10 @@ async function loop() {
       const sv = solver;
       const sp = await sv.readSpectrum();
       if (sv === solver) {
+        // `kunit` rides along so a pinned ghost can be re-registered on physical k when
+        // the box changes (PINCURVE): the snapshot keeps the value it was taken under.
         const d = Object.assign({ perp: sp.perp, nb: sv.nb, fshell: sv.p.fshell,
-                                  par: sp.par, parKfac: sp.parKfac },
+                                  par: sp.par, parKfac: sp.parKfac, kunit: sv.g.kunit },
                                 specExtra ? specExtra() : null);
         autoDissCache.sv = sv; autoDissCache.at = now; autoDissCache.perp = sp.perp;
         for (const c of specCards) c.draw(d);

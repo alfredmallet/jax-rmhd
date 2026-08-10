@@ -166,9 +166,10 @@ struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f
 `;
   // the constants object physics.js templates over (see its header): no gridZ, a
   // flat mode index, real-space kernels at 64 threads, the display buffer is the
-  // whole domain.
+  // whole domain. `sigR` = this app's field list offers the residual energy sigma_r
+  // (display mode 9), so its two display kernels know that mode; the 3D app does not.
   const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc };
+              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc, sigR: true };
 
   const S = {};
 
@@ -459,13 +460,14 @@ class Solver {
   // others are built the first time a card claims them, so a one-card session pays
   // nothing for them. There is NO chain-0 special case: every chain is complete.
   //
-  // Buffer reuse inside a chain (dispK/dispTmp are pure scratch, so BOTH sigma_c
+  // Buffer reuse inside a chain (dispK/dispTmp are pure scratch, so BOTH sigma
   // halves run through them):
-  //   half 0 (any mode, or z+ of sigma_c): components -> dispR, dispR2
-  //   half 1 (z- of sigma_c):              components -> dispR2, dispR3
-  // after which magSqA collapses (dispR, dispR2) -> dispR = |z+|^2 and magSqB
-  // collapses (dispR2, dispR3) -> dispR2 = |z-|^2. Dispatches inside one compute
-  // pass are ordered, so the reuse is safe.
+  //   half 0 (any mode; z+ of sigma_c, u of sigma_r): components -> dispR, dispR2
+  //   half 1 (z- of sigma_c, b of sigma_r):           components -> dispR2, dispR3
+  // after which magSqA collapses (dispR, dispR2) -> dispR = |z+|^2 (|u|^2) and magSqB
+  // collapses (dispR2, dispR3) -> dispR2 = |z-|^2 (|b|^2). Dispatches inside one compute
+  // pass are ordered, so the reuse is safe. sigma_r is the SAME four buffers: only the
+  // two Mode uniforms differ, so it adds no state at all.
   //
   // The contour overlay (REFINE_PLAN I2.4) extends that discipline instead of
   // allocating: it runs LAST in the frame, when dispK2/dispTmp2/dispR2 -- and, with
@@ -494,11 +496,14 @@ class Solver {
       contMx: contPer(() => d.createBuffer({ size: 4, usage: SQ })),
       contB: contPer(() => d.createBuffer({ size: 16, usage: SQ })),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-      // pinned to the z- vector: the second half of the sigma_c chain
+      // pinned to the sigma chain's second vector: z- for sigma_c, b for sigma_r
+      // (rewritten per card by setDisplayMode -- see dispSigmaMate)
       modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to each contour set's potential (phi or psi)
       modeC: contPer(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
+    // the default pin (a fresh chain is mode 0); setDisplayMode rewrites it with the
+    // mate of whatever mode the card asks for, so the pair can never disagree
     d.queue.writeBuffer(B.modeM, 0, new Uint32Array([DISP_ZMINUS, 0, 0, 0]));
     const tex = d.createTexture({
       size: [this.g.nx, this.g.ny], format: "rgba8unorm",
@@ -677,7 +682,8 @@ class Solver {
     D.cont = (o.cont || [0, 0]).slice();
     const u = new Uint32Array([D.mode, 0, (cmap | 0), 0]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
-    u[0] = DISP_ZMINUS;                     // the sigma_c second half, same colormap
+    u[0] = dispSigmaMate(D.mode);           // the sigma second half, same colormap
+                                            // (z- for sigma_c, b for sigma_r)
     this.device.queue.writeBuffer(D.buf.modeM, 0, u);
     for (let i = 0; i < CONT_SETS; i++) {   // each contour potential's own prep
       u[0] = D.cont[i] || DISP_PHI;
@@ -885,6 +891,8 @@ class Solver {
     if (dispIsSigma(mode)) {
       // |z+|^2 -> dispR, then the z- half -> |z-|^2 in dispR2; the floor uses the
       // max of their sum, and colorize renders the ratio on the fixed +-1 range.
+      // sigma_r runs the identical sequence on (|u|^2, |b|^2): the pair of vectors is
+      // chosen by the two Mode uniforms alone (mode 9 and its mate), not here.
       p.setPipeline(this.pl.vecMagSq); p.setBindGroup(0, D.bg.magSqA);
       p.dispatchWorkgroups(nrWG);
       this._dispHalf(p, D, 1, true);
@@ -904,7 +912,7 @@ class Solver {
       p.setPipeline(this.pl.vecMag); p.setBindGroup(0, D.bg.vecMag);
       p.dispatchWorkgroups(nrWG);
     }
-    if (!dispIsSigma(mode)) {          // sigma_c has a FIXED +-1 range, no autoscale
+    if (!dispIsSigma(mode)) {          // sigma_c / sigma_r: FIXED +-1 range, no autoscale
       p.setPipeline(this.pl.maxPartial); p.setBindGroup(0, D.bg.maxPartial);
       p.dispatchWorkgroups(this.nPartR);
       p.setPipeline(this.pl.maxFinal); p.setBindGroup(0, D.bg.maxFinal);
@@ -1031,14 +1039,15 @@ function wireDrawEditor() {
 }
 
 // ---------------------------------------------------------------------------
-// display cards: the quantity list of this app (physics.js modes 0..8)
+// display cards: the quantity list of this app (physics.js modes 0..9)
 // ---------------------------------------------------------------------------
 const DISP_FIELDS = [
   { v: 4, t: "velocity |u|" }, { v: 5, t: "magnetic |b|" },
   { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
   { v: 0, t: "vorticity" }, { v: 1, t: "current" },
   { v: 6, t: "Elsasser |z&#8314;|" }, { v: 7, t: "Elsasser |z&#8315;|" },
-  { v: 8, t: "cross helicity &sigma;_c" }
+  { v: 8, t: "cross helicity &sigma;_c" },
+  { v: 9, t: "residual energy &sigma;_r" }
 ];
 
 // ---------------------------------------------------------------------------
@@ -1053,7 +1062,10 @@ const PRESETS = {
            cbEpsLock: true, rFmin: "1", rFmax: "3", rDiss: "-13", cbAutoDiss: true,
            selIC: "modes", rAmpP: "0", rAmpM: "0", cbAmpLock: true, rCflEvery: "4" },
     layout: { disp: [{ sel: 4 }], charts: ["energy", "spectrum", "cut"] },
-    hint: ""
+    hint: "Random power &epsilon; added into the &zeta;<sup>+</sup> and &zeta;<sup>&minus;</sup> "
+      + "fields via an Ornstein&ndash;Uhlenbeck process, with correlation time &tau;. "
+      + "You can change the wavenumber band of the injection: what does the magnetic "
+      + "spectrum do if you inject at smaller scales?"
   },
   decay: {
     label: "decaying A / B packets",
@@ -1065,8 +1077,10 @@ const PRESETS = {
     prep: () => autoDissSeed(),
     layout: { disp: [{ sel: 6 }, { sel: 7 }], charts: ["energy", "spectrum"] },
     hint: "Decaying 2D turbulence: A-shaped &zeta;<sup>+</sup> and B-shaped &zeta;<sup>&minus;</sup> "
-      + "potentials at 512&sup2;, forcing off &mdash; press <b>Run</b> and switch a display to "
-      + "&sigma;_c to watch dynamic alignment shut the cascade down. "
+      + "potentials at 512&sup2;, forcing off &mdash; press <b>Run</b> and watch these very "
+      + "ordered initial conditions collapse into a universal turbulent cascade. See if you "
+      + "can also spot the inverse cascade and the development of dynamic alignment and "
+      + "stable magnetically-dominated vortices. "
       + "Ideal 2D RMHD is self-similar in amplitude ((a,t) &rarr; (a/&lambda;, &lambda;t)), and "
       + "dt is adaptive, so the per-frame dynamics look the same at any amplitude &mdash; "
       + "amplitude only matters against the fixed dissipation (in 3D it is &chi;)."
@@ -1083,22 +1097,22 @@ const PRESETS = {
     // that only ever LOWERS nu during the linear stage (there is nothing at k_d yet) can
     // only approach; once the layer rolls up the controller is what keeps the secondary
     // structure off the dealias scales, which is the P1 item 3 failure this replaces.
-    // rDiss is its t=0 seed, not a physical claim.
-    set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
-           rDiss: "-3.5", cbAutoDiss: true,
+    // No rDiss of its own: like decay, the marginal estimate for this grid / hyper=4 is
+    // the t=0 seed (not a physical claim) and the controller takes it from there.
+    set: { selRes: "512", selBox: "wide", selHyper: "4", nPm: "1", cbForce: false,
+           cbAutoDiss: true,
            selIC: "kh", rEqA: "0.05", rEqPert: "-3",
            rEqU0: "1", rEqB0: "0", rCflEvery: "4" },
+    prep: () => autoDissSeed(),
     layout: { disp: [{ sel: 0 }], charts: ["mode", "energy", "cut"] },
     hint: "Two opposite shear layers (periodicity needs a pair) at x = L<sub>x</sub>/4 and "
       + "3L<sub>x</sub>/4, independent while a &Lt; L<sub>x</sub>/2. With b&#8320; = 0 the "
       + "k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed rolls up into vortices; raise <b>b&#8320;</b> "
       + "past <b>U&#8320;</b> and the tension of the in-plane field suppresses it "
-      + "(ideal threshold b&#8320; = U&#8320; for this geometry &mdash; dissipation softens it, "
-      + "it does not remove it). Linear reference &gamma; &asymp; 0.267 U&#8320;k<sub>y</sub> "
-      + "(k<sub>y</sub> = 2&pi;/L<sub>y</sub>) at a = 0.05L<sub>x</sub>, b&#8320; = 0. "
-      + "The <b>k<sub>y</sub> = 2&pi;/L<sub>y</sub> mode</b> chart is where you read that off: "
-      + "the equilibrium swamps the energy trace, but it contributes nothing to that mode, "
-      + "whose log-y slope the legend fits as &gamma;_fit."
+      + "(ideal threshold b&#8320; = U&#8320; for this geometry). "
+      + "Linear reference &gamma; &asymp; 0.267 U&#8320;k<sub>y</sub> "
+      + "(k<sub>y</sub> = 2&pi;/L<sub>y</sub>) at a = 0.05L<sub>x</sub>, b&#8320; = 0 &mdash; "
+      + "you can check this on the <b>k<sub>y</sub> = 2&pi;/L<sub>y</sub> mode</b> chart."
   },
   tearing: {
     label: "tearing mode (magnetic islands)",
@@ -1117,8 +1131,7 @@ const PRESETS = {
       + "contours (= B<sub>&perp;</sub> field lines) over the current sheet reconnect into an "
       + "island chain; the <b>island width</b> chart is log&nbsp;W(t), so the linear stage is a "
       + "straight line and the Rutherford stage bends over. The diss slider is &eta; and "
-      + "<b>Pm</b> = &nu;/&eta; (1 here; Pm = 0 is an inviscid &phi;, which piles energy up at "
-      + "the grid scale in a long run). Linear reference &gamma; &asymp; 0.0287 at "
+      + "<b>Pm</b> = &nu;/&eta; (1 here). Linear reference &gamma; &asymp; 0.0287 at "
       + "&eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4, &gamma; &prop; "
       + "&eta;<sup>3/5</sup>), which <b>maintain equilibrium flux</b> reproduces: it adds the "
       + "static source S = &minus;&eta;&nabla;&sup2;&psi;<sub>eq</sub> that holds the layer. "
