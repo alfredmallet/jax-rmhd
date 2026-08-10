@@ -23,6 +23,7 @@ const frame = () => run(`async function(){
     else {
       const vals = await solver.readCutLine(cards.cfg.zsliceOf(c));
       if (c.type() === "island") islandPush(solver.nsteps * 1e-3, vals, solver.p.ny, solver.p.Ly);
+      if (c.type() === "mode") modePush(solver.nsteps * 1e-3, vals, solver.p.ny);
       c.draw({ vals: vals, Ly: solver.p.Ly });
     }
   }
@@ -422,7 +423,8 @@ setTimeout(async () => {
                        addChartCard("island"); cardsSync(); }`);
       await frame(); await frame();
       const isl = run(`function(){ return { n: islandHist.t.length, w: islandHist.w.slice(-1)[0],
-                                            eq: icEq.on, curv: icEq.curv, w0: icEq.w0, a: icEq.a }; }`);
+                                            eq: icEq.on, kh: icEq.kh, curv: icEq.curv,
+                                            w0: icEq.w0, a: icEq.a }; }`);
       if (!isl.eq || !(isl.curv > 0)) fail("the tearing preset left no equilibrium record: " + JSON.stringify(isl));
       if (!(isl.n >= 1) || !isFinite(isl.w)) fail("the island card collected no W(t): " + JSON.stringify(isl));
       console.log(tag + " island card: " + JSON.stringify(isl));
@@ -433,6 +435,61 @@ setTimeout(async () => {
       // from chartTypeKeys when cfg.zslice is on -- see the 3D run's own assertion below)
       if (run(`function(){ return chartTypeKeys().indexOf("island") < 0; }`))
         fail("the 2D page does not offer the island chart");
+      // the k_y mode card: the KH preset must OPEN with one, it must collect off the same
+      // cut readback, and it must sit on its placeholder for any other IC
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "kh"; s.onchange(); }`);
+      if (!state().charts.some(t => t === "mode")) fail("the kh preset did not open a k_y mode card");
+      await frame(); await frame();
+      const md = run(`function(){ return { n: modeHist.t.length, u: modeHist.u.slice(-1)[0],
+                                           b: modeHist.b.slice(-1)[0], kh: icEq.kh, eq: icEq.on,
+                                           g: modeFitGamma(modeHist.t, modeHist.u) }; }`);
+      if (!md.kh || md.eq) fail("the kh preset left the wrong equilibrium record: " + JSON.stringify(md));
+      // the stub's readback is all zeros, so A_u = 0 and the log-y history correctly stays
+      // EMPTY (that is the guard, not a defect). Drive the same push with a synthetic
+      // growing line to see the record and the legend's fit end to end.
+      if (md.n !== 0) fail("the k_y mode card logged a zero amplitude: " + JSON.stringify(md));
+      const md2 = run(`function(){
+        const ny = solver.p.ny, G = 0.267;
+        for (let i = 0; i < 50; i++) {
+          const v = new Float32Array(4 * ny), A = 1e-5 * Math.exp(G * 0.1 * i);
+          for (let j = 0; j < ny; j++) {
+            v[j] = A * Math.cos(2 * Math.PI * j / ny + 0.4);
+            v[2 * ny + j] = 0.5 * A * Math.cos(2 * Math.PI * j / ny);
+          }
+          modePush(0.1 * i, v, ny);
+        }
+        for (const c of cards.chart) if (c.type() === "mode") c.draw({ vals: new Float32Array(4 * ny), Ly: solver.p.Ly });
+        return { n: modeHist.t.length, u: modeHist.u.slice(-1)[0], b: modeHist.b.slice(-1)[0],
+                 g: modeFitGamma(modeHist.t, modeHist.u) };
+      }`);
+      if (md2.n !== 50 || !(md2.u > 0) || !(md2.b > 0) || !(Math.abs(md2.g - 0.267) < 1e-6))
+        fail("the k_y mode card did not trace a synthetic exponential: " + JSON.stringify(md2));
+      // b0 = 0 (the preset's own default) leaves b_x IDENTICALLY zero: the b series must
+      // then be dropped rather than dragging the log axis, and the draw must still run
+      const md3 = run(`function(){
+        const ny = solver.p.ny;
+        modeReset();
+        for (let i = 0; i < 20; i++) {
+          const v = new Float32Array(4 * ny), A = 1e-5 * Math.exp(0.267 * 0.1 * i);
+          for (let j = 0; j < ny; j++) v[j] = A * Math.cos(2 * Math.PI * j / ny);
+          modePush(0.1 * i, v, ny);
+        }
+        for (const c of cards.chart) if (c.type() === "mode") c.draw(null);
+        return { n: modeHist.t.length, b: modeHist.b.reduce((a, x) => a + x, 0) };
+      }`);
+      if (md3.n !== 20 || md3.b !== 0) fail("a zero b_x line was not traced: " + JSON.stringify(md3));
+      console.log(tag + " k_y mode card: " + JSON.stringify(md) + " -> " + JSON.stringify(md2));
+      // a non-equilibrium IC clears the kh flag (the placeholder comes back), and the
+      // tearing one must NOT arm this chart any more than KH arms the island one
+      run(`function(){ const s = document.getElementById("selIC"); s.value = "letters"; s.onchange(); }`);
+      if (run("function(){ return icEq.kh || modeHist.t.length; }"))
+        fail("a non-equilibrium IC kept the k_y mode chart armed / its history");
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "tearing"; s.onchange(); }`);
+      if (run("function(){ return icEq.kh || !icEq.on; }")) fail("tearing armed the k_y mode chart");
+      await frame();
+      run(`function(){ let c; while ((c = cards.chart.filter(x => x.type() === "mode")[0])) cardClose(c); }`);
+      if (run(`function(){ return cards.chart.some(c => c.type() === "mode"); }`))
+        fail("the k_y mode card would not close");
       // KH's hyper really is live (J2.5): the select moves the solver
       run(`function(){ const s = document.getElementById("selPreset"); s.value = "kh"; s.onchange();
                        const h = document.getElementById("selHyper"); h.value = "3"; h.onchange(); }`);
@@ -484,6 +541,8 @@ setTimeout(async () => {
       await frame();
     } else if (run(`function(){ return chartTypeKeys().indexOf("island") >= 0; }`)) {
       fail("the 3D page offers the 2D-only island chart");
+    } else if (run(`function(){ return chartTypeKeys().indexOf("mode") >= 0; }`)) {
+      fail("the 3D page offers the 2D-only k_y mode chart");
     }
 
     // --- eps+- and the forcing band (Phase G.5) --------------------------------

@@ -104,7 +104,7 @@ def _resolve_backend(requested):
 class Parameters():
     #Stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,cfl_safety,eqpars=None,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
-                 forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0,
+                 forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0e4,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
                  cfl_every=1,z_spectral=False):
         # capture the constructor arguments (before any normalization below) so

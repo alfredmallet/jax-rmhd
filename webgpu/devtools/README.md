@@ -39,7 +39,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   (envelope planes, hidden paint row, live chi line) and the auto-diss controller end to
   end on the live solver: tick disables the slider, a loud synthetic shell drives it up
   and reaches `solver.p.diss`, an empty one holds, the no-spectrum-card path takes its own
-  readback, and unticking leaves the value alone.
+  readback, and unticking leaves the value alone. The KH `k_y = 2pi/Ly mode` card is driven
+  beside the island one: the preset must OPEN with it, the stub's all-zero readback must
+  leave the log-y history EMPTY, a synthetic exponential line must trace and fit, a zero
+  b_x line must drop its series rather than the axis, and only the KH IC may arm it.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
@@ -62,7 +65,12 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   moving it), the fit line's index / label / anchor algebra, and the sinusoidal z± IC
   (2D DFT mode content, envelope placement, icZetaFields normalization, and the field it
   produces on its packet plane). Those sections need controls that REMEMBER writes, hence
-  the `ELS` map behind `getEl`; sections 1-5 keep the old throwaway elements.
+  the `ELS` map behind `getEl`; sections 1-5 keep the old throwaway elements. Section 10
+  covers the KH `k_y = 2pi/Ly mode` chart's arithmetic: `modeAmps` on a synthetic cut stack
+  (known m = 1 amplitude and phase under a constant offset, an m = 2 contamination and
+  6-decades-louder junk in the rows it must not read), `modeFitGamma` on exponentials
+  (even/uneven sampling, trailing-window only, and NaN on flat / decaying / nonpositive
+  data), and the `modeHist` record through HIST_MAX halving and a paused clock.
 - `checksh.js` — GATE H fp64 checks against the pages' inlined reference A states:
   the H_c accumulator lane, E± = E_kin+E_mag±H_c = ½⟨|z±|²⟩, the spectra lanes summing
   back to the energies, and cutPrep+rowsC2R reproducing (u_x,u_y,b_x,b_y) on x = Lx/2 —
@@ -77,6 +85,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   against itself. Section 4b (GATE J2) adds the maintained equilibrium flux: the same
   solver with the app's source term, checking that psi_eq is then stationary to round-off
   and that the free-running growth rate is the frozen-equilibrium eigenvalue again.
+  Section 5 also runs the app's OWN `modeAmps` (what the `k_y = 2pi/Ly mode` chart plots)
+  over a cut line built from those fp64 fields on x = Lx/2, at the same tolerance as the
+  KH rate beside it.
 - `checkk.js [dir]` — GATE K fp64 checks: the field-line integrator against the analytic
   line of a single-mode ψ (both perpendicular components, RK2 order measured by halving
   dz), the along-line sampler against the analytic (u, b) at the position the polyline

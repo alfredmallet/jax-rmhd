@@ -192,6 +192,28 @@ function makeSolver(o) {
       }
       return 2 * Math.hypot(ar, ai) / (nx * ny);
     },
+    // the app's CUT LINE on x = Lx/2: (u_x, u_y, b_x, b_y) stacked ny at a time, the same
+    // 4*ny layout readCutLine returns, in fp32 as the GPU readback is. u_x = -d_y phi and
+    // u_y = d_x phi (psi -> b), evaluated at ix = nx/2 by folding the x sum first --
+    // e^{i kx Lx/2} = (-1)^ix, exactly as psiTilde above does it -- and inverse
+    // transforming the remaining ny column.
+    cutLine() {
+      const out = new Float32Array(4 * ny), br = new Float64Array(ny), bi = new Float64Array(ny);
+      for (let r = 0; r < 4; r++) {
+        const c = (r >> 1) * 2, ddx = (r & 1);     // r = 0,1 -> phi;  r = 2,3 -> psi
+        br.fill(0); bi.fill(0);
+        for (let i = 0; i < nx; i++) {
+          const s = (i & 1) ? -1 : 1;
+          for (let j = 0; j < ny; j++) {
+            const m = i * ny + j, k = ddx ? kx[m] : -ky[m];        // i*k*F, k = kx or -ky
+            br[j] += s * (-k * f[c + 1][m]); bi[j] += s * (k * f[c][m]);
+          }
+        }
+        fft(br, bi, ny, +1);                        // unnormalized inverse over the column
+        for (let j = 0; j < ny; j++) out[r * ny + j] = br[j] / (nx * ny);
+      }
+      return out;
+    },
     // energy in the |k_y| = 1 harmonic of a field (0 = phi, 2 = psi): the linear mode
     modeEnergy(off) {
       let s = 0;
@@ -235,7 +257,7 @@ function appIC(preset, nx, ny, Lx, Ly, sliders) {
     document.getElementById("selIC").value = preset;
     const f = icPresetFields({ nx: nx, ny: ny, Lx: Lx, Ly: Ly }, preset, 1, 1, null);
     return { phi: Array.from(f.phi), psi: Array.from(f.psi),
-             eq: { on: icEq.on, curv: icEq.curv, a: icEq.a, w0: icEq.w0 } };
+             eq: { on: icEq.on, kh: icEq.kh, curv: icEq.curv, a: icEq.a, w0: icEq.w0 } };
   }`, preset, nx, ny, Lx, Ly, sliders);
 }
 // d/dx of a 1D periodic profile, 4th order
@@ -295,9 +317,12 @@ console.log("1. equilibrium ICs: the app's arrays vs the analytic profiles (J.3)
      "edge residual " + Math.abs(ph[0] - ph[nx - 1] - uy(0) * Lx / nx).toExponential(2));
   ok("the two layers are independent (a << |x2-x1|)", aK * 8 < 0.5 * Lx,
      "|x2-x1|/a = " + (0.5 * Lx / aK).toFixed(1));
-  // KH has no resonant surface on x = Lx/2, so it must NOT arm the island chart
+  // KH has no resonant surface on x = Lx/2, so it must NOT arm the island chart -- and
+  // the k_y mode chart's flag is the mirror image: exactly one preset arms each
   ok("KH leaves the island record off", K.eq.on === false && T.eq.on === true,
      "icEq.on: kh " + K.eq.on + ", tearing " + T.eq.on);
+  ok("... and only KH arms the k_y mode chart", K.eq.kh === true && T.eq.kh === false,
+     "icEq.kh: kh " + K.eq.kh + ", tearing " + T.eq.kh);
 }
 
 console.log("2. island-width machinery (J.4)");
@@ -438,12 +463,12 @@ console.log("4. tearing linear growth rate vs the eigenvalue reference (J physic
 console.log("5. KH growth and its magnetic suppression (J physics target)");
 {
   const Lx = REF.Lx, Ly = REF.Ly, nx = 256, ny = 8, nu = REF.kh.nu;
-  const runKH = (b0, freeze, t0, t1) => {
+  const runKH = (b0, freeze, t0, t1, ampf) => {
     const K = appIC("kh", nx, ny, Lx, Ly, { rEqA: 0.05, rEqU0: 1, rEqB0: b0, rEqPert: -4 });
     const s = makeSolver({ nx, ny, Lx, Ly, hyper: 1, nu: nu, eta: nu, freeze });
     s.setIC(Float64Array.from(K.phi), Float64Array.from(K.psi));
     // the k_y = 1 kinetic energy of the perturbation: the flow IS the KH mode
-    return measure(s, () => Math.sqrt(s.modeEnergy(0)), 0.01, t0, t1, 100);
+    return measure(s, ampf ? () => ampf(s) : () => Math.sqrt(s.modeEnergy(0)), 0.01, t0, t1, 100);
   };
   const g0 = runKH(0, true, 8, 20), g0f = runKH(0, false, 8, 20);
   ok("KH gamma at b0 = 0", rel(g0, REF.kh.g0) < 0.02,
@@ -452,6 +477,17 @@ console.log("5. KH growth and its magnetic suppression (J physics target)");
   ok("... and free-running (nu/a^2 << gamma, so the layer barely spreads)",
      rel(g0f, REF.kh.g0) < 0.06,
      "free " + g0f.toPrecision(5) + "  (" + (100 * rel(g0f, REF.kh.g0)).toFixed(1) + "%)");
+  // ... and the quantity the k_y MODE CHART plots, taken from the app's own extraction
+  // code on a cut line built from these fp64 fields: A_u = the m = 1 amplitude of
+  // u_x on x = Lx/2. Same run, same window, same tolerance as g0 -- the chart measures the
+  // linear mode itself, not a proxy for it, and its LINE (midway between the layers) only
+  // offsets the amplitude, never the rate.
+  const appModeAmps = env.run("function(){ return modeAmps; }");
+  const gcut = runKH(0, true, 8, 20, s => appModeAmps(s.cutLine(), ny).u);
+  ok("the app's k_y mode extraction on the cut line grows at the eigenvalue rate",
+     rel(gcut, REF.kh.g0) < 0.02,
+     "chart quantity " + gcut.toPrecision(5) + " vs 1D eigenvalue " + REF.kh.g0 +
+     "  (" + (100 * rel(gcut, REF.kh.g0)).toFixed(2) + "%)");
   // the approach to the threshold, at a b0 where the mode still grows cleanly
   const gh = runKH(0.5, true, 8, 20);
   ok("KH weakens with b0 below the threshold (b0 = 0.5 U0)", rel(gh, REF.kh.gHalf) < 0.03,

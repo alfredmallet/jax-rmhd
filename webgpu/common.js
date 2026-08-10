@@ -870,6 +870,56 @@ function drawIsland(c) {
                  { log: true, empty: "island width W(t) — collecting…" });
 }
 
+// ---------------------------------------------------------------------------
+// the k_y = 2pi/Ly mode amplitude A(t) -- the KH linear stage
+// ---------------------------------------------------------------------------
+// The energy trace cannot show that stage at all: the KH equilibrium carries ~1e6 times
+// the seed's energy, so E(t) is flat while the mode grows through six decades. What this
+// plots instead is the one quantity that is PURE perturbation -- the m = 1 Fourier
+// amplitude of u_x (and of b_x) along the same x = Lx/2 line the cut card already reads.
+// u_x = -d_y phi, and the equilibrium is y-independent with its flow along y, so u_x has
+// exactly ZERO equilibrium content; b_x = -d_y psi likewise. Log y is forced, so the
+// linear stage is a straight line whose slope is gamma (fitted into the legend below).
+// Same history discipline as islandHist, filled from the same cut readback.
+const modeHist = { t: [], u: [], b: [] };
+function modeReset() { modeHist.t.length = 0; modeHist.u.length = 0; modeHist.b.length = 0; }
+// The gamma fit's trailing window is SIM-TIME, not a sample count: the cut readback is
+// wall-clock-throttled (~10 Hz), so a fixed count would span wildly different stretches
+// of t on different devices -- on a fast one, more than the whole linear stage
+// (~ln(1/seed)/gamma ~ 26 t-units at the defaults), always mixing noise floor, growth
+// and roll-up and reading systematically low. 10 t-units is ~2.7/gamma at the KH
+// reference rate: comfortably inside the linear stage, a few samples on any device.
+const MODE_FIT_DT = 10;
+// ... and a slope is only QUOTED when that window saw real, clean growth: at least
+// MODE_FIT_RISE of ln A end to end (~0.43 decades -- the fp32 noise floor's jitter and
+// the saturated stage's oscillation cannot fake it), with an R^2 of at least
+// MODE_FIT_R2, so a window straddling two stages stays blank instead of quoting a
+// number that is an average of neither.
+const MODE_FIT_RISE = 1.0;
+const MODE_FIT_R2 = 0.98;
+function drawMode(c) {
+  if (!c) return;
+  if (!icEq.kh) {
+    chartFrame(c, CW, EH, PADC);
+    c.textAlign = "left"; c.fillStyle = COL.txt;
+    c.fillText("k_y mode amplitude — needs the KH IC preset", PADC.l + 6, PADC.t + 13);
+    return;
+  }
+  const g = modeFitGamma(modeHist.t, modeHist.u);
+  // b_x is IDENTICALLY zero at b0 = 0, and a log axis cannot carry that: drawTimeSeries
+  // falls back to a LINEAR y the moment one plotted value is <= 0, which would flatten
+  // exactly what this chart exists to show. So the b series is left out entirely until it
+  // has something positive, and a zero inside a live series is floored far below its own
+  // smallest positive sample rather than dragging the axis.
+  let bmin = Infinity;
+  for (const v of modeHist.b) if (v > 0 && v < bmin) bmin = v;
+  const series = [["A_u" + (isFinite(g) ? "   γ_fit ≈ " + g.toFixed(3) : ""), COL.ek,
+                   i => modeHist.u[i]]];
+  if (isFinite(bmin)) series.push(["A_b", COL.em, i => Math.max(modeHist.b[i], 1e-3 * bmin)]);
+  drawTimeSeries(c, CW, EH, PADC, modeHist.t, series,
+                 { log: true, empty: "k_y = 2π/L_y mode A(t) — collecting…" });
+}
+
 // The binned data is THREE quantities per bin, [E_u | E_b | H_c] (the spectra kernels'
 // third accumulator lane), from which the Elsasser spectra follow without a second
 // kernel: E+-(k) = E_u(k) + E_b(k) +- H_c(k). Which of the four curves a card draws is
@@ -1318,6 +1368,19 @@ const CHART_TYPES = {
     draw: c => drawIsland(c),
     hint: "W = 4&radic;(&Delta;&psi;/2|&psi;&Prime;|) from the &psi; extrema on x = L<sub>x</sub>/2, "
       + "with &psi;&Prime; measured on the equilibrium; log y, so the linear stage is a straight line"
+  },
+  // the KH counterpart of the island trace, and on the SAME readback (`src: "cut"`): the
+  // k_y = 2pi/Ly Fourier amplitude of u_x / b_x on x = Lx/2. Also 2D only -- the
+  // equilibria are.
+  mode: {
+    label: "k_y = 2&pi;/L_y mode", w: CW, h: EH, src: "cut", avail: cfg => !cfg.zslice,
+    draw: c => drawMode(c),
+    hint: "|&#251;<sub>x</sub>| (and |b&#770;<sub>x</sub>|) at k<sub>y</sub> = 2&pi;/L<sub>y</sub> "
+      + "on x = L<sub>x</sub>/2 &mdash; no equilibrium content at all, unlike the energy; log y, "
+      + "so the KH linear stage is a straight line and the legend fits its &gamma;. That line lies "
+      + "midway between the layers, where the mode is evanescent (~e<sup>&minus;k<sub>y</sub>L<sub>x</sub>/4</sup> "
+      + "= e<sup>&minus;&pi;</sup> per layer), so the amplitude is well below its on-layer value "
+      + "&mdash; an offset of the line, not a change of its slope."
   }
 };
 // which chart types this app offers (the equilibrium ones are 2D-only)
@@ -1700,7 +1763,7 @@ function cardsLayout(L) {
 function primaryCard() { return cards.disp.length ? cards.disp[0] : null; }
 // clear the traces after an IC change / rebuild (one call, both apps)
 function chartsReset() {
-  histReset(); islandReset();
+  histReset(); islandReset(); modeReset();
   cardsThrottle.spec = 0; cardsThrottle.cut = 0;
   for (const c of cards.chart) c.draw(null);
 }
@@ -2625,7 +2688,7 @@ const icIsPacketIC = p => (p === "letters" || p === IC_SINE);
 //   env              3D packet z-envelopes (icLetterZeta / icSineZeta), null in 2D
 function icPresetFields(q, preset, ampP, ampM, env) {
   const g = icDrawGrid(q);            // also the geometry record for the letter path
-  icEq.on = false;                    // only an equilibrium builder turns this back on
+  icEq.on = false; icEq.kh = false;   // only an equilibrium builder turns these back on
   const B = IC_BUILDERS[preset];
   if (B) return B.fields(g);
   const z = preset === "custom" ? { zp: icDraw.zp, zm: icDraw.zm }
@@ -2653,8 +2716,10 @@ function icRegister(name, rec) { IC_BUILDERS[name] = rec; }
 // What the island-width chart needs to know about the LIVE equilibrium. `on` and `curv`
 // are what islandWidth reads; `a` and `w0` (the initial width) are the record the node
 // checks assert the builders against. An equilibrium builder that leaves `on` false --
-// KH -- keeps the island chart on its "needs the tearing IC" placeholder.
-const icEq = { on: false, a: 0, curv: 0, w0: 0 };
+// KH -- keeps the island chart on its "needs the tearing IC" placeholder. `kh` is the
+// parallel flag for the k_y mode chart, which is the KH one: exactly one builder sets
+// each, and icPresetFields clears BOTH before any of them runs.
+const icEq = { on: false, kh: false, a: 0, curv: 0, w0: 0 };
 // a live equilibrium slider (only the page that builds the rows ever calls a builder)
 function icEqNum(id, dflt) { const v = parseFloat(el(id).value); return isFinite(v) ? v : dflt; }
 // does #selIC offer this preset? -- the ONE test for "this page builds that preset's
@@ -2727,8 +2792,8 @@ icRegister("kh", {
     }
     // no resonant surface at x = Lx/2 here (b_y is extremal, not zero), so the island
     // chart stays off for KH (icEq.on stays false) -- its mixing-layer analogue was left
-    // out of Phase J.
-    icEq.a = a;
+    // out of Phase J. The k_y mode chart is this preset's quantitative view instead.
+    icEq.a = a; icEq.kh = true;
     return { phi: icPlaneFromX(ph, sd, g), psi: icPlaneFromX(ps, null, g) };
   }
 });
@@ -2803,6 +2868,65 @@ function islandPush(t, vals, ny, Ly) {
     for (const a of [H.t, H.w]) { let k = 0; for (let i = 0; i < a.length; i += 2) a[k++] = a[i]; a.length = k; }
   }
   H.t.push(t); H.w.push(w);
+}
+
+// ---- the k_y = 2pi/Ly mode amplitude (KH linear stage) --------------------
+// ONE DFT coefficient, not a transform: m = 1 of an ny-point row, accumulated in fp64.
+//   A = (2/ny) |sum_j f_j exp(-2 pi i j / ny)|
+// normalized so that a row f_j = A cos(2 pi j / ny + phase) returns exactly A, for any
+// phase, with any constant offset and any other mode present. O(ny), and only while a
+// mode card exists, at the cut throttle (~10 Hz).
+function modeAmp1(f, off, n) {
+  let cr = 0, ci = 0;
+  for (let j = 0; j < n; j++) {
+    const th = 2 * Math.PI * j / n;
+    cr += f[off + j] * Math.cos(th); ci -= f[off + j] * Math.sin(th);
+  }
+  return 2 * Math.hypot(cr, ci) / n;
+}
+// The two rows of the cut stack (u_x, u_y, b_x, b_y) that carry NO equilibrium: it is
+// y-independent with u and B along y, so u_x and b_x are pure perturbation -- which is
+// the whole reason this chart can show a growth the energy trace cannot.
+function modeAmps(vals, ny) {
+  return { u: modeAmp1(vals, 0, ny), b: modeAmp1(vals, 2 * ny, ny) };
+}
+// Least-squares slope of ln A vs t over the trailing MODE_FIT_DT of sim-time -- the
+// number to compare with the linear reference gamma = 0.267 U0 k_y. Only finite,
+// positive samples count (a log has nothing to say about the others); the window must
+// span time, must RISE by MODE_FIT_RISE (a flat, decaying, jittering or saturated trace
+// has no growth rate to quote), and the fit must actually describe it (R^2 >=
+// MODE_FIT_R2 -- a straddle of two stages is not a rate). Otherwise NaN, and the legend
+// simply omits the readout.
+function modeFitGamma(ts, as) {
+  const t = [], y = [];
+  let tl = NaN;
+  for (let i = Math.min(ts.length, as.length) - 1; i >= 0; i--) {
+    if (!(isFinite(ts[i]) && isFinite(as[i]) && as[i] > 0)) continue;
+    if (isFinite(tl) && ts[i] < tl - MODE_FIT_DT) break;
+    if (!isFinite(tl)) tl = ts[i];
+    t.unshift(ts[i]); y.unshift(Math.log(as[i]));
+  }
+  const m = t.length;
+  if (m < 4 || !(t[m - 1] > t[0]) || !(y[m - 1] - y[0] >= MODE_FIT_RISE)) return NaN;
+  let mt = 0, my = 0;
+  for (let i = 0; i < m; i++) { mt += t[i]; my += y[i]; }
+  mt /= m; my /= m;
+  let sxx = 0, sxy = 0, syy = 0;                       // centered: no cancellation risk
+  for (let i = 0; i < m; i++) {
+    const dt = t[i] - mt, dy = y[i] - my;
+    sxx += dt * dt; sxy += dt * dy; syy += dy * dy;
+  }
+  const g = sxx > 0 ? sxy / sxx : NaN;
+  return g > 0 && sxy * sxy >= MODE_FIT_R2 * sxx * syy ? g : NaN;
+}
+function modePush(t, vals, ny) {
+  const a = modeAmps(vals, ny), H = modeHist;
+  if (!(a.u > 0) || !isFinite(a.u) || !isFinite(a.b)) return;   // the log axis needs A_u > 0
+  if (H.t.length && !(t > H.t[H.t.length - 1])) return;         // paused: no duplicate t
+  if (H.t.length >= HIST_MAX) {
+    for (const q of [H.t, H.u, H.b]) { let k = 0; for (let i = 0; i < q.length; i += 2) q[k++] = q[i]; q.length = k; }
+  }
+  H.t.push(t); H.u.push(a.u); H.b.push(a.b);
 }
 
 // The equilibrium presets' own control rows, as controlsBuild spec fragments -- next to
@@ -3467,6 +3591,11 @@ async function loop() {
         if (d0 && cutCards.some(c => c.type() === "island")) {
           islandPush(s[1], d0.vals, sv.p.ny, sv.p.Ly);
         }
+        // ... and so does the k_y mode trace: one DFT coefficient of the u_x / b_x rows
+        // of the very same line.
+        if (d0 && cutCards.some(c => c.type() === "mode")) {
+          modePush(s[1], d0.vals, sv.p.ny);
+        }
         for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
       }
     }
@@ -3510,7 +3639,12 @@ function showTests(rows, extraHtml) {
 // statistical check of the OU path: run the solver from a quiescent start at a known
 // total injection rate and compare dE/dt + <D> against it. Identical in both apps.
 async function ouInjectionRow(s) {
-  s.p.epsP = 0.5; s.p.epsM = 0.5; s.uploadCfg();
+  // production cap, NOT the refvector-recorded one: the harness solver is built with
+  // smax = R.forcing_scale_max so the deterministic rows replay the JSON exactly, but
+  // this row is statistical and must run the cap the apps actually ship -- at the
+  // saturated eps=1 state the required scale is ~1.8, so a recorded smax=1 pins and
+  // caps injection at ~0.64 (the 2026-08-09 failure).
+  s.p.epsP = 0.5; s.p.epsM = 0.5; s.p.smax = 1e4; s.uploadCfg();
   s.setIC(true);                                   // quiescent start
   for (let i = 0; i < 600; i++) { s.step(1); if (i % 100 === 99) await device.queue.onSubmittedWorkDone(); }
   const a = await s.readStats();
@@ -3520,7 +3654,8 @@ async function ouInjectionRow(s) {
     if (i % 200 === 199) {
       await device.queue.onSubmittedWorkDone();
       const q = await s.readStats();
-      if (Math.abs(q[4]) >= 0.999 || Math.abs(q[5]) >= 0.999) clipped++;
+      const smx = 0.999 * (s.p.smax || 1);
+      if (Math.abs(q[4]) >= smx || Math.abs(q[5]) >= smx) clipped++;
     }
   }
   const b = await s.readStats();

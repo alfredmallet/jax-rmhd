@@ -122,6 +122,7 @@ is the default and is what the chart drew before they existed):
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
 | island width (2D) | — | log W(t); needs the tearing IC (see below) |
+| k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
 
 **The spectrum fit line** (FEEDBACK item 8) is a straight E = A k<sup>p</sup> from just
 above the forcing shell to the last bin, per CHART CARD, so two cards can carry two
@@ -456,6 +457,23 @@ cut chart already reads b_x = −∂_yψ on that line at ~10 Hz, and ψ along it
 spectral integration of that line (`icLineIntegrate`, exact for a band-limited periodic
 line where a quadrature rule would be second order; the k = 0 gauge drops out because
 only max − min is used).
+
+**The k_y = 2π/L_y mode.** KH's counterpart of the island chart, and on the same readback:
+the `k_y = 2π/L_y mode` card (2D only, so it is off the 3D page exactly as `island width`
+is) plots the m = 1 Fourier amplitude of u_x — and of b_x — along x = L_x/2 on a log
+axis, and fits γ over the trailing 32 samples into its legend (`γ_fit`, blank unless the
+window is finite, positive and growing). It exists because the **energy trace cannot show
+the linear stage at all**: the equilibrium shear carries ~10⁶ times the seed's energy, so
+E(t) is flat while the mode grows through six decades. u_x = −∂_yφ and b_x = −∂_yψ are the
+two rows of the cut stack with *exactly zero* equilibrium content (the equilibrium is
+y-independent with u and B along ŷ), so what is plotted is pure perturbation. b_x is
+identically 0 at b₀ = 0, which a log axis cannot carry, so that series is simply absent
+until there is something positive to draw. One caveat on the amplitude, not the rate: the
+cut line sits midway between the two layers, where the mode is evanescent — A_u there is
+0.17 of its peak on-layer value at the preset's defaults (a vortex-sheet estimate,
+e^{−k_y L_x/4} = e^{−π} per layer, would say 0.09: the finite-width layer's eigenfunction
+decays slower than e^{−k_y|x|}) — the log-y line is offset downward, its slope is not affected
+(`devtools/checkj.js` §5 fits 0.26738 off this very line, 0.42 % from the eigenvalue).
 
 **Linear-theory references** (`devtools/eqlinear.py`: a 1D generalized eigenvalue solve
 of the linearized system on Fourier differentiation matrices, at k_y = 2π/L_y, converged

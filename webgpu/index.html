@@ -3,50 +3,118 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebGPU reduced MHD — taranis in the browser</title>
+<title>plasma turbulence in your browser: webgpu RMHD solver</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>Reduced MHD in the browser — WebGPU pseudospectral solvers</h1>
-<div class="sub">a browser port of the
+<h1>plasma turbulence in your browser: webgpu RMHD solver</h1>
+<div class="sub">
   <a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>
-  solver &middot; fp32 &middot; no server, no build step
+  in the browser &middot; fp32 &middot; no server, no build step
   &middot; <a href="https://github.com/alfredmallet/taranis/blob/main/webgpu/README.md"
        target="_blank" rel="noopener">about / README</a></div>
 
-<p class="lead">Two live pseudospectral solvers for reduced MHD, running entirely on
-your GPU through WebGPU: the same equations, dealiasing, LSRK33 integrating-factor stepper
-and (optional) Elsasser Ornstein&ndash;Uhlenbeck forcing as the JAX code they were ported
-from. Both
-pages ship the fp64 reference vectors generated from <code>taranis</code> itself and a
-<b>Self-test</b> button that runs them through the same GPU pipelines as production. They
-are demos, not science runs: WebGPU has no float64.</p>
+<p class="lead">this is a browser port of the jax plasma turbulence code
+<a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>,
+running on your gpu and using the same numerical algorithms as the parent code. Reduced
+MagnetoHydroDynamics (RMHD) is the equation set solved here: a simplified model for the
+behavior of a plasma when there is a strong magnetic field present (as is the case in our
+solar system). it is useful because it encodes the physics of Alfv&eacute;n waves traveling
+along magnetic field lines, as well as complex nonlinear interactions between the waves. it
+does a surprisingly good job at describing plasma turbulence in a wide range of systems.</p>
+
+<p class="lead">we hope you can use these solvers to get a feel for how this turbulence
+works. you can change parameters freely, and explore various setups: forced and decaying
+turbulence, collisions between waves, and plasma instabilities. both two-dimensional and
+three-dimensional solvers are provided. for more details on what this all means, please
+click on some of the demonstrations. have fun!</p>
 
 <div class="cards">
   <a class="card" href="rmhd2d.html">
     <h2>2D RMHD &rarr;</h2>
-    <p>rfft2 spectral in (x,y), 128&sup2;&ndash;512&sup2; or a wide 4&pi;&times;2&pi; box.
-      Vorticity / current / potentials / velocity and magnetic field with arrow and
-      field-line overlays, energy trace, shell-binned spectra, cut trace. Forced runs show
-      the 2D inverse cascade piling magnetic energy up at the box scale; the equilibrium
-      presets show shear-flow roll-up and magnetic reconnection instead.</p>
+    <p>forced/decaying turbulence, Kelvin&ndash;Helmholtz, and tearing instabilities.
+      runs pretty fast, at resolutions of up to 512&sup2;.</p>
   </a>
   <a class="card" href="rmhd3d.html">
-    <h2>3D RMHD, spectral z &rarr;</h2>
-    <p>rfftn over (z,x,y), 64&sup2;&times;32 to 256&sup2;&times;64. The Alfv&eacute;n coupling
-      &plusmn;i&middot;k<sub>z</sub> is applied exactly by a closed-form 2&times;2 wave
-      propagator, so there is no wave CFL. z-slice or three-face cube view, perpendicular
-      and parallel spectra.</p>
+    <h2>3D RMHD &rarr;</h2>
+    <p>forced/decaying turbulence, and Alfv&eacute;n-wave collisions. 3D dynamics is
+      more expensive, so resolution is smaller.</p>
   </a>
 </div>
 
-<p class="lead">Each app has a <b>preset</b> dropdown in its top bar &mdash; decaying A/B
-Elsasser packets, Kelvin&ndash;Helmholtz shear layers and a tearing mode growing magnetic
-islands in 2D, a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash;
-which sets the controls and opens the displays that go with them. Everything stays
-adjustable; presets are configurations, not separate programs
-(<code>?demo=decay</code> / <code>?demo=kh</code> / <code>?demo=tearing</code> /
-<code>?demo=collision</code> are deep links to the same thing).</p>
+<div class="panes">
+  <details>
+    <summary>what is turbulence?</summary>
+    <blockquote>&ldquo;When I meet God, I am going to ask him two questions: Why relativity?
+      And why turbulence? I really believe he will have an answer for the first.&rdquo;<br>
+      <span class="attrib">&mdash; possibly apocryphal, attributed to Heisenberg, among
+      others&hellip;</span></blockquote>
+    <p>perhaps the greatest unsolved mystery of classical physics. a basic, concise working
+      definition: multiscale disorder. introducing energy at large scales in the system
+      causes a chaotic, nonlinear cascade down to small scales at which dissipation can
+      occur.</p>
+  </details>
+
+  <details>
+    <summary>what is plasma?</summary>
+    <p>with enough external energy, electrons in atoms can be stripped away from their
+      central nuclei, forming a (usually) overall electrically neutral system of
+      negatively-charged electrons and positively-charged ions. these particles interact in
+      complex ways, resulting in phenomena like plasma turbulence.</p>
+  </details>
+
+  <details>
+    <summary>why should anyone care?</summary>
+    <p>most of the universe is full of turbulent plasma: it is hard to find an astrophysics
+      problem where understanding this turbulence is not crucially important. here are three
+      examples:</p>
+    <ol>
+      <li>the sun is constantly emitting plasma, which is heated (up to temperatures of
+        millions of kelvin) and accelerated (up to hundreds of kilometers per second) by
+        plasma turbulence in the solar atmosphere, the corona. understanding this coronal
+        heating is an open problem.</li>
+      <li>plasma impacting the earth&rsquo;s magnetic field can degrade satellites and
+        disrupt power grids: mitigating the impacts of this space weather requires us to
+        understand the plasma turbulence in interplanetary space.</li>
+      <li>closer to home, plasma turbulence is also a main cause of loss of confinement in
+        nuclear fusion devices: solving this problem would be a major step towards accessing
+        a near-limitless energy source.</li>
+    </ol>
+  </details>
+
+  <details>
+    <summary>why do numerical simulations?</summary>
+    <p>the governing equations are strongly nonlinear, coupling an enormous range of length
+      and timescales, and cannot be solved only with pen-and-paper theory. simulations are a
+      crucial tool: we can perform numerical experiments where every parameter is precisely
+      controlled, and every output precisely measured at every point in space and time. we
+      then compare the simulations against real measured data: in a first for humanity,
+      NASA&rsquo;s Parker Solar Probe has entered our sun&rsquo;s corona, directly sampling
+      this turbulent plasma. comparing simulations with these state-of-the-art measurements
+      drives improvements in our models, and better understanding of this fundamental and
+      omnipresent physical phenomenon.</p>
+  </details>
+
+  <details>
+    <summary>technical details</summary>
+    <p>RMHD equations, solved using a pseudospectral method with a Williamson 1980
+      low-storage RK3 modified to calculate linear terms (Alfv&eacute;n wave
+      propagation and viscous/resistive dissipation) with integrating factors. note that
+      the taranis code by default uses a different method for the z-derivatives (centered
+      finite differences) which is much better for parallelizing over many gpus; the
+      algorithm used here is the same as taranis with <code>z_spectral=True</code>. also,
+      WebGPU has no fp64, so this is all fp32. you can validate that the same equations are
+      being solved using the <b>self-test</b> button to check a small test problem against
+      the taranis solution.</p>
+    <p>each app has a <b>preset</b> dropdown in its top bar &mdash; decaying A/B Elsasser
+      packets, Kelvin&ndash;Helmholtz shear layers and a tearing mode growing magnetic
+      islands in 2D, a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash; which
+      sets the controls and opens the displays that go with them. everything stays
+      adjustable; presets are configurations, not separate programs
+      (<code>?demo=decay</code> / <code>?demo=kh</code> / <code>?demo=tearing</code> /
+      <code>?demo=collision</code> are deep links to the same thing).</p>
+  </details>
+</div>
 
 <div class="hint" style="margin-top:14px">
   Needs a WebGPU-capable browser (Chrome/Edge 113+, recent Firefox and Safari). Source,

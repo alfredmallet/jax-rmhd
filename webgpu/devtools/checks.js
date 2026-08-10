@@ -65,7 +65,7 @@ Object.assign(C, vm.runInContext("({ icSigmaLetter, IC_SIGMA_PERP_FRAC, IC_SIGMA
   + " IC_SIGMA_Z_MAX_FRAC, TRACK_HYST, IC_LETTERS, DISS_KD_FRAC, dissKd, DISS_STEP,"
   + " DISS_DECADES_BELOW, DISS_LG_OPEN, AUTODISS_SHELL_W, AUTODISS_SMOOTH,"
   + " AUTODISS_MAX_FACTOR, AUTODISS_PERIOD, IC_SINE, IC_SINE_N, icSigmaSine, icIsPacketIC,"
-  + " FIT_FRACS, FIT_SNAP })", sandbox));
+  + " FIT_FRACS, FIT_SNAP, MODE_FIT_DT, MODE_FIT_RISE, MODE_FIT_R2 })", sandbox));
 const L = 2 * Math.PI;
 
 // ---------------------------------------------------------------------------
@@ -701,6 +701,124 @@ console.log("9. sinusoidal z+- packet IC (FEEDBACK item 9)");
   }
   ok("on its packet plane z+ = a+ yhat sin(k1 x)", eF < 2e-3 * aP, "max dev " + eF.toExponential(2));
   ok("... with no y dependence at all (d_y zeta+ = 0)", eY < 1e-9, "max spread " + eY.toExponential(2));
+}
+
+// ---------------------------------------------------------------------------
+console.log("10. k_y = 2pi/Ly mode extraction and its gamma fit (KH chart)");
+// ---------------------------------------------------------------------------
+// The two halves of the chart's arithmetic, on data whose answer is known in closed form:
+// modeAmps (one DFT coefficient of the cut stack) and modeFitGamma (the trailing-window
+// slope of ln A). Neither is checked against itself.
+{
+  // a synthetic cut stack, in the 4*ny (u_x, u_y, b_x, b_y) layout readCutLine returns.
+  // Rows 0 and 2 carry a known m = 1 cosine at a known PHASE, on top of a large constant
+  // offset and a large m = 2 contamination -- neither of which a single-mode coefficient
+  // may see (the offset is the k=0 gauge; m=2 is the first harmonic the roll-up makes).
+  // Rows 1 and 3 are deliberate junk, 6 decades louder: the extraction must not read them.
+  const ny = 64, Au = 3.7e-4, phu = 0.9, Ab = 1.1e-2, phb = -2.3;
+  const vals = new Float64Array(4 * ny);
+  for (let j = 0; j < ny; j++) {
+    const th = 2 * Math.PI * j / ny;
+    vals[j] = 0.25 + Au * Math.cos(th + phu) + 7 * Math.cos(2 * th);
+    vals[ny + j] = 1e3 * Math.sin(3 * th);
+    vals[2 * ny + j] = -1.5 + Ab * Math.cos(th + phb) + 4 * Math.cos(2 * th + 1);
+    vals[3 * ny + j] = -1e3 * Math.cos(5 * th);
+  }
+  const a = C.modeAmps(vals, ny);
+  ok("A_u is the m = 1 amplitude of the u_x row", Math.abs(a.u / Au - 1) < 1e-6,
+     "got " + a.u.toPrecision(10) + " vs " + Au);
+  ok("A_b is the m = 1 amplitude of the b_x row", Math.abs(a.b / Ab - 1) < 1e-6,
+     "got " + a.b.toPrecision(10) + " vs " + Ab);
+  // the phase is arbitrary: sweep it and the amplitude must not move
+  let ep = 0;
+  for (let q = 0; q < 16; q++) {
+    const p = q * Math.PI / 8, v = new Float64Array(4 * ny);
+    for (let j = 0; j < ny; j++) v[j] = 3 + Au * Math.cos(2 * Math.PI * j / ny + p);
+    ep = Math.max(ep, Math.abs(C.modeAmps(v, ny).u / Au - 1));
+  }
+  ok("... independent of the mode's phase", ep < 1e-6, "max relative spread " + ep.toExponential(2));
+  // a row with NO m = 1 content at all reads zero, not round-off times its own size
+  const z = new Float64Array(4 * ny);
+  for (let j = 0; j < ny; j++) { z[j] = 12 + 5 * Math.cos(4 * Math.PI * j / ny); z[2 * ny + j] = 0; }
+  const az = C.modeAmps(z, ny);
+  ok("an offset + m = 2 row has no m = 1 amplitude", az.u < 1e-14 && az.b === 0,
+     "A_u = " + az.u.toExponential(2) + ", A_b = " + az.b);
+
+  // --- the gamma fit ---------------------------------------------------------
+  const G = 0.266260;                              // the KH eigenvalue reference
+  const ts = [], as = [];
+  for (let i = 0; i < 120; i++) { ts.push(0.37 * i); as.push(1e-6 * Math.exp(G * 0.37 * i)); }
+  ok("the fit recovers gamma from an exponential", Math.abs(C.modeFitGamma(ts, as) / G - 1) < 1e-6,
+     "got " + C.modeFitGamma(ts, as).toPrecision(10) + " vs " + G);
+  // ... on an UNEVEN time base too (the readback throttle is wall-clock, not step count)
+  const tu = [], au = [];
+  for (let i = 0, t = 0; i < 60; i++, t += 0.1 + 0.4 * ((i * 7) % 5) / 5) { tu.push(t); au.push(2.5e-8 * Math.exp(G * t)); }
+  ok("... on an unevenly sampled trace", Math.abs(C.modeFitGamma(tu, au) / G - 1) < 1e-6,
+     "got " + C.modeFitGamma(tu, au).toPrecision(10));
+  // it is a TRAILING window: an old, much steeper stage must not leak into the answer
+  const tk = [], ak = [];
+  for (let i = 0; i < 200; i++) {
+    const t = 0.37 * i;
+    tk.push(t); ak.push(i < 168 ? 1e-9 * Math.exp(3 * G * t)
+                                : 1e-9 * Math.exp(3 * G * 0.37 * 167 + G * (t - 0.37 * 167)));
+  }
+  ok("only the trailing " + C.MODE_FIT_DT + " t-units are fitted",
+     Math.abs(C.modeFitGamma(tk, ak) / G - 1) < 1e-6,
+     "got " + C.modeFitGamma(tk, ak).toPrecision(10) + " (the older stage runs at 3 gamma)");
+  // and it is NaN-guarded everywhere a growth rate would be a lie
+  const flat = ts.map(() => 1e-5), dec = ts.map((t, i) => 1e-3 * Math.exp(-G * ts[i]));
+  ok("flat data has no growth rate", !isFinite(C.modeFitGamma(ts, flat)),
+     "got " + C.modeFitGamma(ts, flat));
+  ok("a decaying trace has no growth rate", !isFinite(C.modeFitGamma(ts, dec)),
+     "got " + C.modeFitGamma(ts, dec));
+  ok("nonpositive / non-finite amplitudes are not logged",
+     !isFinite(C.modeFitGamma([0, 1, 2, 3], [0, -1, NaN, Infinity])) &&
+     !isFinite(C.modeFitGamma(ts.slice(0, 3), as.slice(0, 3))),
+     "too few valid samples -> NaN");
+  // a saturated stage OSCILLATES around a plateau: even when its endpoints happen to
+  // rise, the window never rises by MODE_FIT_RISE, so the legend stays blank instead of
+  // flickering a meaningless positive slope (reviewer MINOR-2)
+  const tsat = [], asat = [];
+  for (let i = 0; i < 80; i++) { tsat.push(0.2 * i); asat.push(2e-2 * (1 + 0.3 * Math.sin(1.7 * 0.2 * i + 0.3))); }
+  ok("a saturated oscillation has no growth rate", !isFinite(C.modeFitGamma(tsat, asat)),
+     "got " + C.modeFitGamma(tsat, asat));
+  // ... and a window STRADDLING two stages (here 4 gamma kinking to gamma mid-window,
+  // rise well above MODE_FIT_RISE) is not a rate either: the R^2 gate blanks it rather
+  // than quoting an average of neither stage (reviewer MINOR-1/2)
+  const tst = [], ast = [];
+  for (let i = 0; i <= 100; i++) {
+    const t = 0.1 * i;
+    tst.push(t); ast.push(1e-6 * Math.exp(t < 5 ? 4 * G * t : 4 * G * 5 + G * (t - 5)));
+  }
+  ok("a two-stage straddle is blanked by the R^2 gate", !isFinite(C.modeFitGamma(tst, ast)),
+     "got " + C.modeFitGamma(tst, ast));
+  // zeros INSIDE an otherwise growing trace are skipped, not fatal
+  const th2 = ts.slice(0, 40), ah2 = as.slice(0, 40).map((v, i) => (i % 7 === 3 ? 0 : v));
+  ok("... and skipping them leaves the rate intact",
+     Math.abs(C.modeFitGamma(th2, ah2) / G - 1) < 1e-6,
+     "got " + C.modeFitGamma(th2, ah2).toPrecision(10));
+
+  // --- the history record ----------------------------------------------------
+  // HIST_MAX halving keeps every other sample, and a paused clock pushes nothing
+  C.modeReset();
+  const line = A => { const v = new Float64Array(4 * ny);
+    for (let j = 0; j < ny; j++) v[j] = A * Math.cos(2 * Math.PI * j / ny);
+    return v; };
+  for (let i = 0; i < 2400; i++) C.modePush(0.01 * i, line(1e-6 * Math.exp(G * 0.01 * i)), ny);
+  const H = vm.runInContext("modeHist", sandbox);
+  ok("the history halves at HIST_MAX instead of growing", H.t.length > 0 && H.t.length <= 2000,
+     H.t.length + " samples after 2400 pushes");
+  ok("... keeping every other sample (the t axis stays monotone and spans the run)",
+     H.t[0] === 0 && Math.abs(H.t[H.t.length - 1] - 23.99) < 1e-9 && H.t[1] > H.t[0],
+     "t = " + H.t[0] + " .. " + H.t[H.t.length - 1] + ", dt = " + (H.t[1] - H.t[0]).toPrecision(3));
+  const nb4 = H.t.length;
+  C.modePush(H.t[nb4 - 1], line(1), ny); C.modePush(H.t[nb4 - 1] - 1, line(1), ny);
+  ok("a paused clock pushes no duplicate t", H.t.length === nb4, nb4 + " samples, unchanged");
+  ok("the fitted gamma survives the halving",
+     Math.abs(C.modeFitGamma(H.t, H.u) / G - 1) < 1e-6,
+     "got " + C.modeFitGamma(H.t, H.u).toPrecision(10));
+  C.modeReset();
+  ok("modeReset clears all three columns", H.t.length === 0 && H.u.length === 0 && H.b.length === 0);
 }
 
 console.log(bad ? "\n" + bad + " CHECK(S) FAILED" : "\nall GATE G node checks passed");
