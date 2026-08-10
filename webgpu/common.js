@@ -1652,7 +1652,14 @@ function cbarFmt(v) {
 // colorbar are in the PNG but not in the video.
 const REC_FPS = 30;
 const REC_MAX_MS = 30000;                // hard stop, so a forgotten recording stays small
-const REC_MIME = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+// MP4 (H.264) first: it is the one container everything opens, phones included --
+// Alfred's iPhone would not play the VP9 WebM his laptop recorded. Safari's
+// MediaRecorder only does MP4; Chrome has recorded video/mp4 since ~126; engines
+// that cannot record MP4 fall through to WebM as before.
+const REC_MIME = ["video/mp4;codecs=avc1", "video/mp4",
+                  "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+// the saved file's extension follows the mime actually negotiated
+const recExt = mime => (mime && mime.indexOf("mp4") >= 0 ? "mp4" : "webm");
 const recSupported = cv =>
   typeof window !== "undefined" && !!window.MediaRecorder && !!(cv && cv.captureStream);
 const recMime = () => {
@@ -1897,14 +1904,14 @@ class DisplayCard {
     const mime = recMime(), chunks = [];
     const r = new window.MediaRecorder(this.cv.captureStream(REC_FPS),
                                        mime ? { mimeType: mime } : undefined);
-    const name = shotName(this.barMode, "webm");
+    const name = shotName(this.barMode, recExt(mime));
     r.ondataavailable = e => { if (e && e.data && e.data.size) chunks.push(e.data); };
     r.onstop = () => {
       clearTimeout(this.recStop);
       this.rec = null; this.recStop = 0;
       this.btnRec.innerHTML = "rec";
       this.btnRec.classList.remove("reclive");
-      dlBlob(new window.Blob(chunks, { type: mime || "video/webm" }), name);
+      dlBlob(new window.Blob(chunks, { type: mime || "video/mp4" }), name);
     };
     this.rec = r;
     r.start();

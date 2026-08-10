@@ -250,12 +250,14 @@ the WebGPU canvas, the overlay canvas and the colorbar into an offscreen 2D canv
 hands it to `toBlob`; the card **re-renders first**, because WebGPU has no
 `preserveDrawingBuffer` — `getCurrentTexture` is transient and the canvas holds only its
 last *presented* image, so the capture has to be taken in the same task as a fresh
-present. `rec` is `MediaRecorder` over `captureStream(30)` of the WebGPU canvas, WebM,
+present. `rec` is `MediaRecorder` over `captureStream(30)` of the WebGPU canvas — MP4
+(H.264) where `isTypeSupported` allows it (Safari, Chrome ≥126; VP9 WebM does not open
+on phones, which is why MP4 leads the mime list), WebM otherwise —
 with a 30 s hard stop; `onstop` is the single place the file is written, so the timer and
 the button press take the identical path. It is feature-detected and the button is simply
-absent where `MediaRecorder` is not (iOS Safari) — which also means the video is the field
-canvas alone, `captureStream` taking one canvas. Filenames are
-`taranis-<page>-<field>-t<time>.{png,webm}`. `devtools/stubenv.js` stubs `toBlob`,
+absent where `MediaRecorder` is not (older iOS Safari) — which also means the video is the
+field canvas alone, `captureStream` taking one canvas. Filenames are
+`taranis-<page>-<field>-t<time>.{png,mp4,webm}`. `devtools/stubenv.js` stubs `toBlob`,
 `captureStream`, `MediaRecorder`, `Blob` and `URL.createObjectURL` and logs every blob and
 every `<a download>` click, so `bootstub.js` asserts that pressing the buttons really
 produces a blob-shaped download (and that removing `MediaRecorder` removes the button and

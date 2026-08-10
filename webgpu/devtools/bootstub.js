@@ -897,6 +897,8 @@ setTimeout(async () => {
       console.log(tag + " save -> " + png.name + " (" + png.blob.type + ", " + png.blob.size + " B)");
     }
     // RECORD: a toggle. Start -> live recorder + relabelled button; stop -> the file.
+    // The stub engine supports only WebM/vp9, so this leg exercises the WebM FALLBACK
+    // of REC_MIME; the MP4-preferred leg is tested right after.
     const rec1 = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
       return { live: !!d.rec, label: d.btnRec.innerHTML, mime: d.rec && d.rec.mimeType,
                fps: d.rec && d.rec.stream && d.rec.stream.fps, hot: d.btnRec.classList.contains("reclive") }; }`);
@@ -912,6 +914,19 @@ setTimeout(async () => {
     if (!webm || !/\.webm$/.test(webm.name) || !(webm.blob && webm.blob.size > 0))
       fail("record produced no webm download: " + JSON.stringify(webm));
     else console.log(tag + " record -> " + webm.name + " (" + webm.blob.type + ", " + webm.blob.size + " B)");
+    // ... and an MP4-capable engine (Safari, current Chrome) must NEGOTIATE MP4: that
+    // is the point of the mime order -- VP9 WebM does not open on phones (Alfred's
+    // iPhone, 2026-08-10 follow-up). Same toggle path, temporarily widened stub.
+    const mp4mime = run(`function(){ const M = window.MediaRecorder, old = M.isTypeSupported;
+      M.isTypeSupported = m => m.indexOf("mp4") >= 0 || old(m);
+      const d = cards.disp[0]; d.btnRec.onclick();
+      const mime = d.rec && d.rec.mimeType; d.btnRec.onclick();
+      M.isTypeSupported = old; return mime; }`);
+    if (mp4mime !== "video/mp4;codecs=avc1") fail("mp4-capable engine picked " + mp4mime);
+    const mp4 = env.caps.downloads[env.caps.downloads.length - 1];
+    if (!mp4 || !/\.mp4$/.test(mp4.name) || !(mp4.blob && mp4.blob.type.indexOf("mp4") >= 0 && mp4.blob.size > 0))
+      fail("mp4 record download wrong: " + JSON.stringify(mp4 && mp4.name));
+    else console.log(tag + " record (mp4 engine) -> " + mp4.name + " (" + mp4.blob.type + ")");
     // ... and with MediaRecorder absent (iOS Safari) the button is simply not there
     const noRec = run(`function(){
       const M = window.MediaRecorder;
