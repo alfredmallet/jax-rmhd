@@ -1948,7 +1948,17 @@ async function planeTrackHook(sv) {
 // times the size and only the chart reads them, so they come back only when it is open.
 let flData = null, flPar = null, flAt = 0;
 const flLinesOn = () => cards.disp.some(d => d.linesView());
-const flChartOn = () => cards.chart.some(c => c.type() === "spectrum" && c.optVals().sd === "fl");
+// The along-line SAMPLE readback has TWO consumers since ANISO_PLAN: a spectrum card
+// showing "k∥ (field line)", and an anisotropy card whose curve selector wants the
+// field-line measure (its default "both", or "fl"; "z" wants only the coordinate
+// spectrum and asks for nothing extra). Deliberately ONE predicate: the readback is four
+// times the size of the polyline one, and it must still stop the moment the last consumer
+// closes or switches away.
+const flChartOn = () => cards.chart.some(c => {
+  const t = c.type();
+  if (t === "spectrum") return c.optVals().sd === "fl";
+  return t === "aniso" && (c.optVals().ad || "both") !== "z";
+});
 async function fieldLineHook(sv) {
   const chart = flChartOn();
   if (!chart && !flLinesOn()) {
@@ -2234,6 +2244,31 @@ async function runSelfTest() {
       "E = " + Etot.toPrecision(6) + ", unbinned corner modes make up the rest"));
     rows.push(testRow("sum E(k_par) <= E_tot", Math.max(0, sPar / Etot - 1), 1e-4,
       "sum/E = " + (sPar / Etot).toPrecision(4) + " (the kz = 0 plane is not plotted)"));
+    // ... and the anisotropy card's matching, run over those very spectra (ANISO_PLAN
+    // Phase C). STRUCTURAL only: a 16^2 self-test box has no inertial range, so there is
+    // no slope to assert -- what is asserted is that the tails, their overlap window and
+    // the log-log inversion produce finite, positive, k-ordered points and never a NaN,
+    // over every option combination. The harness runs no field-line march, so the fl leg
+    // is handed the coordinate parallel spectrum: same code path, same arithmetic.
+    {
+      const dA = { perp: sp.perp, nb: s.nb, par: sp.par, parFL: sp.par,
+                   parKfac: sp.parKfac, fshell: s.p.fshell };
+      let bad = 0, np = 0;
+      for (const aq of ["tot", "zp", "zm"]) for (const ad of ["both", "z", "fl"]) {
+        const A = anisoCurves(dA, { aq, ad });
+        for (const cv of A.curves) {
+          for (let i = 0; i < cv[0].length; i += 2) {
+            if (!isFinite(cv[0][i]) || !(cv[0][i] > 0) ||
+                !isFinite(cv[0][i + 1]) || !(cv[0][i + 1] > 0)) bad++;
+            if (i >= 2 && !(cv[0][i] >= cv[0][i - 2])) bad++;
+            np++;
+          }
+        }
+        if (!isFinite(A.hi) || (A.curves.length && !(A.hi > 0))) bad++;
+      }
+      rows.push(testRow("anisoCurves: finite k∥/k⊥ points", bad, 0,
+        np + " points over 9 option pairs (structural: no slope at 16^2)"));
+    }
   }
 
   // --- one LSRK33 step from A with dt = A_dt, recorded scales, no OU --------

@@ -236,6 +236,18 @@ setTimeout(async () => {
         if (fn === "frame") drawBoxFrame(c, F); else drawFieldLines(c, flData, F);
         return got; }`, fn);
       setSD("both");
+      // Since ANISO_PLAN the anisotropy card is a SECOND consumer of the along-line
+      // samples (its default `ad: "both"` wants the field-line curve). This section's
+      // no-consumer assertions ("no k_par chart open", "outlived its only consumer")
+      // are about the GATE, not about which card holds it open, so park every aniso
+      // card on its along-z-only option for the duration — the spectrum card's `sd`
+      // is then again the only thing that can demand the samples, and the original
+      // assertions keep their exact meaning. checkaniso.js owns the aniso side of the
+      // gate's truth table.
+      run(`function(){ for (const c of cards.chart) {
+        if (c.type() !== "aniso") continue;
+        const s = c.optEls.filter(e => e.__optId === "ad")[0];
+        if (s) { s.value = "z"; s.onchange(); } } }`);
       // one card in the lines view, one on the cube, one on a plain slice
       run(`function(){ cards.disp[0].selField.value = "4";           // a vector quantity
                        cards.disp[0].selZSrc.value = "lines"; cards.disp[0].apply();

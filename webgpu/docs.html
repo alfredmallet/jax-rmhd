@@ -284,6 +284,40 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       dissipation and watch the straight range stretch, or pin at t = 0 and watch the
       spectrum fill in. Up to four; <b>unpin</b> clears them.</li>
   </ul>
+  <!-- DRAFT copy (ANISO_PLAN Phase C): written by the implementing agent, awaiting
+       Alfred's wording pass, like the preset text before it. -->
+  <p><b>anisotropy k<sub>&#8741;</sub>/k<sub>&perp;</sub></b> (3D) &mdash; how stretched
+    the eddies are along the background magnetic field, scale by scale. Turbulence in a
+    magnetised plasma does not make round eddies: the smaller they get, the longer and
+    thinner they are along the field. This chart measures that, and it is the one plot
+    where the theory of the last thirty years is directly visible.</p>
+  <p>It is built from the two spectra of the chart above, with no extra work asked of the
+    GPU. For a given amount of energy at small scales, it asks which perpendicular scale
+    and which parallel scale hold that much, and plots one against the other; doing it for
+    a ladder of energies gives the curve. Reading it:</p>
+  <ul>
+    <li>The line falls, because eddies get more elongated as they get smaller. A slope of
+      <b>&minus;1/3</b> is <i>critical balance</i> (Goldreich &amp; Sridhar): eddies live
+      exactly as long as it takes an Alfv&eacute;n wave to cross them. <b>&minus;1/2</b> is
+      what the same picture gives when flow and field align. The <b>fit</b> control is the
+      spectrum card's, with those two indices and &minus;1 in its box.</li>
+    <li>There are two curves. The solid one measures the parallel scale along the
+      <b>z axis</b> of the box; the dashed one measures it <b>along the actual field
+      lines</b>, which are themselves bent. They separate, and the separation is the
+      point: the field lines wander, so beyond a certain scale the z axis stops being the
+      parallel direction at all and the solid curve flattens towards a slope of
+      &minus;1. The dashed curve keeps reporting the real scaling. Measured in the wrong
+      frame, critical balance is invisible &mdash; which is why it took a while to find.
+      The dashed curve needs the field-line sampler, so it appears a second after the
+      solid one.</li>
+    <li>The <b>which energy</b> option matches the total or one Elsasser field on its own;
+      an imbalanced run can be anisotropic differently in the two.</li>
+    <li>Two honest caveats. The height of the curve is a convention, not a measurement:
+      it moves if you change L<sub>z</sub>, so compare slopes and never absolute values.
+      And at the left-hand end the parallel scales are whole numbers of box lengths, too
+      coarse to resolve, which flattens the curve there &mdash; that is the instrument,
+      not the plasma. Give it a forced run, a while to develop, and read the middle.</li>
+  </ul>
   <p><b>cut trace</b> &mdash; a slice through the field along a single line (along y, at
     the middle of the box). The option picks which pair of components:
     u_x,&nbsp;u_y &middot; b_x,&nbsp;b_y &middot;

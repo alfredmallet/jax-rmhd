@@ -1081,17 +1081,38 @@ const specSeries = sq => (sq === "both" ? SPEC_SETS.ub.concat(SPEC_SETS.pm)
 // SPEC_MAXDEC is the hard floor that keeps the panel readable no matter what the
 // crossing and the pre-peak minimum find.
 const SPEC_KNEE = 4, SPEC_KFRAC = 0.5, SPEC_TAIL = 3, SPEC_MAXDEC = 9;
+// this curve's own peak bin, as an index into its flat (k, v) array (-1 when it is
+// empty or carries nothing positive)
+function _specPeak(a) {
+  let p = -1, pv = 0;
+  for (let i = 0; i < a.length; i += 2) if (a[i + 1] > pv) { pv = a[i + 1]; p = i; }
+  return p;
+}
+// k_d, the dissipation knee itself, factored out of the floor rule because a SECOND
+// consumer needs exactly this crossing and must not be allowed to invent its own: the
+// anisotropy card's level window ends where the cascade does (ANISO_PLAN). Everything
+// the paragraph above says about the walk -- start at the peak, plain crossing, a curve
+// wholly below the threshold has no knee of its own -- is this function. Infinity means
+// no knee: the caller decides what that means for it.
 // `rc` are the range-setting curves, each [ [k, v, k, v, ...], ... ] in k order.
-function specFloor(rc, hi, lo) {
+function specKnee(rc, hi) {
   const thr = hi * Math.pow(10, -SPEC_KNEE);
-  let kd = Infinity, pre = Infinity;
+  let kd = Infinity;
   for (const cv of rc) {
-    const a = cv[0];
-    let p = -1, pv = 0;                          // this curve's own peak bin (argmax)
-    for (let i = 0; i < a.length; i += 2) if (a[i + 1] > pv) { pv = a[i + 1]; p = i; }
-    if (p < 0 || pv <= thr) continue;            // empty, or wholly below the crossing
+    const a = cv[0], p = _specPeak(a);
+    if (p < 0 || a[p + 1] <= thr) continue;      // empty, or wholly below the crossing
     for (let i = p + 2; i < a.length; i += 2)    // the knee: walk RIGHT from the peak
       if (a[i + 1] <= thr) { kd = Math.min(kd, a[i]); break; }
+  }
+  return kd;
+}
+function specFloor(rc, hi, lo) {
+  const thr = hi * Math.pow(10, -SPEC_KNEE);
+  const kd = specKnee(rc, hi);
+  let pre = Infinity;
+  for (const cv of rc) {
+    const a = cv[0], p = _specPeak(a);
+    if (p < 0 || a[p + 1] <= thr) continue;      // (the same curves the knee walk keeps)
     for (let i = 0; i < p; i += 2) pre = Math.min(pre, a[i + 1]);   // low-k side of the peak
   }
   if (!isFinite(kd)) return lo;                 // no knee: the data set their own floor
@@ -1119,21 +1140,37 @@ function specFloor(rc, hi, lo) {
 // FIT_SNAP of one of the two indices this subject actually argues about snaps to the
 // exact fraction -- for the drawn line AND for the legend, which is why one function
 // answers both. Anything else is drawn and labelled as the number it is.
+//
+// WHICH fractions those are is per USE, not per file: the spectrum card argues about
+// -5/3 and -3/2, the anisotropy card (ANISO_PLAN) about -1/3 (Goldreich-Sridhar critical
+// balance), -1/2 (dynamic alignment) and -1 (what the coordinate-z measure trends to once
+// field-line wander decorrelates the z frame). So the table is an argument, defaulting to
+// the spectrum's pair -- which keeps every existing call site, and its snapping, exactly
+// as it was. `sym` names the abscissa in the legend, k on the spectrum and k_perp here.
 const FIT_SNAP = 5e-3;
 const FIT_FRACS = [[-5 / 3, "-5/3"], [-3 / 2, "-3/2"]];
-function _fitFrac(p) {
-  for (const f of FIT_FRACS) if (Math.abs(p - f[0]) < FIT_SNAP) return f;
+const FIT_FRACS_ANISO = [[-1 / 3, "-1/3"], [-1 / 2, "-1/2"], [-1, "-1"]];
+function _fitFrac(p, fr) {
+  for (const f of (fr || FIT_FRACS)) if (Math.abs(p - f[0]) < FIT_SNAP) return f;
   return null;
 }
-function fitIndex(v) {
+function fitIndex(v, fr) {
   const p = parseFloat(v);
-  if (!isFinite(p)) return FIT_FRACS[0][0];         // blank / NaN box: the default index
-  const f = _fitFrac(p);
+  if (!isFinite(p)) return (fr || FIT_FRACS)[0][0];  // blank / NaN box: the default index
+  const f = _fitFrac(p, fr);
   return f ? f[0] : p;
 }
-function fitLabel(p) {
-  const f = _fitFrac(p);
-  return "k^" + (f ? f[1] : String(Math.round(p * 1000) / 1000));
+function fitLabel(p, fr, sym) {
+  const f = _fitFrac(p, fr);
+  return (sym || "k") + "^" + (f ? f[1] : String(Math.round(p * 1000) / 1000));
+}
+// Where the fit line is anchored, and where the anisotropy card's level window starts:
+// just above the forcing shell, which is where the fixed k^-5/3 guide was anchored long
+// before either was settable. An unforced run has no shell worth speaking of, and the
+// max(2, ...) is what then leaves the anchor at the second bin. ONE rule, one site --
+// the two cards must not drift apart on where "the inertial range starts" is.
+function fitKA(nb, fshell) {
+  return Math.max(2, Math.min(nb - 1, Math.round(fshell[1])));
 }
 // A in E = A k^p, pinned to a drawn series: its first point at or above kA, exactly where
 // the old guide anchored (just above the forcing shell). 0 when the series has no such
@@ -1329,7 +1366,7 @@ function drawSpectrum(c, d, o, pins) {
   // guide was anchored) to the last bin. `fit` = pin / amp / off; in "amp" mode an empty
   // or non-positive amplitude box falls back to the pinned anchor, so switching to it
   // never blanks the line before the user has typed anything.
-  const kA = Math.max(2, Math.min(nb - 1, Math.round(fshell[1])));
+  const kA = fitKA(nb, fshell);
   const fitMode = (o && o.fit) || "pin";
   const fitP = fitIndex(o && o.fitp);
   let anch = 0;
@@ -1360,6 +1397,242 @@ function drawSpectrum(c, d, o, pins) {
   // ghosts already carry the live curves' colours, so the only thing the legend has to add
   // is WHICH MOMENTS are frozen.
   if (G.length) items.push([G.length + " pinned @t=" + G.map(p => p.t.toFixed(1)).join(", "), COL.txt]);
+  legend(c, x0 + 6, y0 + 12, items, x1 - 30);
+}
+
+// ---------------------------------------------------------------------------
+// scale-dependent ANISOTROPY: k_par(k_perp)/k_perp against k_perp (ANISO_PLAN)
+// ---------------------------------------------------------------------------
+// The critical-balance plot, and entirely CPU arithmetic on spectra that are already in
+// hand: the perpendicular shell spectrum, the COORDINATE parallel one (k_par along z)
+// and -- whenever the field-line sampler is running -- the along-B one (REFINE_PLAN K.3).
+// No kernel, no buffer, no readback of its own; the card rides the spectrum readback the
+// way `island` rides the cut line.
+//
+// k_par(k_perp) is read off by EQUAL-AMPLITUDE MATCHING of the two 1D spectra, drawn on
+// their cumulative TAILS
+//     Q_perp(k) = sum_{k' >= k} E_perp(k'),   Q_par(k) = sum_{k' >= k} E_par(k'),
+// and NOT on the spectral densities. That choice IS the method, so here is the arithmetic
+// behind it. Take GS95: E_perp ~ k_perp^-5/3 and E_par ~ k_par^-2. Matching the DENSITIES,
+// E_perp(k_perp) = E_par(k_par), gives k_perp^-5/3 = k_par^-2, i.e. k_par ~ k_perp^5/6 --
+// a law manufactured by the method, since what critical balance actually asserts is
+// k_par ~ k_perp^2/3. What matches physically is energy CONTENT, k E(k) or its integral:
+// Q_perp ~ k_perp^-2/3 against Q_par ~ k_par^-1 gives k_perp^-2/3 = k_par^-1, hence
+// k_par ~ k_perp^2/3 -- the CB relation, and a RATIO k_par/k_perp ~ k_perp^-1/3, which is
+// this card's default fit index. (The 5/6 trap would show up as a ratio slope of -1/6
+// instead; devtools/checkaniso.js asserts the difference at a tolerance that excludes it.)
+// The tail is preferred over k E(k) itself for two reasons: it is MONOTONE by
+// construction, so every matching level has exactly ONE crossing per leg however bumpy
+// the live spectrum is, and log-log interpolation between its bins gives sub-bin k_par
+// resolution -- which is what softens the integer-k_z quantization at the low-k_perp end.
+//
+// Both parallel spectra drop the parallel mean (the coordinate one has no kz = 0 bin, the
+// field-line one no b = 0 bin) and both already carry the perpendicular one's energy
+// units -- the self-test's "sum E(k_perp) vs E_tot" / "sum E(k_par) <= E_tot" rows pin the
+// coordinate pair to one normalization, and flSpectrum's W2 division keeps Parseval along
+// the lines. So the tails are matched AS THEY ARE, with no renormalization of parFL: a
+// residual constant offset between the two normalizations would move the field-line curve
+// VERTICALLY on a log axis and cannot change its slope, and the slope is the only thing
+// this chart is read for.
+//
+// Gauge caveat, for the hint and the manual: under the RMHD rescaling symmetry the
+// absolute value of k_par/k_perp is a convention (it moves with Lz). Only the slope is
+// physical -- and so is the DIVERGENCE of the two curves, which is the Cho-Vishniac
+// lesson: the coordinate-z measure saturates at the outer-scale k_z because field-line
+// wander decorrelates the z frame, and trends towards ratio ~ k_perp^-1, while the
+// field-line measure keeps reporting the real scaling.
+const ANISO_NLEV = 16;
+// which energy the tails are built from -- the three lanes every spectrum here carries,
+// with E+- = E_u + E_b +- H_c (SPEC_SETS), so this needs no second binning either
+const ANISO_LANES = {
+  tot: (u, b, h) => u + b,
+  zp: (u, b, h) => u + b + h,
+  zm: (u, b, h) => u + b - h
+};
+// one leg's (k, E) pairs out of a three-lane bin stack of `n` bins. `j0` is the bin index
+// sitting at k = kf: 1 for the parallel stacks, whose bin 0 IS |kz| = 1, and 0 for the
+// perpendicular one, whose bin 0 is the (zero-energy) DC shell and is skipped. Bins that
+// are not strictly positive and finite are dropped -- which is also what makes the tail
+// below strictly decreasing.
+function _anisoLeg(a, n, j0, kf, lane) {
+  const pts = [];
+  if (!a || !(n >= 1)) return pts;
+  for (let j = (j0 ? 0 : 1); j < n; j++) {
+    const v = lane(a[j], a[n + j], a[2 * n + j]);
+    if (v > 0 && isFinite(v)) pts.push((j + j0) * kf, v);
+  }
+  return pts;
+}
+// the cumulative tail, as parallel ks[] / qs[] arrays in k order. qs is STRICTLY
+// decreasing (every kept bin is positive), which is exactly the property that makes the
+// inversion below single-valued on a noisy, non-monotone spectrum.
+function _anisoTail(pts) {
+  const n = pts.length >> 1, ks = new Float64Array(n), qs = new Float64Array(n);
+  let s = 0;
+  for (let i = n - 1; i >= 0; i--) { s += pts[2 * i + 1]; ks[i] = pts[2 * i]; qs[i] = s; }
+  return { ks, qs, n };
+}
+// the k at which a tail crosses the level Q, by log-log interpolation between the two
+// bracketing bins. NO EXTRAPOLATION PAST THE GRID: a level above the tail's first bin (or
+// below its last) would put k outside the resolved range, so it is refused with 0 and the
+// caller drops that level rather than fabricating a point.
+function _anisoAt(T, Q) {
+  if (!(T.n > 0) || !(Q > 0) || Q > T.qs[0] || Q < T.qs[T.n - 1]) return 0;
+  let i = 0;
+  while (i + 1 < T.n && T.qs[i + 1] >= Q) i++;
+  if (i + 1 >= T.n) return T.ks[T.n - 1];
+  const dq = Math.log(T.qs[i] / T.qs[i + 1]);
+  if (!(dq > 0)) return T.ks[i];                  // flat rung: take the bin, do not divide
+  return T.ks[i] * Math.pow(T.ks[i + 1] / T.ks[i], Math.log(T.qs[i] / Q) / dq);
+}
+// the band of levels one leg admits: the tail values at the first bin at or above kLo and
+// at the last bin below kHi, returned as [Qlo, Qhi] (Q falls as k rises). Levels outside
+// it are never generated, which is the same "drop it, do not extrapolate" rule again --
+// only applied to the WINDOW rather than to the grid.
+function _anisoWin(T, kLo, kHi) {
+  let a = -1, b = -1;
+  for (let i = 0; i < T.n; i++) {
+    if (a < 0 && T.ks[i] >= kLo) a = i;
+    if (T.ks[i] < kHi) b = i;
+  }
+  return (a < 0 || b < a) ? null : [T.qs[b], T.qs[a]];
+}
+// the largest value on a flat (k, v) curve -- the "peak" specKnee measures its crossing
+// against when the curve is alone in its own range pool
+function _anisoPeak(pts) {
+  let h = 0;
+  for (let i = 1; i < pts.length; i += 2) h = Math.max(h, pts[i]);
+  return h;
+}
+// The card's curves, as data -- the specCurves seam again: no canvas, no DOM, so node can
+// test the matching directly and a future pin can snapshot it. Returns the same
+// [points (k, ratio pairs), colour, dash, label] curve shape, the global (k_par along z)
+// curve first when it is drawn (`nGlob` of them, so a caller can tell the two apart, as
+// nPerp does on the spectrum), plus the hi/lo of the drawn ratios.
+function anisoCurves(d, o) {
+  const lane = ANISO_LANES[(o && o.aq)] || ANISO_LANES.tot;
+  const ad = (o && o.ad) || "both";
+  const nb = (d && d.nb) || 1, parKfac = (d && d.parKfac) || 1;
+  const kA = fitKA(nb, (d && d.fshell) || [1, 3]);
+  const curves = [];
+  let hi = 0, lo = Infinity, nGlob = 0;
+  const perp = _anisoLeg(d && d.perp, nb, 0, 1, lane);
+  if (perp.length < 4) return { curves, hi, lo, nGlob, kA };   // one bin brackets nothing
+  const TP = _anisoTail(perp);
+  // The high-k end of the window: the dissipation knee, by the SAME peak-then-walk-right
+  // crossing the spectrum card's y floor uses (specKnee) -- one knee rule in this file.
+  // With no knee in view (an early frame, an instability preset) the window simply runs to
+  // the last resolved bin. The low-k end is the fit line's kA, just above the forcing
+  // shell. Note the tails themselves are built over ALL bins: the window restricts which
+  // LEVELS are reported, not what energy is counted above a k.
+  const wP = _anisoWin(TP, kA, specKnee([[perp]], _anisoPeak(perp)));
+  // z first, field line second: the fit line anchors on the field-line curve when it is
+  // there, and drawAniso finds it at index nGlob.
+  const legs = [];
+  if (ad !== "fl") legs.push(["z", d && d.par, COL.ek, null, "k∥z / k⊥"]);
+  if (ad !== "z") legs.push(["fl", d && d.parFL, COL.em, [5, 3], "k∥B / k⊥"]);
+  for (const lg of legs) {
+    const src = lg[1], nzb = Math.floor((src ? src.length : 0) / 3);
+    const par = _anisoLeg(src, nzb, 1, parKfac, lane);
+    if (par.length < 4) continue;                 // absent or one-binned: no curve at all
+    const TQ = _anisoTail(par);
+    const wQ = _anisoWin(TQ, 0, specKnee([[par]], _anisoPeak(par)));
+    if (!wP || !wQ) continue;
+    // the levels live in the OVERLAP of the two admissible bands, log-spaced from the top
+    // (large scales, small k) down, so the points come out in k_perp order
+    const Qhi = Math.min(wP[1], wQ[1]), Qlo = Math.max(wP[0], wQ[0]);
+    if (!(Qhi > 0) || !(Qlo > 0) || Qlo > Qhi) continue;
+    const nl = Qlo < Qhi ? ANISO_NLEV : 1;
+    const pts = [];
+    let chi = 0, clo = Infinity;
+    for (let m = 0; m < nl; m++) {
+      const Q = nl > 1 ? Qhi * Math.pow(Qlo / Qhi, m / (nl - 1)) : Qhi;
+      const kp = _anisoAt(TP, Q), kz = _anisoAt(TQ, Q);
+      if (!(kp > 0) || !(kz > 0)) continue;
+      const r = kz / kp;
+      if (!(r > 0) || !isFinite(r)) continue;
+      pts.push(kp, r);
+      chi = Math.max(chi, r); clo = Math.min(clo, r);
+    }
+    // a single surviving point cannot be stroked (specStroke skips < 2 points) and the
+    // legend filters it, so letting it into the range pool would blank the card into a
+    // bare frame -- with the fit line possibly anchored on the invisible point. Below
+    // two points the leg contributes NOTHING, and a card whose every leg is that
+    // degenerate keeps its honest "waiting…" (review 2026-08-10, the one MINOR).
+    if (pts.length < 4) continue;
+    hi = Math.max(hi, chi); lo = Math.min(lo, clo);
+    curves.push([pts, lg[2], lg[3], lg[4]]);
+    if (lg[0] === "z") nGlob = 1;
+  }
+  return { curves, hi, lo, nGlob, kA };
+}
+function drawAniso(c, d, o) {
+  if (!c) return;
+  const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
+  chartFrame(c, SW, SH, P);
+  c.textAlign = "left"; c.fillStyle = COL.txt;
+  const nb = (d && d.nb) || 1;
+  const fshell = (d && d.fshell) || [1, 3];
+  const A = anisoCurves(d, o);
+  // "waiting…" covers everything the matching can legitimately fail on: no readback yet,
+  // a quiescent field, a 2D-shaped data object, and (the common one) an open card whose
+  // field-line spectrum has not landed yet on its own 2 Hz cadence -- no special casing,
+  // the global curve simply appears first.
+  if (nb < 2 || !(A.hi > 0)) { c.fillText("k∥/k⊥ vs k⊥ — waiting…", x0 + 6, y0 + 13); return; }
+  const ymax = Math.log10(A.hi) + 0.3;
+  // at least one decade always, so a flat ratio still has an axis to sit on
+  const ymin = Math.min(ymax - 1, Math.log10(A.lo) - 0.3);
+  const xmax = Math.log10(nb);
+  const X = k => x0 + Math.log10(k) / xmax * (x1 - x0);
+  const Y = v => px(y1 - (Math.log10(v) - ymin) / (ymax - ymin) * (y1 - y0));
+
+  for (const tk of logTicks(ymin, ymax, (y1 - y0) / (ymax - ymin)))
+    yTick(c, Y(tk[0]), x0, x1, tk[2], tk[1]);
+  for (const tk of logTicks(0, xmax, (x1 - x0) / Math.max(xmax, 1e-9), (m, e) => String(m * Math.pow(10, e))))
+    xTick(c, X(tk[0]), y0, y1, SH - 8, X(tk[0]) > x1 - 20 ? "" : tk[2], tk[1]);
+  c.fillStyle = COL.txt; c.textAlign = "center";
+  c.fillText(String(nb), x1, SH - 8);
+  c.textAlign = "left";
+  c.fillText("k⊥ / kunit", x0 + 4, SH - 8);
+
+  c.save();
+  c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
+  // the forcing-shell markers are kept: they orient the eye on this x axis exactly as
+  // they do on the spectrum's, and the window's low end is one of them
+  c.strokeStyle = COL.shell; c.setLineDash([2, 3]); c.lineWidth = 1;
+  for (const kf of fshell) {
+    if (kf >= 1 && kf <= nb) {
+      const x = Math.round(X(kf)) + 0.5;
+      c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
+    }
+  }
+  c.setLineDash([]);
+  // the reference slope, with the spectrum card's controls and behaviours: pin / set A /
+  // off, the index snapping to -1/3, -1/2 or -1. It anchors on the FIELD-LINE curve
+  // whenever that is drawn -- that is the curve whose slope the lesson is about -- and on
+  // the global one otherwise, at its first point at or above kA.
+  const kA = fitKA(nb, fshell);
+  const fitMode = (o && o.fit) || "pin";
+  const fitP = fitIndex(o && o.fitp, FIT_FRACS_ANISO);
+  let anch = 0;
+  if (fitMode !== "off") {
+    const fc = A.curves.length > A.nGlob ? A.curves[A.nGlob] : (A.curves[0] || null);
+    anch = fc ? fitAnchor(fc[0], kA, fitP) : 0;
+    const Aamp = parseFloat(o && o.fita);
+    if (fitMode === "amp" && isFinite(Aamp) && Aamp > 0) anch = Aamp;
+  }
+  if (anch > 0) {
+    c.strokeStyle = COL.guide; c.setLineDash([5, 4]);
+    c.beginPath();
+    c.moveTo(X(kA), Y(anch * Math.pow(kA, fitP)));
+    c.lineTo(X(nb), Y(anch * Math.pow(nb, fitP)));
+    c.stroke(); c.setLineDash([]);
+  }
+  c.lineWidth = 1.4;
+  specStroke(c, A.curves, X, Y);
+  c.restore();
+  const items = A.curves.filter(cv => cv[0].length >= 4).map(cv => [cv[3], cv[1], cv[2]]);
+  if (anch > 0) items.push([fitLabel(fitP, FIT_FRACS_ANISO, "k⊥"), COL.guide, [4, 3]]);
   legend(c, x0 + 6, y0 + 12, items, x1 - 30);
 }
 
@@ -1535,6 +1808,42 @@ const CHART_TYPES = {
       + "midway between the layers, where the mode is evanescent (~e<sup>&minus;k<sub>y</sub>L<sub>x</sub>/4</sup> "
       + "= e<sup>&minus;&pi;</sup> per layer), so the amplitude is well below its on-layer value "
       + "&mdash; an offset of the line, not a change of its slope."
+  },
+  // the critical-balance card (ANISO_PLAN). `src: "spectrum"` says it feeds off the
+  // spectrum readback -- the two 1D spectra it matches are already in that data object,
+  // so this card adds no kernel, no buffer and no round trip, exactly as island/mode add
+  // none to the cut line. 3D only: in 2D there is no parallel direction to measure.
+  // DRAFT text (hint below) -- for Alfred's pass.
+  aniso: {
+    label: "anisotropy k&#8741;/k&perp;", w: SW, h: SH, src: "spectrum",
+    avail: cfg => cfg.zslice,
+    opts: () => [
+      { id: "aq", ti: "which energy the matched spectra are built from; "
+          + "E&plusmn; = E_u + E_b &plusmn; H_c",
+        o: [["tot", "E_u+E_b"], ["zp", "E&#8314;"], ["zm", "E&#8315;"]] },
+      { id: "ad", ti: "k&#8741; measured along the coordinate z axis (solid), along the "
+          + "actual field lines (dashed), or both",
+        o: [["both", "both k&#8741;"], ["z", "along z only"], ["fl", "field line only"]] },
+      { id: "fit", ti: "power-law reference line k&#8741;/k&perp; = A k&perp;^p",
+        o: [["pin", "fit: pin to curve"], ["amp", "fit: set A"], ["off", "fit: off"]] },
+      { id: "fitp", k: "num", w: 62, step: "any", v: -0.333,
+        ti: "reference index p in k&#8741;/k&perp; = A k&perp;^p (-1/3 critical balance, "
+          + "-1/2 aligned, -1 the wandering-z limit)",
+        vis: v => v.fit !== "off" },
+      { id: "fita", k: "num", w: 74, step: "any", min: 0,
+        ti: "reference amplitude A at k&perp; = 1; blank pins it to the curve",
+        vis: v => v.fit === "amp" }
+    ],
+    draw: (c, d, o) => drawAniso(c, d, o),
+    hint: "k&#8741;(k&perp;)/k&perp; by matching the CUMULATIVE energy above k in the "
+      + "perpendicular and parallel spectra. Solid: k&#8741; along z. Dashed: k&#8741; "
+      + "along the field lines &mdash; it needs the field-line sampler, so it appears a "
+      + "moment later. Eddies elongate along B as they shrink, so the ratio falls; "
+      + "&minus;1/3 is critical balance. The two curves DIVERGE because field-line wander "
+      + "decorrelates the z frame, which drags the solid one towards &minus;1. Only the "
+      + "SLOPE is physical &mdash; the absolute ratio is a gauge that moves with "
+      + "L<sub>z</sub> &mdash; and at low k&perp; the integer k<sub>z</sub> bins flatten "
+      + "the curve: that is the instrument, not the physics."
   }
 };
 // which chart types this app offers (the equilibrium ones are 2D-only)
