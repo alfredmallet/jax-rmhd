@@ -1815,7 +1815,7 @@ class DisplayCard {
     const o = this.selField.options[this.selField.selectedIndex];
     const fr = !lines && cfg.fields.find(f => String(f.v) === this.selField.value);
     this.cap.innerHTML = (o && !lines ? o.innerHTML : "")
-      + (fr && fr.d ? " &nbsp;&mdash;&nbsp; " + fr.d : "")
+      + (fr && fr.d ? ": " + fr.d : "")
       + (cfg.caption ? cfg.caption(this) : "");
     this.barSync();                       // ... and so may have retired / relabelled the bar
     this.overlay();                       // the quantity / view may have retired an overlay
@@ -2289,6 +2289,7 @@ const CTRL_TOPBAR = [
   { k: "lab", t: "preset", for: "selPreset" },
   { k: "sel", id: "selPreset", o: [] },
   { k: "btn", id: "btnParams", t: "hide params" },
+  { k: "btn", id: "btnText", t: "hide text" },
   { k: "txt", id: "steps" }
 ];
 const CTRL_SEED = [{ k: "lab", t: "seed" }, { k: "num", id: "nSeed", v: 7, w: 70 }];
@@ -2693,6 +2694,9 @@ function demoNameFromURL() {
     return new URLSearchParams(q).get("demo");
   } catch (e) { return null; }
 }
+// the user's "hide text" toggle for #demohint (btnText, wired in wireCommonControls):
+// presetWrite honours it, so switching preset never resurrects hidden text
+let hintHidden = false;
 // write one preset's control values + hint; returns the record (or null)
 function presetWrite(registry, name) {
   const d = (registry && registry[name]) || null;
@@ -2709,7 +2713,7 @@ function presetWrite(registry, name) {
     if (typeof v === "boolean") e.checked = v; else e.value = String(v);
   }
   const h = el("demohint");
-  if (h) { h.innerHTML = d.hint || ""; h.style.display = d.hint ? "block" : "none"; }
+  if (h) { h.innerHTML = d.hint || ""; h.style.display = (d.hint && !hintHidden) ? "block" : "none"; }
   if (d.prep) d.prep();
   return d;
 }
@@ -2806,6 +2810,21 @@ function wireCommonControls(opts) {
     const c = el("controls"), hide = c.style.display !== "none";
     c.style.display = hide ? "none" : "";
     bp.textContent = hide ? "show params" : "hide params";
+  };
+  // the preset's explanatory text rides the sticky topbar as its own full-width last
+  // row (Alfred 2026-08-10 follow-up), so it stays on screen while the page scrolls
+  // and survives "hide params". The node is MOVED (same id, state kept): presetWrite
+  // may already have filled it during presetBoot. Its own show/hide button sits next
+  // to the params one; `hintHidden` is honoured by later presetWrites, and display
+  // stays "none" for hintless presets whatever the toggle says.
+  const tb = el("topbar"), dh = el("demohint");
+  if (tb && dh) tb.appendChild(dh);
+  const bt = el("btnText");
+  if (bt) bt.onclick = () => {
+    hintHidden = !hintHidden;
+    const h = el("demohint");
+    if (h) h.style.display = (!hintHidden && h.innerHTML) ? "block" : "none";
+    bt.textContent = hintHidden ? "show text" : "hide text";
   };
   el("btnReset").onclick = () => { solver.p.seed = uiParams().seed; applyIC(); };
   el("selIC").onchange = () => { syncIC(); applyIC(); syncLabels(); };

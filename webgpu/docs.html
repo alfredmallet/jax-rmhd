@@ -34,12 +34,14 @@ press <b>Run</b>, and change one thing at a time.</p>
     displays or charts.</p>
   <p><b>preset</b> is a drop-down of ready-made configurations. Picking one sets the
     controls <i>and</i> opens the displays and charts that go with it, then prints a
-    one-paragraph note about what to look for. Presets are configurations, not separate
+    one-paragraph note about what to look for. That note stays at the top of the screen
+    with the bar while you scroll. Presets are configurations, not separate
     programs: everything stays adjustable afterwards. Each one also has a direct link
     &mdash; for example <code>rmhd2d.html?demo=kh</code> &mdash; which opens the page
     already set up that way.</p>
   <p><b>hide params</b> collapses the whole settings panel, for when you want more room
-    for the pictures. It hides, it does not reset.</p>
+    for the pictures; <b>hide text</b> does the same for the preset's note. Both hide,
+    neither resets.</p>
   <p>On the right of the bar is a readout of the simulation time <b>t</b>, the step
     number, the current time step <b>dt</b>, and how many steps per second your GPU is
     managing. Under the displays there is a second readout with the kinetic and magnetic
@@ -184,23 +186,23 @@ press <b>Run</b>, and change one thing at a time.</p>
   <p>The first drop-down is <b>what is drawn</b>. The caption under the picture repeats
     it with its definition:</p>
   <ul>
-    <li><b>velocity |u|</b> &mdash; how fast the plasma is moving, u = z&#770;&times;&nabla;&phi;.</li>
-    <li><b>magnetic |b|</b> &mdash; the strength of the field in the plane, b = z&#770;&times;&nabla;&psi;.</li>
-    <li><b>&phi;</b> and <b>&psi;</b> &mdash; the two potentials the solver actually
+    <li><b>velocity |u|</b>: how fast the plasma is moving, u = z&#770;&times;&nabla;&phi;.</li>
+    <li><b>magnetic |b|</b>: the strength of the field in the plane, b = z&#770;&times;&nabla;&psi;.</li>
+    <li><b>&phi;</b> and <b>&psi;</b>: the two potentials the solver actually
       evolves. Contours of &phi; are the streamlines of the flow; contours of &psi; are
       the perpendicular magnetic field lines.</li>
-    <li><b>vorticity</b> &mdash; &omega; = &nabla;&sup2;&phi;, the local rate of spin of
+    <li><b>vorticity</b>: &omega; = &nabla;&sup2;&phi;, the local rate of spin of
       the flow.</li>
-    <li><b>current</b> &mdash; j = &nabla;&sup2;&psi;, the electric current. Thin bright
+    <li><b>current</b>: j = &nabla;&sup2;&psi;, the electric current. Thin bright
       sheets of it are where reconnection happens.</li>
-    <li><b>Elsasser |z<sup>+</sup>|</b> and <b>|z<sup>&minus;</sup>|</b> &mdash;
+    <li><b>Elsasser |z<sup>+</sup>|</b> and <b>|z<sup>&minus;</sup>|</b>:
       z<sup>&plusmn;</sup> = u &plusmn; b, the two waves travelling in opposite directions
       along the background field. Turbulence needs both: a lone z<sup>+</sup> travels
       unchanged.</li>
-    <li><b>cross helicity &sigma;<sub>c</sub></b> &mdash;
+    <li><b>cross helicity &sigma;<sub>c</sub></b>:
       2u&middot;b/(|u|&sup2;+|b|&sup2;), how aligned the flow and the field are, between
       &minus;1 and +1. Turbulence tends to align them, which weakens the interaction.</li>
-    <li><b>residual energy &sigma;<sub>r</sub></b> &mdash;
+    <li><b>residual energy &sigma;<sub>r</sub></b>:
       (|u|&sup2;&minus;|b|&sup2;)/(|u|&sup2;+|b|&sup2;), which of the two dominates
       locally: +1 all flow, &minus;1 all field, 0 equal.</li>
   </ul>
