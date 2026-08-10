@@ -38,7 +38,6 @@ from _rmhd_testing import bootstrap, checks
 
 bootstrap()
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 

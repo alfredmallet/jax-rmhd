@@ -38,10 +38,20 @@ REFERENCE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def config_ctx(shell_noise, mode):
-    """(params, kgrid) for one recorded config. ctx() results are shared/frozen."""
+    """(params, kgrid) for one recorded config. ctx() results are shared/frozen.
+
+    forcing_scale_max is PINNED at 1.0, the Parameters default when the reference npz
+    was recorded. The default moved to 1e4 on 2026-08-09 (saturated-state smax pinning
+    fix): from the zero IC these runs start at, the scale sits ON the cap for the first
+    steps, so inheriting the new default injects ~1e4x more on step 1 and moves the
+    10-step fields by 14-19% -- through the top of _REF_BAND_20260808, which was
+    measured at cap 1.0. The comparison isolates the 2026-08-08 normalization change;
+    every other knob must stay at its recorded value. (The 1e4 cap's own semantics are
+    pinned by test_forcing_smoke and test_forcing_spinup, not here.)"""
     return ctx(diss=(0.0, 0.0), forcing=True, forcing_mode=mode,
                forcing_power=1.0, forcing_tau=0.5, fshell=(1, 5),
-               forcing_seed=1, forcing_shell_noise=shell_noise)
+               forcing_seed=1, forcing_shell_noise=shell_noise,
+               forcing_scale_max=1.0)
 
 
 def run_config(shell_noise, mode):

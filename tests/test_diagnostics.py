@@ -18,7 +18,6 @@ from _rmhd_testing import (bootstrap, checks, ctx, fake_ranked_params, make_stat
 
 bootstrap()
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 

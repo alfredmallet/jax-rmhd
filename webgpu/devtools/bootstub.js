@@ -142,7 +142,7 @@ setTimeout(async () => {
     // slider or tracker) and -- on the vector modes -- arrows on that top face.
     if (page.indexOf("3d") >= 0) {
       for (const [fld, view] of [["0", "cube"], ["3", "cubezp"], ["6", "cubezm"],
-                                 ["8", "cube"], ["4", "cube"]]) {
+                                 ["8", "cube"], ["9", "cube"], ["4", "cube"]]) {
         run(`function(f, v){ const c = cards.disp[1];
                              c.selField.value = f; c.selZSrc.value = v; c.apply(); }`, fld, view);
         st = state();

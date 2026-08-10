@@ -7,7 +7,6 @@ from _rmhd_testing import bootstrap, checks, fit_order, fresh_params
 
 bootstrap()
 
-import jax
 import jax.numpy as jnp
 
 from taranis import _precision

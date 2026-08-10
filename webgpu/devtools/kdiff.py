@@ -1,4 +1,4 @@
-import sys, hashlib
+import sys
 def load(p):
     d={}; k=None; buf=[]
     for line in open(p, encoding="utf-8"):

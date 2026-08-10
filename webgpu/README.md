@@ -237,17 +237,21 @@ in quiet regions the ratio is pure noise. It costs four inverse transforms per f
 (both components of both z±) instead of the vector modes' two — display cost only, no
 physics buffer is touched.
 
-**Residual energy σ_r** = (|u|²−|b|²)/(|u|²+|b|²) (2D app only) is the same two-half
-machinery with the u and b vectors as the pair, and shares σ_c's fixed ±1 range and
-relative quiet-region floor. Note the floor's rendering convention: quiet pixels show
-the neutral mid-colour, which for σ_r is also the equipartition colour — a grey quiet
-region means "too little energy to measure", not "measured equipartition".
+**Residual energy σ_r** = (|u|²−|b|²)/(|u|²+|b|²) is the same two-half machinery with
+the u and b vectors as the pair, and shares σ_c's fixed ±1 range and relative
+quiet-region floor. Both apps offer it, and in 3D it goes wherever σ_c goes — a z slice
+or the three cube faces — since the two modes differ only in which pair of vectors the
+chain's two halves are pinned to (the floor is then the maximum over that same target:
+the plane in a slice view, the three faces together in a cube view). Note the floor's
+rendering convention: quiet pixels show the neutral mid-colour, which for σ_r is also
+the equipartition colour — a grey quiet region means "too little energy to measure",
+not "measured equipartition".
 
 3D only: **cube faces** are a *view*, not a field — three of the last four entries of a
 display card's z-source select ("cube faces", "cube + track z⁺", "cube + track z⁻"; the
 fourth is the field-lines view below), orthogonal
-to the field selector, so **any** quantity (σ_c and the vector magnitudes included) can
-be drawn as a cube. It draws the three visible boundary faces of the box in the oblique
+to the field selector, so **any** quantity (σ_c, σ_r and the vector magnitudes included)
+can be drawn as a cube. It draws the three visible boundary faces of the box in the oblique
 view `examples/forced-turbulence-3D.ipynb` uses (matplotlib `view_init(elev=30,
 azim=45)`), colorized through the same shared shading as a slice (so each mode keeps its
 own colour range) with one common autoscale across the three faces, depth-cued by a

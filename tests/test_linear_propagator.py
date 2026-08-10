@@ -25,7 +25,6 @@ from _rmhd_testing import bootstrap, checks, ctx, fresh_params
 
 bootstrap()
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.linalg

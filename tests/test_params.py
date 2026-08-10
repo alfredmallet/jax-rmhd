@@ -27,7 +27,6 @@ import os
 import time
 import warnings
 
-import jax
 
 import taranis as jr
 from taranis import _precision

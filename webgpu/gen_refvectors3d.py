@@ -4,7 +4,6 @@ the OU/RNG path is validated statistically in-browser. See webgpu/SPEC3D.md sect
 import os, json
 os.environ["RMHD_PRECISION"] = "64"
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from taranis.config import Parameters

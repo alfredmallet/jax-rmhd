@@ -227,8 +227,11 @@ fn envelope(A: vec2<f32>, B: vec2<f32>, plane: u32) -> vec2<f32> {
   // the constants object physics.js templates over (see its header): a gridZ, the
   // m = iz*NMP + mp index split, real-space kernels at 256 threads, the display
   // buffer is ONE z slice, and `scale` needs the envelope helper above.
+  // `sigR` = this app's field list offers the residual energy sigma_r (display mode 9),
+  // so its two display kernels (prepDisp, and the shade block colorize / colorizeCube
+  // share) know that mode -- exactly as in the 2D app.
   const C = { pre, hasZ: true, wgReal: 256, nDisp: "NRS", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, envFn };
+              ns: g.shell.length, envFn, sigR: true };
 
   const S = {};
 
@@ -716,9 +719,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }`;
   // colorize each face into its own texture, all three sharing the one autoscale and
-  // the card's colormap. The shading is the SHARED one (physics.js dispX + cmap), so a
-  // cube renders any field the slice view can -- signed scalars symmetric about the
-  // autoscale, magnitudes straight onto [0,1], sigma_c on its fixed +-1 range
+  // the card's colormap. The shading is the SHARED one (physics.js dispX + cmap, through
+  // the same dispShade(C) the slice colorize uses), so a cube renders any field the slice
+  // view can -- signed scalars symmetric about the autoscale, magnitudes straight onto
+  // [0,1], sigma_c and sigma_r on their fixed +-1 range
   // (REFINE_PLAN I2.1). Contours are drawn on the TOP face only: it is the one face
   // whose in-plane potential the display chain already has (I2.4).
   S.colorizeCube = pre + faceConsts + `
@@ -734,7 +738,7 @@ ${MODE_STRUCT}
 @group(0) @binding(8) var<storage, read> cp2: array<f32>;
 @group(0) @binding(9) var<storage, read> cd2: array<f32>;
 ${CMAP_WGSL}
-${DISP_SHADE_WGSL}
+${dispShade(C)}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let s: f32 = mx[0];
@@ -753,7 +757,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }`;
   // the face-sized instances of the display templates: the cube runs the SAME mode work
-  // as a slice (vector magnitude, |z+-|^2, the sigma_c floor and ratio) on the three
+  // as a slice (vector magnitude, the two squared magnitudes, the sigma floor and ratio --
+  // for sigma_c and sigma_r alike, which differ only in the two Mode uniforms) on the three
   // packed faces instead of on one plane -- same kernels, other length, so there is one
   // implementation of each and _dispPass drives both targets (REFINE_PLAN I2.1).
   const CF = Object.assign({}, C, { pre: pre + faceConsts, nDisp: "NFACE" });
@@ -813,7 +818,8 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
   // display chain's own kernels, only its adapting level spacing needs one of its own
   S.contLevel = contLevelWGSL(C);
   S.render = RENDER_WGSL;
-  // sigma_c extras: |z+-|^2 on the slice, the floor's max reduction, and the ratio
+  // sigma extras (sigma_c and sigma_r alike): the two squared magnitudes on the slice,
+  // the floor's max reduction, and the ratio
   S.vecMagSq = vecMagSqWGSL(C);
   S.maxSumPartial = maxSumPartialWGSL(C);
   S.sigmaCombine = sigmaCombineWGSL(C);
@@ -1102,13 +1108,14 @@ class Solver {
   // (nz*nx*ny floats), which is what actually costs.
   //
   // Buffer reuse inside a chain: the volume buffers dispK/dispK2 -> dispR/dispR2
-  // are pure scratch, so BOTH sigma_c halves run through them and only the EXTRACTED
+  // are pure scratch, so BOTH sigma halves run through them and only the EXTRACTED
   // SLICE has to survive:
-  //   half 0 (any mode, or z+ of sigma_c): slices -> sliceA, sliceB
-  //   half 1 (z- of sigma_c):              slices -> sliceB, sliceC
-  // then magSqA collapses (sliceA, sliceB) -> sliceA = |z+|^2 and magSqB collapses
-  // (sliceB, sliceC) -> sliceB = |z-|^2. Dispatches inside one compute pass are
-  // ordered, so the reuse is safe.
+  //   half 0 (any mode; z+ of sigma_c, u of sigma_r): slices -> sliceA, sliceB
+  //   half 1 (z- of sigma_c, b of sigma_r):           slices -> sliceB, sliceC
+  // then magSqA collapses (sliceA, sliceB) -> sliceA = |z+|^2 (|u|^2) and magSqB collapses
+  // (sliceB, sliceC) -> sliceB = |z-|^2 (|b|^2). Dispatches inside one compute pass are
+  // ordered, so the reuse is safe. sigma_r is the SAME buffers on the same targets: only
+  // the two Mode uniforms differ, so it adds no state at all.
   //
   // The cube view is the SAME mode work on a different TARGET (REFINE_PLAN I2.1): the
   // three packed boundary faces, facesA/B/C, extracted by faceExtract instead of
@@ -1116,7 +1123,8 @@ class Solver {
   // targets are described by the `tg` entries below and driven by one _dispPass.
   //
   // The contour overlay (I2.4) extends the reuse discipline instead of allocating: it
-  // runs LAST in the frame, when dispK2 / dispR2 / sliceB -- and, sigma_c being finished,
+  // runs LAST in the frame, when dispK2 / dispR2 / sliceB -- and, the sigma chain being
+  // finished,
   // sliceC -- are dead in every mode, so the two potential planes of the "both" selection
   // (J2.2) land in sliceB and sliceC, which is both what colorize reads and, since the
   // top face IS that plane, what the cube's top face reads. Their only new state is the
@@ -1148,11 +1156,12 @@ class Solver {
       contMx: contPer(() => d.createBuffer({ size: 4, usage: SQ })),
       contB: contPer(() => d.createBuffer({ size: 16, usage: SQ })),
       mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-      // pinned to the z- vector: the second half of the sigma_c chain. Only its `mode`
-      // field is ever read (by prepDisp): sliceExtract runs off the chain's main Mode
-      // uniform for BOTH halves, so modeM.zslice is dead weight. setDisplayMode keeps it
-      // in step with the main uniform anyway, so the two never disagree if some future
-      // kernel does start reading it.
+      // pinned to the sigma chain's SECOND vector: z- for sigma_c, b for sigma_r
+      // (rewritten per card by setDisplayMode -- see dispSigmaMate). Only its `mode`
+      // field is ever read (by prepDisp): sliceExtract / faceExtract run off the chain's
+      // main Mode uniform for BOTH halves, so modeM.zslice is dead weight. setDisplayMode
+      // keeps it in step with the main uniform anyway, so the two never disagree if some
+      // future kernel does start reading it.
       modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to each contour set's potential (phi or psi), same plane
       modeC: contPer(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
@@ -1254,7 +1263,7 @@ class Solver {
     };
     // the two display TARGETS: identical kernel sequences at different lengths, so
     // _dispPass is written once and the cube costs no second copy of the mode logic.
-    // `ex` / `exH1` are the extractions of components 1,2 for the two sigma_c halves.
+    // `ex` / `exH1` are the extractions of components 1,2 for the two sigma halves.
     const tg = {
       slice: {
         n: Math.ceil(this.nrs / 256), np: this.nPartS, arrows: bg.vecGather,
@@ -1328,8 +1337,8 @@ class Solver {
     this.device.queue.writeBuffer(this.buf.cfg, 0, new Float32Array([
       q.Lx / q.nx, q.Ly / q.ny, q.cfl, q.tau, q.epsP, q.epsM, q.smax, 0]));
   }
-  // sel 0..8 is the displayed quantity (0..3 scalars, 4..7 vector magnitudes + arrows,
-  // 8 sigma_c) and is orthogonal to the VIEW: `opt.cube` draws the three boundary faces
+  // sel 0..9 is the displayed quantity (0..3 scalars, 4..7 vector magnitudes + arrows,
+  // 8 sigma_c, 9 sigma_r) and is orthogonal to the VIEW: `opt.cube` draws the three boundary faces
   // of that same quantity instead of one plane, and the plane it resolves to is then the
   // cube's TOP face (REFINE_PLAN I2.1/I2.2). `opt.cont` is the contour sets' potentials
   // as display modes (0 = that set off, 2 = phi, 3 = psi), `opt.nlev` their level count
@@ -1348,7 +1357,8 @@ class Solver {
     if (zslice !== undefined) D.zslice = Math.max(0, Math.min(this.g.nz - 1, zslice | 0));
     const u = new Uint32Array([D.mode, D.zslice, (cmap | 0), 0]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
-    u[0] = DISP_ZMINUS;                     // the sigma_c second half, same z slice
+    u[0] = dispSigmaMate(D.mode);           // the sigma second half, same z slice
+                                            // (z- for sigma_c, b for sigma_r)
     this.device.queue.writeBuffer(D.buf.modeM, 0, u);
     for (let i = 0; i < CONT_SETS; i++) {   // each contour potential's own prep
       u[0] = D.cont[i] || DISP_PHI;
@@ -1534,11 +1544,13 @@ class Solver {
 
   // ---- display ------------------------------------------------------------
   // one half of a chain: prepDisp (through the chain's Mode uniform, or its pinned
-  // z- one for half 1), the full 3D inverse transform of the first component and the
-  // extraction of the TARGET out of the real-space volume -- and, for the two-component
-  // modes, the same for the second component. Target = one z plane (sliceA, sliceB /
-  // sliceB, sliceC for the second sigma_c half) or the three cube faces (facesA, facesB /
-  // facesB, facesC): the two differ only in the extraction kernel and the length.
+  // mate one for half 1 -- z- for sigma_c, b for sigma_r), the full 3D inverse transform
+  // of the first component and the extraction of the TARGET out of the real-space volume
+  // -- and, for the two-component modes, the same for the second component. Target = one
+  // z plane (sliceA, sliceB / sliceB, sliceC for the second sigma half) or the three cube
+  // faces (facesA, facesB / facesB, facesC): the two differ only in the extraction kernel
+  // and the length. Both sigma modes take the IDENTICAL route: which pair of vectors the
+  // two halves carry is decided by the two Mode uniforms alone.
   _dispHalf(p, D, half, twoComp, T) {
     p.setPipeline(this.pl.prepDisp);
     p.setBindGroup(0, half ? D.bg.prepDispM : D.bg.prepDisp);
@@ -1554,20 +1566,24 @@ class Solver {
     p.dispatchWorkgroups(T.n);
   }
 
-  // the whole mode chain on one target: extraction, the vector / sigma_c collapse and
+  // the whole mode chain on one target: extraction, the vector / sigma collapse and
   // the autoscale. Written ONCE for the z slice and the cube faces (REFINE_PLAN I2.1).
   _dispPass(p, D, mode, T) {
     this._dispHalf(p, D, 0, dispTwoComp(mode), T);
     if (dispIsSigma(mode)) {
-      // |z+|^2 -> A, then the z- half -> |z-|^2 in B; the floor uses the max of their
-      // sum, and the colorize kernel renders the ratio on the fixed +-1 range.
+      // |z+|^2 -> A, then the z- half -> |z-|^2 in B; the floor (msum: the max over THIS
+      // target's own a + b) and the ratio, which colorize renders on the fixed +-1 range.
+      // sigma_r runs the identical sequence on (|u|^2, |b|^2) -- the pair of vectors is
+      // chosen by the two Mode uniforms alone, not here -- and on a cube it is the
+      // face-sized instance of the same three kernels, so the floor is the max over the
+      // three faces exactly as it is over the plane in the slice view.
       p.setPipeline(T.pl.magsq); p.setBindGroup(0, T.bg.magsqA); p.dispatchWorkgroups(T.n);
       this._dispHalf(p, D, 1, true, T);
       p.setPipeline(T.pl.magsq); p.setBindGroup(0, T.bg.magsqB); p.dispatchWorkgroups(T.n);
       p.setPipeline(T.pl.msum); p.setBindGroup(0, T.bg.msum); p.dispatchWorkgroups(T.np);
       p.setPipeline(T.pl.mfin); p.setBindGroup(0, T.bg.mfin); p.dispatchWorkgroups(1);
       p.setPipeline(T.pl.sig); p.setBindGroup(0, T.bg.sig); p.dispatchWorkgroups(T.n);
-      return;                          // sigma_c has a FIXED +-1 range, no autoscale
+      return;                          // both sigmas have a FIXED +-1 range, no autoscale
     }
     if (dispIsVector(mode)) {
       // subsample the two components for the overlay (the slice target only -- a cube
@@ -1949,7 +1965,7 @@ function planeReadout() {
 }
 
 // ---------------------------------------------------------------------------
-// display cards: this app's quantity list (physics.js modes 0..8). The cube faces are
+// display cards: this app's quantity list (physics.js modes 0..9). The cube faces are
 // a VIEW in the card's z-source select (REFINE_PLAN I2.1), orthogonal to this list --
 // every quantity here renders as a cube -- so there are no cube entries in it.
 // ---------------------------------------------------------------------------
@@ -1958,7 +1974,8 @@ const DISP_FIELDS = [
   { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
   { v: 0, t: "vorticity" }, { v: 1, t: "current" },
   { v: 6, t: "Elsasser |z&#8314;|" }, { v: 7, t: "Elsasser |z&#8315;|" },
-  { v: 8, t: "cross helicity &sigma;_c" }
+  { v: 8, t: "cross helicity &sigma;_c" },
+  { v: 9, t: "residual energy &sigma;_r" }
 ];
 
 // ---------------------------------------------------------------------------

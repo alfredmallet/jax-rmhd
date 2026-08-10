@@ -111,15 +111,24 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   kernel against itself — and the kernel's own dz/dx, dz/dy constants are read out of the
   emitted WGSL. Section 0 also pins `cubeTopXform` to its pre-K pixels and checks the
   box frame against all twelve projected face corners.
-- `sigrcheck.js [dir]` — the residual-energy display mode (2D `sigma_r`, mode 9): boots
-  rmhd2d on the stub and records, off the stub device, the Mode uniforms each selected
-  field writes (mode 9 + its pinned mate 5 = b, against sigma_c's 8 + 7) and the whole
-  encoded frame as an ordered bind-group list (identical to sigma_c's, no autoscale
-  reduction, no arrow gather). Then it PARSES the emitted WGSL — prepDisp's mode ->
-  potential branch chain, its -i*ky / +i*kx components, sigmaCombine's ratio and floor,
-  colorize's fixed +-1 predicate — and drives an fp64 mirror of that parsed chain on an
-  analytic (phi, psi), comparing against sigma_r computed directly from the analytic
-  gradients. It does not execute WGSL: what it pins is the wiring and the composition.
+- `sigrcheck.js [dir]` — the residual-energy display mode (`sigma_r`, mode 9) in BOTH
+  apps: boots rmhd2d and rmhd3d on the stub and records, off the stub device, the Mode
+  uniforms each selected field writes (mode 9 + its pinned mate 5 = b, against sigma_c's
+  8 + 7) and the whole encoded frame as an ordered bind-group list (identical to
+  sigma_c's, no autoscale reduction, no arrow gather). Then it PARSES the emitted WGSL —
+  prepDisp's mode -> potential branch chain, its -i*ky / +i*kx components, sigmaCombine's
+  ratio and floor, colorize's fixed +-1 predicate — and drives an fp64 mirror of that
+  parsed chain on an analytic (phi, psi), comparing against sigma_r computed directly
+  from the analytic gradients. In 3D it runs the uniform + frame sections TWICE, once in
+  the slice view and once in the cube-faces view (whose frame must be the same sequence
+  through the face-sized instances: `magSqFA/FB`, `maxSumPartialFace`,
+  `sigmaCombineFace`, `colorizeCube`), checks `colorizeCube` carries the same fixed ±1
+  predicate as `colorize`, checks the face-sized `sigmaCombine` / `maxSumPartial` are the
+  slice text with `NFACE` for `NRS` (so the quiet floor is the max over the three faces'
+  own a+b), checks the mate uniform rides the card's z slice, and asserts `sliceExtract`
+  / `faceExtract` are pure gathers — which is what makes the one-plane fp64 mirror the
+  whole story in 3D too. It does not execute WGSL: what it pins is the wiring and the
+  composition.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

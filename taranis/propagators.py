@@ -18,7 +18,6 @@
 #   putzer2   L.ndim == 5: (2, 2, nz-or-1, nkx, nky)           closed-form 2x2 exponential
 # The z/kz axis is size 1 (broadcast) for perpendicular-only operators; the slot exists so
 # a spectral-z operator can fill it later without changing this interface.
-import jax
 import jax.numpy as jnp
 import numpy as np
 

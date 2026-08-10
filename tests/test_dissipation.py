@@ -23,7 +23,6 @@ bootstrap()
 import math
 import os
 
-import jax
 import numpy as np
 
 from taranis import _precision, diagnostics

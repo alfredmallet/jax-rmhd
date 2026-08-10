@@ -17,7 +17,7 @@
 // vecMagSq, maxSumPartial, sigmaCombine, vecGather, cutPrep, colorize,
 // contLevel, the blit) and the display-mode predicates the apps and the frame
 // loop branch on. The shading itself (dispX + the contour overlay) is one WGSL
-// fragment, DISP_SHADE_WGSL, so the 3D cube faces shade exactly like a slice.
+// fragment, dispShade(C), so the 3D cube faces shade exactly like a slice.
 // The 3D index convention is m = iz*NMP + mp; every template below
 // derives ITS OWN text for both dimensions from the single flag `C.hasZ`, so
 // the apps hand over sizes, not code. Where a body genuinely restructures
@@ -427,14 +427,15 @@ ${body}
 // prepDisp branch picks phi, exactly as mode 4 does) and the second Mode uniform
 // pinned to DISP_BVEC -> the b half. Everything after the two halves -- the squared
 // magnitudes, the quiet-region floor, the ratio and the fixed +-1 colour range -- is
-// shared with sigma_c, which is why dispIsSigma covers both. It is offered by the 2D
-// app only (`C.sigR`); the 3D app's field list stops at mode 8, so its kernels never
-// learn mode 9 and stay byte-identical.
+// shared with sigma_c, which is why dispIsSigma covers both. Both apps offer it
+// (`C.sigR`), so in 3D it rides the identical chain on a z plane or on the three cube
+// faces -- the only 3D-specific piece is that its second half runs through the same
+// extraction as the first (see rmhd3d.html's _dispHalf).
 const DISP_VEC0 = 4;        // first vector-magnitude mode -- also the u vector
 const DISP_BVEC = 5;        // b vector: also the pinned mode of the sigma_r 2nd half
 const DISP_ZMINUS = 7;      // z- vector: also the pinned mode of the sigma_c 2nd half
 const DISP_SIGMA = 8;       // sigma_c
-const DISP_SIGMA_R = 9;     // sigma_r (2D app only)
+const DISP_SIGMA_R = 9;     // sigma_r
 // the two POTENTIALS, as display modes: the contour overlay (REFINE_PLAN I2.4) prepares
 // one of them through the same prepDisp kernel, so its selector value IS its mode.
 const DISP_PHI = 2;         // phi -> streamlines
@@ -459,7 +460,8 @@ const dispTwoComp = m => dispIsVector(m) || dispIsSigma(m);
 // three boundary faces are (faceExtract, the cube modes).
 function prepDispWGSL(C) {
   // sigma_r's FIRST half is the u vector, so mode 9 has to pick phi like mode 4 does --
-  // one extra branch, emitted only where the mode exists (the 2D app).
+  // one extra branch, emitted only where the mode exists (both apps set C.sigR; a C
+  // without it still gets the historical text).
   const sigR = C.sigR
     ? `    else if (md.mode == ${DISP_SIGMA_R}u) { f = phi; }   // 9 -> phi (sigma_r's u half)\n`
     : "";
@@ -755,8 +757,10 @@ const _contArgs = a => `${a}[gid.x * NY + gid.y], ${a}[((gid.x + 1u) % NX) * NY 
                        `${a}[gid.x * NY + ((gid.y + 1u) % NY)]`;
 const CONT_ARGS = `${_contArgs("cp")}, ${_contArgs("cp2")}`;
 // One shade block, two texts: the sigma modes are the ones rendered on the FIXED +-1
-// range, and which modes those are is per app (sigma_r exists in the 2D app only), so
-// the predicate is the single parameter. `dispShade(C)` picks the right one.
+// range, and which modes those are is a property of the constants object, so the
+// predicate is the single parameter. `dispShade(C)` picks the right one -- and every
+// consumer (2D colorize, 3D colorize AND colorizeCube) goes through it, so a slice and
+// a cube face can never disagree about which modes are the sigma ones.
 const _dispShadeWGSL = sig => `
 fn dispX(raw: f32, s: f32, mode: u32) -> f32 {
   if (${sig}) { return 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
@@ -778,7 +782,8 @@ fn contInk(col: vec3<f32>, a0: f32, au: f32, av: f32, b0: f32, bu: f32, bv: f32)
   if (contHit(b0, bu, bv, cd2[1])) { c = mix(c, ${CONT_ACCENT}, 0.85); }
   return c;
 }`;
-// the historical text -- what the 3D app (which has no sigma_r) inlines directly
+// the historical text: sigma_c alone. Both apps now pass C.sigR, so this is the
+// fallback for a constants object that does not offer sigma_r.
 const DISP_SHADE_WGSL = _dispShadeWGSL(`mode == ${DISP_SIGMA}u`);
 const DISP_SHADE_SIGR_WGSL = _dispShadeWGSL(`mode == ${DISP_SIGMA}u || mode == ${DISP_SIGMA_R}u`);
 const dispShade = C => (C.sigR ? DISP_SHADE_SIGR_WGSL : DISP_SHADE_WGSL);

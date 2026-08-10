@@ -9,7 +9,6 @@ from _rmhd_testing import bootstrap, checks, ctx, make_state, multimode_ic
 
 bootstrap()
 
-import jax
 import jax.numpy as jnp
 
 from taranis import _precision, comms, diagnostics, grids

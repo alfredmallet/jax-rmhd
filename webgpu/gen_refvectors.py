@@ -14,7 +14,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from taranis.config import Parameters
-from taranis.grids import setup_kgrids, fft
+from taranis.grids import setup_kgrids
 from taranis.run import initialize, _advance_forcing, _refresh_forcing_scale
 from taranis.timestepping import get_scheme
 from taranis.physics import equation_registry, construct_rhs

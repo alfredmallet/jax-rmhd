@@ -1,4 +1,3 @@
-import jax
 import numpy as np
 from . import comms
 from . import _precision
