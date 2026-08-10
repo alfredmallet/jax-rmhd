@@ -3,21 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>3D RMHD (spectral z, WebGPU pseudospectral)</title>
+<title>plasma turbulence in your browser &mdash; 3D RMHD</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>3D RMHD (spectral z) — WebGPU pseudospectral solver</h1>
+<h1>plasma turbulence in your browser</h1>
 <div class="sub"><a href="docs.html"><b>how to use this page</b></a>
-  &middot; rfftn over (z,x,y) &middot; LSRK33 with the exact 2&times;2 Alfv&eacute;n propagator
-  &middot; fp32
-  &middot; <a href="rmhd2d.html">&larr; 2D version</a>
-  &middot; <a href="index.html">overview</a></div>
+  &middot; 3D RMHD (spectral z) &middot; rfftn over (z,x,y) &middot; exact 2&times;2 Alfv&eacute;n
+  propagator &middot; fp32</div>
+
+<!-- the 2D/3D tab strip and the "what is all this?" rail below are BUILT by common.js
+     (chromeBuild): shared chrome, and the rail's prose, exist once -->
+<nav id="tabs"></nav>
 
 <!-- the sticky bar and the control panel are BUILT from a spec (common.js
      controlsBuild): every row the two apps share exists once, in common.js -->
 <div id="topbar"></div>
-<div id="controls">
+<!-- hidden in the MARKUP (ONEPAGE_PLAN A.1 + review): the wall of sliders must not
+     flash while initGPU awaits, and must not sit dead on the no-WebGPU fallback page;
+     wireCommonControls re-shows it if localStorage remembers the visitor's choice -->
+<div id="controls" style="display:none">
   <div class="hint" id="demohint" style="display:none"></div>
 </div>
 <div id="status"></div>
@@ -31,6 +36,9 @@
     <div id="readout">initialising&hellip;</div>
   </div>
   <div id="charts"></div>
+  <!-- chromeBuild fills this: a third, narrower column past 1400px, under both columns
+       below that. Empty markup, like #topbar -- the text lives in common.js -->
+  <aside id="rail" class="panes"></aside>
 </div>
 
 <div class="panel" id="testpanel">
@@ -2252,6 +2260,9 @@ async function runSelfTest() {
 // boot
 // ---------------------------------------------------------------------------
 async function boot() {
+  // the shared chrome first (tabs + what-is rail): it has to be on the page even when
+  // initGPU is about to fail, since the no-GPU path opens the rail's panes
+  chromeBuild({ is3d: true });
   groupsInit();
   // sigma sliders take their range and default from the shared IC constants, BEFORE a
   // preset gets a chance to set them. sigma_z's max IS the Lz/12 packet cap, so the

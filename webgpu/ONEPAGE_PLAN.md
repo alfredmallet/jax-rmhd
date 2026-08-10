@@ -12,13 +12,9 @@ physics, no WGSL, no SPEC changes; this is chrome only (`common.js` UI regions,
 
 ## Coordination — read before starting
 
-1. **Another instance is rebuilding the video recorder right now** (FEEDBACK_2026-08-10
-   item 13; recorder logic ~common.js 2000–2100, plus possible `CTRL_TOPBAR` /
-   display-card header edits). Do NOT start until that lands. Phases A and B edit
-   `CTRL_TOPBAR`, `wireCommonControls`, and `style.css`'s topbar block — guaranteed
-   conflict zones. Rebase this plan's base commit on the recorder work.
-2. The working tree carries the (large) uncommitted 2026-08-10 batch. This plan builds
-   on top of it *after* it is committed, not alongside.
+1. ~~Recorder rebuild in flight~~ **CLEARED 2026-08-10**: recorder work landed and is
+   committed (`5366639` mp4/WebCodecs). Base commit for this plan = `5366639`.
+2. ~~Uncommitted 2026-08-10 batch~~ **CLEARED**: batch committed (`e494cd4`, `2e3eb54`).
 3. Per repo default: opus/sonnet implement, Fable oversees, adversarial review by a
    separate fresh Fable at the end.
 
@@ -56,15 +52,27 @@ the "what is…" panes already exist as `<details>` on index.html.
   the extra click once, ever.
 - **Run is the hero button.** First item in the topbar, larger (own `#btnRun` style
   block: bigger font/padding), green when it says "Run", red when it says "Pause".
-  Muted green/red consistent with the dark palette — not stoplight saturation.
+  **NOT lurid** (Alfred): desaturated, dark-palette tones — think green ≈ `#2f6b4f`,
+  red ≈ `#7a3d3d` backgrounds with the existing `#d8dee6` text, never pure `#0f0`/
+  `#f00`. Two constants in `style.css` so retuning after on-device is a two-line edit.
   No other topbar button grows.
-- **Autoplay on a plain visit.** A visit with no `?demo=` boots the default forced-
-  turbulence preset at a modest resolution (256² in 2D; 3D keeps its current default
-  size) and starts running (`running = true`, button shows red "Pause"). Any `?demo=`
-  visit keeps today's paused boot — lessons want the visitor to read first. Trim the
-  h1 + `.sub` to one line each so title → tabs → topbar → canvas fits one laptop screen.
-- **Out of scope:** static poster fallback for non-WebGPU browsers (nice, separate);
-  any preset/lesson text changes; docs.html restructure beyond fixing links.
+- **Autoplay on a plain visit** (ratified). A visit with no `?demo=` boots the default
+  forced-turbulence preset at **256²** (ratified; 3D keeps its current default size)
+  and starts running (`running = true`, button shows red "Pause"). Any `?demo=` visit
+  keeps today's paused boot — lessons want the visitor to read first. Trim the h1 +
+  `.sub` to one line each so title → tabs → topbar → canvas fits one laptop screen.
+- **index.html redirects immediately** (ratified; no splash).
+- **No-WebGPU fallback is IN scope** (consequence of the redirect: today a failed
+  `initGPU` leaves dead black canvases plus one `#status` line, acceptable behind an
+  essay front door, not as the first impression). Minimal version: on `initGPU()`
+  returning false, show the checked-in PNG of a real 512² run (**`webgpu/poster.png`**,
+  512², |u| afmhot + arrows + colorbar, supplied by Alfred 2026-08-10) in the display
+  area, keep the existing browser-advice message under it, and boot the what-is rail
+  expanded. No capability sniffing beyond what initGPU
+  already does; the three failure paths (no `navigator.gpu`, no adapter, device lost)
+  all already land in `showStatus(..., "err")` — hook there.
+- **Out of scope:** any preset/lesson text changes; docs.html restructure beyond
+  fixing links.
 
 ## Phases (agent-executed, in order, each gated)
 
@@ -80,10 +88,12 @@ demohint row appears.
 
 Shared tab strip; one-line h1/.sub on both app pages; "what is…" pane spec in common.js
 injected on both pages (rail markup + responsive CSS, panes collapsed); index.html →
-redirect; sweep README/docs.html for links that said "index.html is the overview".
+redirect; no-WebGPU poster fallback (decision above); sweep README/docs.html for links
+that said "index.html is the overview".
 **Gate:** every `?demo=` deep link unchanged; docs.html reachable from both pages;
 GitHub Pages entry lands on a working 2D page; rail collapses below the display block
-at phone widths; no duplicated pane content in any html file.
+at phone widths; no duplicated pane content in any html file; poster + expanded rail
+render when `navigator.gpu` is stubbed away (bootstub leg).
 
 ### Phase C — autoplay (common.js boot path)
 
@@ -92,6 +102,10 @@ today; steps/s readout confirms it is actually running. **Gate:** no autorun und
 `?demo=`; IC editor, self-test, and record flows all still pause/restore correctly
 around the running boot (grep the `wasRunning` sites); energy trace starts cleanly from
 the autorun (no duplicate-t guard trips).
+**BUILT 2026-08-10.** The seam is `bootAutorun()` in `common.js`, fired from `bootApply`'s
+FIRST call — the boot one, past a successful `initGPU`, with the solver already built — and
+one-shot, so the preset dropdown never touches `running`. No page-level edits: neither
+inline boot script changed. Gate legs added to `devtools/checkonepage.js` (64/64).
 
 ### Review
 
@@ -100,11 +114,30 @@ Adversarial review by a fresh Fable instance (checklist: the three gates, plus
 Then Alfred on-device: phone widths, autoplay feel/battery, whether muted green/red
 reads at a glance, tab strip on iOS Safari.
 
-## Open questions (Alfred decides, not the builders)
+**DONE 2026-08-10.** Verdict SEND-BACK (narrowly) → both MAJORs + MINORs fixed by the
+overseer same session, re-gated to SHIP quality: (1) root `.gitignore`'s `*.png` was
+silently swallowing poster.png — negation rule added (+ `node_modules/`); (2) params-
+hidden only applied after `initGPU` resolved — `#controls` now hidden in the MARKUP of
+both pages (no flash during adapter wait; no dead panel on the poster page), spec label
+fixed, and stubenv taught to reflect markup style attributes. MINORs: docs.html "press
+Run" clause updated for autoplay; hero hover/border hexes now color-mix-derived so the
+two `--run-*` lines really are the whole retune; gpuFallback disables the dead topbar
+buttons; both `<title>`s match the new h1. Recorded NOTEs (defensible, unfixed):
+boot-time-lost device gets no poster (pre-existing at HEAD); index.html redirect drops
+query strings (no documented `index.html?demo=` links exist); invalid `?demo=typo`
+boots paused instead of autoplaying; self-test over an autorun shows Pause while
+frozen (pre-existing save/restore mechanics); SPEC.md/SPEC3D.md still say "landing
+page" (SPEC edits out of scope). Final gates: checkonepage 69/69, bootstub 8/8,
+checks/layout/names/dup green, WGSL byte-identical (120/159126 B, 240/357390 B).
+Alfred's on-device list above stands, plus: color-mix rendering of the Run tones,
+poster page in a real non-WebGPU browser (Firefox mac/Linux).
 
-1. Autoplay vs. load-paused-with-pulsing-green-Run. Plan says autoplay; flip to the
-   pulse if the battery/CPU cost on lurkers feels rude on-device.
-2. Which preset is the plain-visit default, and at what resolution (256² assumed).
-3. Does index.html redirect, or keep a minimal splash (title + two cards + redirect
-   after N seconds)? Plan says immediate redirect.
-4. Non-WebGPU poster fallback — worth a follow-up item?
+## Decisions ratified (Alfred, 2026-08-10)
+
+1. Autoplay, not pulsing-Run (revisit only if it feels rude on-device).
+2. Plain-visit default: forced-turbulence preset at 256².
+3. index.html: immediate redirect, no splash.
+4. No-WebGPU poster fallback: in scope, Phase B (see decision above). Alfred supplies
+   the poster PNG.
+5. Green/red must be muted, not lurid — hexes in the Run decision are the target
+   register; final tuning on-device.

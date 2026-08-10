@@ -3,134 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- ONEPAGE_PLAN B.4: rmhd2d.html is the front door, so this file is a redirect and
+     nothing else. It stays because it is the URL GitHub Pages serves for webgpu/ and the
+     one every old bookmark and wordpress link points at; the essay it used to carry is
+     now the "what is all this?" rail, built once in common.js and shown BESIDE the
+     canvas on both app pages (an essay nobody scrolls past is worse than one next to the
+     picture it describes).
+     Three redirects, cheapest first: the meta refresh (works with scripting off), a
+     location.replace (no history entry, so Back leaves the site instead of bouncing),
+     and the plain link in the body for anything that honours neither. rel=canonical
+     points crawlers at the real page. NB .github/workflows/pages.yml seds this file too,
+     so the style.css reference and the buildid span must both stay findable here. -->
+<meta http-equiv="refresh" content="0; url=rmhd2d.html">
+<link rel="canonical" href="rmhd2d.html">
 <title>plasma turbulence in your browser: webgpu RMHD solver</title>
 <link rel="stylesheet" href="style.css">
+<script>window.location.replace("rmhd2d.html");</script>
 </head>
 <body>
-<h1>plasma turbulence in your browser: webgpu RMHD solver</h1>
-<div class="sub">
-  <a href="docs.html"><b>how to use these pages</b></a> &middot;
-  <a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>
-  in the browser &middot; fp32 &middot; no server, no build step</div>
-
-<p class="lead">this is a browser port of the jax plasma turbulence code
-<a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>,
-running on your gpu and using the same numerical algorithms as the parent code. Reduced
-MagnetoHydroDynamics (RMHD) is the equation set solved here: a simplified model for the
-behavior of a plasma when there is a strong magnetic field present (as is the case in our
-solar system). it is useful because it encodes the physics of Alfv&eacute;n waves traveling
-along magnetic field lines, as well as complex nonlinear interactions between the waves. it
-does a surprisingly good job at describing plasma turbulence in a wide range of systems.</p>
-
-<p class="lead">we hope you can use these solvers to get a feel for how this turbulence
-works. you can change parameters freely, and explore various setups: forced and decaying
-turbulence, collisions between waves, and plasma instabilities. both two-dimensional and
-three-dimensional solvers are provided. for more details on what this all means, please
-click on some of the demonstrations. have fun!</p>
-
-<div class="cards">
-  <a class="card" href="rmhd2d.html">
-    <h2>2D RMHD &rarr;</h2>
-    <p>forced/decaying turbulence, Kelvin&ndash;Helmholtz, and tearing instabilities.
-      runs pretty fast, at resolutions of up to 512&sup2;.</p>
-  </a>
-  <a class="card" href="rmhd3d.html">
-    <h2>3D RMHD &rarr;</h2>
-    <p>forced/decaying turbulence, and Alfv&eacute;n-wave collisions. 3D dynamics is
-      more expensive, so resolution is smaller.</p>
-  </a>
-</div>
-
-<div class="panes">
-  <details>
-    <summary>what is turbulence?</summary>
-    <blockquote>&ldquo;When I meet God, I am going to ask him two questions: Why relativity?
-      And why turbulence? I really believe he will have an answer for the first.&rdquo;<br>
-      <span class="attrib">&mdash; possibly apocryphal, attributed to Heisenberg, among
-      others&hellip;</span></blockquote>
-    <p>perhaps the greatest unsolved mystery of classical physics. a basic, concise working
-      definition: multiscale disorder. introducing energy at large scales in the system
-      causes a chaotic, nonlinear cascade down to small scales at which dissipation can
-      occur.</p>
-  </details>
-
-  <details>
-    <summary>what is plasma?</summary>
-    <p>with enough external energy, electrons in atoms can be stripped away from their
-      central nuclei, forming a (usually) overall electrically neutral system of
-      negatively-charged electrons and positively-charged ions. these particles interact in
-      complex ways, resulting in phenomena like plasma turbulence.</p>
-  </details>
-
-  <details>
-    <summary>why should anyone care?</summary>
-    <p>most of the universe is full of turbulent plasma: it is hard to find an astrophysics
-      problem where understanding this turbulence is not crucially important. here are three
-      examples:</p>
-    <ol>
-      <li>the sun is constantly emitting plasma, which is heated (up to temperatures of
-        millions of kelvin) and accelerated (up to hundreds of kilometers per second) by
-        plasma turbulence in the solar atmosphere, the corona. understanding this coronal
-        heating is an open problem.</li>
-      <li>plasma impacting the earth&rsquo;s magnetic field can degrade satellites and
-        disrupt power grids: mitigating the impacts of this space weather requires us to
-        understand the plasma turbulence in interplanetary space.</li>
-      <li>closer to home, plasma turbulence is also a main cause of loss of confinement in
-        nuclear fusion devices: solving this problem would be a major step towards accessing
-        a near-limitless energy source.</li>
-    </ol>
-  </details>
-
-  <details>
-    <summary>why do numerical simulations?</summary>
-    <p>the governing equations are strongly nonlinear, coupling an enormous range of length
-      and timescales, and cannot be solved only with pen-and-paper theory. simulations are a
-      crucial tool: we can perform numerical experiments where every parameter is precisely
-      controlled, and every output precisely measured at every point in space and time. we
-      then compare the simulations against real measured data: in a first for humanity,
-      NASA&rsquo;s Parker Solar Probe has entered our sun&rsquo;s corona, directly sampling
-      this turbulent plasma. comparing simulations with these state-of-the-art measurements
-      drives improvements in our models, and better understanding of this fundamental and
-      omnipresent physical phenomenon.</p>
-  </details>
-
-  <details>
-    <summary>technical details</summary>
-    <p>RMHD equations, solved using a pseudospectral method with a Williamson 1980
-      low-storage RK3 modified to calculate linear terms (Alfv&eacute;n wave
-      propagation and viscous/resistive dissipation) with integrating factors. note that
-      the taranis code by default uses a different method for the z-derivatives (centered
-      finite differences) which is much better for parallelizing over many gpus; the
-      algorithm used here is the same as taranis with <code>z_spectral=True</code>. also,
-      WebGPU has no fp64, so this is all fp32. you can validate that the same equations are
-      being solved using the <b>self-test</b> button to check a small test problem against
-      the taranis solution.</p>
-    <p>each app has a <b>preset</b> dropdown in its top bar &mdash; decaying A/B Elsasser
-      packets, Kelvin&ndash;Helmholtz shear layers and a tearing mode growing magnetic
-      islands in 2D, a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash; which
-      sets the controls and opens the displays that go with them. everything stays
-      adjustable; presets are configurations, not separate programs
-      (<code>?demo=decay</code> / <code>?demo=kh</code> / <code>?demo=tearing</code> /
-      <code>?demo=collision</code> are deep links to the same thing).</p>
-  </details>
-</div>
-
-<div class="hint" style="margin-top:14px">
-  Needs a WebGPU-capable browser (Chrome/Edge 113+, recent Firefox and Safari). Source,
-  implementation contracts (<code>SPEC.md</code>, <code>SPEC3D.md</code>) and the reference-vector
-  generators live in <code>webgpu/</code> of the
-  <a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis repository</a>.
-</div>
-
-<div class="hint" id="acknowledgements" style="margin-top:18px">
-  Contributors:
-  <a href="https://alfredmallet.wordpress.com" target="_blank" rel="noopener">Alfred Mallet</a> &middot;
-  <a href="https://www.linkedin.com/in/esromabraham/" target="_blank" rel="noopener">Esrom Abraham</a> &middot;
-  <a href="https://claude.ai" target="_blank" rel="noopener">Claude</a>
-</div>
-<div class="hint" id="buildline" style="margin-top:4px">
-  build <span class="buildid">dev</span> &middot;
-  <a href="#" onclick="var u=new window.URL(window.location.href);u.searchParams.set('fresh',Date.now());window.location.replace(u.href);return false">load latest build</a>
-</div>
+<div class="sub">taking you to <a href="rmhd2d.html">plasma turbulence in your
+  browser</a> &middot; build <span class="buildid">dev</span></div>
 </body>
 </html>

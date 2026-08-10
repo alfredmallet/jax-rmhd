@@ -2,11 +2,26 @@
    Plain <link rel="stylesheet">, so it works from file:// like the scripts do.
    Mobile-first: every control row wraps, and nothing has a fixed width that
    cannot fit inside a 360 px viewport. */
-:root { color-scheme: dark; }
+:root { color-scheme: dark;
+        /* the hero Run button's two states -- deliberately desaturated, dark-palette
+           tones (NOT stoplight green/red); retune these two lines after on-device */
+        --run-go: #2f6b4f; --run-stop: #7a3d3d; }
 body { margin: 0; padding: 12px 14px 40px; background: #14161a; color: #d8dee6;
        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
 h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 .sub { color: #8a94a3; font-size: 12px; margin-bottom: 10px; }
+
+/* ---- 2D / 3D tabs: chrome built once (chromeBuild), sitting on the sticky bar ----
+   The active tab is a <span>, the other one an <a>; the active one is filled like the
+   bar under it and gives up its own bottom edge, so the bar's top border becomes the
+   tab strip's baseline. No negative margins anywhere near the sticky bar. */
+#tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.tab { padding: 4px 15px; font-size: 13px; font-weight: 600; line-height: 1.5;
+       background: #14161a; color: #8a94a3; text-decoration: none;
+       border: 1px solid #252a33; border-radius: 6px 6px 0 0; }
+a.tab:hover { background: #1d2129; color: #a9c7e8; }
+.tab.on { background: #181b21; color: #d8dee6;
+          border-color: #333a45; border-bottom-color: transparent; }
 
 /* ---- sticky bar: Run / Reset / preset / steps readout, always visible ---- */
 #topbar { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap;
@@ -18,6 +33,17 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 /* the preset's explanatory text, moved into the sticky bar as its own last row
    (flex-wrap + width:100% puts it on a line of its own, under the buttons) */
 #topbar #demohint { width: 100%; margin-top: 2px; }
+/* the hero button (ONEPAGE_PLAN A.2): the one control a first-time visitor needs, so
+   the one control allowed to be bigger than the rest of the bar. Colour carries the
+   state -- setRunning() toggles .stop; disabled (IC editor open) drops back to the
+   neutral button colour so it reads as inert, not as "will run". */
+#btnRun { background: var(--run-go); font-size: 14px; font-weight: 600; padding: 6px 18px;
+          border-color: color-mix(in srgb, var(--run-go), #d8dee6 14%); }
+#btnRun:hover { background: color-mix(in srgb, var(--run-go), #d8dee6 9%); }
+#btnRun.stop { background: var(--run-stop);
+               border-color: color-mix(in srgb, var(--run-stop), #d8dee6 14%); }
+#btnRun.stop:hover { background: color-mix(in srgb, var(--run-stop), #d8dee6 9%); }
+#btnRun:disabled { background: #1d2129; border-color: #333a45; }
 
 /* ---- collapsible control groups ---- */
 #controls { background: #181b21; border: 1px solid #252a33; border-radius: 6px;
@@ -36,6 +62,13 @@ h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
 #displaycol { flex: 3 1 340px; min-width: 0; }
 #displays { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
 #charts { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+/* the "what is all this?" rail is the LAST child of #display, so a 100% basis is what
+   drops it under both columns; only past 1400px is there room for a third column beside
+   them, and the canvas must never be pushed down to make space for prose */
+#rail { flex: 1 1 100%; min-width: 0; max-width: 780px; margin: 0; }
+@media (min-width: 1400px) { #rail { flex: 0 1 300px; max-width: 340px; } }
+#rail .railtitle { color: #a9c7e8; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+#rail .lead { margin: 0 0 10px; }
 
 /* ---- cards ---- */
 .card.disp, .card.chart { background: #181b21; border: 1px solid #252a33; border-radius: 6px;
@@ -116,22 +149,23 @@ a { color: #7aa7d8; } a:hover { color: #a9c7e8; }
 @media (max-width: 700px) {
   body { padding: 10px 10px 32px; }
   #display { flex-direction: column; }
-  #displaycol, #charts { width: 100%; flex: none; }
+  /* flex: none here as well as width: a 100% BASIS in a column container would be 100%
+     of the height, not the width */
+  #displaycol, #charts, #rail { width: 100%; flex: none; }
   .card.disp { flex: 1 1 100%; max-width: none; }
   .row .val { width: 58px; }
 }
 
-/* ---- landing page ---- */
-.cards { display: flex; flex-wrap: wrap; gap: 16px; margin: 18px 0 6px; }
+/* ---- the base card box. Written for the landing page's two link cards (gone with
+   index.html, ONEPAGE_PLAN B.4), but the app cards inherit from it -- most notably the
+   flex line, which is what gives a chart card its height inside the column #charts --
+   so it stays here rather than being folded into .card.disp / .card.chart. ---- */
 .card { display: block; flex: 1 1 300px; max-width: 460px; text-decoration: none;
         background: #181b21; border: 1px solid #252a33; border-radius: 8px;
         padding: 14px 16px; color: #d8dee6; }
-a.card:hover { background: #1d2129; border-color: #39404d; color: #d8dee6; }
-.card h2 { font-size: 15px; font-weight: 600; margin: 0 0 6px; color: #a9c7e8; }
-.card p { margin: 0; color: #8a94a3; font-size: 12px; }
 .lead { max-width: 780px; }
 
-/* ---- landing page: collapsible background panes ---- */
+/* ---- collapsible prose panes: docs.html, and the what-is rail on both apps ---- */
 .panes { margin: 16px 0 6px; max-width: 780px; }
 .panes details { background: #181b21; border: 1px solid #252a33; border-radius: 6px;
                  padding: 0 14px; margin-bottom: 8px; }

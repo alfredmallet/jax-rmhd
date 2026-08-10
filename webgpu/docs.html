@@ -10,17 +10,21 @@
 <h1>how to use these pages</h1>
 <div class="sub">every button and every chart in the 2D and 3D RMHD apps
   &middot; <a href="rmhd2d.html">2D app</a>
-  &middot; <a href="rmhd3d.html">3D app</a>
-  &middot; <a href="index.html">overview</a></div>
+  &middot; <a href="rmhd3d.html">3D app</a></div>
 
-<p class="lead">Both apps have the same shape: a bar at the top that is always visible, a
-panel of settings under it, and below that a column of <b>display cards</b> (pictures of
-the field) beside a column of <b>chart cards</b> (graphs against time or against scale).
-Nothing is modal &mdash; you can change any setting at any time, and the run keeps going.
-The 3D app adds the things a third dimension needs; everything else is identical.</p>
+<p class="lead">Both apps have the same shape: a <b>2D / 3D</b> tab pair that switches
+between them, a bar at the top that is always visible, a panel of settings under it (hidden
+until you press <b>show params</b>), and below that a column of <b>display cards</b>
+(pictures of the field) beside a column of <b>chart cards</b> (graphs against time or
+against scale). Off to the side, or under everything on a narrow screen, is
+<b>what is all this?</b> &mdash; background reading on turbulence, plasma and why any of
+it matters. Nothing is modal &mdash; you can change any setting at any time, and the run
+keeps going. The 3D app adds the things a third dimension needs; everything else is
+identical.</p>
 
-<p class="lead">A good first move is to pick a <b>preset</b> from the bar at the top,
-press <b>Run</b>, and change one thing at a time.</p>
+<p class="lead">A good first move is to pick a <b>preset</b> from the bar at the top
+(a plain visit is already running one — press the red <b>Pause</b> first if you want to
+read before it moves), and change one thing at a time.</p>
 
 <div class="panes">
 
@@ -39,8 +43,9 @@ press <b>Run</b>, and change one thing at a time.</p>
     programs: everything stays adjustable afterwards. Each one also has a direct link
     &mdash; for example <code>rmhd2d.html?demo=kh</code> &mdash; which opens the page
     already set up that way.</p>
-  <p><b>hide params</b> collapses the whole settings panel, for when you want more room
-    for the pictures; <b>hide text</b> does the same for the preset's note. Both hide,
+  <p><b>show params</b> / <b>hide params</b> opens and closes the whole settings panel: it
+    starts closed, so the first thing on screen is the picture, and the page remembers
+    whichever you chose. <b>hide text</b> does the same for the preset's note. Both hide,
     neither resets.</p>
   <p>On the right of the bar is a readout of the simulation time <b>t</b>, the step
     number, the current time step <b>dt</b>, and how many steps per second your GPU is

@@ -3,7 +3,7 @@
 **This file is repo-facing**: how the thing is built, what the contracts are, why each
 piece is the way it is, and how to verify a change. The **user-facing** documentation —
 every button and every chart, in plain language — is `docs.html`, which is a page of the
-app set itself and is what `rmhd2d.html` / `rmhd3d.html` / `index.html` link at the top.
+app set itself and is what `rmhd2d.html` / `rmhd3d.html` link at the top.
 Nothing here is linked from those pages. When a control changes, `docs.html` changes with
 it; when the *reason* for a control changes, this file does.
 
@@ -11,9 +11,12 @@ Two browser apps over one shared core: `rmhd2d.html` (2D) and `rmhd3d.html` (3D
 spectral-z, the `z_spectral=True` path — Alfvén coupling applied exactly via the
 closed-form 2×2 wave propagator, no wave CFL; z-slice or three-face cube display,
 resolutions 64²×32 to 256²×64 plus the long-box 64²×128 / 64²×256, free Lz,
-`z_diss_k` kz⁴ dissipation with auto). `index.html` is a landing page linking the two
-apps; the preconfigured runs are presets *inside* each app (dropdown, or `?demo=` as a
-deep link), not separate pages. The 3D contract is `SPEC3D.md`; its reference vectors are
+`z_diss_k` kz⁴ dissipation with auto). `rmhd2d.html` is the front door: `index.html` is an
+immediate redirect to it (ONEPAGE_PLAN B), the two apps carry the same 2D/3D tab strip,
+and the background essay that used to be the landing page is the collapsed "what is all
+this?" rail beside the canvas — tabs, rail and no-WebGPU poster all built by `chromeBuild`
+in `common.js`, so that text exists once. The preconfigured runs are presets *inside* each
+app (dropdown, or `?demo=` as a deep link), not separate pages. The 3D contract is `SPEC3D.md`; its reference vectors are
 `refvectors3d.json` from `gen_refvectors3d.py` (16²×8, fp64, including a dedicated
 exp(L·τ) propagator vector). The rest of this README describes the 2D app; everything
 carries over to 3D except where SPEC3D.md says otherwise.
@@ -29,11 +32,15 @@ shell-restricted OU noise (~12 modes).
 
 ## Run
 
-Open `index.html` (or either app directly) in a WebGPU-capable browser (Chrome, Firefox,
-Safari — 2026 versions all ship it). Works from `file://`, no server or build step:
-`<script src>` and `<link rel=stylesheet>` are allowed there, which is why the reference
-vectors stay *inlined* in each app (`fetch` is not). If no adapter is found the page
-says so.
+Open `rmhd2d.html` (or `rmhd3d.html`, or `index.html`, which redirects to the 2D app) in a
+WebGPU-capable browser (Chrome, Firefox, Safari — 2026 versions all ship it). Works from
+`file://`, no server or build step: `<script src>` and `<link rel=stylesheet>` are allowed
+there, which is why the reference vectors stay *inlined* in each app (`fetch` is not). If
+no adapter is found the page says so and shows `poster.png` — a still of a real run — in
+place of the live one, with the what-is rail opened. A plain visit **starts running** on
+the default forced-turbulence preset (ONEPAGE_PLAN C: pictures move with zero clicks; the
+Run button boots red, saying **Pause**); a `?demo=` deep link boots paused, so the lesson's
+text can be read first.
 
 ## Self-test
 
@@ -58,7 +65,14 @@ programmatically; do not try to hand-edit a 180 kB line).
 
 ## Files
 
-- `index.html` — landing page (links, description, contributors). No solver code.
+- `index.html` — an immediate redirect to `rmhd2d.html` (meta refresh + `location.replace`
+  + a plain link, `rel=canonical`). It exists because it is the URL GitHub Pages serves
+  for `webgpu/` and the one old links point at; there is no landing page any more. Note
+  that `pages.yml` seds this file too, so its `style.css` reference and its `buildid` span
+  have to stay.
+- `poster.png` — a 512² still of a real forced-turbulence run (|u|, afmhot, arrows,
+  colorbar), shown *only* where `initGPU` fails. The `<img>` is created on that path and
+  nowhere else, so a working visit never fetches it.
 - `docs.html` — the user-facing manual: the topbar, every control group, the display and
   chart cards and their options, the colorbar, save/record, and one plain line per preset.
   Same stylesheet, no script, no build step. It is the page the apps link at the top; the
@@ -76,9 +90,13 @@ programmatically; do not try to hand-edit a 180 kB line).
   (`controlsBuild(spec)` and the row/group fragments the two pages share — the sticky
   top bar, the cfl row, the hyper/diss row, the whole forcing group, the IC group and
   the displays group; each app's page markup is now an empty `#topbar` / `#controls`
-  plus its own spec), the preset machinery (`presetBoot`,
-  `presetWrite`) and the boot wiring both apps share (`bootApply`,
-  `wireCommonControls`, the locked slider pairs, `syncCommonLabels`), the CPU-side IC
+  plus its own spec), the **page chrome** (`chromeBuild`: the 2D/3D tab strip, whose
+  inactive side is a plain link, the `RAIL_LEAD` / `RAIL_PANES` text of the what-is rail,
+  and `gpuFallback`, the poster + opened rail an engine with no WebGPU gets), the preset
+  machinery (`presetBoot`,
+  `presetWrite`) and the boot wiring both apps share (`bootApply`, whose first call is
+  also the autoplay seam `bootAutorun`, `wireCommonControls`, the locked slider pairs,
+  `syncCommonLabels`), the CPU-side IC
   construction (glyph raster, periodic gaussian blur, the ζ± → (φ,ψ) normalization
   `icZetaFields`, gaussian z-envelope, packet placement + χ, and the whole `custom` blob
   editor — deposit math, its own **view**, preview, pointer→grid mapping, driven by one

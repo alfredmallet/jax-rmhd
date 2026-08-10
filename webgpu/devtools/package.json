@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "acorn": "^8.18.0",
+    "wgsl_reflect": "^1.5.0"
+  }
+}

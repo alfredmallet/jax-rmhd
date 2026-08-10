@@ -472,10 +472,19 @@ function gpuCanvasCtx(cv) {
   return c;
 }
 
-// adapter + device. opts.maxLimits asks the adapter for its own
-// reported limits (always a legal request): the 3D app's 8-field gradient stack is
-// 129 MiB at 256^2x64, past the DEFAULT 128 MiB storage-binding limit.
+// adapter + device. Every failure has already put its own advice in #status, so the
+// wrapper only has to make that advice look like a page rather than a dead black canvas
+// (ONEPAGE_PLAN B.5): one hook, both apps, and only for the paths that return FALSE --
+// a device lost mid-run leaves the run that already happened on screen.
 async function initGPU(opts) {
+  const ok = await initGPUTry(opts);
+  if (!ok) gpuFallback();
+  return ok;
+}
+// opts.maxLimits asks the adapter for its own reported limits (always a legal request):
+// the 3D app's 8-field gradient stack is 129 MiB at 256^2x64, past the DEFAULT 128 MiB
+// storage-binding limit.
+async function initGPUTry(opts) {
   if (!navigator.gpu) {
     showStatus("WebGPU is not available in this browser. Use Chrome 113+ (or Edge) on a machine "
       + "with a supported GPU; on Linux you may need --enable-unsafe-webgpu.", "err");
@@ -2589,7 +2598,7 @@ const CTRL_TOPBAR = [
   { k: "btn", id: "btnReset", t: "Reset" },
   { k: "lab", t: "preset", for: "selPreset" },
   { k: "sel", id: "selPreset", o: [] },
-  { k: "btn", id: "btnParams", t: "hide params" },
+  { k: "btn", id: "btnParams", t: "show params" },
   { k: "btn", id: "btnText", t: "hide text" },
   { k: "txt", id: "steps" }
 ];
@@ -2681,6 +2690,148 @@ const ctrlGrpDisp = extra => ({
      { k: "btn", id: "btnAddChart", t: "+ chart" }].concat(extra || [])
   ]
 });
+
+// ===========================================================================
+// page chrome: the 2D/3D tabs, the "what is all this?" rail, the no-GPU poster
+// ===========================================================================
+// ONEPAGE_PLAN B. The two apps stay separate documents (separate pipelines), so the
+// only thing that can make them feel like one site is chrome built from ONE source --
+// the controlsBuild bargain again, applied to the markup above and beside the canvas.
+// A visitor cannot tell a styled link from a tab, so "2D | 3D" is a strip in which the
+// current page is a plain span and the other one an ordinary <a>.
+const TABS = [{ t: "2D", href: "rmhd2d.html", is3d: false },
+              { t: "3D", href: "rmhd3d.html", is3d: true }];
+// The essay index.html used to carry MOVED here rather than going in the bin (the front
+// door is now rmhd2d.html, and an essay nobody reaches is worse than one beside the
+// picture it describes): two sentences of lead, then the five panes, all collapsed.
+const RAIL_LEAD =
+  "this is a browser port of the plasma turbulence code "
+  + '<a href="https://github.com/alfredmallet/taranis" target="_blank" rel="noopener">taranis</a>'
+  + ", running on your gpu with the same numerical algorithms as the parent code: it solves"
+  + " Reduced MagnetoHydroDynamics (RMHD), a simplified model for a plasma threaded by a"
+  + " strong magnetic field, as most of our solar system is. change anything you like, pick"
+  + " a preset, and get a feel for how this turbulence works &mdash; the panes below say"
+  + " what any of it means.";
+const RAIL_PANES = [
+  { summary: "what is turbulence?", html: `
+    <blockquote>&ldquo;When I meet God, I am going to ask him two questions: Why relativity?
+      And why turbulence? I really believe he will have an answer for the first.&rdquo;<br>
+      <span class="attrib">&mdash; possibly apocryphal, attributed to Heisenberg, among
+      others&hellip;</span></blockquote>
+    <p>perhaps the greatest unsolved mystery of classical physics. a basic, concise working
+      definition: multiscale disorder. introducing energy at large scales in the system
+      causes a chaotic, nonlinear cascade down to small scales at which dissipation can
+      occur.</p>` },
+  { summary: "what is plasma?", html: `
+    <p>with enough external energy, electrons in atoms can be stripped away from their
+      central nuclei, forming a (usually) overall electrically neutral system of
+      negatively-charged electrons and positively-charged ions. these particles interact in
+      complex ways, resulting in phenomena like plasma turbulence.</p>` },
+  { summary: "why should anyone care?", html: `
+    <p>most of the universe is full of turbulent plasma: it is hard to find an astrophysics
+      problem where understanding this turbulence is not crucially important. here are three
+      examples:</p>
+    <ol>
+      <li>the sun is constantly emitting plasma, which is heated (up to temperatures of
+        millions of kelvin) and accelerated (up to hundreds of kilometers per second) by
+        plasma turbulence in the solar atmosphere, the corona. understanding this coronal
+        heating is an open problem.</li>
+      <li>plasma impacting the earth&rsquo;s magnetic field can degrade satellites and
+        disrupt power grids: mitigating the impacts of this space weather requires us to
+        understand the plasma turbulence in interplanetary space.</li>
+      <li>closer to home, plasma turbulence is also a main cause of loss of confinement in
+        nuclear fusion devices: solving this problem would be a major step towards accessing
+        a near-limitless energy source.</li>
+    </ol>` },
+  { summary: "why do numerical simulations?", html: `
+    <p>the governing equations are strongly nonlinear, coupling an enormous range of length
+      and timescales, and cannot be solved only with pen-and-paper theory. simulations are a
+      crucial tool: we can perform numerical experiments where every parameter is precisely
+      controlled, and every output precisely measured at every point in space and time. we
+      then compare the simulations against real measured data: in a first for humanity,
+      NASA&rsquo;s Parker Solar Probe has entered our sun&rsquo;s corona, directly sampling
+      this turbulent plasma. comparing simulations with these state-of-the-art measurements
+      drives improvements in our models, and better understanding of this fundamental and
+      omnipresent physical phenomenon.</p>` },
+  { summary: "technical details", html: `
+    <p>RMHD equations, solved using a pseudospectral method with a Williamson 1980
+      low-storage RK3 modified to calculate linear terms (Alfv&eacute;n wave
+      propagation and viscous/resistive dissipation) with integrating factors. note that
+      the taranis code by default uses a different method for the z-derivatives (centered
+      finite differences) which is much better for parallelizing over many gpus; the
+      algorithm used here is the same as taranis with <code>z_spectral=True</code>. also,
+      WebGPU has no fp64, so this is all fp32. you can validate that the same equations are
+      being solved using the <b>self-test</b> button to check a small test problem against
+      the taranis solution.</p>
+    <p>the <b>preset</b> dropdown in the top bar &mdash; decaying A/B Elsasser packets,
+      Kelvin&ndash;Helmholtz shear layers and a tearing mode growing magnetic islands in 2D,
+      a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash; sets the controls and
+      opens the displays that go with them. everything stays adjustable; presets are
+      configurations, not separate programs (<code>?demo=decay</code> /
+      <code>?demo=kh</code> / <code>?demo=tearing</code> / <code>?demo=collision</code> are
+      deep links to the same thing).</p>` }
+];
+// the built panes, kept so the no-GPU path can open them without a DOM query
+let railPanes = [];
+// the two markup hooks (#tabs, #rail) are empty on both pages, exactly as #topbar and
+// #controls are. Called first in each app's boot(), so the chrome is on the page even
+// when initGPU is about to fail.
+function chromeBuild(o) {
+  const is3d = !!(o && o.is3d);
+  const nav = el("tabs");
+  if (nav) {
+    for (const t of TABS) {
+      const on = t.is3d === is3d;
+      const e = _mk(on ? "span" : "a", on ? "tab on" : "tab", nav);
+      e.innerHTML = t.t;
+      if (on) e.setAttribute("aria-current", "page"); else e.href = t.href;
+    }
+  }
+  const rail = el("rail");
+  railPanes = [];
+  if (!rail) return;
+  _mk("div", "railtitle", rail).innerHTML = "what is all this?";
+  _mk("p", "lead", rail).innerHTML = RAIL_LEAD;
+  for (const p of RAIL_PANES) {
+    const d = _mk("details", null, rail);
+    _mk("summary", null, d).innerHTML = p.summary;
+    // the body goes in its own div: innerHTML on the <details> would eat the <summary>
+    _mk("div", null, d).innerHTML = p.html;
+    railPanes.push(d);
+  }
+}
+// the no-WebGPU first impression (ONEPAGE_PLAN B.5). Reached only from initGPU's three
+// failure paths, every one of which has just written its browser advice into #status --
+// so that node is MOVED under the picture (same id, same text, as demohint is moved into
+// the topbar) instead of being reworded here. The <img> is created HERE and nowhere else:
+// a visit that gets a device must not fetch a 360 kB poster it will never show.
+const POSTER = "poster.png";
+function gpuFallback() {
+  const host = el("displays");
+  if (host) {
+    const card = _mk("div", "card disp", host);
+    const wrap = _mk("div", "cvwrap", card);
+    const img = _mk("img", "cvmain", wrap);
+    img.alt = "|u| in a 512 by 512 forced-turbulence run, with velocity arrows";
+    img.src = POSTER;
+    _mk("div", "viewcap", card).innerHTML =
+      "a real 512&sup2; run of this solver, recorded earlier &mdash; your browser cannot "
+      + "run the live one:";
+    const st = el("status");
+    if (st) card.appendChild(st);
+  }
+  const ro = el("readout");
+  if (ro) ro.textContent = "";
+  // nothing past this point is wired (wireCommonControls is never reached), so the
+  // topbar's buttons would be enabled-looking dead chrome -- disable them (review
+  // NOTE 11); the tab strip and docs link are plain <a>s and keep working
+  for (const id of ["btnRun", "btnReset", "btnParams", "btnText"]) {
+    const b = el(id);
+    if (b) b.disabled = true;
+  }
+  // with no run to watch, the explanation is the whole page: open it
+  for (const d of railPanes) d.open = true;
+}
 
 // ---------------------------------------------------------------------------
 // collapsible control groups: default-open on a wide viewport, collapsed on a
@@ -3095,6 +3246,31 @@ function bootApply(pre) {
   syncForceEnabled();
   rebuild();
   cardsLayout(pre && pre.layout);
+  bootAutorun();
+}
+// Autoplay on a plain visit (ONEPAGE_PLAN C, ratified): the visitor gets moving pictures
+// with zero clicks. The seam is bootApply's FIRST call, which is exactly the boot one --
+// both apps end boot() in it, past a successful initGPU (the no-GPU poster path returns
+// before it, so a device-less visit never starts a clock), and rebuild() has just made
+// the solver the run needs. Every LATER bootApply is a user already on the page turning
+// the preset dropdown; it must not touch `running`, hence the one-shot flag. A ?demo=
+// lesson still boots paused: its hint is there to be read first.
+let autorunDone = false;
+function bootAutorun() {
+  if (autorunDone) return;
+  autorunDone = true;
+  if (!demoNameFromURL()) setRunning(true);
+}
+// `running` is flipped from several places (topbar click, IC editor enter/leave). The
+// hero Run button carries the state as COLOUR as well as text (green = will run, red =
+// will pause; .stop class, tones in style.css --run-*), so every visible flip goes
+// through here to keep flag, label and class coherent. The self-test wrapper's silent
+// save/restore of `running` stays a bare assignment on purpose -- the button must not
+// blink red during a test the user perceives as instantaneous.
+function setRunning(b) {
+  running = b;
+  const r = el("btnRun");
+  if (r) { r.textContent = b ? "Pause" : "Run"; r.classList.toggle("stop", b); }
 }
 // every control whose handler is the same in both apps.
 //   opts.presets    the app's preset registry
@@ -3103,15 +3279,28 @@ function bootApply(pre) {
 function wireCommonControls(opts) {
   const s = el("selPreset");
   if (s) s.onchange = () => bootApply(presetWrite(opts.presets, s.value));
-  el("btnRun").onclick = () => { running = !running; el("btnRun").textContent = running ? "Pause" : "Run"; };
+  el("btnRun").onclick = () => setRunning(!running);
   // hide/show the whole #controls block from the always-visible topbar. Pure display
-  // toggle: nothing is re-read on show, so hidden controls keep their state.
+  // toggle: nothing is re-read on show, so hidden controls keep their state. HIDDEN is
+  // the boot default (ONEPAGE_PLAN A.1: first-timers get canvas, not sliders); the
+  // click is remembered so a returning tinkerer pays the extra click once, ever.
+  // Storage can be absent or throwing (Safari private mode, the stub env) -- treat
+  // that as "no memory", never as a boot failure.
   const bp = el("btnParams");
-  if (bp) bp.onclick = () => {
-    const c = el("controls"), hide = c.style.display !== "none";
-    c.style.display = hide ? "none" : "";
-    bp.textContent = hide ? "show params" : "hide params";
-  };
+  if (bp) {
+    const paramsShow = show => {
+      el("controls").style.display = show ? "" : "none";
+      bp.textContent = show ? "hide params" : "show params";
+    };
+    bp.onclick = () => {
+      const show = el("controls").style.display === "none";
+      paramsShow(show);
+      try { localStorage.setItem("taranisShowParams", show ? "1" : "0"); } catch (e) {}
+    };
+    let show = false;
+    try { show = localStorage.getItem("taranisShowParams") === "1"; } catch (e) {}
+    paramsShow(show);
+  }
   // the preset's explanatory text rides the sticky topbar as its own full-width last
   // row (Alfred 2026-08-10 follow-up), so it stays on screen while the page scrolls
   // and survives "hide params". The node is MOVED (same id, state kept): presetWrite
@@ -4172,7 +4361,7 @@ function icEditEnter() {
   icDraw.snap = { zp: Float32Array.from(icDraw.zp), zm: Float32Array.from(icDraw.zm),
                   has: icDraw.has };
   icDraw.on = true; icDraw.down = false; icDraw.last = null;
-  running = false; el("btnRun").textContent = "Run";
+  setRunning(false);
   el("btnRun").disabled = true; el("btnEdit").disabled = true;
   // the editor's OWN z plane: seeded from the first display card, then its slider's
   if (icDraw.plSl) {
@@ -4197,7 +4386,7 @@ function icEditLeave(mode) {
   el("btnRun").disabled = false; el("btnEdit").disabled = false;
   if (mode === "run") {
     applyIC();
-    running = true; el("btnRun").textContent = "Pause";
+    setRunning(true);
   } else if (mode === "save") {
     showStatus("drawing saved — Reset applies it", "info");
   }

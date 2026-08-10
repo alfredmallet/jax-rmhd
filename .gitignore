@@ -12,6 +12,10 @@ tests/data
 
 #Random stray png
 *.png
+# ...but the no-WebGPU fallback poster is a deliverable (ONEPAGE_PLAN B.5)
+!webgpu/poster.png
+# devtools npm deps (acorn, wgsl_reflect) live beside the gate scripts
+node_modules/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

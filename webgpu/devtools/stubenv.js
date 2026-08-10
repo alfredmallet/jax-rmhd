@@ -7,15 +7,27 @@
 // in the page markup, so every tool now has to BOOT the page to see them. One stub,
 // three consumers (bootstub / dumpwgsl2 / layout).
 //
-//   const env = require("./stubenv")(dir, page, demo);
+//   const env = require("./stubenv")(dir, page, demo, opts);
+//   opts.noGpu   an engine with no navigator.gpu at all: initGPU takes its first failure
+//                path, so the no-WebGPU poster fallback (ONEPAGE_PLAN B.5) runs for real
 //   env.run("function(){ ... }", args...)   evaluate in the page's context
 //   env.getEl(id) / env.els / env.allEls    the element model
 //   env.fails / env.fail(msg)               accumulated stub-level failures
 "use strict";
 const fs = require("fs"), vm = require("vm"), path = require("path");
 const MAXWG = 65535;
+// localStorage, shared across every env made by this PROCESS (not per-env): two boots
+// in one gate script are "two visits by the same browser", which is exactly what the
+// params-toggle memory (ONEPAGE_PLAN A.1) needs to be tested against. Also on env.store
+// so a consumer can seed or inspect it directly.
+const storeMap = new Map();
+const store = { getItem: k => (storeMap.has(k) ? storeMap.get(k) : null),
+                setItem: (k, v) => { storeMap.set(k, String(v)); },
+                removeItem: k => { storeMap.delete(k); },
+                clear: () => { storeMap.clear(); } };
 
-module.exports = function makeEnv(dir, page, demo) {
+module.exports = function makeEnv(dir, page, demo, opts) {
+  const noGpu = !!(opts && opts.noGpu);
   const fails = [];
   const fail = m => { if (fails.indexOf(m) < 0) fails.push(m); };
 
@@ -192,10 +204,23 @@ module.exports = function makeEnv(dir, page, demo) {
   };
 
   const allEls = [];
+  // a real DOM reflects the markup's style attribute into el.style; the app now relies
+  // on that (the control panel is hidden in the MARKUP so it cannot flash before boot)
+  const parseStyle = s => {
+    const o = {};
+    for (const d of (s || "").split(";")) {
+      const i = d.indexOf(":");
+      if (i < 0) continue;
+      const k = d.slice(0, i).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      o[k] = d.slice(i + 1).trim();
+    }
+    return o;
+  };
   function mkEl(id, kind, at) {
     const e = {
       id: id || "", kind: kind || "div", _value: "", _html: "", checked: false, disabled: false,
-      textContent: "", className: "", style: {}, width: 0, height: 0, title: "",
+      textContent: "", className: "", style: at && at.style ? parseStyle(at.style) : {},
+      width: 0, height: 0, title: "",
       min: "", max: "", step: "", type: "", options: [], children: [], parentNode: null,
       attrs: at || {},
       classList: { _s: {}, toggle(c, v) { this._s[c] = v === undefined ? !this._s[c] : !!v; },
@@ -418,7 +443,7 @@ module.exports = function makeEnv(dir, page, demo) {
               EncodedVideoChunk: EncodedVideoChunkStub },
     location: { search, href: "file:///x/" + page + search },
     URLSearchParams, navigator: {
-      gpu: {
+      gpu: noGpu ? null : {
         getPreferredCanvasFormat: () => "bgra8unorm",
         async requestAdapter() { return { limits: { maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 31 },
                                           async requestDevice() { return device; } }; }
@@ -433,7 +458,8 @@ module.exports = function makeEnv(dir, page, demo) {
     setInterval: setIntervalStub, clearInterval: clearIntervalStub,
     GPUBufferUsage: { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, UNIFORM: 8, MAP_READ: 16 },
     GPUTextureUsage: { STORAGE_BINDING: 1, TEXTURE_BINDING: 2 },
-    GPUMapMode: { READ: 1 }
+    GPUMapMode: { READ: 1 },
+    localStorage: store
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -442,5 +468,5 @@ module.exports = function makeEnv(dir, page, demo) {
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
   return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, caps,
-           tick, fireTimeout, is3d: page.indexOf("3d") >= 0 };
+           tick, fireTimeout, store, is3d: page.indexOf("3d") >= 0 };
 };

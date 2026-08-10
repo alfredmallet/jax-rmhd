@@ -21,6 +21,8 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `MediaRecorder`), `VideoFrame`, `EncodedVideoChunk`, a `Blob` that KEEPS the bytes, and
   `setInterval` as a hand-driven pump — `env.tick(n)` fires exactly n frames, so a "30 s"
   recording costs no wall clock, and `env.fireTimeout(ms)` fires the armed 30 s hard stop.
+  A fourth argument carries the boot knobs: `{noGpu: true}` removes `navigator.gpu`, so
+  `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
   kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
   clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
@@ -181,6 +183,25 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   with zero stderr. Three cases — a square 512×512 take, the non-square 1024×256 wide box,
   and a one-frame file — plus the refusals (no samples / no avcC) and the codec-string
   level table. This is the gate that says the recording will play on a phone.
+- `checkonepage.js [dir]` — the ONEPAGE_PLAN gates, on both booted pages. Phase A: the
+  control panel hidden at boot, the params toggle's `localStorage` memory across two boots
+  in one process (stubenv's store is per-PROCESS on purpose, so that IS a return visit),
+  the guided-preset text still showing with the panel hidden, and `setRunning`'s
+  flag/label/`.stop` coherence in both directions. Phase B: the shared tab strip, asserted
+  as what a visitor sees (the current page a filled `<span>`, the other one an `<a href>`),
+  the what-is rail — a title, a lead and the five panes, every one filled and COLLAPSED —
+  plus a grep of all four html files proving the pane text lives only in `common.js`, then
+  the no-WebGPU path driven for real through `stubenv(..., {noGpu: true})`: one `poster.png`
+  node with alt text inside the display area, the browser advice moved under it with its
+  `#status` id intact, every pane forced open, and NO poster node at all on a working boot.
+  Phase C (autoplay): a plain visit boots RUNNING on both pages — flag, "Pause" label and
+  `.stop` class, on the default preset at its ratified size — while `?demo=kh` and
+  `?demo=collision` still boot paused with a "Run" label, and the no-WebGPU boot starts no
+  clock at all (initGPU returned false, so `bootApply` was never reached). The one-shot-ness
+  of the autorun is checked from the other side too: a later preset switch must leave the
+  run state exactly as the user left it, paused or running.
+  Finally index.html's redirect, read as markup (there is no script to boot): meta refresh,
+  canonical, `location.replace`, the no-JS link, and the two strings `pages.yml` seds.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's
