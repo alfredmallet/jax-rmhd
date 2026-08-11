@@ -5,6 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>plasma turbulence in your browser &mdash; 2D RMHD</title>
 <link rel="stylesheet" href="style.css">
+<!-- Pageview counts and nothing else (ANALYTICS_PLAN.md): GoatCounter sets no cookies,
+     stores no personal data and records no custom events, so there is nothing here to
+     consent to and no banner. The canonical is what makes the numbers readable: this
+     page generates query strings in normal use -- ?fresh=<timestamp> from the "load
+     latest build" link (a UNIQUE value per click) and ?demo=<preset> deep links -- and
+     GoatCounter sends pathname+search by default, which would scatter one page's traffic
+     across an unbounded set of near-identical paths. Cost of the canonical: ?demo= links
+     stop being separable. That is an EVENT question, and events are deliberately out of
+     scope. NB index.html carries no beacon on purpose -- it is a pure redirect here, and
+     its own canonical points at this file, so counting it would file every arrival at
+     the bare /webgpu/ URL under THIS path and inflate it. devtools/checkgc.js asserts
+     that absence; do not "fix" it. -->
+<link rel="canonical" href="rmhd2d.html">
+<script data-goatcounter="https://taranis.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
 </head>
 <body>
 <h1>plasma turbulence in your browser</h1>
@@ -55,6 +70,12 @@
   <a href="https://alfredmallet.wordpress.com" target="_blank" rel="noopener">Alfred Mallet</a> &middot;
   <a href="https://www.linkedin.com/in/esromabraham/" target="_blank" rel="noopener">Esrom Abraham</a> &middot;
   <a href="https://claude.ai" target="_blank" rel="noopener">Claude</a>
+  <!-- FILLED by common.js contactBuild (from chromeBuild, which runs before initGPU, so
+       the link is on the no-WebGPU fallback page too -- that visitor is the one most
+       likely to want it). Empty in the markup on purpose: the address is assembled at
+       runtime and never appears contiguously in the served HTML. The leading "·" is
+       emitted by contactBuild too, so a failed common.js leaves no dangling bullet. -->
+  <span id="contact"></span>
 </div>
 <div class="hint" id="buildline" style="margin-top:4px">
   build <span class="buildid">dev</span> &middot;

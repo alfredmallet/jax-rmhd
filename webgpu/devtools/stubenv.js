@@ -430,9 +430,23 @@ module.exports = function makeEnv(dir, page, demo, opts) {
       getElementById: getEl,
       createElement: t => mkEl("", t.toLowerCase()),
       createTextNode: t => ({ kind: "#text", textContent: t }),
-      querySelectorAll: sel => (sel === "#controls details" ? descendants(getEl("controls"), "details") : [])
+      querySelectorAll: sel => (sel === "#controls details" ? descendants(getEl("controls"), "details") : []),
+      // ANALYTICS_PLAN phase 2: the ONLY selector the apps pass to querySelector is
+      // ".buildid" (contactBody -- the build id has a CLASS and no id, because pages.yml
+      // seds that exact span and must keep finding it). The element model above is built
+      // from tags that declare an id, so a class-only span is not in it; read it straight
+      // out of the markup instead. Deliberately narrow: any other selector returns null,
+      // which is the honest answer from a stub that does not implement it.
+      querySelector: sel => {
+        if (sel !== ".buildid") return null;
+        const m = body.match(/<span class="buildid">([^<]*)<\/span>/);
+        return m ? { textContent: m[1] } : null;
+      }
     },
-    window: { addEventListener() {}, devicePixelRatio: 1,
+    // innerWidth/innerHeight: contactBody reports the viewport, and without them that
+    // line took the absent branch and was never exercised. 1280x800 is the first-screen
+    // size the one-page layout is checked at.
+    window: { addEventListener() {}, devicePixelRatio: 1, innerWidth: 1280, innerHeight: 800,
               matchMedia: q => ({ matches: /min-width/.test(q) }),
               // item 13: the browser globals the capture path feature-detects and uses --
               // both recording legs. Present here, so the stub exercises the SUPPORTED
@@ -443,9 +457,17 @@ module.exports = function makeEnv(dir, page, demo, opts) {
               EncodedVideoChunk: EncodedVideoChunkStub },
     location: { search, href: "file:///x/" + page + search },
     URLSearchParams, navigator: {
+      // ANALYTICS_PLAN phase 2: contactBody reads userAgent, and every real browser has
+      // one -- a stub without it would exercise only the absent branch.
+      userAgent: "stubenv/1.0 (node; not a browser)",
       gpu: noGpu ? null : {
         getPreferredCanvasFormat: () => "bgra8unorm",
+        // `info` mirrors the recent-Chrome adapter.info contactBody stashes into gpuInfo.
+        // Browsers that lack it are covered too -- gpuInfo simply stays "", and nothing
+        // is allowed to depend on it being non-empty.
         async requestAdapter() { return { limits: { maxStorageBufferBindingSize: 1 << 30, maxBufferSize: 1 << 31 },
+                                          info: { vendor: "stub", architecture: "stub-arch",
+                                                  device: "", description: "stub adapter" },
                                           async requestDevice() { return device; } }; }
       }
     },

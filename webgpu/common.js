@@ -458,6 +458,10 @@ function shaderModuleFactory(device) {
 }
 
 let device = null, canvasFormat = "bgra8unorm";
+// set once in initGPUTry when the adapter reports itself, read only by contactBuild's
+// mailto body. "" is a legitimate steady state (no adapter, or a browser that does not
+// expose adapter.info) and every reader must treat it as one.
+let gpuInfo = "";
 let solver = null, running = false, stepsPerFrame = 1, spsSmooth = 0;
 // the sim time of the last stats readback: the readout prints it, and the save/record
 // filenames stamp it (item 13), so it is kept once here rather than parsed back out
@@ -494,6 +498,16 @@ async function initGPUTry(opts) {
   try { adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }); }
   catch (e) { showStatus("requestAdapter failed: " + e.message, "err"); return false; }
   if (!adapter) { showStatus("No WebGPU adapter found (no compatible GPU, or WebGPU is disabled).", "err"); return false; }
+  // The one line the contact link (contactBuild) needs out of here: WHICH GPU. A bug
+  // report that names the adapter is worth ten that say "it didn't work". `adapter.info`
+  // is a recent-Chrome property and the older async `requestAdapterInfo()` has been
+  // removed, so this is guarded twice over and may legitimately stay "" -- the contact
+  // link must never depend on it being non-empty. No await, no new failure path.
+  try {
+    const inf = adapter.info;
+    if (inf) gpuInfo = [inf.vendor, inf.architecture, inf.device, inf.description]
+      .filter(Boolean).join(" ").trim();
+  } catch (e) {}
   const need = {};
   if (opts && opts.maxLimits) {
     for (const k of ["maxStorageBufferBindingSize", "maxBufferSize"]) {
@@ -3912,12 +3926,93 @@ const RAIL_PANES = [
       deep links to the same thing).</p>` }
 ];
 // the built panes, kept so the no-GPU path can open them without a DOM query
+// ---------------------------------------------------------------------------
+// the contact line (ANALYTICS_PLAN.md phase 2)
+// ---------------------------------------------------------------------------
+// Analytics on these pages is pageview counts and nothing else -- no events, no adapter
+// strings, no "did they press Run". This link is the deliberate substitute: the same
+// diagnostic information, VOLUNTEERED, from the few people motivated enough to write.
+//
+// The address is assembled here and never appears contiguously in the served HTML: a
+// mailto: on a page carrying a real name and a publication list gets harvested. This is
+// not serious obfuscation and does not pretend to be -- it defeats the regex scrapers,
+// which is the entire threat model. Consequence, accepted: no contact link with
+// scripting off. These pages need WebGPU, which needs scripting.
+const MAIL_USER = "alfred.mallet", MAIL_HOST = "berkeley.edu";
+const ISSUES_URL = "https://github.com/alfredmallet/taranis/issues/new";
+// DRAFT COPY -- Alfred's to replace, like the preset text and the aniso hints.
+const CONTACT_TXT = "email Alfred", ISSUES_TXT = "report a bug";
+function contactAddr() { return MAIL_USER + String.fromCharCode(64) + MAIL_HOST; }
+// Built at CLICK time, not at build time: on a page that booted, gpuInfo is populated by
+// then and the report names the GPU; on one that did not, the line is honestly absent
+// rather than a stale "" captured before initGPU ran. Every probe is guarded -- this runs
+// during a click handler on the fallback page, where nothing is safe to assume.
+function contactBody() {
+  const L = [];
+  const push = (k, f) => { try { const v = f(); if (v) L.push(k + ": " + v); } catch (e) {} };
+  push("page", () => location.href);
+  // feature-detected, the same way the controls sweep at the bottom of this file does:
+  // the build id has a CLASS and no id (pages.yml seds that exact span, so it must not
+  // grow one), which makes querySelector the only way to reach it.
+  push("build", () => { const b = document.querySelector && document.querySelector(".buildid");
+                        return b && b.textContent; });
+  push("webgpu", () => navigator.gpu ? (device ? "yes, device created" : "yes, no device") : "NO");
+  push("gpu", () => gpuInfo);
+  push("browser", () => navigator.userAgent);
+  // NB the guard in push() is "is the value falsy", and a concatenation NEVER is: build
+  // the string only once the numbers are known to be numbers, or this line reports
+  // "undefinedxundefined" instead of being absent.
+  push("screen", () => (typeof window.innerWidth === "number" && typeof window.innerHeight === "number")
+    ? window.innerWidth + "x" + window.innerHeight + " dpr " + (window.devicePixelRatio || 1)
+    : "");
+  return "\n\n\n-- what went wrong, and anything above you would rather delete --\n"
+    + L.join("\n");
+}
+function contactBuild(is3d) {
+  const host = el("contact");
+  if (!host) return;
+  host.textContent = "";
+  const PAGE_NAME = is3d ? "3D" : "2D";
+  // The leading separator is emitted HERE, not left in the markup: if common.js fails to
+  // load, an empty #contact preceded by a markup "·" leaves the acknowledgements line
+  // ending in a dangling bullet. Nothing is better than half a list.
+  host.appendChild(document.createTextNode("· "));
+  const a = _mk("a", null, host);
+  a.textContent = CONTACT_TXT;
+  a.href = "mailto:" + contactAddr();
+  // The subject and the diagnostics are attached on the way out. Kept under ~1500 chars
+  // so no mail client trims the body.
+  a.onclick = () => {
+    const subj = "plasma turbulence in your browser — " + PAGE_NAME;
+    let q = "?subject=" + encodeURIComponent(subj)
+      + "&body=" + encodeURIComponent(contactBody());
+    // Truncate on a CHARACTER boundary of the encoded string: slicing blind can cut a
+    // percent-escape in half ("...%2" / "...%"), and what the mail client then gets is
+    // not a short URI but a malformed one. Realistic hrefs are ~600-900 chars so this
+    // never fires in practice -- which is exactly why it would have been found in the
+    // wild, by someone whose report we could not read, rather than here.
+    if (q.length > 1500) q = q.slice(0, 1500).replace(/%[0-9A-Fa-f]?$/, "");
+    a.href = "mailto:" + contactAddr() + q;
+    return true;
+  };
+  host.appendChild(document.createTextNode(" · "));
+  const g = _mk("a", null, host);
+  g.textContent = ISSUES_TXT;
+  g.href = ISSUES_URL;
+  g.target = "_blank";
+  g.rel = "noopener";
+}
+
 let railPanes = [];
 // the three markup hooks (#intro, #tabs, #rail) are empty on both pages, exactly as
 // #topbar and #controls are. Called first in each app's boot(), so the chrome is on the
 // page even when initGPU is about to fail.
 function chromeBuild(o) {
   const is3d = !!(o && o.is3d);
+  // FIRST, deliberately: chromeBuild returns early when there is no #rail, and the
+  // contact link is the one piece of chrome that must survive every degraded boot.
+  // checkgc.js pins this ordering -- it is an argument, not an accident.
+  contactBuild(is3d);
   // the intro rides directly under the subtitle so a first-timer is told what the page
   // IS before anything else (Alfred/Charlotte follow-up) -- but as a <details>, so the
   // cost to everyone who has read it is one line, not two paragraphs of canvas push.

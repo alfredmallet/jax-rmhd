@@ -335,6 +335,30 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   legend while every cell still sits exactly where the frame's map puts it; and the two
   measured anisotropy curves are gone, strokes, labels and call site alike. CI reports,
   never gates.
+- `checkgc.js` — the ANALYTICS_PLAN gates: the GoatCounter beacon and the contact line.
+  Three parts. TEXT over the five HTML files pins the **set of counted pages**, which is
+  the load-bearing decision of the feature: the four content pages carry exactly one
+  `data-goatcounter` each, all four endpoints identical, all four `async`, each with a
+  self-referencing canonical (which is what stops `?fresh=<timestamp>` from the "load
+  latest build" link and `?demo=` deep links scattering one page across unbounded distinct
+  paths — `count.js` resolves the canonical and drops the query), and `index.html` carries
+  NONE, because it is a pure redirect whose own canonical points at `rmhd2d.html`, so a
+  beacon there would file every arrival at the bare `/webgpu/` URL under rmhd2d's path and
+  inflate the one number the feature exists to produce. Then the ADDRESS: it must not
+  appear contiguously in any file the deploy publishes — the walk covers all of `webgpu/`,
+  `.md` plans and `devtools/` included, because `pages.yml` stages the directory
+  wholesale, and a plan file spelling it out in full once defeated the entire
+  runtime-assembly exercise while every narrower check stayed green. Then both apps
+  BOOTED, each with and without WebGPU (`{noGpu: true}` — the fallback visitor is the one
+  most likely to want the link): `#contact` holds exactly two anchors, the mailto carries
+  the assembled address, the issues link has `target=_blank rel=noopener`, and the click
+  handler — which builds the diagnostics on the way OUT, so a booted page names its GPU
+  and a failed one honestly does not — yields a body with the build id, the userAgent, the
+  viewport, and `webgpu: NO` with no `gpu:` line on the fallback. A pathological userAgent
+  drives the 1500-char cap so the truncation branch really runs and the result must still
+  decode: slicing an encoded query blind splits a percent-escape about one time in four.
+  A text leg pins `contactBuild` being called before `chromeBuild`'s `if (!rail) return`,
+  which no boot can reach. CI reports, never gates.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's
