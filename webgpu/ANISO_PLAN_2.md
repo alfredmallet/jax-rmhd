@@ -5,9 +5,13 @@ ANISO_PLAN.md deliberately: that plan is being executed by another agent
 concurrently — do not edit ANISO_PLAN.md, and BASE THIS WORK ON THE TREE AFTER
 ANISO LANDS** (it owns the fl-readback gate and the chart-card regions of
 common.js this feature will sit next to; rebase, verify disjoint hunks).
-Second dependency, soft: ISO_PLAN Phase D defines the smooth k⊥ band factor
-(half-cosine edges, exact-1.0 passthrough) in physics.js — whichever plan lands
-first defines it ONCE and the other reuses it. Suggested by Jono Squire.
+Second constraint: **do not execute concurrently with ISO_PLAN** — both edit
+physics.js (prepDisp there, prepGrads here), common.js card controls, and
+per-card band UI. Agreed order: ANISO → ISO → this plan. Run after ISO Phase D
+lands and REUSE its k⊥ band factor (half-cosine edges, exact-1.0 passthrough),
+its per-card band-control pattern, and its checkiso §6 fp64 factor mirror. (If
+ISO is abandoned or Phase D cut, this plan defines the factor itself — the
+soft-dependency fallback, not the expected path.) Suggested by Jono Squire.
 
 ## What it is / why
 

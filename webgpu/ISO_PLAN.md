@@ -5,7 +5,10 @@ reviewer, SEND-BACK on majors). Base: current working tree (f79b14a + the uncomm
 2026-08-10 feedback batch); rebase over ANISO if it lands first — no file conflicts
 expected beyond `rmhd3d.html` hunk adjacency. **Physics WGSL is untouched: every
 physics kernel must remain byte-identical, and the checks assert it. No RNG-adjacent
-changes anywhere in this plan.**
+changes anywhere in this plan.** Sequencing with the other open plans: ANISO
+(in flight, another agent) → this plan → ANISO_PLAN_2 (2D spectrum; reuses
+Phase D's band factor and band-control pattern — do not run it concurrently
+with this plan, same files).
 
 ## What it is / why
 
