@@ -331,6 +331,12 @@ const NMP_: u32 = ${nmp}u;`;
   //   nlAssemble  the nonlinear RHS; 3D dealias = perpendicular ellipse AND
   //               |iz_signed| < nz/3
   S.prepGrads = prepGradsWGSL(C);
+  // ... and the SAME template with the k_perp band gate on its (phi, psi) read path
+  // (ANISO_PLAN_2 A): the generated E(k_perp, k_par) card's sweep runs through this one,
+  // the RHS through the one above, which is why the stepping kernel keeps its text and its
+  // ALU exactly as they were. Emitting it costs a string; its pipeline is built only on the
+  // first generate press (Solver._genInit).
+  S.prepGradsBand = prepGradsWGSL(Object.assign({}, C, { gband: g.kunit }));
   S.bracket = bracketWGSL(C);
   S.nlAssemble = nlAssembleWGSL(C);
 
@@ -507,20 +513,41 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   // +kz and -kz planes. Weight is the identical 0.5*ksq_perp*|f|^2*yfac*INVN2, so
   // sum over ALL bins (including the omitted kz=0) == E.
   const nzb = nz >> 1;
-  S.specPar = pre + `
+  // ... and, from the SAME template, the generated card's COORDINATE panel (ANISO_PLAN_2 B).
+  // That panel is E(k_perp, |kz|) in the coordinate frame -- the companion picture to the
+  // field-line rows, and the one whose ridge is expected to FLATTEN at high k_perp where
+  // line wander decorrelates the z frame (Cho-Vishniac). It is this very reduction run once
+  // per k_perp band instead of once for the whole box: one workgroup per (|kz| bin, band),
+  // dispatched as a 2D grid, with the band's half-cosine factor folded into the weight.
+  //
+  // Folded into the WEIGHT and not into the field, for three reasons that are the whole
+  // normalization argument:
+  //   * energy is quadratic, so band-passing the field by bf and then squaring is bf^2 on
+  //     |f|^2 -- the same number, one multiply instead of a scratch copy of the state (the
+  //     state is READ here and never written, as everywhere in this feature);
+  //   * bf is a function of k_perp alone, so it comes out of the +-kz pair and out of the
+  //     H_c cross term identically -- one factor for all three lanes;
+  //   * with both band ends off, bandFac is the literal 1.0 and `w * bf * bf` is `w` bit
+  //     for bit, so the banded emission reduces EXACTLY to the 1D parallel spectrum above,
+  //     bin for bin and lane for lane. That is what makes the two panels' numbers
+  //     comparable and what Parseval is checked through: the weight, the lanes, the bins
+  //     and the +-kz folding are not a second opinion, they are literally this text.
+  // `band` = emit the banded variant; absent = the 1D kernel's pre-plan text, byte for byte.
+  const specParTmpl = band => pre + `
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> gridB: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> bins: array<f32>;
-var<workgroup> sh: array<vec4<f32>, 256>;
+${band ? "@group(0) @binding(4) var<storage, read> bnd: array<vec4<f32>>;\n" + BAND_WGSL
+       + `const INVKU: f32 = ${(1 / g.kunit).toExponential(12)};\n` : ""}var<workgroup> sh: array<vec4<f32>, 256>;
 const NZB: u32 = ${nzb}u;
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let tid: u32 = lid.x;
   let b: u32 = wgid.x + 1u;                     // |iz| = 1 .. NZ/2
-  var acc: vec4<f32> = vec4<f32>(0.0);
+${band ? "  let klo: f32 = bnd[wgid.y].x;\n  let khi: f32 = bnd[wgid.y].y;\n" : ""}  var acc: vec4<f32> = vec4<f32>(0.0);
   for (var mp: u32 = tid; mp < NMP; mp = mp + 256u) {
-    let w: f32 = 0.5 * gridA[mp].z * gridB[mp].w * INVN2;
+${band ? "    let bf: f32 = bandFac(sqrt(gridA[mp].z) * INVKU, klo, khi);\n" : ""}    let w: f32 = 0.5 * gridA[mp].z * gridB[mp].w * INVN2${band ? " * bf * bf" : ""};
     let m1: u32 = b * NMP + mp;
     var e: vec4<f32> = vec4<f32>(dot(fields[m1], fields[m1]),
                                  dot(fields[NM + m1], fields[NM + m1]),
@@ -542,9 +569,15 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
     workgroupBarrier();
     stride = stride >> 1u;
   }
-  if (tid == 0u) { bins[wgid.x] = sh[0].x; bins[NZB + wgid.x] = sh[0].y;
-                   bins[2u*NZB + wgid.x] = sh[0].z; }
+  ${band ? `if (tid == 0u) { let o: u32 = wgid.y * 3u * NZB + wgid.x;
+                   bins[o] = sh[0].x; bins[NZB + o] = sh[0].y; bins[2u*NZB + o] = sh[0].z; }`
+         : `if (tid == 0u) { bins[wgid.x] = sh[0].x; bins[NZB + wgid.x] = sh[0].y;
+                   bins[2u*NZB + wgid.x] = sh[0].z; }`}
 }`;
+  S.specPar = specParTmpl(false);
+  // one row-block of 3*NZB floats per band, in the ROWS' own [E_u | E_b | H_c] order, so
+  // the coordinate panel and the field-line panel are the same Float32Array shape
+  S.specParBand = specParTmpl(true);
 
   // ---- per-REAL-z-plane Elsasser energy (max-energy plane tracking) -------
   // z is spectral here, so "the energy in plane iz" is NOT a k-space partial sum: the
@@ -1135,6 +1168,11 @@ function volRay(g, nx, ny, nz) {
 // The lines view's plain background is the contour plate itself (physics.js), which is
 // what makes its top face read as ink with no plate -- see Solver.render.
 const FL_SIDE = 8, FL_PERIOD = 500;
+// The generated 2D-spectrum sweep (ANISO_PLAN_2 A) marches a DENSER seed grid than the
+// live view: 16 x 16 = 256 lines against 64. It can afford to -- it is one-shot, at a
+// button press, over a frozen state -- and the live path's constant, cadence and buffers
+// are untouched by it, which is the point of it being its own number.
+const GEN_SIDE = 16;
 const FL_BG = { r: CONT_PLATE_RGB[0], g: CONT_PLATE_RGB[1], b: CONT_PLATE_RGB[2], a: 1 };
 
 // ---------------------------------------------------------------------------
@@ -1240,6 +1278,12 @@ class Solver {
   _buildPipelines() {
     const d = this.device;
     const S = buildShaders(this.g);
+    // the band-gated prepGrads is kept as TEXT and compiled only if the generate sweep is
+    // ever pressed (ANISO_PLAN_2 A); everything it then needs is built there, at once.
+    // The coordinate panel's binning kernel (B) rides along on exactly the same terms.
+    this._genWGSL = S.prepGradsBand;
+    this._gen2dWGSL = S.specParBand;
+    this._gen = null;
     const mod = shaderModuleFactory(d);
     const cp = (code, name) => d.createComputePipeline({
       layout: "auto", compute: { module: mod(code, name), entryPoint: "main" }
@@ -2046,6 +2090,105 @@ class Solver {
     return { pos: await readBuf(d, this.buf.flPos, nl * nz * 8),
              smp: withSmp ? await readBuf(d, this.buf.flSmp, nl * nz * 16) : null };
   }
+
+  // ---- the generated E(k_perp, k_par) sweep (ANISO_PLAN_2 A, B) -----------
+  // Built on the FIRST generate press and never before -- the display chains' rule, and
+  // for the same reason: a session that does not press the button allocates none of it.
+  // What it adds is one pipeline off the band-gated prepGrads emission, its 32-byte Mode
+  // uniform (modeWords' layout, so the two band ends sit exactly where prepDisp's do) and
+  // its OWN polyline pair, because the sweep marches GEN_SIDE^2 = 256 lines where the live
+  // view marches FL_SIDE^2 = 64 and the live buffers are not to be resized under it.
+  // Nothing volume-sized is allocated and no copy of the state exists: the band factor
+  // rides the READ of (phi, psi), and the eight gradients land in the RHS's own gradsK /
+  // realGrads scratch exactly as the live field-line pass's do (same own-submit argument --
+  // submits on one queue execute in order, so this can never overlap a step).
+  // Phase B's coordinate panel adds a second pipeline and two SMALL buffers to the same
+  // lazy block -- GEN_NBAND band ends in, GEN_NBAND * 3 * NZB bins out, both a few kB;
+  // it reads the state's k-space directly and needs no real space at all.
+  _genInit() {
+    if (this._gen) return this._gen;
+    const d = this.device, nl = GEN_SIDE * GEN_SIDE, nz = this.g.nz;
+    const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+    const mod = shaderModuleFactory(d);
+    const cp = (code, name) => d.createComputePipeline({
+      layout: "auto", compute: { module: mod(code, name), entryPoint: "main" }
+    });
+    const pl = cp(this._genWGSL, "prepGradsBand"), pl2d = cp(this._gen2dWGSL, "specParBand");
+    const bg = (pipe, entries) => d.createBindGroup({
+      layout: pipe.getBindGroupLayout(0),
+      entries: entries.map((r, i) => ({ binding: i, resource: { buffer: r } }))
+    });
+    // the six buffers join `this.buf` rather than living on `this._gen`, late as they
+    // are: destroy() walks that object, so a rebuild frees them with everything else and
+    // there is no second lifetime to remember.
+    const B = this.buf;
+    B.genMode = d.createBuffer({ size: MODE_BYTES, usage: U });
+    B.genCfg = d.createBuffer({ size: 16, usage: U });
+    B.genPos = d.createBuffer({ size: nl * nz * 8, usage: SQ });
+    B.genSmp = d.createBuffer({ size: nl * nz * 16, usage: SQ });
+    // (lo, hi, -, -) per band, and the coordinate bins. Both sized for the WHOLE band set
+    // even when a given state resolves fewer, so a second press with a different window
+    // rebinds into the same allocation.
+    B.genBand = d.createBuffer({ size: GEN_NBAND * 16, usage: SQ });
+    B.gen2d = d.createBuffer({ size: Math.max(4, GEN_NBAND * 3 * this.nzb * 4), usage: SQ });
+    d.queue.writeBuffer(B.genCfg, 0, new Uint32Array([GEN_SIDE, 0, 0, 0]));
+    this._gen = { pl, pl2d,
+      // the banded prep writes the SAME gradsK the RHS uses; only the seed grid and the
+      // polyline targets are the sweep's own
+      bgPrep: bg(pl, [B.fields, B.gridA, B.gradsK, B.genMode]),
+      bgFL: bg(this.pl.fieldLine, [B.realGrads, B.genPos, B.genSmp, B.genCfg]),
+      // ... and the coordinate binning reads the state and the two grids the 1D parallel
+      // spectrum reads, in that order, plus the band table
+      bg2d: bg(pl2d, [B.fields, B.gridA, B.gridB, B.gen2d, B.genBand]) };
+    return this._gen;
+  }
+
+  // the COORDINATE half of the same press (ANISO_PLAN_2 B): E(k_perp band, |kz|) for ALL
+  // bands in ONE dispatch -- (nzb, nbands) workgroups of the banded specPar -- and one map
+  // round trip. Cheap enough to be unconditional: it is a single pass over k-space with no
+  // transform, next to Phase A's ~8 iFFTs per band.
+  //
+  // Returns one Float32Array(3*nzb) per band, [E_u | E_b | H_c] over |kz| bins 1..nz/2 --
+  // the SAME shape, lanes, bins and units as the field-line rows and as readSpectrum's
+  // `par`, which is the point: the two panels of the card are two frames of one snapshot,
+  // and the numbers on them are comparable to each other and to the 1D spectra.
+  async readGen2D(bands) {
+    const G = this._genInit(), d = this.device, nzb = this.nzb;
+    const n = Math.min((bands || []).length, GEN_NBAND);
+    if (!(n > 0) || nzb < 1) return [];
+    const ends = new Float32Array(GEN_NBAND * 4);
+    for (let j = 0; j < n; j++) { ends[4 * j] = bands[j].lo; ends[4 * j + 1] = bands[j].hi; }
+    d.queue.writeBuffer(this.buf.genBand, 0, ends);
+    const enc = d.createCommandEncoder();
+    const p = enc.beginComputePass();
+    p.setPipeline(G.pl2d); p.setBindGroup(0, G.bg2d);
+    p.dispatchWorkgroups(nzb, n);
+    p.end();
+    d.queue.submit([enc.finish()]);
+    const raw = await readBuf(d, this.buf.gen2d, n * 3 * nzb * 4);
+    const out = [];
+    for (let j = 0; j < n; j++) out.push(raw.slice(j * 3 * nzb, (j + 1) * 3 * nzb));
+    return out;
+  }
+
+  // one row's raw material: the frozen state band-passed to [band.lo, band.hi] (box
+  // wavenumbers, 0 = that end off), inverse-transformed, marched, and the along-line
+  // (u_x, u_y, b_x, b_y) samples read back. ONE submit and ONE map round trip per band --
+  // the sweep is NBANDS of these with a yield between them, never one long submission.
+  async readGenBand(band) {
+    const G = this._genInit(), d = this.device, nl = GEN_SIDE * GEN_SIDE, nz = this.g.nz;
+    d.queue.writeBuffer(this.buf.genMode, 0, modeWords(0, 0, 0, [band.lo, band.hi]));
+    const enc = d.createCommandEncoder();
+    const p = enc.beginComputePass();
+    p.setPipeline(G.pl); p.setBindGroup(0, G.bgPrep);
+    p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+    this.encodeInv3D(p, 8, this.bg.zInvGrads, this.bg.colsInvGrads, this.bg.rowsC2RGrads);
+    p.setPipeline(this.pl.fieldLine); p.setBindGroup(0, G.bgFL);
+    p.dispatchWorkgroups(Math.ceil(nl / 64));
+    p.end();
+    d.queue.submit([enc.finish()]);
+    return readBuf(d, this.buf.genSmp, nl * nz * 16);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2287,6 +2430,88 @@ async function fieldLineHook(sv) {
   flPar = chart ? flSpectrum(L.smp, flData.nl, sv.g.nz) : null;
   // every card caches them; only a lines-view card draws them (DisplayCard.overlay)
   for (const d of cards.disp) d.setLines(flData);
+}
+
+// ---------------------------------------------------------------------------
+// the generated E(k⊥, k∥) sweep (ANISO_PLAN_2 A, B) -- the DATA half
+// ---------------------------------------------------------------------------
+// Alfred's generate-button model, and the reason the feature is honest and cheap: every
+// row comes off ONE frozen state and the whole cost is paid once, at a press, instead of
+// per frame. A live per-update band cycle would time-skew the rows against each other,
+// which is exactly wrong mid-collision.
+//
+// This is the sweep; the button, the card and the plot are the card's own code, and the
+// CALLER is what pauses the run (setRunning(false)) before it and resumes after — the
+// snapshot has to be frozen for the rows to be comparable, and pausing is a UI act, not a
+// solver one. Per band:
+//   band ends -> the sweep's Mode uniform  ->  the BAND-GATED prepGrads (its own pipeline;
+//   the RHS's is untouched)  ->  the same eight inverse transforms the RHS does  ->  the
+//   field-line march on GEN_SIDE^2 seeds  ->  flSmp back  ->  flSpectrum, the very Hann
+//   periodogram the "k∥ (field line)" spectrum curve is drawn from, so a row means exactly
+//   what that curve means and carries the same units.
+// One submit and one readback per band with a yield between them (~1 s in all at 256²×64):
+// the browser stays responsive, and a rebuild mid-sweep is caught by the `sv !== solver`
+// test the field-line hook already uses. One iteration more than there are bands: the
+// UNBANDED row (`parFL`) the overlay's k∥B curve is drawn from — see below.
+//
+// The COORDINATE companion (Phase B) comes off the same press and out of the same object:
+// `crows`, band for band with `rows`, the same [E_u | E_b | H_c] over the same |k∥| bins,
+// but binned in the box's own z frame instead of along the lines. It is one dispatch and
+// one readback for the whole set (Solver.readGen2D) — nearly free beside the sweep, which
+// is why it is not a second button. A card select toggles which of the two is DRAWN; the
+// contrast between them is the Cho–Vishniac lesson and the reason both are here.
+//
+// `opts`: { onProgress(done, total) } — called once with (0, total) before the first band
+// and after every band (including the extra unbanded one below), for the button's progress
+// text; `total` counts that extra pass too, so "done/total" is honest about how much of the
+// sweep is left. Returns null if there is no solver, if the solver was retired mid-sweep, or
+// if the state has no resolved k⊥ range to band at all (gen2dBands empty — the card then
+// says so rather than drawing one meaningless row; no progress call is made in that case).
+async function gen2dSpec(opts) {
+  const o = opts || {};
+  const sv = solver;
+  if (!sv) return null;
+  const prog = o.onProgress || (() => {});
+  // the band set's high end is this state's OWN dissipation knee, so one spectrum readback
+  // comes first; it is returned with the rows too, since the card wants the same ⊥
+  // spectrum its k⊥ axis was cut from.
+  const sp = await sv.readSpectrum();
+  const st = await sv.readStats();
+  if (sv !== solver) return null;
+  const bands = gen2dBands(sv.nb, sv.p.fshell, sp.perp);
+  if (!bands.length) return null;
+  // one extra pass beyond the bands themselves -- the unbanded parFL march below -- so the
+  // total the button counts against is every readGenBand call the sweep actually makes.
+  const total = bands.length + 1;
+  prog(0, total);
+  // the coordinate panel first: one pass over k-space, no transform, so it costs a fraction
+  // of one band's row and the frozen state it bins is unambiguously the same one the rows
+  // are about to be taken from
+  const crows = await sv.readGen2D(bands);
+  if (sv !== solver) return null;
+  // ... and ONE unbanded row, which is not a row of the plot at all: it is the WHOLE
+  // field's parallel spectrum along the field lines, `parFL`, the leg the anisotropy
+  // overlay needs to draw its k∥B curve over this snapshot instead of over the live
+  // state. `par` above is that curve's z leg and comes free with readSpectrum; the
+  // field-line leg has no such readback here, so the sweep takes it — one extra band
+  // iteration, the same march on the same seeds with both band ends off.
+  const smpAll = await sv.readGenBand({ lo: 0, hi: 0 });
+  if (sv !== solver) return null;
+  const parFL = flSpectrum(smpAll, GEN_SIDE * GEN_SIDE, sv.g.nz);
+  prog(1, total);
+  const rows = [];
+  for (let j = 0; j < bands.length; j++) {
+    const smp = await sv.readGenBand(bands[j]);
+    if (sv !== solver) return null;                 // retired mid-sweep (a rebuild)
+    // [E_u | E_b | H_c] over |k∥| bins 1..nzb, the lanes every spectrum here carries, so
+    // E± = E_u + E_b ± H_c (SPEC_SETS) needs no second path
+    rows.push(flSpectrum(smp, GEN_SIDE * GEN_SIDE, sv.g.nz));
+    prog(j + 2, total);
+    await new Promise(r => setTimeout(r, 0));       // air between submissions
+  }
+  return { t: st[1], bands, rows, crows, nb: sv.nb, nzb: sv.nzb, parKfac: sv.parKfac,
+           fshell: sv.p.fshell.slice(), nl: GEN_SIDE * GEN_SIDE, perp: sp.perp,
+           par: sp.par, parFL };
 }
 
 // extra readout lines: where the trackers are (continuous, so a smooth centroid reads

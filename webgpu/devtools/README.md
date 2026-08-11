@@ -269,6 +269,60 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `filter: k⊥ = 10:k_max` on the filtered card and nothing on the wide-open one, and — with
   the checkbox unticked — no handle, no caption, and zero band words on every uniform the
   card preps a field through. Later phases append to the `LEGS` list at the bottom.
+- `check2dspec.js [dir]` — the ANISO_PLAN_2 gates: the generated E(k&perp;, k&#8741;) card, its
+  band-gated `prepGrads` sweep (Phase A) and its coordinate binning kernel (Phase B). Six
+  legs. The emission first: every kernel parses, `names.mjs` clean, `dup.py` showing no
+  clone inside a file, and both pages' WHOLE dump byte-identical to the plan's base commit
+  with exactly two kernels ADDED (`prepGradsBand`, `specParBand`) and none removed — which
+  is both halves of the plan's WGSL rule, the stepping `prepGrads` the RHS runs and the
+  idle-path emission around it. Then the two new kernels as TEXT: each is the unbanded
+  template's own lines plus an explicitly listed set (a line that changed and is not on the
+  list fails, and so does a listed line that stopped changing), carrying prepDisp's band
+  block and Mode struct VERBATIM — one half-cosine in the project, not three — measured in
+  the spectrum chart's own k unit and binding `fields` read-only. That unit claim is made at
+  TWO box sizes: every shipped preset fixes L<sub>x</sub> = L<sub>y</sub> = 2&pi;, so kunit
+  is 1 and comparing conversions there is comparing the identity with itself — the same
+  templates are therefore re-emitted (dumpwgsl2's own override argument) on a 4&pi; box,
+  where a dropped or inverted conversion is a factor of two. State invariance is
+  asserted five ways, because no sandbox makes them all at once: the two kernels EXECUTED
+  over a band set leave the state array bit-identical word for word; the press on the booted
+  page never writes, clears or copies INTO the state buffer (a full ordered buffer trace,
+  named off `solver.buf`, with the row readbacks left REAL so it is the true encode path);
+  the whole state buffer read back before and after the press is bitwise the same — the
+  stub's buffers are given real backing stores for that, so `readBuf` really reads what was
+  written; every bind group the sweep builds is checked BY NAME and in binding order, looked
+  up by identity off `solver._gen` (`bgPrep` = fields, gridA, gradsK, genMode and `bgFL` =
+  realGrads, genPos, genSmp, genCfg) — a group with `fields` in the read_write slot is legal
+  WGSL, legal WebGPU and on a real device a press that OVERWRITES the state, and the other
+  three legs are all blind to it; and the CONTENTS of the two uniforms it fills are read back
+  out of those backing stores, the Mode words per band (`modeWords(0,0,0,[lo,hi])`, so
+  swapped ends fail) and the coordinate pass's `(lo, hi, 0, 0)` band table.
+  The fp64 mirror runs the emitted `prepGradsBand` on wgsl_reflect's interpreter:
+  the factor swept over k&perp; against checkiso's own `bandFacJs` (~1e-7, in [0,1], monotone,
+  exactly 1 / exactly 0 — and the same sweep again on the 4&pi; emission, so the band is
+  measured in k/kunit as a matter of arithmetic and not just of a constant), all eight
+  band-passed gradient lanes on the page's own grid, bit
+  identity with `prepGrads` when both ends are off, and then the whole ROW — those gradients
+  inverse-transformed by a direct fp64 DFT, sampled on the sweep's own 16&times;16 seed grid with
+  the marcher's bilinear gather (&psi; = 0, so the lines are straight in z), fed to the app's
+  real `flSpectrum` and compared with an fp64 Hann periodogram written from the definition.
+  `specParBand` is executed too, one live perpendicular mode at a time — the interpreter runs
+  a workgroup's invocations sequentially and treats `workgroupBarrier` as a no-op, so a tree
+  reduction only survives it when one thread carries everything; on those states its rows
+  match the fp64 mirror and its band-[0,0] row is the 1D `specPar`'s own bins BIT for BIT,
+  which is Stage B's anchor. Ridge recovery drives the REAL press with a synthetic snapshot
+  carrying a KNOWN k&#8741;(k&perp;): the real `gen2dBands` window off a real-shaped &perp; spectrum
+  (log-spaced, octave-wide, overlapping, between `fitKA` and the shared `specKnee`), the real
+  sweep, the real periodogram, and `gen2dRidge` landing within ONE k&#8741; bin of the law on both
+  panels — with the coordinate one FLATTENING where the field-line one keeps climbing, which
+  is the Cho&ndash;Vishniac contrast the card exists for; the same leg checks the extra UNBANDED
+  row (`parFL`) the sweep takes so the overlay's k&#8741;B curve has a field-line leg to draw at
+  all. The last leg is Alfred's choreography as
+  a sequence: press while running &rarr; paused, with the plot and its `generated @ t` legend;
+  Run &rarr; unmoved; IC reset and full solver rebuild &rarr; still standing; second press &rarr;
+  replaced; a press on a DEAD field &rarr; NOT replaced (an all-zero sweep is the null path,
+  and the band set alone would not have caught it); no solver &rarr; button disabled and a
+  forced press declines quietly. CI reports, never gates.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

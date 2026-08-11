@@ -326,7 +326,9 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     falling curve; here you are looking at it directly. In 2D the same cut shows the
     small-scale sheets and the alignment between flow and field. Filtered snapshots like these
     are how the anisotropy was first measured (Cho &amp; Vishniac; Maron &amp; Goldreich) &mdash;
-    the difference is that here the scale is a slider and the run keeps going.</p>
+    the difference is that here the scale is a slider and the run keeps going. The
+    <a href="#gen2d">2D spectrum chart</a> does the same filtering as a measurement rather
+    than as a picture.</p>
   <p>Practical notes. The edge of the filter is soft, about one wavenumber wide, on purpose: a
     hard cut rings, and the ringing would look like structure that is not there. What is left
     high up is a small amount of energy, and the colour scale follows the filtered
@@ -417,6 +419,43 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       And at the left-hand end the parallel scales are whole numbers of box lengths, too
       coarse to resolve, which flattens the curve there &mdash; that is the instrument,
       not the plasma. Give it a forced run, a while to develop, and read the middle.</li>
+  </ul>
+  <!-- DRAFT copy (ANISO_PLAN_2 Stage C): written by the implementing agent, awaiting
+       Alfred's wording pass, like the anisotropy card's above. -->
+  <p id="gen2d"><b>2D spectrum E(k<sub>&perp;</sub>,k<sub>&#8741;</sub>)</b> (3D) &mdash; the
+    picture the chart above reduces to a curve: how much energy sits at each combination of
+    a perpendicular and a parallel scale, drawn as a heatmap. Bright is more energy (the
+    colorbar under it gives the range; the scale is logarithmic, so the middle tick is the
+    geometric mean of the two ends). The bright ridge running up and to the right, bending
+    over as it goes, <i>is</i> critical balance.</p>
+  <ul>
+    <li><b>generate</b> is how it fills in, and it is the only chart here that works that
+      way. Pressing it <b>pauses the run</b> and measures every perpendicular band on that
+      one frozen moment, which takes about a second; every row of the picture then belongs
+      to the same instant instead of to ten different ones. The plot stays as it is
+      afterwards &mdash; press <b>Run</b> when you have finished reading it, and press
+      <b>generate</b> again when you want a fresh one. The legend says which moment you are
+      looking at.</li>
+    <li><b>field line</b> / <b>coordinate</b> is the same snapshot measured in two frames,
+      and switching between them is the lesson. Along the <b>coordinate</b> z axis the ridge
+      goes flat at small perpendicular scales, because the field lines have wandered far
+      enough that z is no longer the parallel direction; measured <b>along the field
+      lines</b> it keeps bending. (Same story as the two curves on the anisotropy chart.)
+      One caveat on the field-line half: the lines of each row are traced through the
+      field of <i>that band</i> rather than through the whole field, so the large-scale
+      wander that does most of the decorrelating is not in them. Measured properly, with
+      the full field's lines, the contrast at small perpendicular scales would be
+      stronger than what is drawn here, not weaker.</li>
+    <li><b>which energy</b> is the anisotropy card's: the total, or one Elsasser field.</li>
+    <li><b>overlays</b> (off by default) adds two guides: the straight
+      k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub><sup>2/3</sup> line critical balance
+      predicts, laid on the ridge at the left-hand end so that only its <i>slope</i> is a
+      claim, and the anisotropy chart's own extracted curve for the same snapshot.</li>
+    <li>Read the shape, not a number. At these resolutions there are only about twenty
+      usable parallel bins and the arithmetic is single precision, so the ridge is a fuzzy
+      band rather than a line; measuring an exponent off it is a job for a bigger machine.
+      Give it a forced run with some history behind it &mdash; in the collision demo, let
+      the packets meet and develop first.</li>
   </ul>
   <p><b>cut trace</b> &mdash; a slice through the field along a single line (along y, at
     the middle of the box). The option picks which pair of components:

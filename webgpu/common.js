@@ -1641,6 +1641,304 @@ function drawAniso(c, d, o) {
 }
 
 // ---------------------------------------------------------------------------
+// the generated E(k⊥, k∥) card's k⊥ BAND SET (ANISO_PLAN_2 A)
+// ---------------------------------------------------------------------------
+// One row of that card is the parallel spectrum of the field band-passed to one k⊥ band,
+// so this band set IS the card's k⊥ axis. Its two ends are the anisotropy card's level
+// window, through the SAME two functions rather than through a second opinion -- the two
+// cards must not drift apart on where the resolved inertial range is:
+//   low   fitKA(nb, fshell) -- just above the forcing shell, or the second bin when there
+//         is no shell worth speaking of, which is where the fit line anchors too;
+//   high  the dissipation knee (specKnee's peak-then-walk-right crossing on the
+//         perpendicular spectrum), or the dealias cut nb when there is no knee in view --
+//         an early frame, an instability preset, or no spectrum handed in at all. It is
+//         never above nb: the band is measured in the same bins the ⊥ spectrum is binned
+//         into, and there is nothing retained past that cut.
+// GEN_NBAND centres are log-spaced across that window and each band is GEN_BAND_W wide in
+// k (an octave: ×÷√2 about its centre), so adjacent bands OVERLAP wherever the window is
+// shorter than GEN_NBAND octaves -- which at these resolutions it always is. That is
+// deliberate and is the standard filtered-snapshot practice: a partition into disjoint
+// octaves would give three or four rows at 256², and the rows are not independent
+// measurements to begin with -- they are cuts through one E(k⊥, k∥).
+// Ends come back in BOX WAVENUMBERS (the unit bandFac's klo/khi are in, k/kunit) and are
+// clipped to the window, so no band reaches past the dealias cut or below the shell.
+// An empty return means "no resolved range" (a 16² self-test box, a dead field): the
+// caller draws nothing rather than one meaningless row.
+const GEN_NBAND = 10, GEN_BAND_W = 2;
+function gen2dBands(nb, fshell, perp) {
+  const n = Math.max(1, nb | 0);
+  const kA = fitKA(n, fshell || [1, 3]);
+  let kHi = n;
+  if (perp) {
+    // the knee, off the SAME three-lane bin stack and the same total lane the anisotropy
+    // card's window uses (the tail helpers, so a null / one-binned spectrum is a no-op)
+    const pts = _anisoLeg(perp, n, 0, 1, ANISO_LANES.tot);
+    if (pts.length >= 4) {
+      const kd = specKnee([[pts]], _anisoPeak(pts));
+      if (isFinite(kd)) kHi = Math.min(kHi, kd);
+    }
+  }
+  const out = [];
+  if (!(kHi > kA)) return out;
+  const r = Math.sqrt(GEN_BAND_W);
+  const c0 = kA * r, c1 = kHi / r;          // centres whose full band still fits the window
+  const nbnd = c1 > c0 ? GEN_NBAND : 1;     // a window under one octave carries ONE band
+  for (let j = 0; j < nbnd; j++) {
+    const kc = nbnd > 1 ? c0 * Math.pow(c1 / c0, j / (nbnd - 1)) : Math.sqrt(kA * kHi);
+    out.push({ kc, lo: Math.max(kA, kc / r), hi: Math.min(kHi, kc * r) });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// the generated E(k⊥, k∥) card (ANISO_PLAN_2 C): state, panel, choreography, plot
+// ---------------------------------------------------------------------------
+// The anisotropy card reduces this picture to one curve; this card is the picture. It is
+// the only chart here that is NOT fed by the frame loop: its data comes from a GENERATE
+// press (Alfred's model, fixed) that pauses the run and sweeps every k⊥ band over ONE
+// frozen state -- the page's `gen2dSpec` (ANISO_PLAN_2 A + B) -- and the result then sits
+// there until the next press. So the state is a MODULE-LEVEL snapshot, not a per-card one:
+//   * a press is a page-wide act (it pauses the run and costs ~1 s of GPU), and the object
+//     it produces says nothing about which card asked for it. Two cards can therefore show
+//     the field-line panel and the coordinate panel OF THE SAME SNAPSHOT side by side,
+//     which is the comparison the card exists for, without generating twice;
+//   * it is the shape the energy / island / mode traces already have (`hist`,
+//     `islandHist`, `modeHist`): the chart type draws from module state and the cards are
+//     views on it.
+// `data` is self-contained -- it carries its own t, bands, nb, nzb, parKfac and fshell --
+// so the plot survives a pause, a resume, a preset switch, an IC reset and a solver
+// rebuild without ever consulting the live grid. That is the pin convention: a record of a
+// moment, legended with the t it was taken at, cleared only by taking another one.
+const gen2d = { data: null, busy: false, done: 0, total: 0 };
+// afmhot, the display cards' own default ramp, through the SAME cmapRGB table the WGSL is
+// expanded from -- the heatmap must not invent a second colour convention.
+const GEN2D_CMAP = 0;
+// One redraw of every card of this type, with the option sync that enables / disables the
+// generate button. It is what the progress callback and the end of a sweep call: these
+// cards get no frame-loop draw at all.
+function gen2dRedraw() {
+  for (const c of cards.chart) if (c.type() === "gen2d") { c._optSync(); c.draw(null); }
+}
+// The button's whole choreography, and the ONLY place run state is touched: pause, sweep,
+// keep the result, leave the page paused. `gen2dSpec` deliberately does not touch `running`
+// -- pausing is a UI act -- and it is the 3D page that defines it, hence the typeof guard
+// (the card is 3D-only, so in 2D this is unreachable rather than merely harmless).
+// The run is NOT auto-resumed: setRunning(false) is a visible state, the plot is a static
+// picture of the moment it was taken, and the green Run button resuming when the reader is
+// ready is exactly what "the plot persists" means.
+async function gen2dRun() {
+  if (gen2d.busy || typeof gen2dSpec !== "function") return;
+  gen2d.busy = true; gen2d.done = 0; gen2d.total = 0;
+  setRunning(false);
+  gen2dRedraw();                                   // button disabled before the first await
+  let d = null;
+  try {
+    d = await gen2dSpec({ onProgress: (done, total) => {
+      gen2d.done = done; gen2d.total = total;
+      gen2dRedraw();
+    } });
+  } catch (e) {
+    showStatus("2D spectrum: " + e.message, "err");
+    console.error(e);
+  }
+  gen2d.busy = false;
+  // Four ways a press comes back with nothing: no solver at all, the solver retired
+  // mid-sweep (a rebuild), no resolved k⊥ range to band (gen2dSpec returns null for those
+  // three), and a snapshot of a field with no energy in it (gen2dLive below -- a
+  // well-formed object of zeros, which is NOT a null return and which would otherwise
+  // replace a good plot with a blank card). In every one of them the PREVIOUS plot is the
+  // honest thing to keep showing, and saying so beats a card that silently goes back to
+  // "press generate".
+  if (d && gen2dLive(d)) gen2d.data = d;
+  else showStatus("2D spectrum: nothing to plot — no solver, a rebuild mid-sweep, no "
+                  + "resolved k⊥ range yet, or no energy in the field; any previous plot "
+                  + "is kept", "info");
+  gen2dRedraw();
+}
+// Is there anything ON a snapshot? A press over a dead or quiescent field returns a
+// perfectly well-formed object whose every bin is zero: gen2dBands still cuts a band set
+// (with no knee in a silent ⊥ spectrum, its high end falls back to the dealias cut), the
+// sweep still runs, and only gen2dPanel notices, by which point the good plot is gone.
+// Any positive bin anywhere is enough -- E_u and E_b cannot be negative, so a field with
+// energy in it always has one.
+function gen2dLive(d) {
+  for (const rows of [(d && d.rows) || [], (d && d.crows) || []])
+    for (const r of rows) for (let i = 0; i < r.length; i++)
+      if (r[i] > 0 && isFinite(r[i])) return true;
+  return false;
+}
+// The panel the card is currently showing, as data (the specCurves seam again: no canvas,
+// no DOM, so the plot and the colorbar labels read ONE computation and node can drive it).
+// `gp` picks the frame -- field line (default) or coordinate -- and `gq` the lane, through
+// the anisotropy card's own ANISO_LANES, so E± = E_u + E_b ± H_c needs no second table.
+// Each row comes back as the charts' flat (k, v) pair array, k∥ in the SAME kunit as k⊥
+// (parKfac = (2π/Lz)/kunit), which is what lets one axis pair carry both.
+function gen2dPanel(o) {
+  const d = gen2d.data;
+  if (!d) return null;
+  const lane = ANISO_LANES[(o && o.gq)] || ANISO_LANES.tot;
+  const rows = (((o && o.gp) === "z") ? d.crows : d.rows) || [];
+  const nzb = d.nzb | 0;
+  if (!rows.length || nzb < 1) return null;
+  const out = [];
+  let hi = 0, lo = Infinity;
+  for (const r of rows) {
+    const pts = [];
+    for (let i = 0; i < nzb; i++) {
+      const v = lane(r[i], r[nzb + i], r[2 * nzb + i]);
+      if (v > 0 && isFinite(v)) { pts.push((i + 1) * d.parKfac, v); hi = Math.max(hi, v); lo = Math.min(lo, v); }
+    }
+    out.push(pts);
+  }
+  if (!(hi > 0)) return null;
+  // the colour floor is the spectrum chart's floor rule, on these rows as its range-setting
+  // curves (specFloor: the dissipation knee, the pre-peak minimum, the SPEC_MAXDEC clamp) --
+  // one convention for "below this is noise" in this file. A decade of range is the least
+  // that reads as a heatmap at all.
+  const floor = Math.min(specFloor(out.map(p => [p]), hi, lo), 0.1 * hi);
+  return { d, rows: out, hi, floor, nzb };
+}
+// the colorbar's three labels: log colour, so the middle of the strip is the GEOMETRIC
+// mean of the two ends
+function gen2dBarTicks(o) {
+  const G = gen2dPanel(o);
+  if (!G) return ["", "", ""];
+  return [cbarFmt(G.floor), cbarFmt(Math.sqrt(G.floor * G.hi)), cbarFmt(G.hi)];
+}
+// the two overlays, behind one checkbox and OFF by default (Alfred, this session):
+//   * GS95 -- k∥ ∝ k⊥^(2/3), critical balance, the line the ridge is being compared with.
+//     It is ANCHORED on the measured ridge of the lowest band (the fit line's "pin to
+//     field" convention), so what is on the plot is a SLOPE, never an absolute claim;
+//   * the anisotropy card's own extracted curve, k∥(k⊥) = (k∥/k⊥)·k⊥ off `anisoCurves`.
+// The ridge, per band: the k∥ of the largest cell in the row (0 for an empty row, which is
+// what the anchor walk below tests for).
+function gen2dRidge(pts) {
+  let k = 0, v = 0;
+  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] > v) { v = pts[i + 1]; k = pts[i]; }
+  return k;
+}
+const GEN2D_GS = 2 / 3;
+function drawGen2D(c, o) {
+  if (!c) return;
+  const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
+  chartFrame(c, SW, SH, P);
+  c.textAlign = "left"; c.fillStyle = COL.txt;
+  const prog = gen2d.busy
+    ? "generating… band " + gen2d.done + "/" + Math.max(gen2d.total, gen2d.done, 1) : "";
+  const G = gen2dPanel(o);
+  if (!G) { c.fillText(prog || "E(k⊥, k∥) — press generate", x0 + 6, y0 + 13); return; }
+  const d = G.d, nb = Math.max(2, d.nb), nzb = G.nzb, pk = d.parKfac;
+  const xmax = Math.log10(nb);
+  const XL = L => x0 + L / xmax * (x1 - x0);         // a log10 k⊥ -> pixels
+  const X = k => XL(Math.log10(k));
+  // y is |k∥| over its own bins, 1..nzb, in the same kunit as k⊥ -- so a k⊥^(2/3) line
+  // is a statement and not a unit conversion. The axis spans the drawn CELL edges.
+  const ylo = Math.log10(0.5 * pk), yhi = Math.log10((nzb + 0.5) * pk);
+  const YL = L => px(y1 - (L - ylo) / (yhi - ylo) * (y1 - y0));
+  const Y = k => YL(Math.log10(k));
+
+  const kfmt = (m, e) => String(Math.round(m * Math.pow(10, e) * 1e6) / 1e6);
+  for (const tk of logTicks(ylo, yhi, (y1 - y0) / Math.max(yhi - ylo, 1e-9), kfmt))
+    yTick(c, YL(Math.log10(tk[0])), x0, x1, tk[2], tk[1]);
+  for (const tk of logTicks(0, xmax, (x1 - x0) / Math.max(xmax, 1e-9), (m, e) => String(m * Math.pow(10, e))))
+    xTick(c, X(tk[0]), y0, y1, SH - 8, X(tk[0]) > x1 - 20 ? "" : tk[2], tk[1]);
+  c.fillStyle = COL.txt; c.textAlign = "center";
+  c.fillText(String(nb), x1, SH - 8);
+  c.textAlign = "left";
+  // both axes on the one line the other charts label: no chart here rotates text (and the
+  // y axis of every one of them is named in its hint, not on the canvas)
+  c.fillText("k⊥ / kunit  (y: k∥ / kunit)", x0 + 4, SH - 8);
+
+  // The x extent of a band's column is the MIDPOINT (in log k⊥) between its neighbours'
+  // centres, not its own [lo, hi]: the bands deliberately overlap (gen2dBands), so their
+  // own ends would paint over each other and the picture would depend on the draw order.
+  // A single-band set falls back to that one band's ends, which is all there is.
+  const lb = d.bands.map(b => Math.log10(b.kc));
+  const edge = j => {
+    if (lb.length < 2) return Math.log10(j === 0 ? d.bands[0].lo : d.bands[0].hi);
+    if (j === 0) return lb[0] - 0.5 * (lb[1] - lb[0]);
+    if (j >= lb.length) return lb[lb.length - 1] + 0.5 * (lb[lb.length - 1] - lb[lb.length - 2]);
+    return 0.5 * (lb[j - 1] + lb[j]);
+  };
+  const lf = Math.log10(G.floor), lh = Math.log10(G.hi);
+  c.save();
+  c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
+  for (let j = 0; j < G.rows.length && j < lb.length; j++) {
+    const xa = Math.round(XL(edge(j))), xb = Math.round(XL(edge(j + 1)));
+    const pts = G.rows[j];
+    for (let i = 0; i < pts.length; i += 2) {
+      const kp = pts[i];
+      const t = Math.max(0, Math.min(1, (Math.log10(pts[i + 1]) - lf) / Math.max(lh - lf, 1e-9)));
+      const rgb = cmapRGB(GEN2D_CMAP, t);
+      c.fillStyle = "rgb(" + rgb.map(v => Math.round(255 * v)).join(",") + ")";
+      // one cell = one (band, |k∥| bin): half a bin either side of its own k∥, which is
+      // exactly the bin's width and needs no bin index carried alongside the value
+      const ya = Math.round(Y(kp + 0.5 * pk)), yb = Math.round(Y(kp - 0.5 * pk));
+      c.fillRect(xa, ya, Math.max(1, xb - xa), Math.max(1, yb - ya));
+    }
+  }
+  // the forcing shell, in the marker every other k⊥ chart carries -- the band set starts
+  // just above it (fitKA), so it is where this picture begins to mean anything
+  c.strokeStyle = COL.shell; c.setLineDash([2, 3]); c.lineWidth = 1;
+  for (const kf of (d.fshell || [])) {
+    if (kf >= 1 && kf <= nb) {
+      const x = Math.round(X(kf)) + 0.5;
+      c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
+    }
+  }
+  c.setLineDash([]);
+  const items = [];
+  if ((o && o.gov) === "on") {
+    // GS95, anchored on the lowest band that HAS a ridge (pin-to-field, as the fit lines
+    // here all do). With no ridge anywhere there is nothing to anchor to and no line.
+    let A = 0;
+    for (let j = 0; j < G.rows.length && j < lb.length && !A; j++) {
+      const kr = gen2dRidge(G.rows[j]);
+      if (kr > 0) A = kr / Math.pow(d.bands[j].kc, GEN2D_GS);
+    }
+    if (A > 0) {
+      const ka = Math.pow(10, edge(0)), kb = Math.pow(10, edge(lb.length));
+      c.strokeStyle = COL.guide; c.setLineDash([5, 4]); c.lineWidth = 1.4;
+      c.beginPath();
+      c.moveTo(X(ka), Y(A * Math.pow(ka, GEN2D_GS)));
+      c.lineTo(X(kb), Y(A * Math.pow(kb, GEN2D_GS)));
+      c.stroke(); c.setLineDash([]);
+      items.push(["k∥ ∝ k⊥^2/3 (GS95)", COL.guide, [4, 3]]);
+    }
+    // ... and the anisotropy card's extracted skeleton, off the SNAPSHOT's own spectra
+    // (which ride in the same object) rather than off the live ones: a static heatmap and
+    // a curve from a later moment would be two different fields. BOTH its legs ride: `par`
+    // (k∥ along z) comes with the ⊥ spectrum readback the band window was cut from, and
+    // `parFL` (k∥ along the field lines) is the sweep's own extra UNBANDED row, which is
+    // why the k∥B curve is drawn here and not just the coordinate one. It draws with no
+    // aniso card open, and simply contributes nothing when the matching finds no range.
+    const A2 = anisoCurves(d, { aq: o && o.gq, ad: "both" });
+    c.lineWidth = 1.4;
+    for (let i = 0; i < A2.curves.length; i++) {
+      const cv = A2.curves[i], a = cv[0];
+      if (a.length < 4) continue;
+      const lab = i < A2.nGlob ? "k∥z (aniso)" : "k∥B (aniso)";
+      c.strokeStyle = cv[1]; c.setLineDash(cv[2] || []); c.beginPath();
+      for (let m = 0; m < a.length; m += 2) {
+        // the aniso curve is the RATIO k∥/k⊥ against k⊥; times k⊥ it is this plot's k∥
+        const x = X(a[m]), y = Y(a[m + 1] * a[m]);
+        if (m === 0) c.moveTo(x, y); else c.lineTo(x, y);
+      }
+      c.stroke(); c.setLineDash([]);
+      items.push([lab, cv[1], cv[2]]);
+    }
+  }
+  c.restore();
+  // the cells overpaint chartFrame's border, so it is re-stroked over them
+  c.strokeStyle = COL.axis; c.lineWidth = 1;
+  c.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
+  items.unshift([((o && o.gp) === "z" ? "coordinate k∥z" : "field line k∥B") +
+                 " — generated @ t = " + (isFinite(d.t) ? d.t.toFixed(2) : "?"), COL.txt]);
+  if (prog) items.push([prog, COL.txt]);
+  legend(c, x0 + 6, y0 + 12, items, x1 - 30);
+}
+
+// ---------------------------------------------------------------------------
 // cut trace: a PAIR of in-plane components along y at fixed x = Lx/2 (REFINE_PLAN
 // H.3). `d.vals` is solver.readCutLine's 4*ny stack (u_x, u_y, b_x, b_y) of the
 // card's own z plane, so the pair selector is pure arithmetic here -- including
@@ -1848,6 +2146,47 @@ const CHART_TYPES = {
       + "SLOPE is physical &mdash; the absolute ratio is a gauge that moves with "
       + "L<sub>z</sub> &mdash; and at low k&perp; the integer k<sub>z</sub> bins flatten "
       + "the curve: that is the instrument, not the physics."
+  },
+  // ... and the distribution that curve is EXTRACTED from (ANISO_PLAN_2 C). The only chart
+  // type with no readback source at all: its data is a GENERATE press, so it declares no
+  // `src`, the frame loop never hands it anything, and every draw reads the module-level
+  // snapshot above. 3D only and placeholderless in 2D (no k∥ to bin), by the same `avail`
+  // the anisotropy card uses. `bar: fn` gives it the display cards' small colorbar --
+  // a heatmap is the one chart whose y is not the quantity.
+  // DRAFT text (hint below) -- for Alfred's pass.
+  gen2d: {
+    label: "2D spectrum E(k&perp;,k&#8741;)", w: SW, h: SH,
+    avail: cfg => cfg.zslice, bar: o => gen2dBarTicks(o), cmap: GEN2D_CMAP,
+    opts: () => [
+      { id: "gen", k: "btn", t: "generate", onClick: () => gen2dRun(),
+        dis: () => gen2d.busy || !solver,
+        ti: "PAUSE the run and sweep every k⊥ band over the frozen state (about a second). "
+          + "The plot then stays until you press this again — press Run when you are done "
+          + "reading it." },
+      // (a `ti` is a title ATTRIBUTE -- plain characters, never entities)
+      { id: "gp", ti: "k∥ measured along the field lines, or along the z coordinate — "
+          + "the same snapshot in two frames",
+        o: [["fl", "field line"], ["z", "coordinate"]] },
+      { id: "gq", ti: "which energy is binned; E± = E_u + E_b ± H_c",
+        o: [["tot", "E_u+E_b"], ["zp", "E&#8314;"], ["zm", "E&#8315;"]] },
+      { id: "gov", k: "cbl", t: "overlays",
+        ti: "the k∥ ∝ k⊥^2/3 (GS95) reference line, anchored on the lowest band's own "
+          + "ridge, and the anisotropy card's extracted k∥(k⊥) off this same snapshot" }
+    ],
+    draw: (c, d, o) => drawGen2D(c, o),
+    hint: "E(k&perp;, k&#8741;) from ONE frozen snapshot (<b>generate</b> pauses the run and "
+      + "band-passes the field in k&perp;, band by band); colour is log E, y is k&#8741;/kunit. "
+      + "The ridge bending right is critical balance seen whole. Switching panel is the "
+      + "Cho&ndash;Vishniac contrast on the same snapshot: the <i>coordinate</i> ridge FLATTENS "
+      + "at high k&perp; because field-line wander decorrelates the z frame, while the "
+      + "<i>field line</i> one keeps bending. One caveat on that half: each row's lines are "
+      + "traced through THAT BAND's own b&perp;, not the full field, so the large-scale "
+      + "wander doing most of the decorrelating is left out &mdash; against the full-field "
+      + "technique this panel under-shows the contrast at high k&perp;. "
+      + "Read the SHAPE and that contrast, not an "
+      + "exponent &mdash; at these resolutions there are only ~20 usable k&#8741; bins and the "
+      + "arithmetic is fp32, so the ridge is fuzzy (the quantitative version is a bigger-machine "
+      + "exercise). In the collision preset, let it develop first."
   }
 };
 // which chart types this app offers (the equilibrium ones are 2D-only)
@@ -2775,10 +3114,14 @@ class ChartCard {
   type() { return this.selType.value; }
   zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
   // the option selects, as { id: value } -- what the type's draw() branches on.
-  // Buttons (k: "btn") are actions, not values, so they contribute nothing.
+  // Buttons (k: "btn") are actions, not values, so they contribute nothing; a checkbox
+  // (k: "cbl") reads as "on" / "off", so every option value stays a plain string.
   optVals() {
     const o = {};
-    for (const s of this.optEls) if (!s.__optBtn) o[s.__optId] = s.value;
+    for (const s of this.optEls) {
+      if (s.__optChk) o[s.__optId] = s.__optChk.checked ? "on" : "off";
+      else if (!s.__optBtn) o[s.__optId] = s.value;
+    }
     return o;
   }
   // show/hide the options whose meaning depends on another one (the fit line's boxes),
@@ -2826,11 +3169,23 @@ class ChartCard {
         if (spec.ti) s.title = spec.ti;
         s.__optBtn = true;
         s.onclick = () => { spec.onClick(this); redraw(this.lastData); };
+      } else if (spec.k === "cbl") {
+        // a header CHECKBOX, in the `.cbl` idiom the control panel and the display card's
+        // arrows box already use (label wrapping box + text, so it is ONE flex item and
+        // the layout audit measures it as one). Its value is its checked state, so it
+        // rides optVals like any other option and the type's draw() sees "on" / "off".
+        s = _mk("label", "cbl", this.head);
+        const box = _mk("input", null, s);
+        box.type = "checkbox"; box.checked = !!spec.v;
+        s.appendChild(document.createTextNode(spec.t));
+        if (spec.ti) s.title = spec.ti;
+        s.__optChk = box;
+        box.onchange = () => redraw(this.lastData);
       } else {
         s = _sel(this.head, spec.o.map(x => ({ v: x[0], t: x[1] })), spec.ti);
         s.onchange = () => redraw();
       }
-      if (spec.v !== undefined) s.value = String(spec.v);
+      if (spec.v !== undefined && !s.__optChk) s.value = String(spec.v);
       s.__optId = spec.id;
       s.__optVis = spec.vis || null;
       s.__optDis = spec.dis || null;
@@ -2848,6 +3203,27 @@ class ChartCard {
     this.cv.style.aspectRatio = T.w + " / " + T.h;
     this.cx = chartCtx(this.cv, T.w, T.h);
     this.hint.innerHTML = T.hint;
+    this._barBuild(T);
+  }
+  // A chart whose quantity is a COLOUR needs the same legend a display card's field does,
+  // so the colorbar is the display card's block verbatim -- `.viewfoot` > `.cbar` (strip +
+  // three ticks), painted by cbarPaint through the shared colormap table and labelled by
+  // cbarFmt. Only types that declare `bar(opts)` get one; retyping the card takes it away
+  // again, which is why it is built here and not in the constructor.
+  _barBuild(T) {
+    if (this.foot) { this.root.removeChild(this.foot); this.foot = null; this.barT = null; }
+    if (!T.bar) return;
+    // appended, then the hint is re-appended after it -- the same "move it back to last"
+    // idiom the close button uses, so the card reads canvas / colorbar / hint
+    this.foot = _mk("div", "viewfoot", this.root);
+    this.root.removeChild(this.hint); this.root.appendChild(this.hint);
+    const bar = _mk("div", "cbar", this.foot);
+    bar.title = "colour range of the plotted quantity (log scale, so the middle tick is "
+      + "the geometric mean)";
+    const bcv = _mk("canvas", "cbarcv", bar);
+    const tk = _mk("div", "cbartk", bar);
+    this.barT = [_mk("span", null, tk), _mk("span", null, tk), _mk("span", null, tk)];
+    cbarPaint(chartCtx(bcv, CBAR_W, CBAR_H), T.cmap || 0);
   }
   // keep the z slider in range / enabled only when this card picks its plane by hand
   apply() {
@@ -2867,7 +3243,15 @@ class ChartCard {
       // the first: nothing about the buttons changes on the ones after it.
       if (first) this._optSync();
     }
-    CHART_TYPES[this.type()].draw(this.cx, data, this.optVals(), this.pins);
+    const T = CHART_TYPES[this.type()];
+    const o = this.optVals();
+    T.draw(this.cx, data, o, this.pins);
+    // the colorbar's labels come off the SAME options the plot was just drawn from, and
+    // through the type's own hook -- the card knows it has a bar, never what is on it
+    if (this.barT && T.bar) {
+      const t = T.bar(o);
+      for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
+    }
   }
   // ---- pinned ghost spectra (PINCURVE Phase B) -------------------------------
   // A pin is a snapshot of the curves this card is DRAWING -- post specSeries /
@@ -2993,11 +3377,15 @@ function cardsLayout(L) {
 }
 // the card the single-instance overlays (IC editor, cut trace) hang off
 function primaryCard() { return cards.disp.length ? cards.disp[0] : null; }
-// clear the traces after an IC change / rebuild (one call, both apps)
+// clear the traces after an IC change / rebuild (one call, both apps). The option sync
+// rides along because a rebuild can change what a card's BUTTONS mean -- the generated
+// E(k⊥,k∥) card's `generate` needs a live solver, and a card built before there was one
+// (the no-WebGPU boot) would otherwise stay disabled for the session. It is idempotent
+// for every other card: the fit boxes and the pin buttons re-evaluate to what they were.
 function chartsReset() {
   histReset(); islandReset(); modeReset();
   cardsThrottle.spec = 0; cardsThrottle.cut = 0;
-  for (const c of cards.chart) c.draw(null);
+  for (const c of cards.chart) { c._optSync(); c.draw(null); }
 }
 
 // ===========================================================================

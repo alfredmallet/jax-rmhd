@@ -91,18 +91,42 @@ const _zSlot = (C, slot) => (C.hasZ ? slot + 1 : slot);
 // PERPENDICULAR gradients only. In 3D the parallel derivative is not an RHS term
 // (it lives in the linear propagator), so the 3D kernel is the 2D one with gridA
 // read at the perpendicular index mp; vort/jpar use the perpendicular ksq too.
+//
+// ... and, ONLY where an app asks for it, the k_perp BAND-PASS of the generated
+// E(k_perp, k_par) card (ANISO_PLAN_2 A). That card's rows are the parallel spectrum of
+// the field band-passed to one k_perp band, and what has to be band-passed is exactly
+// what this kernel reads -- so the factor rides here, on the (phi, psi) READ path, and
+// nothing is written back: the state is never touched, no scratch copy of it exists, and
+// the eight gradients land in the RHS's own stack.
+// `C.gband` is the box k1 the two band ends are measured in, exactly as `C.band` is for
+// prepDisp, and it is a COMPILE-TIME option for the same reason: the RHS's own prepGrads
+// is emitted from this template WITHOUT it and is the pre-plan text byte for byte, so the
+// stepping path carries neither the uniform read nor the multiply. The sweep gets its own
+// pipeline off the banded emission (built lazily, on the first generate press). The factor
+// itself is ISO_PLAN D's, shared verbatim from BAND_WGSL below -- one half-cosine band in
+// this file -- and it keeps that phase's exact-1.0 passthrough: with both ends 0 the
+// factor is the literal 1.0 and `1.0 * v` is v bit for bit, so a row taken with the band
+// off is the unfiltered gradient.
 function prepGradsWGSL(C) {
+  // the uniform is the Mode one (modeWords' 32-byte layout), so the two band ends sit
+  // where prepDisp's do; mode / zslice / cmap are simply not read here.
+  const bandDecl = C.gband
+    ? MODE_BAND_STRUCT + "\n@group(0) @binding(3) var<uniform> md: Mode;\n"
+      + BAND_WGSL + `const INVKU: f32 = ${(1 / C.gband).toExponential(12)};\n` : "";
+  const bandLet = C.gband
+    ? `  let bf: f32 = bandFac(sqrt(g.z) * INVKU, md.klo, md.khi);\n` : "";
+  const bm = C.gband ? "bf * " : "";
   return C.pre + `
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> outg: array<vec2<f32>>;
-@compute @workgroup_size(64)
+${bandDecl}@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m: u32 = gid.x;
   if (m >= NM) { return; }
   let g: vec4<f32> = gridA[${_mpExpr(C)}];
-  let phi: vec2<f32> = fields[m];
-  let psi: vec2<f32> = fields[NM + m];
+${bandLet}  let phi: vec2<f32> = ${bm}fields[m];
+  let psi: vec2<f32> = ${bm}fields[NM + m];
   let vort: vec2<f32> = -g.z * phi;
   let jpar: vec2<f32> = -g.z * psi;
   outg[m]           = vec2<f32>(-g.x * phi.y,  g.x * phi.x);
@@ -500,6 +524,11 @@ const dispTwoComp = m => dispIsVector(m) || dispIsSigma(m);
 // interpreter cannot test: WGSL permits flushing f32 subnormals at any op, so `1.0 * v`
 // on a flush-to-zero device could denormalize a subnormal display value -- invisible in
 // any pixel, but "bitwise" carries that asterisk on-device.)
+//
+// Since ANISO_PLAN_2 A the factor has a SECOND consumer, the band-gated prepGrads above:
+// same half-cosine, same off-is-bitwise-off rule, same uniform words. It is one factor
+// deliberately -- the generated card's rows and this card's live filter must band-pass
+// the field identically, or the two pictures are of two different fields.
 const BAND_EDGE = 1.0;                  // taper width, in bins of the box k1
 const BAND_WGSL = `const BAND_EDGE: f32 = ${BAND_EDGE.toFixed(1)};
 const BAND_PI: f32 = 3.141592653589793;

@@ -53,8 +53,16 @@ const DISPLAY = new Set(["render", "renderCube", "colorize", "colorizeCube", "pr
 // because a stale expectation hides the next change.
 const TOUCHED = { "rmhd2d.html": ["colorize", "prepDisp"],
                   "rmhd3d.html": ["colorize", "colorizeCube", "prepDisp"] };
+// `prepGradsBand` and `specParBand` are NOT this plan's: they are ANISO_PLAN_2 A and B, the
+// generated E(k_perp, k_par) card's field-line sweep and its coordinate panel, and they are
+// listed here because this leg's whole value is that the list is EXACT. Both are additions
+// and not moves: the RHS's own `prepGrads` and the 1D `specPar` are emitted from those very
+// templates without the band and stay byte-identical above, which is exactly what the
+// "physics WGSL byte-identical" row is asserting one line up. (That plan's own gates live
+// in check2dspec.js; this one only refuses to be surprised.)
 const ADDED = { "rmhd2d.html": [],
-                "rmhd3d.html": ["maxFinalVol", "maxPartialVol", "renderVol", "vecMagVol"] };
+                "rmhd3d.html": ["maxFinalVol", "maxPartialVol", "prepGradsBand", "renderVol",
+                                "specParBand", "vecMagVol"] };
 // the three added NON-shader kernels, as (instance, template source, substitution): the
 // vol target's collapse and autoscale must be the SLICE target's own text at the volume's
 // length, or they are a second copy of the arithmetic instead of one template.
