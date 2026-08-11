@@ -1207,12 +1207,44 @@ function fitLabel(p, fr, sym) {
 function fitKA(nb, fshell) {
   return Math.max(2, Math.min(nb - 1, Math.round(fshell[1])));
 }
-// A in E = A k^p, pinned to a drawn series: its first point at or above kA, exactly where
-// the old guide anchored (just above the forcing shell). 0 when the series has no such
-// point -- an empty or still-filling chart draws no line.
-function fitAnchor(pts, kA, p) {
-  for (let i = 0; i < pts.length; i += 2) if (pts[i] >= kA) return pts[i + 1] * Math.pow(pts[i], -p);
+// A in E = A k^p, pinned to a drawn series at the anchor wavenumber `ka`: its first point
+// at or above ka. 0 when the series has no such point -- an empty or still-filling chart
+// draws no line, and the AUTOMATIC anchor below uses that same 0 as its fallback signal.
+function fitAnchor(pts, ka, p) {
+  for (let i = 0; i < pts.length; i += 2) if (pts[i] >= ka) return pts[i + 1] * Math.pow(pts[i], -p);
   return 0;
+}
+// WHERE the automatic ("pin to field") amplitude anchors -- on the spectrum card and on the
+// anisotropy card, through this one function so the two cannot drift apart (Alfred,
+// 2026-08-11). Not at kA any more, but at an INTERMEDIATE scale: halfway LOGARITHMICALLY
+// between the box scale and the dissipation scale, i.e. their geometric mean
+//     k_match = sqrt(k_box * k_diss),   k_box = FIT_KBOX = 1.
+// The fit line is a statement about the WHOLE resolved range, so it is pinned in the middle
+// of that range rather than at one end of it: anchored just above the forcing shell (where
+// it used to be, and where a forced run is least self-similar -- the injection bump sits
+// exactly there) an index that is a little off throws all of its error into the dissipation
+// end, and a wobble at the outer scale swings the entire line.
+//   k_box  is the box FUNDAMENTAL: 1, in the same kunit the abscissa of both cards is in.
+//          Deliberately NOT kA -- "box" is the largest scale in the run, not the largest
+//          scale the line happens to be drawn over.
+//   k_diss is the dissipation knee, specKnee's peak-then-walk-right crossing, measured by
+//          the CALLER on the range-setting curves that card already uses -- the one knee
+//          rule in this file, never a second opinion.
+// Two fallbacks to the old kA anchor, both of them reached through fitAnchor's 0:
+//   * NO KNEE IN VIEW -- specKnee returns Infinity (an early frame, an instability preset,
+//     any spectrum that never falls SPEC_KNEE decades). k_match is then Infinity, no drawn
+//     point is at or above it, and the anchor falls back to kA.
+//   * k_match PAST THE END of the drawn series -- a curve that stops short of it (a
+//     still-filling chart, a card drawing a narrow window). Same 0, same fallback.
+// fitAnchor's sampling convention is untouched (first point at or above the anchor k), so
+// this is a change of WHERE the amplitude is read off and of nothing else. It is the
+// automatic path only: a user-set amplitude ("amp") never comes through here, and "off"
+// draws no line at all.
+const FIT_KBOX = 1;
+function fitKMatch(kd) { return Math.sqrt(FIT_KBOX * kd); }
+function fitAnchorAuto(pts, kA, kd, p) {
+  const a = fitAnchor(pts, fitKMatch(kd), p);
+  return a > 0 ? a : fitAnchor(pts, kA, p);
 }
 // ---------------------------------------------------------------------------
 // the spectrum chart's CURVES, as data (PINCURVE Phase A)
@@ -1397,16 +1429,20 @@ function drawSpectrum(c, d, o, pins) {
   c.lineWidth = 1;
   for (const p of G) { c.globalAlpha = p.alpha; specStroke(c, p.curves, X, Y); }
   c.globalAlpha = 1;
-  // the fit line E = A k^p, from kA (just above the forcing shell, where the old fixed
-  // guide was anchored) to the last bin. `fit` = pin / amp / off; in "amp" mode an empty
-  // or non-positive amplitude box falls back to the pinned anchor, so switching to it
+  // the fit line E = A k^p, DRAWN from kA (just above the forcing shell, where the old
+  // fixed guide was anchored) to the last bin. `fit` = pin / amp / off; in "amp" mode an
+  // empty or non-positive amplitude box falls back to the pinned anchor, so switching to it
   // never blanks the line before the user has typed anything.
+  // Its automatic AMPLITUDE is pinned elsewhere: at fitKMatch's geometric mean of the box
+  // wavenumber and the dissipation knee, with kA as the fallback. The knee comes off `rc`,
+  // the very curves the y floor was just measured from -- one knee rule, one measurement.
   const kA = fitKA(nb, fshell);
+  const kdFit = specKnee(rc, hi);
   const fitMode = (o && o.fit) || "pin";
   const fitP = fitIndex(o && o.fitp);
   let anch = 0;
   if (fitMode !== "off") {
-    anch = fitAnchor(nPerp && curves.length ? curves[0][0] : [], kA, fitP);
+    anch = fitAnchorAuto(nPerp && curves.length ? curves[0][0] : [], kA, kdFit, fitP);
     const A = parseFloat(o && o.fita);
     // "amp" only ever draws over a DRAWN perpendicular series (hiP > 0): on a par-only
     // card the axis is k_par*parKfac, where a perp-bin fit line would be meaningless
@@ -1552,7 +1588,9 @@ function anisoCurves(d, o) {
   const curves = [];
   let hi = 0, lo = Infinity, nGlob = 0;
   const perp = _anisoLeg(d && d.perp, nb, 0, 1, lane);
-  if (perp.length < 4) return { curves, hi, lo, nGlob, kA };   // one bin brackets nothing
+  // `kd` is Infinity on the degenerate return for the same reason it is anywhere else: no
+  // spectrum, no knee -- and drawAniso's fit anchor reads that as "fall back to kA"
+  if (perp.length < 4) return { curves, hi, lo, nGlob, kA, kd: Infinity };  // one bin brackets nothing
   const TP = _anisoTail(perp);
   // The high-k end of the window: the dissipation knee, by the SAME peak-then-walk-right
   // crossing the spectrum card's y floor uses (specKnee) -- one knee rule in this file.
@@ -1560,7 +1598,11 @@ function anisoCurves(d, o) {
   // the last resolved bin. The low-k end is the fit line's kA, just above the forcing
   // shell. Note the tails themselves are built over ALL bins: the window restricts which
   // LEVELS are reported, not what energy is counted above a k.
-  const wP = _anisoWin(TP, kA, specKnee([[perp]], _anisoPeak(perp)));
+  // It is returned as well as used: the fit line's automatic amplitude anchors halfway (in
+  // log) between the box wavenumber and this knee, and must take the SAME one the window
+  // ended at rather than measure it again.
+  const kd = specKnee([[perp]], _anisoPeak(perp));
+  const wP = _anisoWin(TP, kA, kd);
   // z first, field line second: the fit line anchors on the field-line curve when it is
   // there, and drawAniso finds it at index nGlob.
   const legs = [];
@@ -1599,7 +1641,7 @@ function anisoCurves(d, o) {
     curves.push([pts, lg[2], lg[3], lg[4]]);
     if (lg[0] === "z") nGlob = 1;
   }
-  return { curves, hi, lo, nGlob, kA };
+  return { curves, hi, lo, nGlob, kA, kd };
 }
 function drawAniso(c, d, o) {
   if (!c) return;
@@ -1645,14 +1687,16 @@ function drawAniso(c, d, o) {
   // the reference slope, with the spectrum card's controls and behaviours: pin / set A /
   // off, the index snapping to -1/3, -1/2 or -1. It anchors on the FIELD-LINE curve
   // whenever that is drawn -- that is the curve whose slope the lesson is about -- and on
-  // the global one otherwise, at its first point at or above kA.
+  // the global one otherwise, at the SAME intermediate scale the spectrum card's automatic
+  // amplitude uses: halfway logarithmically between the box wavenumber and the dissipation
+  // knee anisoCurves already measured for its level window (fitAnchorAuto, kA as fallback).
   const kA = fitKA(nb, fshell);
   const fitMode = (o && o.fit) || "pin";
   const fitP = fitIndex(o && o.fitp, FIT_FRACS_ANISO);
   let anch = 0;
   if (fitMode !== "off") {
     const fc = A.curves.length > A.nGlob ? A.curves[A.nGlob] : (A.curves[0] || null);
-    anch = fc ? fitAnchor(fc[0], kA, fitP) : 0;
+    anch = fc ? fitAnchorAuto(fc[0], kA, A.kd, fitP) : 0;
     const Aamp = parseFloat(o && o.fita);
     if (fitMode === "amp" && isFinite(Aamp) && Aamp > 0) anch = Aamp;
   }
@@ -2283,7 +2327,12 @@ const CHART_TYPES = {
   // spectrum readback -- the two 1D spectra it matches are already in that data object,
   // so this card adds no kernel, no buffer and no round trip, exactly as island/mode add
   // none to the cut line. 3D only: in 2D there is no parallel direction to measure.
-  // DRAFT text (hint below) -- for Alfred's pass.
+  // The hint is Alfred's own copy (his third feedback round), no longer a draft. What it no
+  // longer carries -- the Cho-Vishniac divergence of the two curves, the L_z gauge caveat,
+  // the integer-k_z flattening at low k_perp and the field-line sampler's own cadence --
+  // lives in docs.html under #aniso, in full sentences: the hint is the one-breath version
+  // and the manual is the long one. "Solid" / "Dashed" are the dashes anisoCurves gives the
+  // two legs (the z leg null, the field-line leg [5, 3]), not a second convention.
   aniso: {
     label: "anisotropy k&#8741;/k&perp;", w: SW, h: SH, src: "spectrum",
     avail: cfg => cfg.zslice,
@@ -2305,15 +2354,12 @@ const CHART_TYPES = {
         vis: v => v.fit === "amp" }
     ],
     draw: (c, d, o) => drawAniso(c, d, o),
-    hint: "k&#8741;(k&perp;)/k&perp; by matching the CUMULATIVE energy above k in the "
-      + "perpendicular and parallel spectra. Solid: k&#8741; along z. Dashed: k&#8741; "
-      + "along the field lines &mdash; it needs the field-line sampler, so it appears a "
-      + "moment later. Eddies elongate along B as they shrink, so the ratio falls; "
-      + "&minus;1/3 is critical balance. The two curves DIVERGE because field-line wander "
-      + "decorrelates the z frame, which drags the solid one towards &minus;1. Only the "
-      + "SLOPE is physical &mdash; the absolute ratio is a gauge that moves with "
-      + "L<sub>z</sub> &mdash; and at low k&perp; the integer k<sub>z</sub> bins flatten "
-      + "the curve: that is the instrument, not the physics."
+    hint: "k&#8741;(k&perp;)/k&perp; as a function of k&perp; by matching cumulative energy "
+      + "above k in the perpendicular and parallel spectra. Solid: k<sub>z</sub> (global "
+      + "mean field). Dashed: k&#8741; (local mean field along field lines). Eddies "
+      + "elongate along B as they shrink, so the ratio falls; somewhere between &minus;1/2 "
+      + "and &minus;1/3 is the classic critical balance prediction. experimental feature: "
+      + "imperfect agreement at these resolutions."
   },
   // ... and the distribution that curve is EXTRACTED from (ANISO_PLAN_2 C). The only chart
   // type with no readback source at all: its data is a GENERATE press, so it declares no
@@ -2321,11 +2367,13 @@ const CHART_TYPES = {
   // snapshot above. 3D only and placeholderless in 2D (no k∥ to bin), by the same `avail`
   // the anisotropy card uses. `bar: fn` gives it the display cards' small colorbar --
   // a heatmap is the one chart whose y is not the quantity.
-  // The hint below is Alfred's own copy (his feedback round, this session), no longer a
-  // draft. What it deliberately does NOT carry any more -- the Cho-Vishniac contrast, the
-  // per-band-b⊥ caveat on the field-line panel, the ~20-bins / fp32 warning and the
-  // "let the collision develop first" note -- all live in docs.html, in full sentences,
-  // under #gen2d: the hint is the one-breath version and the manual is the long one.
+  // The hint below is Alfred's own copy, tightened again in his third feedback round. What
+  // it deliberately does NOT carry -- the Cho-Vishniac contrast, the per-band-b⊥ caveat on
+  // the field-line panel, the legend's GS95 / B06 / iso abbreviations, the rule that lays
+  // each slope just clear of the filled region's upper edge, the ~20-bins / fp32 arithmetic
+  // behind "imperfect agreement" and the "let the collision develop first" note -- all live
+  // in docs.html, in full sentences, under #gen2d: the hint is the one-breath version and
+  // the manual is the long one.
   gen2d: {
     // its own box, not the shared SW x SH: a heatmap wants a SQUARE plot area (GSW / GSH)
     label: "2D spectrum E(k&perp;,k&#8741;)", w: GSW, h: GSH,
@@ -2359,13 +2407,17 @@ const CHART_TYPES = {
     barTi: o => "colour range of the plotted quantity ("
       + ((o && o.gc) === "lin" ? "linear scale, so the middle tick is the arithmetic mean"
                                : "log scale, so the middle tick is the geometric mean") + ")",
-    hint: "two-dimensional spectrum E(k&perp;, k&#8741;) from one frozen snapshot "
+    // The ONE word that is not fixed copy is the colour scale: the sentence has to say what
+    // the cells are actually painted on, so "log" becomes "linear" when `gc` is on linear
+    // and the rest of it stands exactly as written either way. That is why this hint is a
+    // FUNCTION of the card's options -- the `bar(o)` / `barTi(o)` idiom, one row up.
+    hint: o => "two-dimensional spectrum E(k&perp;, k&#8741;) from one frozen snapshot "
       + "(<b>generate</b> pauses the run and band-passes the field in k&perp;, band by "
-      + "band); colour is E &mdash; log by default, linear on the colour select &mdash; and "
-      + "y is k&#8741;/kunit. the theory slopes are GS95 (k&#8741; &prop; "
+      + "band); colour is " + ((o && o.gc) === "lin" ? "linear" : "log") + " E, y is "
+      + "k&#8741;/kunit. overlay lines correspond to GS95 (k&#8741; &prop; "
       + "k&perp;<sup>2/3</sup>), Boldyrev 2006 (k&#8741; &prop; k&perp;<sup>1/2</sup>), and "
-      + "isotropic (k&#8741; &prop; k&perp;), legended <b>GS95</b> / <b>B06</b> / <b>iso</b> "
-      + "and laid just above the upper edge of the filled region."
+      + "isotropic (k&#8741; &prop; k&perp;). experimental feature: imperfect agreement at "
+      + "these resolutions."
   }
 };
 // which chart types this app offers (the equilibrium ones are 2D-only)
@@ -3381,8 +3433,16 @@ class ChartCard {
     this.head.removeChild(this.btnClose); this.head.appendChild(this.btnClose);
     this.cv.style.aspectRatio = T.w + " / " + T.h;
     this.cx = chartCtx(this.cv, T.w, T.h);
-    this.hint.innerHTML = T.hint;
+    this._hintSync(T);
     this._barBuild(T);
+  }
+  // A type's `hint` is fixed copy for every chart but one: gen2d's names the colour scale
+  // its cells are actually painted on, so it is a FUNCTION of the card's options and has to
+  // be re-rendered whenever those change -- which is here (retyping) and in draw() (an
+  // option select, a generate press). The plain string form is untouched and, being
+  // constant, is written once per retype exactly as it always was.
+  _hintSync(T) {
+    this.hint.innerHTML = typeof T.hint === "function" ? T.hint(this.optVals()) : T.hint;
   }
   // A chart whose quantity is a COLOUR needs the same legend a display card's field does,
   // so the colorbar is the display card's block verbatim -- `.viewfoot` > `.cbar` (strip +
@@ -3430,6 +3490,9 @@ class ChartCard {
     const T = CHART_TYPES[this.type()];
     const o = this.optVals();
     T.draw(this.cx, data, o, this.pins);
+    // an options-dependent hint follows the options it depends on (only gen2d has one, and
+    // gen2d gets no frame-loop draw at all -- this runs on a press or a select, not at 60 Hz)
+    if (typeof T.hint === "function") this._hintSync(T);
     // the colorbar's labels come off the SAME options the plot was just drawn from, and
     // through the type's own hook -- the card knows it has a bar, never what is on it
     if (this.barT && T.bar) {

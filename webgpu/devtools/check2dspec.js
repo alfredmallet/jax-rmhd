@@ -1173,7 +1173,8 @@ async function legChoreography(state) {
      C.CHART_TYPES.gen2d.avail({ zslice: true }) === true && !C.CHART_TYPES.gen2d.avail({}));
   ok("  ... and it declares no readback source at all: its data is a press",
      !C.CHART_TYPES.gen2d.src && typeof C.CHART_TYPES.gen2d.bar === "function" &&
-     typeof C.CHART_TYPES.gen2d.hint === "string" && C.CHART_TYPES.gen2d.hint.length > 80);
+     typeof C.CHART_TYPES.gen2d.hint === "function" &&
+     C.CHART_TYPES.gen2d.hint({}).length > 80);
 
   const env = await boot(dir, "rmhd3d.html");
   const card = env.run(`function(){ const c = addChartCard("gen2d"); cardsSync(); return c; }`);
@@ -1365,6 +1366,9 @@ const DRAWREC = `function(vals){
   try { c.draw(null); } finally { for (const m of Object.keys(keep)) cx[m] = keep[m]; }
   rec.bars = c.barT.map(x => x.innerHTML);
   rec.barTi = c.barD ? c.barD.title : "";
+  // the RENDERED hint, not the type's copy: this card's hint names the colour scale, so it
+  // is a function of the options and the card has to re-render it when they change
+  rec.hint = c.hint.innerHTML;
   return rec; }`;
 // the frame and the panel, as data. `ylo`/`ytop` are the axis the DATA occupies and `yhi`
 // the axis the plot is DRAWN on -- they differ by the legend headroom, and the second-round
@@ -1494,7 +1498,7 @@ async function legPlot(state) {
                           : "no axis label drawn");
   ok("  ... and it names the x axis only, as the other k charts do (y is named in the hint)",
      !!lab && lab[0].indexOf("(y:") < 0 && lab[0].indexOf("k⊥") === 0 &&
-     C.CHART_TYPES.gen2d.hint.indexOf("k&#8741;/kunit") >= 0,
+     C.CHART_TYPES.gen2d.hint({}).indexOf("k&#8741;/kunit") >= 0,
      lab ? JSON.stringify(lab[0]) : "-");
 
   // ---- item 1 again: the forcing markers are DROPPED, not clamped ----------
@@ -1766,15 +1770,34 @@ async function legPlot(state) {
      !/log scale/.test(Rlin.barTi), Rlin.barTi);
 
   // ---- item 8: the hint is Alfred's copy, and docs.html says the same ------
-  const h = C.CHART_TYPES.gen2d.hint;
-  ok("the hint is Alfred's copy: the three slopes named, the colour scale not asserted as log",
-     /^two-dimensional spectrum/.test(h) && /GS95/.test(h) && /Boldyrev 2006/.test(h) &&
-     /isotropic/.test(h) && /log by default/.test(h) && !/colour is log E/.test(h) &&
-     (h.match(/\(/g) || []).length === (h.match(/\)/g) || []).length,
-     h.length + " chars, parens balanced");
-  ok("  ... and it drops the measured-vs-prediction distinction with the curves that made it",
-     !/measured/i.test(h) && !/aniso/i.test(h) && /theory slopes/.test(h) &&
-     /<b>GS95<\/b>/.test(h) && /<b>B06<\/b>/.test(h) && /<b>iso<\/b>/.test(h),
+  // Third round: his copy verbatim, with the colour-scale word following the `gc` select.
+  // So the hint is a FUNCTION of the options and the two renderings must differ in that ONE
+  // word and in nothing else -- checked by putting the word back and comparing strings.
+  const hf = C.CHART_TYPES.gen2d.hint;
+  const h = hf({ gc: "log" }), hlin = hf({ gc: "lin" });
+  ok("the hint is Alfred's copy: his sentence, his three slopes, his register",
+     /^two-dimensional spectrum E\(k&perp;, k&#8741;\) from one frozen snapshot/.test(h) &&
+     /<b>generate<\/b> pauses the run and band-passes the field in k&perp;, band by band/.test(h) &&
+     /overlay lines correspond to GS95/.test(h) && /Boldyrev 2006/.test(h) &&
+     /isotropic/.test(h) && /experimental feature: imperfect agreement at these resolutions\.$/.test(h),
+     h.length + " chars");
+  ok("  ... with the parenthesis after the Boldyrev exponent closed (his one slip, both times)",
+     (h.match(/\(/g) || []).length === (h.match(/\)/g) || []).length &&
+     /Boldyrev 2006 \(k&#8741; &prop; k&perp;<sup>1\/2<\/sup>\), and isotropic/.test(h),
+     (h.match(/\(/g) || []).length + " ( against " + (h.match(/\)/g) || []).length + " )");
+  ok("  ... it says \"colour is log E\" on the log scale and \"linear\" on the linear one",
+     /colour is log E, y is k&#8741;\/kunit\./.test(h) &&
+     /colour is linear E, y is k&#8741;\/kunit\./.test(hlin) &&
+     hlin.replace("colour is linear E", "colour is log E") === h,
+     "the two renderings differ in that word alone");
+  ok("  ... and the CARD re-renders it when the select moves, rather than freezing the "
+     + "wording it was built with",
+     /colour is log E/.test(Rlog.hint) && /colour is linear E/.test(Rlin.hint) &&
+     Rlin.hint === hlin, Rlin.hint.slice(0, 120) + "...");
+  ok("  ... it drops the measured-vs-prediction distinction with the curves that made it, "
+     + "and the legend abbreviations with it (they live in the manual now)",
+     !/measured/i.test(h) && !/aniso/i.test(h) && !/<b>GS95<\/b>/.test(h) &&
+     !/<b>B06<\/b>/.test(h) && !/<b>iso<\/b>/.test(h) && !/upper edge/.test(h),
      h);
   const doc = fs.readFileSync(path.join(dir, "docs.html"), "utf8");
   const sec = doc.slice(doc.indexOf('id="gen2d"'), doc.indexOf('id="gen2d"') + 6000);

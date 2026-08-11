@@ -65,7 +65,8 @@ Object.assign(C, vm.runInContext("({ icSigmaLetter, IC_SIGMA_PERP_FRAC, IC_SIGMA
   + " IC_SIGMA_Z_MAX_FRAC, TRACK_HYST, IC_LETTERS, DISS_KD_FRAC, dissKd, DISS_STEP,"
   + " DISS_DECADES_BELOW, DISS_LG_OPEN, AUTODISS_SHELL_W, AUTODISS_SMOOTH,"
   + " AUTODISS_MAX_FACTOR, AUTODISS_PERIOD, IC_SINE, IC_SINE_N, icSigmaSine, icIsPacketIC,"
-  + " FIT_FRACS, FIT_SNAP, MODE_FIT_DT, MODE_FIT_RISE, MODE_FIT_R2, ISLAND_FIT_RISE })",
+  + " FIT_FRACS, FIT_SNAP, FIT_KBOX, MODE_FIT_DT, MODE_FIT_RISE, MODE_FIT_R2,"
+  + " ISLAND_FIT_RISE })",
   sandbox));
 const L = 2 * Math.PI;
 
@@ -653,6 +654,77 @@ console.log("8. spectrum fit line: index, amplitude, anchor (FEEDBACK item 8)");
   ok("an empty series anchors nothing (the waiting... path stays blank)",
      C.fitAnchor([], 3, -5 / 3) === 0);
   ok("a series that stops below kA anchors nothing", C.fitAnchor([1, 1, 2, 0.5], 8, -5 / 3) === 0);
+
+  // ---- where the AUTOMATIC amplitude anchors (Alfred, 2026-08-11) ----------
+  // "pin to field" no longer matches at kA, just above the forcing shell, but at an
+  // INTERMEDIATE scale: k_match = sqrt(k_box * k_diss) with k_box = 1 (the box fundamental,
+  // in the kunit the abscissa is in) and k_diss the dissipation knee -- halfway
+  // logarithmically across the resolved range. Same sampling convention, two fallbacks to
+  // the old kA behaviour: no knee in view, and k_match past the end of the drawn series.
+  ok("k_box is 1, the box fundamental, and k_match is the geometric mean with the knee",
+     C.FIT_KBOX === 1 && C.fitKMatch(100) === 10 && C.fitKMatch(2500) === 50 &&
+     C.fitKMatch(Infinity) === Infinity);
+  {
+    // a spectrum that is NOT one power law, so the anchor point is observable: k^-5/3 up
+    // to k = 50, four times that above it
+    const p = -5 / 3, A0 = 0.0137, pts = [];
+    for (let k = 1; k <= 200; k++) pts.push(k, (k <= 50 ? A0 : 4 * A0) * Math.pow(k, p));
+    ok("the automatic anchor reads the curve at k_match, not at kA",
+       C.fitAnchorAuto(pts, 3, 100, p) === C.fitAnchor(pts, 10, p) &&
+       Math.abs(C.fitAnchorAuto(pts, 3, 100, p) - A0) < 1e-15,
+       "k_diss = 100 -> k_match = 10");
+    ok("  ... and on that curve it is a different number from the old kA anchor",
+       C.fitAnchorAuto(pts, 60, 100, p) !== C.fitAnchor(pts, 60, p));
+    ok("FALLBACK, no knee in view (specKnee = Infinity): the old kA anchor, unchanged",
+       C.fitAnchorAuto(pts, 3, Infinity, p) === C.fitAnchor(pts, 3, p));
+    ok("FALLBACK, k_match past the end of the drawn series: the old kA anchor, unchanged",
+       C.fitAnchorAuto(pts, 3, 1e6, p) === C.fitAnchor(pts, 3, p) &&
+       C.fitAnchor(pts, C.fitKMatch(1e6), p) === 0, "k_match = 1000 > 200 bins");
+    ok("  ... and with nothing drawn at all it still anchors nothing",
+       C.fitAnchorAuto([], 3, 100, p) === 0);
+  }
+  // WIRING: drawSpectrum must feed it the knee measured on the RANGE-SETTING curves -- the
+  // very ones specFloor just set the y floor from, one knee rule -- and must do it in "pin"
+  // mode only. Checked by intercepting fitAnchorAuto in the sandbox.
+  {
+    const nb = 96, KD = 40;
+    const bins = new Float32Array(3 * nb);
+    for (let b = 1; b < nb; b++) {
+      const v = Math.pow(b, -5 / 3) * Math.exp(-Math.pow(b / KD, 4));
+      bins[b] = 0.6 * v; bins[nb + b] = 0.4 * v; bins[2 * nb + b] = 0;
+    }
+    const d = { perp: bins, nb, par: null, parKfac: 1, fshell: [1, 3], kunit: 1 };
+    const stub = () => {
+      const o = { canvas: { width: 420, height: 240 }, fillStyle: "#000", strokeStyle: "#000",
+                  lineWidth: 1, font: "10px x", textAlign: "left" };
+      for (const m of ["save", "restore", "beginPath", "moveTo", "lineTo", "stroke", "fill",
+                       "fillRect", "clearRect", "rect", "clip", "setLineDash", "closePath",
+                       "fillText", "strokeRect", "translate", "scale", "arc"]) o[m] = () => {};
+      o.measureText = t => ({ width: 6.2 * t.length });
+      return o;
+    };
+    const spy = o => {
+      const seen = [];
+      const real = C.fitAnchorAuto;
+      C.fitAnchorAuto = (a, b, c, e) => { seen.push([a, b, c, e]); return real(a, b, c, e); };
+      try { C.drawSpectrum(stub(), d, o, []); } finally { C.fitAnchorAuto = real; }
+      return seen;
+    };
+    const S = C.specCurves(d, { sq: "ub", sd: "perp" });
+    const kd = C.specKnee(S.curves.slice(0, S.nPerp), S.hiP);
+    const seen = spy({ sq: "ub", sd: "perp", fit: "pin", fitp: -1.667 });
+    ok("drawSpectrum anchors through fitAnchorAuto with the knee off its own range curves",
+       seen.length === 1 && isFinite(kd) && seen[0][2] === kd &&
+       seen[0][1] === C.fitKA(nb, d.fshell) && seen[0][3] === -5 / 3,
+       "kA = " + seen[0][1] + ", k_diss = " + kd + ", k_match = " + C.fitKMatch(kd).toFixed(2));
+    ok("  ... which is the same knee specFloor set the y floor from",
+       kd === C.specKnee(S.curves.slice(0, S.nPerp), S.hi) && S.hi === S.hiP);
+    ok("  ... \"off\" never anchors, and \"amp\" computes then overrides (a blank box falls "
+       + "back to the automatic anchor)",
+       spy({ sq: "ub", sd: "perp", fit: "off" }).length === 0 &&
+       spy({ sq: "ub", sd: "perp", fit: "amp", fita: "1.5" }).length === 1 &&
+       spy({ sq: "ub", sd: "perp", fit: "amp", fita: "" }).length === 1);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -378,14 +378,20 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     <li><b>fit</b>: a straight reference line E = A k<sup>p</sup>. <b>pin to field</b>
       places it on the spectrum itself, <b>set A</b> lets you type the amplitude, and
       <b>off</b> hides it. The index box next to it defaults to &minus;5/3; type
-      &minus;1.5 and it is labelled &minus;3/2.</li>
+      &minus;1.5 and it is labelled &minus;3/2. Pinned, the line is matched to the spectrum
+      at an <i>intermediate</i> scale &mdash; halfway, logarithmically, between the box
+      scale and the dissipation scale &mdash; so it runs through the middle of the resolved
+      range instead of being tied to the noisy end of it. Before there is a dissipation
+      range to speak of (the first frames, or a run with no knee in view) it falls back to
+      matching just above the forcing shell, where it used to be pinned always.</li>
     <li><b>pin</b> freezes the curves currently drawn as faint grey ghosts, so the next
       thing you do can be compared against the last thing you did &mdash; lower the
       dissipation and watch the straight range stretch, or pin at t = 0 and watch the
       spectrum fill in. Up to four; <b>unpin</b> clears them.</li>
   </ul>
-  <!-- DRAFT copy (ANISO_PLAN Phase C): written by the implementing agent, awaiting
-       Alfred's wording pass, like the preset text before it. -->
+  <!-- Alfred's wording pass landed (third feedback round): the card's hint is his copy and
+       this section is the long form of it. Solid = k_z in the global mean field, dashed =
+       k_par along the local field, which is how anisoCurves dashes the two legs. -->
   <p id="aniso"><b>anisotropy k<sub>&#8741;</sub>/k<sub>&perp;</sub></b> (3D) &mdash; how
     stretched the eddies are along the background magnetic field, scale by scale. Turbulence
     in a magnetised plasma does not make round eddies: the smaller they get, the longer and
@@ -398,14 +404,19 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     and which parallel scale hold that much, and plots one against the other; doing it for
     a ladder of energies gives the curve. Reading it:</p>
   <ul>
-    <li>The line falls, because eddies get more elongated as they get smaller. A slope of
-      <b>&minus;1/3</b> is <i>critical balance</i> (Goldreich &amp; Sridhar): eddies live
-      exactly as long as it takes an Alfv&eacute;n wave to cross them. <b>&minus;1/2</b> is
-      what the same picture gives when flow and field align. The <b>fit</b> control is the
-      spectrum card's, with those two indices and &minus;1 in its box.</li>
+    <li>The line falls, because eddies get more elongated as they get smaller. Somewhere
+      between <b>&minus;1/2</b> and <b>&minus;1/3</b> is the classic <i>critical balance</i>
+      prediction: &minus;1/3 is Goldreich &amp; Sridhar's, where eddies live exactly as long
+      as it takes an Alfv&eacute;n wave to cross them, and &minus;1/2 is what the same
+      picture gives when flow and field align. The <b>fit</b> control is the spectrum
+      card's, with those two indices and &minus;1 in its box; on <b>pin to field</b> its
+      amplitude is matched to the curve halfway (logarithmically) between the box scale and
+      the dissipation scale, so the line sits through the middle of the measured range
+      rather than at one end of it.</li>
     <li>There are two curves. The solid one measures the parallel scale along the
-      <b>z axis</b> of the box; the dashed one measures it <b>along the actual field
-      lines</b>, which are themselves bent. They separate, and the separation is the
+      <b>z axis</b> of the box &mdash; k<sub>z</sub>, in the global mean field; the dashed
+      one measures it <b>along the actual field lines</b>, which are themselves bent, so it
+      is the local mean field. They separate, and the separation is the
       point: the field lines wander, so beyond a certain scale the z axis stops being the
       parallel direction at all and the solid curve flattens towards a slope of
       &minus;1. The dashed curve keeps reporting the real scaling. Measured in the wrong
@@ -419,9 +430,15 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       And at the left-hand end the parallel scales are whole numbers of box lengths, too
       coarse to resolve, which flattens the curve there &mdash; that is the instrument,
       not the plasma. Give it a forced run, a while to develop, and read the middle.</li>
+    <li>It is an <b>experimental feature</b>, and the hint says so: expect imperfect
+      agreement at these resolutions. A browser-sized box has perhaps a decade of
+      perpendicular range and a handful of parallel bins under it, which is enough to see
+      the ratio fall and the two curves part company, and not enough to measure an
+      exponent off.</li>
   </ul>
-  <!-- DRAFT copy (ANISO_PLAN_2 Stage C): written by the implementing agent, awaiting
-       Alfred's wording pass, like the anisotropy card's above. -->
+  <!-- Alfred's wording pass landed (third feedback round): the card's hint is his copy,
+       down to the colour-scale word that follows the `gc` select, and this section is the
+       long form of it. -->
   <p id="gen2d"><b>2D spectrum E(k<sub>&perp;</sub>,k<sub>&#8741;</sub>)</b> (3D) &mdash; the
     picture the chart above reduces to a curve: how much energy sits at each combination of
     a perpendicular and a parallel scale, drawn as a heatmap. Bright is more energy (the
@@ -455,7 +472,8 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       the full field's lines, the contrast at small perpendicular scales would be
       stronger than what is drawn here, not weaker.</li>
     <li><b>which energy</b> is the anisotropy card's: the total, or one Elsasser field.</li>
-    <li><b>log colour</b> / <b>linear colour</b> is the scale the cells are painted on.
+    <li><b>log colour</b> / <b>linear colour</b> is the scale the cells are painted on, and
+      the card's hint names whichever one is in force.
       Log (the default) runs from the same noise floor the spectrum charts use up to the
       peak, and is the only scale on which an inertial range is visible at all; linear runs
       from zero to the peak, which shows almost nothing &mdash; and that is the point of
@@ -477,11 +495,12 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       twice the noise floor rather than merely at it: a single cell of single-precision
       fuzz at the top of one column would otherwise drag all three lines up together, by
       most of the height of the frame.</li>
-    <li>Read the shape, not a number. At these resolutions there are only about twenty
-      usable parallel bins and the arithmetic is single precision, so the ridge is a fuzzy
-      band rather than a line; measuring an exponent off it is a job for a bigger machine.
-      Give it a forced run with some history behind it &mdash; in the collision demo, let
-      the packets meet and develop first.</li>
+    <li>Read the shape, not a number. It is an <b>experimental feature</b>, and the hint
+      says so: at these resolutions there are only about twenty usable parallel bins and the
+      arithmetic is single precision, so the ridge is a fuzzy band rather than a line and
+      agreement with any of the three slopes is imperfect; measuring an exponent off it is a
+      job for a bigger machine. Give it a forced run with some history behind it &mdash; in
+      the collision demo, let the packets meet and develop first.</li>
   </ul>
   <p><b>cut trace</b> &mdash; a slice through the field along a single line (along y, at
     the middle of the box). The option picks which pair of components:

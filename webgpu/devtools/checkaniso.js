@@ -53,7 +53,8 @@ vm.runInContext(fs.readFileSync(path.join(dir, "common.js"), "utf8"), sandbox, {
 const C = Object.assign({}, vm.runInContext(
   "({ anisoCurves, drawAniso, ANISO_NLEV, ANISO_LANES, _anisoLeg, _anisoTail, _anisoAt,"
   + " _anisoWin, _anisoPeak, specKnee, specFloor, fitKA, fitIndex, fitLabel, FIT_FRACS,"
-  + " FIT_FRACS_ANISO, FIT_SNAP, SPEC_KNEE, CHART_TYPES, COL })", sandbox));
+  + " FIT_FRACS_ANISO, FIT_SNAP, SPEC_KNEE, CHART_TYPES, COL,"
+  + " fitAnchor, fitAnchorAuto, fitKMatch, FIT_KBOX })", sandbox));
 
 // ---- synthetic spectra -----------------------------------------------------
 // a three-lane [E_u | E_b | H_c] bin stack of `n` bins, E_u carrying f(bin) and the other
@@ -413,6 +414,18 @@ console.log("6. the level window: the kA anchor and the shared dissipation knee"
   ok("fitKA is the fit line's own anchor rule, shared with the spectrum card",
      C.fitKA(128, [1, 3]) === 3 && C.fitKA(128, [1, 1]) === 2 && C.fitKA(4, [1, 30]) === 3,
      "3 / 2 / 3");
+  // the knee this window ended at is RETURNED, because the fit line's automatic amplitude
+  // anchors off it (section 6b) and must not measure it a second time
+  ok("  ... and anisoCurves hands the knee back, the same one the window used", (() => {
+    // "no knee" needs a spectrum that never falls SPEC_KNEE decades -- a k^-1 over 64 bins.
+    // (CASE_GS does not qualify: k^-5/3 over 32768 bins falls seven decades and HAS one.)
+    const flat = { perp: mk(64, j => (j === 0 ? 0 : Math.pow(j, -1))), nb: 64,
+                   par: mk(32, j => 0.3 * Math.pow(j + 1, -1)), parKfac: 1, fshell: [1, 3] };
+    return C.anisoCurves(dd, { aq: "tot", ad: "z" }).kd === knee &&
+           !isFinite(C.anisoCurves(flat, { ad: "z" }).kd) &&
+           !isFinite(C.anisoCurves({ nb: 4 }, {}).kd);
+  })(),
+     "k_d = " + knee + " on the knee'd spectrum, Infinity on a shallow one and on nothing");
   ok("_anisoWin returns null when no bin sits inside the window",
      C._anisoWin(C._anisoTail(C._anisoLeg(parLaw(3, -2), PAR_N, 1, 1, lane)), 1e9, Infinity) === null);
   // the knee factoring must not have moved the spectrum card's floor
@@ -420,6 +433,104 @@ console.log("6. the level window: the kA anchor and the shared dissipation knee"
     const hiC = [[[1, 1, 2, 1, 3, 1]]], loC = [[[1, 1e-6, 2, 1e-6, 3, 1e-6]]];
     return C.specFloor(hiC, 1, 1) >= C.specFloor(hiC.concat(loC), 1, 1e-6);
   })());
+}
+
+// ---------------------------------------------------------------------------
+console.log("6b. the fit line's AUTOMATIC anchor: the intermediate matching scale");
+// ---------------------------------------------------------------------------
+// Alfred, 2026-08-11: in automatic ("pin") mode the amplitude is matched halfway
+// LOGARITHMICALLY between the box scale and the dissipation scale --
+//     k_match = sqrt(k_box * k_diss),  k_box = FIT_KBOX = 1
+// -- instead of at kA just above the forcing shell, on BOTH cards. The sampling convention
+// inside fitAnchor is unchanged (first point at or above the anchor k), so these legs pin
+// WHERE it anchors, the two fallbacks to kA, and the fact that the aniso card feeds it the
+// knee it already measured rather than a second opinion.
+{
+  ok("k_box is the box fundamental, 1, and NOT kA", C.FIT_KBOX === 1);
+  ok("k_match is the geometric mean of k_box and the knee -- halfway in log",
+     C.fitKMatch(100) === 10 && C.fitKMatch(64) === 8 &&
+     Math.abs(Math.log(C.fitKMatch(1234)) - 0.5 * (Math.log(1) + Math.log(1234))) < 1e-12,
+     "sqrt(1 * k_d)");
+  ok("  ... and no knee (specKnee = Infinity) gives no matching scale either",
+     C.fitKMatch(Infinity) === Infinity);
+  // a straight A k^p series: every anchor point recovers the SAME A, so the leg that proves
+  // the anchor moved has to be a series that is NOT a single power law. This one is two
+  // power laws joined at k = 50, so the amplitude read at k = 10 differs from the one read
+  // at k = 3 by a factor the check states.
+  const p = -1 / 3, A0 = 0.7;
+  const pts = [];
+  for (let k = 1; k <= 400; k++) pts.push(k, k <= 50 ? A0 * Math.pow(k, p) : 4 * A0 * Math.pow(k, p));
+  const kd = 100, kM = C.fitKMatch(kd);              // = 10, inside the first branch
+  ok("the automatic anchor samples the curve at k_match, not at kA",
+     Math.abs(C.fitAnchorAuto(pts, 3, kd, p) - A0) < 1e-12 &&
+     C.fitAnchorAuto(pts, 3, kd, p) === C.fitAnchor(pts, kM, p),
+     "k_match = " + kM + ", A = " + C.fitAnchorAuto(pts, 3, kd, p).toFixed(4));
+  ok("  ... which really is a different point from kA on a curve that is not one power law",
+     C.fitAnchorAuto(pts, 60, kd, p) !== C.fitAnchor(pts, 60, p) &&
+     Math.abs(C.fitAnchor(pts, 60, p) / A0 - 4) < 1e-12,
+     "kA = 60 lands on the upper branch (4x), k_match = 10 on the lower");
+  ok("FALLBACK 1, no knee in view: the anchor is kA again, exactly as before this change",
+     C.fitAnchorAuto(pts, 60, Infinity, p) === C.fitAnchor(pts, 60, p) &&
+     C.fitAnchorAuto(pts, 3, Infinity, p) === C.fitAnchor(pts, 3, p));
+  ok("FALLBACK 2, k_match past the end of the drawn series: kA again",
+     C.fitAnchorAuto(pts, 3, 1e9, p) === C.fitAnchor(pts, 3, p) &&
+     C.fitAnchor(pts, C.fitKMatch(1e9), p) === 0,
+     "k_match = " + C.fitKMatch(1e9).toFixed(0) + " > 400");
+  ok("  ... and a series with nothing at all still anchors nothing",
+     C.fitAnchorAuto([], 3, 100, p) === 0);
+
+  // WIRING: drawAniso must hand fitAnchorAuto the curve it is drawing, its kA, and the knee
+  // anisoCurves returned -- checked by intercepting the function in the sandbox rather than
+  // by re-deriving pixels off the canvas.
+  const KD = 300;
+  const dd = Object.assign({}, CASE_GS, {
+    perp: mk(PERP_N, j => (j === 0 ? 0 : Math.pow(j, -5 / 3) * Math.exp(-Math.pow(j / KD, 4))))
+  });
+  const stub = () => {
+    const o = { canvas: { width: 420, height: 240 }, calls: [] };
+    for (const m of ["save", "restore", "beginPath", "moveTo", "lineTo", "stroke", "fill",
+                     "fillRect", "clearRect", "rect", "clip", "setLineDash", "closePath",
+                     "fillText", "strokeRect", "translate", "scale", "arc"]) o[m] = () => {};
+    o.measureText = t => ({ width: 6.2 * t.length, actualBoundingBoxAscent: 7.2,
+                            actualBoundingBoxDescent: 0 });
+    return o;
+  };
+  const spy = (d, o) => {
+    const seen = [];
+    sandbox.__spy = (pts2, kA2, kd2, p2) => { seen.push([pts2, kA2, kd2, p2]); return 1; };
+    vm.runInContext("var __real = fitAnchorAuto;"
+      + " fitAnchorAuto = (a, b, c, e) => __spy(a, b, c, e);", sandbox);
+    try { C.drawAniso(stub(), d, o); } finally {
+      vm.runInContext("fitAnchorAuto = __real;", sandbox);
+    }
+    return seen;
+  };
+  const AA = C.anisoCurves(dd, { aq: "tot", ad: "both", fit: "pin" });
+  const seen = spy(dd, { aq: "tot", ad: "both", fit: "pin", fitp: -0.333 });
+  ok("drawAniso anchors through fitAnchorAuto, on the field-line curve, with THAT knee",
+     seen.length === 1 && seen[0][2] === AA.kd && isFinite(AA.kd) &&
+     seen[0][1] === C.fitKA(dd.nb, dd.fshell) &&
+     JSON.stringify(Array.from(seen[0][0])) ===
+       JSON.stringify(Array.from(AA.curves[AA.nGlob][0])),
+     "kA = " + seen[0][1] + ", k_d = " + seen[0][2].toFixed(1)
+     + ", k_match = " + C.fitKMatch(seen[0][2]).toFixed(2));
+  // The two cards share the RULE and the units (k/kunit), so their anchors coincide when
+  // they are looking at the same energy: the knee the aniso card feeds in is specKnee on
+  // its own perpendicular leg and nothing else. They can still land a bin apart in practice
+  // -- the spectrum card measures the knee on the LANES IT IS DRAWING (its `sq` set, plus
+  // any pinned ghosts in the range pool) while this one measures on the single `aq` lane --
+  // which is a difference of what is being measured, never of the rule.
+  ok("  ... and the anchor scale is the shared rule on this card's own range curve",
+     (() => {
+       const leg = C._anisoLeg(dd.perp, dd.nb, 0, 1, (u, b, h) => u + b);
+       return AA.kd === C.specKnee([[leg]], C._anisoPeak(leg)) &&
+              C.fitKMatch(AA.kd) === Math.sqrt(AA.kd);
+     })(), "k_match = " + C.fitKMatch(AA.kd).toFixed(4));
+  ok("the USER-SET amplitude never consults it: \"amp\" wins outright, \"off\" draws nothing",
+     spy(dd, { ad: "both", fit: "amp", fita: "2.5" }).length === 1 &&   // computed, then overridden
+     spy(dd, { ad: "both", fit: "off" }).length === 0);
+  ok("  ... and an \"amp\" box left blank still falls back to the automatic anchor",
+     spy(dd, { ad: "both", fit: "amp", fita: "" }).length === 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +555,29 @@ console.log("7. the card: type entry, fit tables, and the field-line readback ga
      os[3].vis({ fit: "off" }) === false && os[3].vis({ fit: "pin" }) === true &&
      os[4].vis({ fit: "pin" }) === false && os[4].vis({ fit: "amp" }) === true);
   ok("  ... and it has a hint", typeof T.hint === "string" && T.hint.length > 80);
+  // Alfred's copy (third feedback round), and the ONE thing in it that is a claim about the
+  // code rather than about the physics: which leg is solid and which is dashed. anisoCurves
+  // gives the z leg a null dash and the field-line leg [5, 3], so solid = k_z in the global
+  // mean field and dashed = k_par along the local field, which is what the hint says. If a
+  // future edit swaps the dashes, this leg fails rather than the copy quietly going wrong.
+  ok("the hint is Alfred's copy: cumulative-energy matching, the two legs, the CB band",
+     /^k&#8741;\(k&perp;\)\/k&perp; as a function of k&perp; by matching cumulative energy/.test(T.hint) &&
+     /Solid: k<sub>z<\/sub> \(global mean field\)\./.test(T.hint) &&
+     /Dashed: k&#8741; \(local mean field along field lines\)\./.test(T.hint) &&
+     /somewhere between &minus;1\/2 and &minus;1\/3 is the classic critical balance prediction/
+       .test(T.hint) &&
+     /experimental feature: imperfect agreement at these resolutions\.$/.test(T.hint),
+     T.hint.length + " chars");
+  ok("  ... and SOLID / DASHED are the dashes anisoCurves actually strokes the legs with",
+     (() => {
+       const A = C.anisoCurves(CASE_GS, { aq: "tot", ad: "both" });
+       const z = A.curves[0], fl = A.curves[1];
+       return A.nGlob === 1 && A.curves.length === 2 && z[2] === null &&
+              JSON.stringify(fl[2]) === "[5,3]" && /k∥z/.test(z[3]) && /k∥B/.test(fl[3]);
+     })(), "z leg dash null, field-line leg [5,3]");
+  ok("  ... it drops to the manual the things the one-breath version cannot carry",
+     !/Cho/i.test(T.hint) && !/gauge/i.test(T.hint) && !/L<sub>z<\/sub>/.test(T.hint) &&
+     !/DIVERGE/.test(T.hint), T.hint);
   // the FIT_FRACS parameterization: two tables, neither leaking into the other
   ok("the spectrum card's snap table is UNCHANGED at -5/3, -3/2",
      JSON.stringify(C.FIT_FRACS) === JSON.stringify([[-5 / 3, "-5/3"], [-3 / 2, "-3/2"]]));
