@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>further reading &mdash; plasma turbulence</title>
+<link rel="stylesheet" href="style.css">
+<!-- Page-scoped styles ONLY. style.css is shared with the two apps and docs.html and is
+     deliberately not touched by this page: everything below is either an existing shared
+     class (.sub / .lead / .panes / .hint) or is defined right here. If any of this earns
+     its way into the shared sheet later, move it then, not now. -->
+<style>
+  h2 { font-size: 14px; font-weight: 600; color: #d8dee6; margin: 22px 0 2px; }
+  h2 + .note { color: #7a8494; font-size: 11.5px; margin: 0 0 4px; max-width: 780px; }
+  /* reference lists: hanging indent, one entry per line, annotation in dimmer type */
+  ul.refs { list-style: none; padding: 0; margin: 8px 0 4px; max-width: 780px; }
+  ul.refs li { margin: 0 0 7px; padding-left: 18px; text-indent: -18px;
+               color: #c6cdd7; font-size: 12.5px; line-height: 1.45; }
+  ul.refs li .what { color: #8a94a3; }
+  ul.refs li.nolink { color: #a7b0bd; }
+  /* the write-in slots. Delete each one as its paragraph gets written. */
+  .todo { border-left: 2px solid #4a3a5c; padding: 4px 0 4px 10px; margin: 8px 0 12px;
+          color: #9b8ab0; font-size: 12px; font-style: italic; max-width: 780px; }
+</style>
+</head>
+<body>
+<h1>further reading</h1>
+<div class="sub">where to go after the demo
+  &middot; <a href="rmhd2d.html">2D app</a>
+  &middot; <a href="rmhd3d.html">3D app</a>
+  &middot; <a href="docs.html">how to use this page</a></div>
+
+<p class="lead">some papers, books, and lecture notes that might be interesting. the first four sections are
+  the "basics", in order of distance from the simulations performed by this page. then,
+  a long list of topics that I (Alfred) find particularly interesting. just dip into
+  it as you like, probably reading from top to bottom is not a good idea.</p>
+
+<h2>the basics</h2>
+<p class="note">ordered by distance from what you just watched on the other page.</p>
+
+<div class="panes">
+
+<details open>
+  <summary>the equations this page solves</summary>
+  <p class="lead">reduced magnetohydrodynamics (RMHD), the equation set solved in the demos, is a simplified description
+    of a plasma in a system with a strong background magnetic field (there are many restrictions on when it is appropriate,
+    see if you can figure out when it would break down). it was originally derived
+    in the context of the fusion program, independently by US and Soviet researchers. it turns out
+    to also be really useful in the context of astrophysical turbulence!
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1063/1.861310" target="_blank" rel="noopener">Strauss 1976</a>
+      &mdash; <i>Nonlinear, three-dimensional magnetohydrodynamics of noncircular tokamaks</i>.
+      <span class="what">"original" (in the west!) derivation of RMHD, for fusion plasmas.</span></li>
+    <li><a href="https://www.jetp.ras.ru/cgi-bin/e/index/r/65/2/p575?a=list" target="_blank" rel="noopener">Kadomtsev &amp; Pogutse 1974</a>
+      &mdash; <i>Nonlinear helical perturbations of a plasma in the tokamak</i>.
+      <span class="what">slightly earlier independent derivation, from the other side of the Iron Curtain.</span></li>
+    <li><a href="https://doi.org/10.1088/0067-0049/182/1/310" target="_blank" rel="noopener">Schekochihin et al. 2009</a>
+      &mdash; <i>Astrophysical gyrokinetics: kinetic and fluid turbulent cascades in magnetized weakly collisional plasmas</i>.
+      <span class="what">the "tome". &sect;2 is a modern derivation of RMHD and of why it is the right limit; the rest is the kinetic story below it.</span>
+      (<a href="https://arxiv.org/abs/0704.0044" target="_blank" rel="noopener">arXiv</a>)</li>
+  </ul>
+</details>
+
+<details>
+  <summary>learning plasma physics</summary>
+  <p class="lead">I (Alfred) owe a great deal to Alex Schekochihin's teaching, but if you want a gentler introduction,
+    use Fitzpatrick (free and online!) or (one of my favourite books) Choudhuri. Matt Kunz notes are also extremely useful and complementary
+  to Alex's course. you probably need to know some classical mechanics and E&amp;M.</p>
+  <ul class="refs">
+    <li><a href="https://www-thphys.physics.ox.ac.uk/people/AlexanderSchekochihin/KT/" target="_blank" rel="noopener">Schekochihin, <i>Lectures on Kinetic Theory and Magnetohydrodynamics of Plasmas</i></a>
+      <span class="what">Oxford graduate notes: derives magnetohydrodynamics from kinetics.</span></li>
+    <li><a href="https://www.astro.princeton.edu/~kunz/Site/AST554/AST554_Kunz_Lecture_Notes.pdf" target="_blank" rel="noopener">Kunz, <i>Lecture Notes on Irreversible Processes in Plasmas</i></a>
+      <span class="what">Princeton graduate notes; collisional/transport side done properly.</span></li>
+    <li class="nolink">Choudhuri, <i>The Physics of Fluids and Plasmas: An Introduction for Astrophysicists</i> (CUP 1998).
+      <span class="what">extremely good intuitive explanations; assumes an astronomer rather than a physicist.</span>
+      <!-- LINK TODO: CUP DOI unverified --></li>
+    <li class="nolink">Fitzpatrick, <i>Plasma Physics: An Introduction</i> / UT Austin notes.
+      <span class="what">good, free, terse, online &amp; searchable.</span>
+      <!-- LINK TODO --></li>
+  </ul>
+</details>
+
+<details>
+  <summary>learning turbulence</summary>
+  <p class="lead">a warning: turbulence in neutral fluids ("hydro") is usually taught as a completely different subject
+    to MHD turbulence, despite many similarities. the Schekochihin paper here is a complete, modern, guided tour to the MHD
+    side, while the Frisch and Davidson books are for the hydro side, in different but complementary styles.
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1017/S0022377822000721" target="_blank" rel="noopener">Schekochihin 2022</a>
+      &mdash; <i>MHD turbulence: a biased review</i>.
+      <span class="what">the story of MHD turbulence from start to 2022: great fun to read!</span>
+      (<a href="https://arxiv.org/abs/2010.00699" target="_blank" rel="noopener">arXiv</a>)</li>
+    <li><a href="https://doi.org/10.1017/CBO9781139170666" target="_blank" rel="noopener">Frisch 1995</a>
+      &mdash; <i>Turbulence: The Legacy of A. N. Kolmogorov</i>.
+      <span class="what">excellent, but with a particular style.</span></li>
+    <li class="nolink">Davidson, <i>Turbulence: An Introduction for Scientists and Engineers</i> (OUP).
+      <span class="what">also excellent, with physical intuition before formalism.</span>
+      <!-- LINK TODO --></li>
+    <li class="nolink">Biskamp, <i>Magnetohydrodynamic Turbulence</i> (CUP 2003).
+      <span class="what">leaving this here as a classic reference that is no longer really up-to-date with the field.</span>
+      <!-- LINK TODO --></li>
+  </ul>
+</details>
+
+<details>
+  <summary>heliophysics</summary>
+  <p class="lead">the Sun is our closest star: and now with NASA's Parker Solar Probe, we have actually visited its outer atmosphere, the solar corona.
+    the solar system generally is a great laboratory for plasma turbulence: throughout the
+    space age, humanity has explored the solar system with spacecraft, taking increasingly detailed measurements of the plasma. here are some reviews.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1038/s41467-026-72082-8" target="_blank" rel="noopener">Ervin et al.</a>
+      &mdash; <i>The Sun as a driver of the inner heliosphere: modern investigations of fundamental plasma processes</i>.
+      <span class="what">an excellent and brief overview of what's important.</span></li>
+    <li><a href="https://doi.org/10.12942/lrsp-2013-2" target="_blank" rel="noopener">Bruno &amp; Carbone 2013</a>
+      &mdash; <i>The Solar Wind as a Turbulence Laboratory</i>.
+      <span class="what">a classic Living Review of what has actually been measured.</span></li>
+    <li><a href="https://doi.org/10.1017/S0022377816001124" target="_blank" rel="noopener">Chen 2016</a>
+      &mdash; <i>Recent progress in astrophysical plasma turbulence from solar wind observations</i>.
+      <span class="what">Shorter and more focused on the turbulence theory questions specifically.</span>
+      (<a href="https://arxiv.org/abs/1611.03386" target="_blank" rel="noopener">arXiv</a>)</li>
+    <li><a href="https://arxiv.org/abs/1910.14022" target="_blank" rel="noopener">Schrijver et al., <i>Principles of Heliophysics</i></a>
+      <span class="what">free textbook, from the NASA summer schools.</span></li>
+    <li><a href="https://science.nasa.gov/mission/helioswarm/" target="_blank" rel="noopener">HelioSwarm</a>
+      <span class="what">an upcoming mission, with a swarm of 9 separate spacecraft. designed specifically to take
+        multi-point, state-of-the-art measurements of plasma turbulence.</span></li>
+  </ul>
+</details>
+
+</div>
+
+<h2>deep lore (subjective)</h2>
+<p class="note">a list of more specialized topics that I (Alfred) find particularly interesting,
+  or have been personally involved in. these references are woefully incomplete, but hopefully at least give 
+a flavour of the topics involved.</p>
+
+<div class="panes">
+
+<details>
+  <summary>a brief history of (MHD) turbulence</summary>
+  <p class="lead">from the mathematical foundation by Kolmogorov up to critical balance in MHD by Goldreich &amp; Sridhar.</p>
+  <ul class="refs">
+    <li>Kolmogorov 1941 &mdash; <i><a href="https://www.jstor.org/stable/51980" target="_blank" rel="noopener">The local structure of turbulence in
+      incompressible viscous fluid for very large Reynolds numbers</a></i> and
+      <i><a href="https://www.jstor.org/stable/51981" target="_blank" rel="noopener">Dissipation of energy in the locally isotropic turbulence</a></i>.
+      <span class="what">three short papers that encode the great intuitive leap that spawned the whole turbulence field
+        (the third, on the decay of isotropic turbulence, does not seem to be online). linked here in the 1991
+        Proceedings of the Royal Society translations.</span></li>
+    <li><a href="https://doi.org/10.1038/150405d0" target="_blank" rel="noopener">Alfv&eacute;n 1942</a>
+      &mdash; <i>Existence of electromagnetic&ndash;hydrodynamic waves</i>.
+      <span class="what">a two-page article in Nature, deriving the existence of the Alfv&eacute;n wave: won the Nobel Prize in 1970</span></li>
+    <li><a href="https://doi.org/10.1103/PhysRev.79.183" target="_blank" rel="noopener">Elsasser 1950</a>
+      &mdash; <i>The hydromagnetic equations</i>.
+      <span class="what">first noticed the usefulness of the z&plusmn; = u &plusmn; b (&ldquo;Elsasser&rdquo;) variables for MHD.</span></li>
+    <li><a href="https://doi.org/10.1063/1.1761412" target="_blank" rel="noopener">Kraichnan 1965</a>
+      &mdash; <i>Inertial-range spectrum of hydromagnetic turbulence</i>.
+      <span class="what">used Elsasser's formulation of MHD for turbulence; predicted a &minus;3/2 spectral index for the wrong reason (with Iroshnikov 1963; the Soviet equivalent).</span></li>
+    <li><a href="https://doi.org/10.1086/146579" target="_blank" rel="noopener">Parker 1958</a>
+      &mdash; <i>Dynamics of the interplanetary gas and magnetic fields</i>.
+      <span class="what">the solar wind predicted before it was seen: one of the most amazing theoretical predictions in history. 
+        originally rejected by the reviewers, before being (fortunately) overruled by the editor (Chandrasekhar).
+      </span></li>
+    <li><a href="https://doi.org/10.1086/149674" target="_blank" rel="noopener">Coleman 1968</a>
+      &mdash; <i>Turbulence, viscosity, and dissipation in the solar-wind plasma</i>.
+      <span class="what">first observations that the solar wind is hotter than it should be, and how this can be explained via turbulence</span></li>
+    <li><a href="https://ntrs.nasa.gov/citations/19810013385" target="_blank" rel="noopener">Montgomery &amp; Turner 1981</a>
+      and <a href="https://doi.org/10.1017/S0022377800000933" target="_blank" rel="noopener">Shebalin, Matthaeus &amp; Montgomery 1983</a>.
+      <span class="what">anisotropy arrives: the cascade sharpens structures across, but not along, the field.</span></li>
+    <li><a href="https://doi.org/10.1086/175121" target="_blank" rel="noopener">Goldreich &amp; Sridhar 1995</a>
+      &mdash; <i>Toward a theory of interstellar turbulence. II. Strong Alfv&eacute;nic turbulence</i>.
+      <span class="what">critical balance, and a prediction for the scale-dependent alignment. start of the modern era of MHD turbulence theory.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>dynamic alignment</summary>
+  <p class="lead">numerical simulations of 3D MHD turbulence often stubbornly refuse to measure -5/3 spectra;
+     instead typically obtaining -3/2. Boldyrev explained this with a very elegant argument: locally, velocity and 
+     magnetic field vectors dynamically align, causing the nonlinearity to deplete in a scale-dependent way. this was rather 
+     controversial, with others (e.g. Andrey Beresnyak) objecting, and claiming that alignment saturates and the asymptotic slope is
+    &minus;5/3. this was followed by nearly a decade of each group answering the other with ever-bigger simulations (an arms race up to resolutions of 4096 cubed!),
+    and increasingly snarky replies. 
+    note that this resolution corresponds to inertial ranges still grossly insufficient for real astrophysical purposes.
+  I (Alfred) was put to work on dynamic alignment as a short project at the start of my career; it ended up taking 7 years for us to figure out a way to resolve this.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1103/PhysRevLett.96.115002" target="_blank" rel="noopener">Boldyrev 2006</a>
+      &mdash; <i>Spectrum of magnetohydrodynamic turbulence</i>.
+      <span class="what">alignment weakens the nonlinearity; the spectral index goes to &minus;3/2.</span></li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.97.255002" target="_blank" rel="noopener">Mason, Cattaneo &amp; Boldyrev 2006</a>
+      &mdash; <i>Dynamic alignment in driven magnetohydrodynamic turbulence</i>.
+      <span class="what">numerical evidence <i>for</i> dynamic alignment.</span></li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.106.075001" target="_blank" rel="noopener">Beresnyak 2011</a>
+      &mdash; <i>Spectral slope and Kolmogorov constant of MHD turbulence</i>.
+      <span class="what">the objection: alignment saturates, and the dissipative scale behaves as though the spectral index was -5/3 (read the paper to 
+        understand this argument in more detail)
+      </span></li>
+    <li><a href="https://doi.org/10.1103/PhysRevX.2.041005" target="_blank" rel="noopener">Perez, Mason, Boldyrev &amp; Cattaneo 2012</a>
+      &mdash; <i>On the energy spectrum of strong magnetohydrodynamic turbulence</i>.
+      <span class="what">the reply, at increased resolution.</span></li>
+    <li><a href="https://arxiv.org/abs/1301.7425" target="_blank" rel="noopener">Beresnyak 2013, Comment on Perez et al.</a>
+      and <a href="https://arxiv.org/abs/1409.8106" target="_blank" rel="noopener">Perez et al. 2014, Comment on Beresnyak</a>
+      <span class="what">the argument in its purest form. read both.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>reconnection takes over: the disruption scale</summary>
+  <p class="lead">dynamically aligned eddies get more sheet-like as they cascade, which means
+    that at some critical scale, they are thin enough for the tearing mode to break them up (see the 
+    tearing mode demo!). in other words, given enough resolution, the aligning cascade disrupts, forcing a transition to a new
+    kind of turbulence: reconnecting turbulence, with a predicted spectral index of -11/5. this was predicted in 2017, simultaneously by
+  two groups: Mallet, Schekochihin &amp; Chandran, and Loureiro &amp; Boldyrev: we discovered close to publication that we were
+  working along the same lines, and agreed to put our preprints on arXiv on the same day. at the time I thought this theory was completely untestable
+numerically, but soon enough I was proved wrong by 10000^2x5000 simulations by Dong et al. 2022, who largely confirmed our theory!</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1093/mnras/stx670" target="_blank" rel="noopener">Mallet, Schekochihin &amp; Chandran 2017</a>
+      &mdash; <i>Disruption of sheet-like structures in Alfv&eacute;nic turbulence by magnetic reconnection</i>.</li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.118.245101" target="_blank" rel="noopener">Loureiro &amp; Boldyrev 2017</a>
+      &mdash; <i>Role of magnetic reconnection in magnetohydrodynamic turbulence</i>.
+      <span class="what">The simultaneous one.</span></li>
+    <li><a href="https://doi.org/10.3847/1538-4357/aa7d02" target="_blank" rel="noopener">Boldyrev &amp; Loureiro 2017</a>
+      &mdash; <i>Magnetohydrodynamic turbulence mediated by reconnection</i>.
+      <span class="what">what the spectrum below the disruption scale should look like; note that my original paper hedged between the -11/5 clearly predicted in this paper and -5/3,
+        while Loureiro's original paper made a different prediction that turned out to be incorrect. both papers agreed on the position of
+        the disruption scale.
+      </span></li>
+    <li><a href="https://doi.org/10.1126/sciadv.abn7627" target="_blank" rel="noopener">Dong et al. 2022</a>
+      &mdash; <i>Reconnection-driven energy cascade in magnetohydrodynamic turbulence</i>.
+      <span class="what">the heroic simulation effort that confirms the pen-and-paper theory above.</span></li>
+    <li><a href="https://doi.org/10.1017/S0022377817000812" target="_blank" rel="noopener">Mallet, Schekochihin &amp; Chandran 2017</a>
+      &mdash; <i>Disruption of Alfv&eacute;nic turbulence by magnetic reconnection in a collisionless plasma</i>.
+      <span class="what">the same argument where the tearing is collisionless, which is the solar-wind-relevant case.</span></li>
+    <li><a href="https://doi.org/10.3847/2041-8213/aab351" target="_blank" rel="noopener">Vech et al. 2018</a>
+      &mdash; <i>Magnetic reconnection may control the ion-scale spectral break of solar wind turbulence</i>.
+      <span class="what">observational evidence that this is actually going on in the solar wind.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>imbalance: an unsolved problem</summary>
+  <p class="lead">turbulence in the solar wind and corona is strongly "imbalanced": z+>>z-, with Alfven waves preferentially travelling
+    away from the Sun. this allows an extra degree of freedom that has never been satisfactorily closed off: a dirty secret 
+    when it comes to applying the theory to the real world! these are some references, from the usual suspects.
+    you can check out what happens in this case (at modest resolution)
+    in the 3D forced turbulence demo by modifying epsilon+ and epsilon-.
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1086/509884" target="_blank" rel="noopener">Lithwick, Goldreich &amp; Sridhar 2007</a>
+      &mdash; <i>Imbalanced strong MHD turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1088/0004-637X/702/1/460" target="_blank" rel="noopener">Beresnyak &amp; Lazarian 2009</a>
+      &mdash; <i>Structure of stationary strong imbalanced turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1088/2041-8205/710/1/L63" target="_blank" rel="noopener">Perez &amp; Boldyrev 2010</a>
+      &mdash; <i>Numerical simulations of imbalanced strong magnetohydrodynamic turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1017/S0022377822000721" target="_blank" rel="noopener">Schekochihin 2022, &sect; on imbalance</a>
+      <span class="what">all these models critically discussed; none of them wins.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>reflection-driven turbulence</summary>
+  <p class="lead">what sets the imbalance? waves launched from the sun partially reflect from the gradients in density
+    and magnetic field, driving the turbulent cascade. this means the turbulence is no longer homogeneous! taking this 
+    into account will be a major goal of turbulence theory for the next few years.
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1086/341188" target="_blank" rel="noopener">Dmitruk et al. 2002</a>
+      &mdash; <i>Coronal heating distribution due to low-frequency, wave-driven turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1088/0004-637X/707/2/1659" target="_blank" rel="noopener">Chandran &amp; Hollweg 2009</a>
+      &mdash; <i>Alfv&eacute;n wave reflection and turbulent heating in the solar wind from 1 solar radius to 1 AU: an analytical treatment</i>.</li>
+    <li><a href="https://doi.org/10.1017/S0022377819000540" target="_blank" rel="noopener">Chandran &amp; Perez 2019</a>
+      &mdash; <i>Reflection-driven magnetohydrodynamic turbulence in the solar atmosphere and solar wind</i>.</li>
+    <li><a href="https://doi.org/10.1017/S0022377824001181" target="_blank" rel="noopener">Meyrand et al. 2025</a>
+      &mdash; <i>Reflection-driven turbulence in the super-Alfv&eacute;nic solar wind</i>.</li>
+    <li><a href="https://doi.org/10.1017/S0022377825000194" target="_blank" rel="noopener">Chandran et al. 2025</a>
+      &mdash; <i>Intermittent, reflection-driven, strong imbalanced MHD turbulence</i>.
+      <span class="what">a recent theory combining intermittency (see below), reflections, critical balance, and imbalance; this
+        seems to agree quite well with recent measurements.
+      </span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>how to measure anisotropy</summary>
+  <p class="lead">it turns out that actually measuring critical balance is not trivial:
+    because of the strong wandering of the field lines, the relevant mean field is the local one, including the fluctuations,
+    so a standard Fourier transform would hide it. this was solved in simulations by Cho &amp; Vishniac and Maron &amp; Goldreich by using structure functions,
+    and in the solar wind data by using wavelet transforms by Horbury et al. in simulations, we can also carefully
+     step along the field lines and take fourier transforms,
+    which is what is done in the demos.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1086/309213" target="_blank" rel="noopener">Cho &amp; Vishniac 2000</a>
+      &mdash; <i>The anisotropy of magnetohydrodynamic Alfv&eacute;nic turbulence</i>.
+      <span class="what">anisotropy measured in the local field in simulations, for the first time.</span></li>
+    <li><a href="https://doi.org/10.1086/321413" target="_blank" rel="noopener">Maron &amp; Goldreich 2001</a>
+      &mdash; <i>Simulations of incompressible magnetohydrodynamic turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.101.175005" target="_blank" rel="noopener">Horbury, Forman &amp; Oughton 2008</a>
+      &mdash; <i>Anisotropic scaling of magnetohydrodynamic turbulence</i>.
+      <span class="what">the same idea applied to spacecraft data with wavelets. </span></li>
+    <li><a href="https://doi.org/10.1093/mnras/stw802" target="_blank" rel="noopener">Mallet et al. 2016</a>
+      &mdash; <i>Measures of three-dimensional anisotropy and intermittency in strong Alfv&eacute;nic turbulence</i>.
+      <span class="what">anisotropic in three directions, not two: including the effects of dynamic alignment, the fluctuations are ribbons.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>weak turbulence, and the transition to strong</summary>
+  <p class="lead">if the nonlinear time is much longer than the Alfven propagation time, one can do formal perturbation theory.
+    this beautiful but slightly arcane theory was worked out around the turn
+    of the millenium. worth noting that most observed Alfvenic turbulence is, in fact, strong, and even if weak at large scales, it becomes strong: see Meyrand et al. (numerics)
+    and Zhao et al. (observations) below.
+    what happens to the spectrum &amp; anisotropy in the 3D forced demo if you put energy injection rate as small as possible?
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1017/S0022377899008284" target="_blank" rel="noopener">Galtier, Nazarenko, Newell &amp; Pouquet 2000</a>
+      &mdash; <i>A weak turbulence theory for incompressible magnetohydrodynamics</i>.</li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.116.105002" target="_blank" rel="noopener">Meyrand, Galtier &amp; Kiyani 2016</a>
+      &mdash; <i>Direct evidence of the transition from weak to strong MHD turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1038/s41550-024-02249-0" target="_blank" rel="noopener">Zhao et al. 2024</a>
+      &mdash; <i>Identification of the weak-to-strong transition in Alfv&eacute;nic turbulence from space plasma</i>.
+      <span class="what">the transition, measured rather than simulated by the four Cluster spacecraft in Earth's magnetosheath.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>intermittency</summary>
+  <p class="lead">the spectrum isn't the whole story! most of the dissipation is concentrated
+    in a small part of the volume, in large coherent structures. this breaks the self-similarity of
+    Kolmogorov 1941: the fix is a more complex statistical model: which in MHD has to include the effects
+  of critical balance and dynamic alignment.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1017/S0022112062000518" target="_blank" rel="noopener">Kolmogorov 1962</a> (K62) &mdash; the refined similarity hypothesis.
+      <span class="what">Kolmogorov's own correction to Kolmogorov: apparently Landau quickly realised a hole in his 1941 argument,
+        but it took a while to sort out.
+      </span></li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.72.336" target="_blank" rel="noopener">She &amp; Leveque 1994</a>
+      &mdash; <i>Universal scaling laws in fully developed turbulence</i>.
+      <span class="what">the log-Poisson picture that the MHD theories below inherit.</span></li>
+    <li><a href="https://doi.org/10.1063/1.2778948" target="_blank" rel="noopener">Salem et al. 2007</a>
+      &mdash; <i>Anomalous scaling and the role of intermittency in solar wind MHD turbulence: new insights</i>.</li>
+    <li><a href="https://doi.org/10.1093/mnrasl/slv021" target="_blank" rel="noopener">Mallet et al. 2015</a>
+      &mdash; <i>Refined critical balance in strong Alfv&eacute;nic turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1088/0004-637X/807/1/39" target="_blank" rel="noopener">Chandran, Schekochihin &amp; Mallet 2015</a>
+      &mdash; <i>Intermittency and alignment in strong RMHD turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1093/mnras/stw3251" target="_blank" rel="noopener">Mallet &amp; Schekochihin 2016</a>
+      &mdash; <i>A statistical model of three-dimensional anisotropy and intermittency in strong Alfv&eacute;nic turbulence</i>.
+      <span class="what">critical balance, alignment and intermittency in one model.</span></li>
+    <li><a href="https://doi.org/10.1017/S0022377819000357" target="_blank" rel="noopener">Mallet et al. 2019</a>
+      &mdash; <i>Interplay between intermittency and dissipation in collisionless plasma turbulence</i>.
+      <span class="what">why intermittency matters: it dramatically affects how heating happens in a real collisionless plasma.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>collisionless turbulence and gyrokinetics</summary>
+  <p class="lead">at small enough scales, the ion's gyration around the magnetic field has a larger radius than the size of the eddies,
+    and RMHD breaks down. what happens then? a good framework for this is gyrokinetics: another model derived first in the fusion
+    world and later applied very successfully to astrophysics. more recently, the discovery of the helicity barrier by Meyrand et al.
+    has revolutionized this field: showing that small-scale effects can break even the most fundamental rules of turbulence.
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1088/0067-0049/182/1/310" target="_blank" rel="noopener">Schekochihin et al. 2009</a>
+      &mdash; <i>Astrophysical gyrokinetics</i>.
+      <span class="what">the "tome": the whole framework of gyrokinetics applied to astrophysics. have fun!</span></li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.100.065004" target="_blank" rel="noopener">Howes et al. 2008</a>
+      &mdash; <i>Kinetic simulations of magnetized turbulence in astrophysical plasmas</i>.
+      <span class="what">first gyrokinetic simulation of the sub-ion-gyroradius turbulence.</span></li>
+    <li><a href="https://doi.org/10.1017/S0022377821000489" target="_blank" rel="noopener">Meyrand, Squire, Schekochihin &amp; Dorland 2021</a>
+      &mdash; <i>On the violation of the zeroth law of turbulence in space plasmas</i>.
+      <span class="what">the helicity barrier; probably the most important discovery for astrophysical plasma turbulence since (at least) Boldyrev 2006.</span>
+      (<a href="https://arxiv.org/abs/2009.02828" target="_blank" rel="noopener">arXiv</a>)</li>
+    <li><a href="https://doi.org/10.1038/s41550-022-01624-z" target="_blank" rel="noopener">Squire et al. 2022</a>
+      &mdash; <i>High-frequency heating of the solar wind triggered by low-frequency turbulence</i>.</li>
+    <li><a href="https://doi.org/10.1038/s41550-023-02186-4" target="_blank" rel="noopener">Meyrand et al. 2023</a>
+      &mdash; <i>Mediation of collisionless turbulent dissipation through cyclotron resonance</i>.</li>
+    <li><a href="https://doi.org/10.1103/PhysRevX.15.031008" target="_blank" rel="noopener">McIntyre et al. 2025</a>
+      &mdash; <i>Evidence for the helicity barrier from measurements of the turbulence transition range in the solar wind</i>.
+      <span class="what">the observational test.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>collisionless high-beta dynamics: firehose and mirror</summary>
+  <p class="lead">when the magnetic field is relatively weak (compared to the thermal pressure), the plasma pressure can be
+    anisotropic: this drives a whole zoo of instabilities, altering the picture of Alfvenic turbulence based on the RMHD equations.
+    interestingly, this is the case in many astrophysical environments, e.g. the intracluster medium, accretion disks, and (some of)
+    the solar wind.
+  </p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1103/PhysRevLett.103.211101" target="_blank" rel="noopener">Bale et al. 2009</a>
+      &mdash; <i>Magnetic fluctuation power near proton temperature anisotropy instability thresholds in the solar wind</i>.
+      <span class="what">observational evidence of instabilities bounding the observed turbulence in the solar wind.</span></li>
+    <li><a href="https://doi.org/10.3847/2041-8205/830/2/L25" target="_blank" rel="noopener">Squire, Quataert &amp; Schekochihin 2016</a>
+      &mdash; <i>A stringent limit on the amplitude of Alfv&eacute;nic perturbations in high-beta low-collisionality plasmas</i>.
+      <span class="what">The interruption.</span></li>
+    <li><a href="https://doi.org/10.1103/PhysRevLett.119.155101" target="_blank" rel="noopener">Squire, Kunz, Quataert &amp; Schekochihin 2017</a>
+      &mdash; <i>Kinetic simulations of the interruption of large-amplitude shear-Alfv&eacute;n waves in a high-beta plasma</i>.</li>
+    <li><a href="https://doi.org/10.1017/S0022377819000114" target="_blank" rel="noopener">Squire, Schekochihin, Quataert &amp; Kunz 2019</a>
+      &mdash; <i>Magneto-immutable turbulence in weakly collisional plasmas</i>.
+      <span class="what">turbulent self-organisation to avoid the problem.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>how the solar wind and corona gets so hot</summary>
+  <p class="todo">[TEXT] The question all of this is ultimately for. Cyclotron-resonant
+    heating and its long-standing objection (the cascade is perpendicular, so how does
+    anything reach the resonance?), the helicity barrier as an answer to that objection,
+    stochastic heating as the non-resonant alternative, and what Parker Solar Probe has
+    been able to measure directly.</p>
+  <ul class="refs">
+    <li class="nolink">Chandran et al. 2010 &mdash; perpendicular ion heating by low-frequency Alfv&eacute;n-wave turbulence.
+      <span class="what">Stochastic heating.</span>
+      <!-- LINK TODO --></li>
+    <li><a href="https://doi.org/10.1073/pnas.1812491116" target="_blank" rel="noopener">Kawazura, Barnes &amp; Schekochihin 2019</a>
+      &mdash; <i>Thermal disequilibration of ions and electrons by collisionless plasma turbulence</i>.
+      <span class="what">What fraction goes to which species, and why that matters far outside the solar wind.</span></li>
+    <li><a href="https://doi.org/10.3847/2041-8213/ad68fb" target="_blank" rel="noopener">Bowen et al. 2024</a>
+      &mdash; <i>Coexistence of antisunward and sunward ion cyclotron waves in the near-Sun solar wind</i>.</li>
+    <li><a href="https://doi.org/10.3847/2041-8213/ad6b2e" target="_blank" rel="noopener">Bowen et al. 2024</a>
+      &mdash; <i>Extended cyclotron resonant heating of the turbulent solar wind</i>.
+      <span class="what">The heating rate measured in situ.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>switchbacks</summary>
+  <p class="todo">[TEXT] Parker Solar Probe's headline discovery and the argument it
+    started: are these made in the corona by interchange reconnection, or generated in
+    flight as ordinary Alfv&eacute;n waves grow to large amplitude in an expanding wind?
+    Still open.</p>
+  <ul class="refs">
+    <li class="nolink">Bale et al. 2019; Kasper et al. 2019 (Nature).
+      <span class="what">The discovery papers.</span>
+      <!-- LINK TODO --></li>
+    <li><a href="https://doi.org/10.3847/2041-8213/ab74e1" target="_blank" rel="noopener">Squire, Chandran &amp; Meyrand 2020</a>
+      &mdash; <i>In-situ switchback formation in the expanding solar wind</i>.</li>
+    <li><a href="https://doi.org/10.3847/1538-4357/ac0c12" target="_blank" rel="noopener">Mallet et al. 2021</a>
+      &mdash; <i>Evolution of large-amplitude Alfv&eacute;n waves and generation of switchbacks in the expanding solar wind</i>.</li>
+  </ul>
+</details>
+
+<details>
+  <summary>reconnection's own fifty-year problem</summary>
+  <p class="todo">[TEXT] Background for the disruption section above: reconnection as
+    classically described is far too slow to explain anything observed, and the plasmoid
+    instability is the resolution that made the turbulence application possible.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1063/1.2783986" target="_blank" rel="noopener">Loureiro, Schekochihin &amp; Cowley 2007</a>
+      &mdash; <i>Instability of current sheets and formation of plasmoid chains</i>.
+      <span class="what">Sweet&ndash;Parker sheets are themselves unstable, which is why the whole picture changed.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>dynamo: the other thing turbulence does</summary>
+  <p class="todo">[TEXT] Everything else on this page assumes a strong background field.
+    Where did it come from? Turbulence amplifies a seed field exponentially, which is a
+    different problem with a different literature &mdash; and in a collisionless plasma
+    it is a genuinely open one.</p>
+  <ul class="refs">
+    <li class="nolink">Kazantsev 1968 &mdash; the kinematic small-scale dynamo.
+      <!-- LINK TODO --></li>
+    <li><a href="https://doi.org/10.1086/422547" target="_blank" rel="noopener">Schekochihin et al. 2004</a>
+      &mdash; <i>Simulations of the small-scale turbulent dynamo</i>.</li>
+    <li><a href="https://arxiv.org/abs/1903.07829" target="_blank" rel="noopener">Rincon 2019</a>
+      &mdash; <i>Dynamo theories</i>.
+      <span class="what">The review to start from.</span></li>
+    <li><a href="https://arxiv.org/abs/2003.09760" target="_blank" rel="noopener">St-Onge, Kunz, Squire &amp; Schekochihin 2020</a>
+      &mdash; <i>Fluctuation dynamo in a weakly collisional plasma</i>.</li>
+  </ul>
+</details>
+
+<details>
+  <summary>the same power law everywhere else</summary>
+  <p class="todo">[TEXT] The short answer to &ldquo;does this matter anywhere I have heard
+    of&rdquo;. Twelve decades of Kolmogorov in the interstellar medium, turbulence in
+    galaxy clusters, and accretion disks where the turbulence is what makes accretion
+    happen at all.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1086/175515" target="_blank" rel="noopener">Armstrong, Rickett &amp; Spangler 1995</a>
+      &mdash; <i>Electron density power spectrum in the local interstellar medium</i>.
+      <span class="what">The &ldquo;big power law in the sky&rdquo;. One straight line over an absurd range of scales.</span></li>
+    <li><a href="https://doi.org/10.1038/s41550-018-0650-6" target="_blank" rel="noopener">Lee &amp; Lee 2019</a>
+      &mdash; <i>Interstellar turbulence spectrum from in situ observations of Voyager 1</i>.
+      <span class="what">The same spectrum, measured from inside it.</span></li>
+    <li class="nolink">Balbus &amp; Hawley 1991 &mdash; the magnetorotational instability.
+      <span class="what">Why accretion disks are turbulent at all.</span>
+      <!-- LINK TODO --></li>
+    <li class="nolink">Hitomi Collaboration 2016 &mdash; turbulent velocities in the Perseus cluster.
+      <!-- LINK TODO --></li>
+  </ul>
+</details>
+
+<details>
+  <summary>why simulations lie to you</summary>
+  <p class="todo">[TEXT] The section this page is uniquely obliged to have, since the page
+    it is attached to <i>is</i> a simulation. Finite Reynolds number, the bottleneck,
+    what hyperdissipation does to the spectrum you are looking at, and why &ldquo;the
+    slope is X&rdquo; was such a hard thing to settle. Point at the demo's own
+    dissipation slider and say what happens to the spectrum when it moves.</p>
+  <ul class="refs">
+    <li><a href="https://doi.org/10.1103/PhysRevX.2.041005" target="_blank" rel="noopener">Perez et al. 2012</a>
+      and <a href="https://doi.org/10.1103/PhysRevLett.106.075001" target="_blank" rel="noopener">Beresnyak 2011</a>
+      <span class="what">Read as an argument about numerics rather than about physics, which is largely what it was.</span></li>
+    <li><a href="https://doi.org/10.1017/S0022377822000721" target="_blank" rel="noopener">Schekochihin 2022, &sect; on numerics</a>
+      <span class="what">On what resolutions would actually be needed to settle it.</span></li>
+  </ul>
+</details>
+
+<details>
+  <summary>past the fluid: phase space</summary>
+  <p class="todo">[TEXT] Furthest from the demo, and included for completeness: below the
+    ion gyroscale the cascade is in position <i>and</i> velocity space, damping is not
+    simply a sink, and free energy can flow back out of phase space. Say plainly that
+    none of this is in the model on the other page.</p>
+  <ul class="refs">
+    <li class="nolink">Schekochihin et al. 2016 &mdash; phase mixing versus stochastic plasma echoes.
+      <!-- LINK TODO --></li>
+    <li><a href="https://doi.org/10.1103/PhysRevX.9.031037" target="_blank" rel="noopener">Groselj et al. 2019</a>
+      &mdash; <i>Kinetic turbulence in astrophysical plasmas: waves and/or structures?</i></li>
+    <li><a href="https://doi.org/10.1073/pnas.2220927120" target="_blank" rel="noopener">Kawazura et al. 2023</a>
+      &mdash; <i>Electron heating in kinetic-Alfv&eacute;n-wave turbulence</i>.</li>
+  </ul>
+</details>
+
+</div>
+
+<div class="hint" style="margin-top:18px">
+  Every link on this page is external and will open in a new tab. If one has rotted,
+  the DOI is in the URL and will usually still resolve.
+</div>
+</body>
+</html>
