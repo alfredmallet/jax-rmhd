@@ -51,6 +51,22 @@
 // The display uniform, one declaration for both apps (2D never writes `zslice`,
 // which stays 0). `cmap` is the per-display-card colormap index (see CMAP_WGSL).
 const MODE_STRUCT = `struct Mode { mode: u32, zslice: u32, cmap: u32, pad: u32 };`;
+// prepDisp alone reads two MORE words out of the same uniform: the k_perp band ends of the
+// display filter (ISO_PLAN D). Its own declaration rather than a wider shared one, so that
+// every other kernel's text is unmoved -- WGSL modules are independent, and a uniform buffer
+// may be longer than the struct a module declares.
+const MODE_BAND_STRUCT = MODE_STRUCT.replace("pad: u32 }",
+  "pad: u32, klo: f32, khi: f32, bpad: vec2<f32> }");
+const MODE_BYTES = 32;                  // ... which is what every Mode uniform is allocated at
+// One Mode uniform's words, written by both apps through this one function so the layout
+// lives in one place. `band` is [k_lo, k_hi] in units of the box k1, 0 = that end is OFF
+// (see bandFac: an off end is not arithmetic the kernel does at all).
+function modeWords(mode, zslice, cmap, band) {
+  const b = new ArrayBuffer(MODE_BYTES), u = new Uint32Array(b), f = new Float32Array(b);
+  u[0] = mode | 0; u[1] = zslice | 0; u[2] = cmap | 0;
+  f[4] = (band && band[0]) || 0; f[5] = (band && band[1]) || 0;
+  return u;
+}
 
 // ---------------------------------------------------------------------------
 // index helpers: everything the 3D app needs to say about m = iz*NMP + mp
@@ -414,6 +430,7 @@ ${body}
 //   0 vorticity   1 current   2 phi   3 psi       signed scalars, autoscaled +-max
 //   4 |u|   5 |b|   6 |z+|   7 |z-|               vector magnitudes (+ arrows)
 //   8 sigma_c   9 sigma_r                         signed, FIXED range +-1
+//  10 omega+   11 omega-                          signed scalars, autoscaled +-max
 // The vector modes show |zhat x grad f| = |grad f| for f = phi, psi, phi+psi,
 // phi-psi: u, b and the two Elsasser fields z+- = u +- b. Cross helicity
 //   sigma_c = (|z+|^2 - |z-|^2) / (|z+|^2 + |z-|^2)
@@ -440,6 +457,12 @@ const DISP_SIGMA_R = 9;     // sigma_r
 // one of them through the same prepDisp kernel, so its selector value IS its mode.
 const DISP_PHI = 2;         // phi -> streamlines
 const DISP_PSI = 3;         // psi -> B_perp field lines
+// the Elsasser vorticities omega+- = grad_perp^2 zeta+- = omega +- j (ISO_PLAN B): the
+// same shape as modes 0/1 with the Elsasser potential zeta+- = phi +- psi in place of one
+// potential, so they are ordinary signed scalars everywhere downstream. A packet is purely
+// z+ or z-, so an omega+ card shows one packet of a collision with the other invisible.
+const DISP_OMEGA_P = 10;
+const DISP_OMEGA_M = 11;
 const dispIsVector = m => m >= DISP_VEC0 && m <= DISP_ZMINUS;  // magnitude + arrows
 const dispIsSigma = m => m === DISP_SIGMA || m === DISP_SIGMA_R;
 // which vector the sigma chain's SECOND half is pinned to: z- for sigma_c, b for sigma_r
@@ -458,6 +481,43 @@ const dispTwoComp = m => dispIsVector(m) || dispIsSigma(m);
 // In 3D this is the full (nz,nkx,nky) quantity: it gets a full 3D inverse transform,
 // and one z slice is extracted from the real-space result (sliceExtract) -- or its
 // three boundary faces are (faceExtract, the cube modes).
+// ---------------------------------------------------------------------------
+// ... through the per-card k_perp band-pass (ISO_PLAN D)
+// ---------------------------------------------------------------------------
+// DISPLAY ONLY, and emphatically not physics: the factor below multiplies the k-space field
+// on its way to the DISPLAY inverse transform -- after the state update, and into a display
+// scratch buffer. The solver state, every stepping kernel, the spectra / energy charts and
+// the field-line march (which reads the RHS gradient stack, not this chain) are untouched.
+// It is the Cho-Vishniac / Maron-Goldreich filtered-snapshot technique as a live control.
+//
+// The band is in k_perp only (kz is left alone: a box has ~20 usable kz modes and the
+// anisotropy knob is the perpendicular one), with half-cosine edges BAND_EDGE bins wide --
+// a hard cut would ring, and ringing reads as structure that is not there.
+//
+// OFF IS BITWISE OFF, twice over: an end at 0 is skipped as a whole `if`, so the factor is
+// the literal 1.0 and `1.0 * v` is v bit for bit; and the pass band returns 1.0 by the
+// `t >= 1.0` test rather than by evaluating the cosine at its endpoint. (One caveat the
+// interpreter cannot test: WGSL permits flushing f32 subnormals at any op, so `1.0 * v`
+// on a flush-to-zero device could denormalize a subnormal display value -- invisible in
+// any pixel, but "bitwise" carries that asterisk on-device.)
+const BAND_EDGE = 1.0;                  // taper width, in bins of the box k1
+const BAND_WGSL = `const BAND_EDGE: f32 = ${BAND_EDGE.toFixed(1)};
+const BAND_PI: f32 = 3.141592653589793;
+// one edge, rising over t in [0,1]; exactly 0 and exactly 1 outside it
+fn bandEdge(t: f32) -> f32 {
+  if (t >= 1.0) { return 1.0; }
+  if (t <= 0.0) { return 0.0; }
+  return 0.5 - 0.5 * cos(BAND_PI * t);
+}
+// the band factor at k_perp = kn box wavenumbers; lo / hi <= 0 = that end is off
+fn bandFac(kn: f32, lo: f32, hi: f32) -> f32 {
+  var f: f32 = 1.0;
+  let e: f32 = 0.5 * BAND_EDGE;
+  if (lo > 0.0) { f = f * bandEdge((kn - lo + e) / BAND_EDGE); }
+  if (hi > 0.0) { f = f * bandEdge((hi + e - kn) / BAND_EDGE); }
+  return f;
+}
+`;
 function prepDispWGSL(C) {
   // sigma_r's FIRST half is the u vector, so mode 9 has to pick phi like mode 4 does --
   // one extra branch, emitted only where the mode exists (both apps set C.sigR; a C
@@ -465,14 +525,23 @@ function prepDispWGSL(C) {
   const sigR = C.sigR
     ? `    else if (md.mode == ${DISP_SIGMA_R}u) { f = phi; }   // 9 -> phi (sigma_r's u half)\n`
     : "";
+  // ... and the band-pass is gated the same way: `C.band` is the box k1 the two ends are
+  // measured in, so a C without it emits the pre-filter text byte for byte.
+  const bandDecl = C.band
+    ? BAND_WGSL + `const INVKU: f32 = ${(1 / C.band).toExponential(12)};\n` : "";
+  const bandMul = C.band ? `  // ISO_PLAN D: the display-only k_perp band-pass, in box wavenumbers
+  let bf: f32 = bandFac(sqrt(gridA[${_mpName(C)}].z) * INVKU, md.klo, md.khi);
+  v = bf * v;
+  v2 = bf * v2;
+` : "";
   return C.pre + `
-${MODE_STRUCT}
+${C.band ? MODE_BAND_STRUCT : MODE_STRUCT}
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> outk: array<vec2<f32>>;
 @group(0) @binding(3) var<uniform> md: Mode;
 @group(0) @binding(4) var<storage, read_write> outk2: array<vec2<f32>>;
-@compute @workgroup_size(64)
+${bandDecl}@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m: u32 = gid.x;
   if (m >= NM) { return; }
@@ -482,6 +551,10 @@ ${_mpDecl(C)}  var v: vec2<f32> = vec2<f32>(0.0, 0.0);
   else if (md.mode == 1u) { v = -gridA[${_mpName(C)}].z * fields[NM + m]; }
   else if (md.mode == 2u) { v = fields[m]; }
   else if (md.mode == 3u) { v = fields[NM + m]; }
+  // omega+- = grad_perp^2 (phi +- psi) = -k_perp^2 (phik +- psik): modes 0/1 with the
+  // Elsasser potential in place of one potential -- two branch lines, no new kernel
+  else if (md.mode == ${DISP_OMEGA_P}u) { v = -gridA[${_mpName(C)}].z * (fields[m] + fields[NM + m]); }
+  else if (md.mode == ${DISP_OMEGA_M}u) { v = -gridA[${_mpName(C)}].z * (fields[m] - fields[NM + m]); }
   else {
     let phi: vec2<f32> = fields[m];
     let psi: vec2<f32> = fields[NM + m];
@@ -495,7 +568,7 @@ ${sigR}    else if (md.mode > 5u) { f = phi + psi; }
     v  = vec2<f32>( ky * f.y, -ky * f.x);   // -i*ky*f  =  -d_y f
     v2 = vec2<f32>(-kx * f.y,  kx * f.x);   // +i*kx*f  =  +d_x f
   }
-  outk[m] = v;
+${bandMul}  outk[m] = v;
   outk2[m] = v2;
 }`;
 }
@@ -713,10 +786,11 @@ fn cmap(x: f32, which: u32) -> vec3<f32> {
 // are `cp` / `cp2` (the two contour potentials on the SAME plane as the texel) and
 // `cd` / `cd2` (their level tables, [range, delta, nlev, plain-background]).
 //
-// dispX: signed fields (modes 0..3) are symmetric about the autoscale
-// (imshow(..., vmin=-s, vmax=+s)); magnitude modes (4..7) are already non-negative and
-// map straight onto [0,1]; sigma_c is signed on a FIXED +-1 range and ignores the
-// autoscale entirely.
+// dispX: signed fields (modes 0..3, and the omega+- of ISO_PLAN B) are symmetric about
+// the autoscale (imshow(..., vmin=-s, vmax=+s)); the magnitude modes 4..7 are already
+// non-negative and map straight onto [0,1]; sigma_c is signed on a FIXED +-1 range and
+// ignores the autoscale entirely. The magnitude test is the CLOSED range 4..7 and not
+// `mode >= 4`: the modes past the sigma pair are signed again.
 //
 // contInk: in-plane field lines (REFINE_PLAN I2.4) -- psi contours are the B_perp field
 // lines, phi contours the streamlines. A texel is on a contour when the level index
@@ -761,13 +835,18 @@ const CONT_ARGS = `${_contArgs("cp")}, ${_contArgs("cp2")}`;
 // predicate is the single parameter. `dispShade(C)` picks the right one -- and every
 // consumer (2D colorize, 3D colorize AND colorizeCube) goes through it, so a slice and
 // a cube face can never disagree about which modes are the sigma ones.
-const _dispShadeWGSL = sig => `
+// ... and dispX ALONE is the second consumer's whole need: the volume raymarch
+// (ISO_PLAN B) colours its shells with the card's colormap at the same value -> [0,1]
+// map, but declares none of the contour bindings, so the two halves are separate texts
+// concatenated back together here -- the shade block's bytes are unchanged.
+const _dispXWGSL = sig => `
 fn dispX(raw: f32, s: f32, mode: u32) -> f32 {
   if (${sig}) { return 0.5 * (clamp(raw, -1.0, 1.0) + 1.0); }
   let v: f32 = raw / max(s, 1e-30);
-  if (mode >= ${DISP_VEC0}u) { return v; }
+  if (mode >= ${DISP_VEC0}u && mode <= ${DISP_ZMINUS}u) { return v; }
   return 0.5 * (clamp(v, -1.0, 1.0) + 1.0);
-}
+}`;
+const _CONT_WGSL = `
 fn contHit(p0: f32, pu: f32, pv: f32, dl: f32) -> bool {
   if (!(dl > 0.0)) { return false; }
   let n0: f32 = floor(p0 / dl);
@@ -784,9 +863,12 @@ fn contInk(col: vec3<f32>, a0: f32, au: f32, av: f32, b0: f32, bu: f32, bv: f32)
 }`;
 // the historical text: sigma_c alone. Both apps now pass C.sigR, so this is the
 // fallback for a constants object that does not offer sigma_r.
-const DISP_SHADE_WGSL = _dispShadeWGSL(`mode == ${DISP_SIGMA}u`);
-const DISP_SHADE_SIGR_WGSL = _dispShadeWGSL(`mode == ${DISP_SIGMA}u || mode == ${DISP_SIGMA_R}u`);
+const DISP_X_WGSL = _dispXWGSL(`mode == ${DISP_SIGMA}u`);
+const DISP_X_SIGR_WGSL = _dispXWGSL(`mode == ${DISP_SIGMA}u || mode == ${DISP_SIGMA_R}u`);
+const DISP_SHADE_WGSL = DISP_X_WGSL + _CONT_WGSL;
+const DISP_SHADE_SIGR_WGSL = DISP_X_SIGR_WGSL + _CONT_WGSL;
 const dispShade = C => (C.sigR ? DISP_SHADE_SIGR_WGSL : DISP_SHADE_WGSL);
+const dispXOnly = C => (C.sigR ? DISP_X_SIGR_WGSL : DISP_X_WGSL);
 
 // the contour level table, one thread: max |pot| over the displayed plane -> a slowly
 // adapting range -> the uniform spacing delta = 2*range/nlev. Adapting on the GPU (rather

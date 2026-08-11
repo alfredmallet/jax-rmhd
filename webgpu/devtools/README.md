@@ -30,7 +30,8 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   source, `ny`/`Lx`/`Ly` = a rectangular 2D box),
   which is how a knob's kernel footprint is shown: dump twice, diff the two.
 - `wgslparse.mjs` — parse all emitted kernels with wgsl_reflect (closest available
-  compile check; npm i wgsl_reflect first).
+  compile check; npm i wgsl_reflect first, or `WGSL_REFLECT=<path-to-wgsl_reflect.module.js>`,
+  the same idiom names.mjs uses for acorn).
 - `bootstub.js <dir> <page> [demo]` — stub-GPU boot of a real app page; exercises
   cards (add/close/reuse/retype), every chart card's option selects with a frame drawn
   per value, the cut card's own z source, presets, ?demo= links, colormaps, the 3D cube
@@ -85,7 +86,8 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   off transitions and a card close-and-re-add on the same chain slot, and asserts on the
   emitted `colorize` / `colorizeCube` that set 0's ink does not depend on the background
   colour. Run it against a reverse-patched copy of the two shared files to see the failures
-  it was written for.
+  it was written for. (3D: it puts the card on a PLANE first — since ISO_PLAN B a display
+  card opens on the volume, which draws no plane and hence no contour overlay.)
 - `checks.js` — GATE G fp64 unit checks (normalized-IC rescale, sigma_letter k-perp
   content at two resolutions, chi formula, separation cap, centroid/argmax trackers)
   against the real common.js functions via vm. Sections 6-9 (FEEDBACK_2026-08-08 P2) add
@@ -202,6 +204,54 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   clock at all.
   Finally index.html's redirect, read as markup (there is no script to boot): meta refresh,
   canonical, `location.replace`, the no-JS link, and the two strings `pages.yml` seds.
+- `checkiso.js [dir]` — the ISO_PLAN gates. Phases A (box-unit aspect), B (the volume
+  raymarch) and C (the collision preset) plus the two
+  disciplines the whole plan runs under: every emitted kernel of both pages parses
+  (`dumpwgsl2` → `wgslparse.mjs`, with `WGSL_REFLECT` pointed at the local
+  `node_modules`), `names.mjs` clean, `dup.py` showing no clone inside one file or
+  reaching into the shared core, and every PHYSICS kernel BYTE-IDENTICAL to the plan's base
+  commit — emitted from a `git show <base>:webgpu/...` checkout in a temp dir and diffed
+  kernel by kernel, which is what "render-path only" has to mean. The DISPLAY kernels that
+  moved, and the ones Phase B adds, are listed in the file and asserted to be exactly that
+  list (a stale expectation fails too), and the three volume-length kernels are asserted to
+  be the slice target's own template text at `NR`. The aspect legs boot
+  the real rmhd3d page and drive the `L_z` select itself, so the whole path (select →
+  rebuild → `cubeQuads` → `cubeFrame`) is measured: the z:x edge ratio tracks `Lz/Lx` at
+  every option, y:x does not move, the 0.92 autoscale still fits the elongated box and
+  stays tight against the canvas, and `cubeFrame` reproduces all 12 projected corners
+  (so the field lines, the box wireframe and the arrow overlay ride the same projection).
+  A last leg makes the `ASPECT_CAP` on-device edit on a COPY of the page and boots that,
+  so the display-cap switch is known to work before anyone flips it.
+  The Phase B legs RUN the raymarch: `volRay`'s uniform is asserted to invert `cubeQuads`
+  at all 12 drawn corners and to be orthogonal/unit-depth in BOX units (so the march's `t`
+  is a true length), its slab test to reproduce the drawn box's silhouette and to enter
+  through the three faces the cube draws; then the EMITTED fragment shader is executed by
+  wgsl_reflect's WGSL interpreter (wrapped in a compute entry that calls `fs`) on a
+  synthetic offset Gaussian blob and compared, pixel by pixel, with a CPU reference march
+  written independently here (~1e-6 achieved, 1e-5 tolerance). A last leg drives the same
+  execution over every field-table entry — a negative blob must raise a shell exactly where
+  the table says the field is signed — checks that the sigma modes fall back to the cube
+  faces, and derives `prepDisp`'s two omega+- branches from its own vorticity branch.
+  The Phase C leg boots the page at `?demo=collision` and asserts what the preset actually
+  OPENS: a volume of j (resolved by the solver, not just by the select) carrying the
+  preset's own level/opacity, flanked by the two omega+- volumes, at L_z = 8pi with the chi
+  line alive and the plane sliders dead — and that the preset names no view at all, the
+  volume being the default it inherits. Its other half is the promise that Phase C is a
+  VIEW change: the packet IC's own functions (`icPresetFields`, `icGaussZ`, `packetGeom`,
+  `chiEstimate`, `applyIC`, `icInfoLine`) are brace-matched out of both the working tree and
+  the base checkout and compared byte for byte.
+  The Phase D leg does for the k⊥ display filter what the Phase B legs do for the raymarch:
+  it EXECUTES the emitted `prepDisp` (same interpreter) and mirrors it in fp64. The factor
+  swept over k⊥ is the half-cosine band to ~1e-7, inside [0,1], monotone across each edge and
+  EXACTLY 1 / EXACTLY 0 in the pass and stop bands; shell by shell on the page's own grid, the
+  filtered field's energy is the unfiltered field's with the taper applied — shells strictly
+  inside the band passing exactly, shells strictly outside exactly zero, on the spectrum
+  kernel's own bins and in its own `INVKU` (band Parseval). Filter-OFF is proved bitwise three
+  ways: the gated emission is base's `prepDisp` plus Phase B's four lines and nothing else,
+  the executed kernel's output is bit-identical to the base kernel's on the same state, and
+  the Mode uniforms the page writes over a sweep of modes / views / colormaps are the BASE
+  page's bytes (booted from the base checkout, the same sweep) with two zero band words after
+  them. Later phases append to the `LEGS` list at the bottom.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

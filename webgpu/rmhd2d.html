@@ -176,8 +176,10 @@ struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f
   // flat mode index, real-space kernels at 64 threads, the display buffer is the
   // whole domain. `sigR` = this app's field list offers the residual energy sigma_r
   // (display mode 9), so its two display kernels know that mode; the 3D app does not.
+  // `band` = the display k_perp filter's unit, the box k1 (ISO_PLAN D): present = prepDisp
+  // emits the filter, absent = it emits the pre-filter text, byte for byte.
   const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc, sigR: true };
+              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc, sigR: true, band: g.kunit };
 
   const S = {};
 
@@ -503,16 +505,18 @@ class Solver {
       // is switched off)
       contMx: contPer(() => d.createBuffer({ size: 4, usage: SQ })),
       contB: contPer(() => d.createBuffer({ size: 16, usage: SQ })),
-      mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // MODE_BYTES, not 16: prepDisp reads the two band ends past the historical four
+      // words out of this same uniform (ISO_PLAN D)
+      mode: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the sigma chain's second vector: z- for sigma_c, b for sigma_r
       // (rewritten per card by setDisplayMode -- see dispSigmaMate)
-      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      modeM: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to each contour set's potential (phi or psi)
-      modeC: contPer(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
+      modeC: contPer(() => d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
     // the default pin (a fresh chain is mode 0); setDisplayMode rewrites it with the
     // mate of whatever mode the card asks for, so the pair can never disagree
-    d.queue.writeBuffer(B.modeM, 0, new Uint32Array([DISP_ZMINUS, 0, 0, 0]));
+    d.queue.writeBuffer(B.modeM, 0, modeWords(DISP_ZMINUS, 0, 0, null));
     const tex = d.createTexture({
       size: [this.g.nx, this.g.ny], format: "rgba8unorm",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
@@ -688,7 +692,10 @@ class Solver {
     const D = this.chain(ci), o = opt || {};
     D.mode = mode | 0;
     D.cont = (o.cont || [0, 0]).slice();
-    const u = new Uint32Array([D.mode, 0, (cmap | 0), 0]);
+    // `o.band` is the card's DISPLAY-ONLY k_perp band (ISO_PLAN D). It rides every uniform
+    // this chain preps a field through -- the card's own, the sigma mate and the two contour
+    // potentials -- so one card shows one band, contours included, and nothing else moves.
+    const u = modeWords(D.mode, 0, cmap, o.band);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = dispSigmaMate(D.mode);           // the sigma second half, same colormap
                                             // (z- for sigma_c, b for sigma_r)
@@ -1055,6 +1062,10 @@ const DISP_FIELDS = [
   { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
   { v: 0, t: "vorticity", d: "&omega; = &nabla;&sup2;&phi; = z&#770;&middot;&nabla;&times;u" },
   { v: 1, t: "current", d: "j = &nabla;&sup2;&psi; = z&#770;&middot;&nabla;&times;b" },
+  { v: 10, t: "Elsasser &omega;&#8314;",
+    d: "&omega;&#8314; = &nabla;&sup2;&zeta;&#8314; = &omega; + j, &zeta;&#8314; = &phi; + &psi;" },
+  { v: 11, t: "Elsasser &omega;&#8315;",
+    d: "&omega;&#8315; = &nabla;&sup2;&zeta;&#8315; = &omega; &minus; j, &zeta;&#8315; = &phi; &minus; &psi;" },
   { v: 6, t: "Elsasser |z&#8314;|", d: "z&#8314; = u + b" },
   { v: 7, t: "Elsasser |z&#8315;|", d: "z&#8315; = u &minus; b" },
   { v: 8, t: "cross helicity &sigma;_c",

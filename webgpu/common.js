@@ -658,9 +658,13 @@ function drawBoxFrame(c, F) {
 // PERPENDICULAR position in box fractions and UNWRAPPED (the marcher never folds it), so
 // a line that leaves the box shows up as a change in floor(u) -- which is exactly the
 // place to lift the pen instead of drawing a stripe across the picture.
-// No depth sorting and no occlusion -- 2D canvas, one pass, everything visible.
-function drawFieldLines(c, L, F) {
+// No depth sorting and no occlusion -- 2D canvas, one pass, everything visible. `alpha`
+// (default 1) scales both strokes: over the volume view they are drawn faint, because
+// there they cross a picture that has its own depth (ISO_PLAN B).
+const VOL_LINE_ALPHA = 0.45;
+function drawFieldLines(c, L, F, alpha) {
   if (!F) return;
+  const al = alpha === undefined ? 1 : alpha;
   const pos = L.pos, nz = L.nz;
   const path = new Path2D();
   for (let l = 0; l < L.nl; l++) {
@@ -676,8 +680,8 @@ function drawFieldLines(c, L, F) {
     }
   }
   c.lineCap = "round"; c.lineJoin = "round";
-  c.strokeStyle = "rgba(255,255,255,0.85)"; c.lineWidth = 2.6; c.stroke(path);
-  c.strokeStyle = "rgba(20,60,150,0.90)"; c.lineWidth = 1.1; c.stroke(path);
+  c.strokeStyle = "rgba(255,255,255," + (0.85 * al) + ")"; c.lineWidth = 2.6; c.stroke(path);
+  c.strokeStyle = "rgba(20,60,150," + (0.90 * al) + ")"; c.lineWidth = 1.1; c.stroke(path);
 }
 
 const _histCols = () => [hist.t, hist.ek, hist.em, hist.hc];
@@ -1868,6 +1872,15 @@ function _sel(parent, opts, title) {
   }
   return s;
 }
+// a header range slider, the shape the per-card z slider already has (same class, so it
+// shares its flexible width) -- the volume view's level / opacity knobs use it too
+function _rng(parent, cls, min, max, step, v, title) {
+  const r = _mk("input", cls, parent);
+  r.type = "range"; r.min = String(min); r.max = String(max); r.step = String(step);
+  r.value = String(v);
+  if (title) r.title = title;
+  return r;
+}
 
 // The per-card z-plane source (3D only): "manual" plus a plane slider, or one of the
 // two packet trackers. BOTH card kinds have one -- a display card picks the plane it
@@ -1883,27 +1896,47 @@ function _sel(parent, opts, title) {
 // Since K2.1 the FIELD LINES are a view on the same select: a whole-box object with no
 // plane of its own, so it takes no tracker and no slider and is flagged out of the cut
 // card with the cube entries.
+// Since ISO_PLAN B the VOLUME raymarch is a third such view, and the 3D app's DEFAULT one
+// (ratified): the whole box, so like the lines it owns no plane -- and there is no
+// "volzp"/tracking variant, because a view that shows every plane makes tracking moot.
 const ZSRC_OPTS = [{ v: "manual", t: "z slice" }, { v: "zp", t: "track z&#8314;" },
                    { v: "zm", t: "track z&#8315;" }];
-const ZSRC_CUBE = [{ v: "cube", t: "cube faces" }, { v: "cubezp", t: "cube + track z&#8314;" },
+const ZSRC_CUBE = [{ v: "vol", t: "volume" }, { v: "cube", t: "cube faces" },
+                   { v: "cubezp", t: "cube + track z&#8314;" },
                    { v: "cubezm", t: "cube + track z&#8315;" }, { v: "lines", t: "field lines" }];
+const ZSRC_DEFAULT_CUBE = "vol";        // the 3D display card opens on the volume
 function _zSliceControls(card, head, cube) {
   const cfg = cards.cfg;
   if (!cfg.zslice) return;
   card.selZSrc = _sel(head, cube ? ZSRC_OPTS.concat(ZSRC_CUBE) : ZSRC_OPTS,
-                      "which z plane this card uses" + (cube ? ", and whether it draws the cube faces or the field lines" : ""));
+                      "which z plane this card uses" + (cube ? ", and whether it draws the volume, the cube faces or the field lines" : ""));
+  // a display card opens on the volume; the cut chart (cube false) has no such view and
+  // keeps the historical first option, its own z plane
+  if (cube) card.selZSrc.value = ZSRC_DEFAULT_CUBE;
   card.rSlice = _mk("input", "zslider", head);
   card.rSlice.type = "range"; card.rSlice.min = "0"; card.rSlice.step = "1"; card.rSlice.value = "0";
   card.rSlice.max = String(Math.max(0, cfg.nz() - 1));
 }
 // the plane source of a card, with the view prefix stripped: every caller that resolves
 // a plane (the app's zsliceOf / trackingOn) sees exactly the three pre-I2 values
-// ("lines" owns no plane at all -- reporting it as "manual" is what keeps the trackers
-// and the slider out of the lines view, K2.5)
+// ("lines" and "vol" own no plane at all -- reporting them as "manual" is what keeps the
+// trackers and the slider out of both whole-box views, K2.5 / ISO_PLAN B)
 function _zSrcPlane(v) {
-  if (v === "lines") return "manual";
+  if (v === "lines" || v === "vol") return "manual";
   return v.indexOf("cube") === 0 ? (v.slice(4) || "manual") : v;
 }
+// the volume view's two knobs (ISO_PLAN B): the shell level as a fraction of the
+// autoscale, and the opacity, which is an extinction per unit BOX length (the march
+// integrates 1 - exp(-opacity * shell * dt), so it does not move with the step count).
+// The shell WIDTH rides the level (w = 0.4*level in the shader), not a third slider.
+const VOL_LEVEL = 0.35, VOL_OPAC = 12;
+// the per-card k_perp BAND-PASS (ISO_PLAN D), in BOTH apps: two integer handles in units of
+// the box wavenumber, kept one shell apart, in the forcing band's own idiom (uiFshell). It
+// is a DISPLAY filter -- one factor in prepDisp, nothing the solver steps and no chart sees
+// it -- and it is wide open by default, which is bitwise OFF (see bandFac in physics.js).
+// The travel is the dealias cut, i.e. the last shell the spectrum chart bins, so the two
+// controls speak the same k as that chart.
+const bandTop = () => (solver && solver.nb) || 32;
 // the contour overlay's per-card selectors (REFINE_PLAN I2.4), in BOTH apps: in-plane
 // field lines of psi (B_perp) or streamlines of phi, on the plane the card displays --
 // or BOTH at once (J2.2), which is the alignment view. The value IS the potential's
@@ -2208,8 +2241,31 @@ class DisplayCard {
     const al = _mk("label", "cbl", head);
     this.cbArrow = _mk("input", null, al);
     this.cbArrow.type = "checkbox"; this.cbArrow.checked = true;
-    al.appendChild(document.createTextNode("arrows"));
-    al.title = "vector overlay on the |u| / |b| / |z±| modes (on the cube: its top face)";
+    // ISO_PLAN B: the vol view has no arrows (there is no plane to draw them on), so the
+    // same checkbox carries the FIELD-LINE overlay there -- one control, two independent
+    // remembered states (cbState below), because their defaults differ.
+    this.cbTx = document.createTextNode("arrows");
+    al.appendChild(this.cbTx);
+    al.title = "vector overlay on the |u| / |b| / |z±| modes (on the cube: its top face); "
+      + "in the volume view, the field lines instead";
+    // the volume view's two knobs, hidden (like the contour count) wherever they mean
+    // nothing. 3D only: cfg.cube is what says this app has a box to march.
+    if (cfg.cube) {
+      this.rLevel = _rng(head, "zslider", 0.05, 0.95, 0.01, VOL_LEVEL,
+                         "volume view: shell level, as a fraction of the colour range "
+                         + "(the shells sit at ±level, and their width rides it)");
+      this.rOpac = _rng(head, "zslider", 1, 40, 1, VOL_OPAC,
+                        "volume view: opacity of the shells");
+    }
+    // the display-only k_perp band (ISO_PLAN D), both apps, every view: wide open to begin
+    // with, i.e. off. Their travel follows the grid in apply().
+    const nb = bandTop();
+    this.rBLo = _rng(head, "zslider", 0, nb, 1, 0,
+                     "display filter: hide k⊥ below this, in units of the box wavenumber "
+                     + "(left end = no low cut). The simulation itself is NOT filtered.");
+    this.rBHi = _rng(head, "zslider", 1, nb, 1, nb,
+                     "display filter: hide k⊥ above this (right end = no high cut). "
+                     + "The simulation itself is NOT filtered.");
     this.selCont = _sel(head, _contOpts(), "in-plane field lines: psi -> B_perp, phi -> streamlines");
     this.selLev = _sel(head, CONT_LEVELS.map(n => ({ v: n, t: n + " levels" })), "contour level count");
     this.selBg = _sel(head, [{ v: "0", t: "field bg" }, { v: "1", t: "plain bg" }],
@@ -2252,6 +2308,12 @@ class DisplayCard {
     this.lines = null;                    // two sources, one overlay canvas (see overlay())
     this.arrowAt = 0;
     this.wasLines = false;                // edge-trigger for the lines view's psi default
+    // the overlay checkbox's two states, [slice/cube arrows, vol field lines]: arrows on
+    // by default as they always were, lines over the volume OFF -- they composite in
+    // FRONT of the shells (2D overlay canvas), so they are opt-in there. `wasVol` is the
+    // edge trigger that swaps them.
+    this.cbState = [true, false];
+    this.wasVol = false;
     // colorbar state: the strip's context, the mode its labels belong to, the last
     // autoscale read back for it, and that readback's throttle clock
     this.barCx = chartCtx(this.barCv, CBAR_W, CBAR_H);
@@ -2270,6 +2332,8 @@ class DisplayCard {
     this.cbArrow.onchange = apply;
     if (this.selZSrc) this.selZSrc.onchange = apply;
     if (this.rSlice) this.rSlice.oninput = apply;
+    if (this.rLevel) { this.rLevel.oninput = apply; this.rOpac.oninput = apply; }
+    this.rBLo.oninput = apply; this.rBHi.oninput = apply;
     this.btnClose.onclick = () => cardClose(this);
     this.btnSave.onclick = () => this.saveShot();
     this.btnRec.onclick = () => this.recToggle();
@@ -2278,10 +2342,41 @@ class DisplayCard {
   cmap() { return parseInt(this.selCmap.value, 10) | 0; }
   // the PLANE source, view prefix stripped (the app's zsliceOf / trackingOn use this)
   zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
-  // ... and the two VIEWS the same select carries instead of the one plane: the cube
-  // faces, or (K2.1) the whole box's field lines with a transparent top face
+  // ... and the three VIEWS the same select carries instead of the one plane: the cube
+  // faces, (K2.1) the whole box's field lines with a transparent top face, or (ISO_PLAN B)
+  // the volume raymarch -- the box itself, and the 3D app's default
   cubeView() { return !!this.selZSrc && this.selZSrc.value.indexOf("cube") === 0; }
   linesView() { return !!this.selZSrc && this.selZSrc.value === "lines"; }
+  volView() { return !!this.selZSrc && this.selZSrc.value === "vol"; }
+  level() { return this.rLevel ? parseFloat(this.rLevel.value) : VOL_LEVEL; }
+  opac() { return this.rOpac ? parseFloat(this.rOpac.value) : VOL_OPAC; }
+  // the card's k_perp band as prepDisp reads it: [k_lo, k_hi] in box wavenumbers, an end at
+  // 0 meaning that end is OFF. The handles are kept one shell apart (uiFshell's rule -- a
+  // crossed pair would show an empty picture), and an end at the far stop reports 0: below
+  // the first shell there is nothing to cut, and at the dealias cut the high end already
+  // passes everything the solver keeps. Wide open therefore writes (0, 0), and a (0, 0)
+  // band is not arithmetic the kernel does at all.
+  band() {
+    let lo = parseInt(this.rBLo.value, 10) | 0, hi = parseInt(this.rBHi.value, 10) | 0;
+    hi = Math.max(hi, lo + 1); lo = Math.min(lo, hi - 1);
+    this.rBLo.value = String(lo); this.rBHi.value = String(hi);
+    return [lo > 0 ? lo : 0, hi < bandTop() ? hi : 0];
+  }
+  bandOn() { const b = this.band(); return b[0] > 0 || b[1] > 0; }
+  // ... and, when it is on, the caption says so: a filtered picture must never be mistaken
+  // for the field itself (DRAFT copy -- Alfred's wording pass)
+  bandCap() {
+    const b = this.band();
+    if (!(b[0] > 0 || b[1] > 0)) return "";
+    return " &mdash; <i>display filter</i>: k&perp;/k&#8321; "
+      + (b[0] > 0 ? b[0] : "0") + "&ndash;" + (b[1] > 0 ? b[1] : "cut") + " only";
+  }
+  // the field lines over the volume: the arrows checkbox, read in its vol state, and only
+  // where a field is actually marched (the sigma modes fall back to the cube faces)
+  volLinesOn() {
+    return !!(this.volView() && this.cbArrow.checked &&
+              solver && !dispIsSigma(solver.modeOf(this.ci)));
+  }
   // the card's CONT_SETS contour potentials, as display modes (0 = that set is off)
   cont() {
     const v = this.selCont.value;
@@ -2309,21 +2404,55 @@ class DisplayCard {
     const cfg = cards.cfg;
     this._resize();
     if (this.rSlice) this.rSlice.max = String(Math.max(0, cfg.nz() - 1));
+    // the band handles travel out to the live dealias cut; a card sitting wide open stays
+    // wide open when the grid (and with it the cut) moves under it
+    const nb = bandTop();
+    if (parseInt(this.rBHi.max, 10) !== nb) {
+      const wasTop = parseInt(this.rBHi.value, 10) >= parseInt(this.rBHi.max, 10);
+      this.rBLo.max = String(nb); this.rBHi.max = String(nb);
+      if (wasTop) this.rBHi.value = String(nb);
+      this.rBLo.value = String(Math.min(parseInt(this.rBLo.value, 10), nb));
+    }
     // ENTERING the lines view turns psi contours on: the transparent top face is the
     // point of the view (K2.3). From there the card's own contour select rules, "off"
     // included -- hence the edge trigger rather than a forced value.
     const lines = this.linesView();
     if (lines && !this.wasLines && !this.contOn()) this.selCont.value = String(DISP_PSI);
     this.wasLines = lines;
+    // ... and the same edge trigger swaps the overlay checkbox between its two meanings
+    // (arrows on a plane / field lines over the volume), each keeping its own last value
+    const vol = this.volView();
+    if (vol !== this.wasVol) {
+      this.cbState[this.wasVol ? 1 : 0] = this.cbArrow.checked;
+      this.cbArrow.checked = this.cbState[vol ? 1 : 0];
+      this.wasVol = vol;
+    }
+    this.cbState[vol ? 1 : 0] = this.cbArrow.checked;
+    this.cbTx.textContent = vol ? "lines" : "arrows";
     solver.setDisplayMode(this.ci, this.sel(), cfg.zsliceOf(this), this.cmap(),
-                          { cube: this.cubeView(), lines: lines, cont: this.cont(), nlev: this.nlev(),
+                          { cube: this.cubeView(), lines: lines, vol: vol,
+                            level: this.level(), opac: this.opac(), band: this.band(),
+                            cont: this.cont(), nlev: this.nlev(),
                             plain: lines || (this.contOn() && this.plainBg()) });
     // the slider drives the displayed plane in the slice view and the TOP face in the
     // cube view, so it is live in both -- and dead whenever a tracker owns the plane, or
-    // in the lines view, whose face is the top BOUNDARY of the box (K2.5)
-    if (this.rSlice) this.rSlice.disabled = lines || this.zsrc() !== "manual";
-    this.selLev.style.display = this.contOn() ? "" : "none";
-    this.selBg.style.display = (this.contOn() && !lines) ? "" : "none";   // lines: always plain
+    // in either whole-box view (the lines face is the top BOUNDARY, K2.5; the volume has
+    // no plane at all)
+    if (this.rSlice) this.rSlice.disabled = lines || vol || this.zsrc() !== "manual";
+    // ... but a sigma card in vol view fell back to the cube faces (setDisplayMode), so
+    // level/opacity would march nothing and the checkbox would overlay nothing: hide the
+    // sliders and grey the checkbox rather than show live-looking controls the card ignores
+    const rvol = vol && !!solver && !dispIsSigma(solver.modeOf(this.ci));
+    this.cbArrow.disabled = vol && !rvol;
+    if (this.rLevel) {
+      this.rLevel.style.display = rvol ? "" : "none";
+      this.rOpac.style.display = rvol ? "" : "none";
+    }
+    // the contour overlay is an IN-PLANE object, so it goes away with the plane: the
+    // volume view draws no plate for it and its potential pass is skipped (Solver.render)
+    this.selCont.style.display = vol ? "none" : "";
+    this.selLev.style.display = (this.contOn() && !vol) ? "" : "none";
+    this.selBg.style.display = (this.contOn() && !lines && !vol) ? "" : "none";   // lines: always plain
     // the field selector is inert in the lines view (the lines are psi lines), so the
     // caption is the app's alone there. A field record may carry `d`, a one-line HTML
     // definition of the displayed quantity (FEEDBACK 2026-08-10 item 1) -- it rides the
@@ -2332,6 +2461,7 @@ class DisplayCard {
     const fr = !lines && cfg.fields.find(f => String(f.v) === this.selField.value);
     this.cap.innerHTML = (o && !lines ? o.innerHTML : "")
       + (fr && fr.d ? ": " + fr.d : "")
+      + this.bandCap()
       + (cfg.caption ? cfg.caption(this) : "");
     this.barSync();                       // ... and so may have retired / relabelled the bar
     this.overlay();                       // the quantity / view may have retired an overlay
@@ -2529,7 +2659,7 @@ class DisplayCard {
     else this.recIdle();
   }
   showArrows() {
-    return !!(this.cbArrow.checked && !this.linesView() &&
+    return !!(this.cbArrow.checked && !this.linesView() && !this.volView() &&
               solver && dispIsVector(solver.modeOf(this.ci)));
   }
   // the cube view draws its arrows on the projected top face; a square plane view uses the
@@ -2554,7 +2684,7 @@ class DisplayCard {
   // cache always (so entering the lines view shows instantly via apply()'s overlay());
   // redraw only when this card actually displays lines -- the 2 Hz march must not force
   // an overlay repaint on every slice/cube card (reviewer, GATE K2)
-  setLines(L) { this.lines = L; if (this.linesView()) this.overlay(); }
+  setLines(L) { this.lines = L; if (this.linesView() || this.volLinesOn()) this.overlay(); }
   overlay() {
     const c = this.vcx;
     if (!c) return;
@@ -2565,6 +2695,10 @@ class DisplayCard {
       drawBoxFrame(c, F);                 // under it carries only the top face's ink
       if (this.lines) drawFieldLines(c, this.lines, F);
     }
+    // over the VOLUME (ISO_PLAN B) the same polylines, at reduced alpha and with no box
+    // frame -- the raymarch draws its own wireframe, and these composite in FRONT of the
+    // shells rather than through them (2D overlay canvas; the card's hint says so)
+    if (this.volLinesOn() && X && this.lines) drawFieldLines(c, this.lines, X(), VOL_LINE_ALPHA);
     if (this.arr && this.showArrows()) drawArrows(c, this.arr.a, this.arr.nax, this.arr.nay, this.arrowFrame());
   }
   // closing a card mid-recording writes what it has: the stream (or the canvas the
@@ -2755,6 +2889,12 @@ function addDisplayCard(state) {
     if (state.arrows !== undefined) c.cbArrow.checked = !!state.arrows;
     if (state.zsrc !== undefined && c.selZSrc) c.selZSrc.value = state.zsrc;
     if (state.zslice !== undefined && c.rSlice) c.rSlice.value = String(state.zslice);
+    if (state.level !== undefined && c.rLevel) c.rLevel.value = String(state.level);
+    if (state.opac !== undefined && c.rOpac) c.rOpac.value = String(state.opac);
+    // the k_perp band, as a preset may ask for it: [k_lo, k_hi] in box wavenumbers
+    if (state.band !== undefined) {
+      c.rBLo.value = String(state.band[0]); c.rBHi.value = String(state.band[1]);
+    }
     if (state.cont !== undefined) c.selCont.value = String(state.cont);
     if (state.nlev !== undefined) c.selLev.value = String(state.nlev);
     if (state.plain !== undefined) c.selBg.value = state.plain ? "1" : "0";
@@ -2996,7 +3136,13 @@ const ctrlGrpIC = o => ({
 const ctrlGrpDisp = extra => ({
   id: "grpDisp", summary: "displays &amp; charts", keep: true, rows: [
     [{ k: "btn", id: "btnAddDisp", t: "+ display" },
-     { k: "btn", id: "btnAddChart", t: "+ chart" }].concat(extra || [])
+     { k: "btn", id: "btnAddChart", t: "+ chart" }].concat(extra || []),
+    // ISO_PLAN D, DRAFT copy (Alfred's wording pass): the one line that has to be said out
+    // loud, because a band-passed picture looks like a different simulation and is not one
+    [{ k: "hint", t: "the two narrow sliders on a display card are a <b>k&perp; band "
+        + "filter on the picture only</b>: the run, the spectra and the field lines are "
+        + "never filtered. Slide the band up during a developed run and the structures "
+        + "get thinner across the field while staying long along it." }]
   ]
 });
 

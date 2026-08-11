@@ -238,8 +238,10 @@ fn envelope(A: vec2<f32>, B: vec2<f32>, plane: u32) -> vec2<f32> {
   // `sigR` = this app's field list offers the residual energy sigma_r (display mode 9),
   // so its two display kernels (prepDisp, and the shade block colorize / colorizeCube
   // share) know that mode -- exactly as in the 2D app.
+  // `band` = the display k_perp filter's unit, the box k1 (ISO_PLAN D): present = prepDisp
+  // emits the filter, absent = it emits the pre-filter text, byte for byte.
   const C = { pre, hasZ: true, wgReal: 256, nDisp: "NRS", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, envFn, sigR: true };
+              ns: g.shell.length, envFn, sigR: true, band: g.kunit };
 
   const S = {};
 
@@ -817,6 +819,158 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
   return vec4<f32>(c.rgb * fc.f[i.id].sh.x, 1.0);
 }`;
 
+  // ---- volume view (ISO_PLAN B) ------------------------------------------
+  // The volume marched is the display chain's OWN dispR -- the real-space volume
+  // sliceExtract slices and faceExtract collapses -- so the scalar modes are already
+  // there. The vector-magnitude modes need the |(a,b)| collapse over the WHOLE volume
+  // instead of over a plane or the three faces: that is one more INSTANTIATION of the
+  // same template at nDisp = NR, exactly as the cube's is at NFACE, and the autoscale is
+  // the same two reduction templates at the volume's length. No new kernel, no new
+  // arithmetic, and nothing volume-sized is allocated (the target is dispR itself).
+  const CV = Object.assign({}, C, { nDisp: "NR" });
+  S.vecMagVol = vecMagWGSL(CV);
+  S.maxPartialVol = maxPartialWGSL(pre, "NR");
+  S.maxFinalVol = maxFinalWGSL(pre, Math.ceil(nr / 1024));
+  // ... and the raymarch itself: ONE new render-side shader, the only new WGSL here.
+  //   ray      parallel (the projection is orthographic), reconstructed from the CPU
+  //            uniform volRay writes; entry / exit from a slab test against the unit box
+  //            in box-FRACTION coordinates, with t a length in BOX UNITS
+  //   sample   manual trilinear, 8 taps straight out of the storage buffer and periodic
+  //            on all three axes -- the pattern samp2 uses in the field-line kernel.
+  //            No 3D texture: r16float is not storage-writable and r32float sampling is
+  //            an optional device feature.
+  //   normal   the trilinear interpolant's OWN gradient: differences of those same 8
+  //            taps over the BOX-UNIT cell sizes (Lx/nx, Ly/ny, Lz/nz), so an elongated
+  //            box shades correctly and the normal belongs to the field being marched
+  //   shells   fuzzy Gaussians at +-level*vmax -- two for a signed field, one for a
+  //            magnitude (modes 4..7), which is the field table's own distinction --
+  //            of width 0.4*level, coloured by the card's colormap through the SAME
+  //            dispX the slice and the cube faces use, so the views agree chromatically
+  //   opacity  1 - exp(-opacity * shell * dt), an extinction per unit box length: the
+  //            picture does not move with VOL_STEPS (which is the on-device knob).
+  //            Front to back, early exit at VOL_AMAX.
+  //   frame    a faint wireframe where the entry (front edges) or exit (back edges)
+  //            point sits at the end of two box axes at once -- no extra geometry
+  S.renderVol = pre + `
+const VOL_STEPS: i32 = 256;
+const VOL_AMAX: f32 = 0.98;
+const VOL_WFRAC: f32 = 0.4;
+const VOL_AMB: f32 = 0.35;
+const VOL_EDGE: f32 = 0.004;
+const VOL_WIRE_A: f32 = 0.22;
+${MODE_STRUCT}
+struct Vol { ru: vec4<f32>, uv: vec4<f32>, dv: vec4<f32>, cel: vec4<f32>, par: vec4<f32> };
+@group(0) @binding(0) var<storage, read> fld: array<f32>;
+@group(0) @binding(1) var<storage, read> mx: array<f32>;
+@group(0) @binding(2) var<uniform> md: Mode;
+@group(0) @binding(3) var<uniform> vu: Vol;
+${CMAP_WGSL}
+${dispXOnly(C)}
+fn vwrap(i: i32, n: i32) -> u32 { return u32(((i % n) + n) % n); }
+// value AND the interpolant's three grid-coordinate derivatives, from ONE set of 8 taps
+fn vsamp(g: vec3<f32>) -> vec4<f32> {
+  let f0: vec3<f32> = floor(g);
+  let t: vec3<f32> = g - f0;
+  let x0: u32 = vwrap(i32(f0.x), i32(NX));
+  let x1: u32 = vwrap(i32(f0.x) + 1, i32(NX));
+  let y0: u32 = vwrap(i32(f0.y), i32(NY));
+  let y1: u32 = vwrap(i32(f0.y) + 1, i32(NY));
+  let z0: u32 = vwrap(i32(f0.z), i32(NZ)) * NRS;
+  let z1: u32 = vwrap(i32(f0.z) + 1, i32(NZ)) * NRS;
+  let e000: f32 = fld[z0 + x0 * NY + y0];
+  let e100: f32 = fld[z0 + x1 * NY + y0];
+  let e010: f32 = fld[z0 + x0 * NY + y1];
+  let e110: f32 = fld[z0 + x1 * NY + y1];
+  let e001: f32 = fld[z1 + x0 * NY + y0];
+  let e101: f32 = fld[z1 + x1 * NY + y0];
+  let e011: f32 = fld[z1 + x0 * NY + y1];
+  let e111: f32 = fld[z1 + x1 * NY + y1];
+  let a00: f32 = mix(e000, e100, t.x);
+  let a10: f32 = mix(e010, e110, t.x);
+  let a01: f32 = mix(e001, e101, t.x);
+  let a11: f32 = mix(e011, e111, t.x);
+  let b0: f32 = mix(a00, a10, t.y);
+  let b1: f32 = mix(a01, a11, t.y);
+  return vec4<f32>(mix(b0, b1, t.z),
+                   mix(mix(e100 - e000, e110 - e010, t.y),
+                       mix(e101 - e001, e111 - e011, t.y), t.z),
+                   mix(a10 - a00, a11 - a01, t.z),
+                   b1 - b0);
+}
+// a point on the box surface is on an EDGE when it is at the end of two axes at once
+fn vedge(p: vec3<f32>) -> bool {
+  let ex: vec3<f32> = vec3<f32>(vu.cel.x * f32(NX), vu.cel.y * f32(NY), vu.cel.z * f32(NZ));
+  let d: vec3<f32> = min(p, vec3<f32>(1.0) - p) * ex;
+  var n: i32 = 0;
+  if (d.x < VOL_EDGE) { n = n + 1; }
+  if (d.y < VOL_EDGE) { n = n + 1; }
+  if (d.z < VOL_EDGE) { n = n + 1; }
+  return n >= 2;
+}
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) cp: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+  // the full-canvas triangle of the slice blit, with the CLIP position carried through:
+  // it is the fragment's only input to the ray setup
+  var p: array<vec2<f32>, 3> = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  var o: VOut;
+  o.pos = vec4<f32>(p[vi], 0.0, 1.0);
+  o.cp = p[vi];
+  return o;
+}
+@fragment
+fn fs(i: VOut) -> @location(0) vec4<f32> {
+  let s: f32 = max(mx[0], 1e-30);
+  let p0: vec3<f32> = vec3<f32>(0.5, 0.5, 0.5) + i.cp.x * vu.ru.xyz + i.cp.y * vu.uv.xyz;
+  let dv: vec3<f32> = vu.dv.xyz;
+  // slab test against the unit box; the substitution keeps an axis-parallel ray (which
+  // this projection never produces) from dividing by zero rather than missing
+  let ds: vec3<f32> = select(dv, vec3<f32>(1e-12), abs(dv) < vec3<f32>(1e-12));
+  let ta: vec3<f32> = -p0 / ds;
+  let tb: vec3<f32> = (vec3<f32>(1.0) - p0) / ds;
+  let lo: vec3<f32> = min(ta, tb);
+  let hi: vec3<f32> = max(ta, tb);
+  let t0: f32 = max(max(lo.x, lo.y), lo.z);
+  let t1: f32 = min(min(hi.x, hi.y), hi.z);
+  var acc: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+  var aa: f32 = 0.0;
+  if (t1 > t0) {
+    let wire: vec3<f32> = vec3<f32>(0.55, 0.62, 0.72);
+    let lgt: vec3<f32> = normalize(vec3<f32>(0.3, 0.8, 0.52));
+    if (vedge(p0 + t0 * dv)) { acc = VOL_WIRE_A * wire; aa = VOL_WIRE_A; }
+    let lev: f32 = max(vu.par.x, 1e-4) * s;
+    let w: f32 = VOL_WFRAC * lev;
+    let two: bool = !(md.mode >= ${DISP_VEC0}u && md.mode <= ${DISP_ZMINUS}u);
+    let cP: vec3<f32> = cmap(dispX(lev, s, md.mode), md.cmap);
+    let cM: vec3<f32> = cmap(dispX(-lev, s, md.mode), md.cmap);
+    let dt: f32 = (t1 - t0) / f32(VOL_STEPS);
+    for (var k: i32 = 0; k < VOL_STEPS; k = k + 1) {
+      let p: vec3<f32> = p0 + (t0 + (f32(k) + 0.5) * dt) * dv;
+      let v: vec4<f32> = vsamp(vec3<f32>(p.x * f32(NX), p.y * f32(NY), p.z * f32(NZ)));
+      let qp: f32 = (v.x - lev) / w;
+      let qm: f32 = (v.x + lev) / w;
+      let gp: f32 = exp(-qp * qp);
+      let gm: f32 = select(0.0, exp(-qm * qm), two);
+      let dens: f32 = gp + gm;
+      if (dens > 1e-3) {
+        // the shell at -lev faces the other way, so the outward normal flips with it
+        let gr: vec3<f32> = vec3<f32>(v.y / vu.cel.x, v.z / vu.cel.y, v.w / vu.cel.z)
+                            * select(1.0, -1.0, gp >= gm);
+        let gl: f32 = length(gr);
+        let nrm: vec3<f32> = select(lgt, gr / max(gl, 1e-30), gl > 0.0);
+        let sh: f32 = VOL_AMB + (1.0 - VOL_AMB) * max(dot(nrm, lgt), 0.0);
+        let a: f32 = 1.0 - exp(-vu.par.y * dens * dt);
+        acc = acc + (1.0 - aa) * a * sh * ((gp * cP + gm * cM) / dens);
+        aa = aa + (1.0 - aa) * a;
+        if (aa > VOL_AMAX) { break; }
+      }
+    }
+    if (vedge(p0 + t1 * dv)) { acc = acc + (1.0 - aa) * VOL_WIRE_A * wire; }
+  }
+  return vec4<f32>(acc, 1.0);
+}`;
+
   // shared display helpers (physics.js) + the generic autoscale reduction (common.js)
   S.vecMag = vecMagWGSL(C);
   S.vecGather = vecGatherWGSL(C);
@@ -854,15 +1008,39 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
 // Cube faces are a VIEW of whatever field the card selects (REFINE_PLAN I2.1), chosen in
 // the card's z-source select -- there are no cube entries in the field list any more.
 const CUBE_SHADE = [1.0, 0.85, 0.7];
-function cubeQuads() {
+// The box is drawn with its TRUE edge lengths (Lx, Ly, Lz)/Lx (ISO_PLAN A), so a tall
+// box reads as a column and not as a cube; the 0.92 autoscale below then fits the
+// elongated box in the square canvas exactly as it fitted the unit one. ASPECT_CAP = 0
+// is the true shape, no cap; set it to (say) 6 to clamp the DRAWN elongation instead --
+// one constant, because which of the two reads better at Lz = 16pi is an on-device call.
+const ASPECT_CAP = 0;
+// the box's display edge lengths in units of Lx. `g` is a solver grid (`this.g`); with
+// none given the LIVE solver's is used, which is what lets cubeFrame -- and through it
+// the field lines, the arrow overlay and the lines-view box -- read the same box off
+// the same projection without threading an argument through any of them.
+function boxUnits(g) {
+  const b = g || (solver ? solver.g : null);
+  if (!b) return [1, 1, 1];
+  const cap = v => (ASPECT_CAP > 0 ? Math.min(v, ASPECT_CAP) : v);
+  return [1, cap(b.Ly / b.Lx), cap(b.Lz / b.Lx)];
+}
+// the projection itself, in one place: the two screen unit vectors, the box's edge
+// lengths and the autoscale that fits it in the square canvas. cubeQuads projects with
+// it; volRay (ISO_PLAN B) INVERTS it -- one basis, so a marched ray and the drawn box
+// cannot disagree.
+function cubeBasis(g) {
   const az = Math.PI / 4, ev = Math.PI / 6;
   const r = [-Math.sin(az), Math.cos(az), 0];
   const u = [-Math.sin(ev) * Math.cos(az), -Math.sin(ev) * Math.sin(az), Math.cos(ev)];
-  const hx = 0.5 * (Math.abs(r[0]) + Math.abs(r[1]) + Math.abs(r[2]));
-  const hy = 0.5 * (Math.abs(u[0]) + Math.abs(u[1]) + Math.abs(u[2]));
-  const sc = 0.92 / Math.max(hx, hy);
+  const e = boxUnits(g);
+  const hx = 0.5 * (Math.abs(e[0] * r[0]) + Math.abs(e[1] * r[1]) + Math.abs(e[2] * r[2]));
+  const hy = 0.5 * (Math.abs(e[0] * u[0]) + Math.abs(e[1] * u[1]) + Math.abs(e[2] * u[2]));
+  return { r: r, u: u, e: e, sc: 0.92 / Math.max(hx, hy) };
+}
+function cubeQuads(g) {
+  const B = cubeBasis(g), r = B.r, u = B.u, e = B.e, sc = B.sc;
   const P = (x, y, z) => {
-    const a = x - 0.5, b = y - 0.5, c = z - 0.5;
+    const a = (x - 0.5) * e[0], b = (y - 0.5) * e[1], c = (z - 0.5) * e[2];
     return [sc * (a * r[0] + b * r[1] + c * r[2]), sc * (a * u[0] + b * u[1] + c * u[2])];
   };
   const corners = [
@@ -901,6 +1079,33 @@ function cubeFrame() {
 function cubeTopXform() {
   const F = cubeFrame();
   return { ox: F.ox + F.cx, oy: F.oy + F.cy, ax: F.ax, ay: F.ay, bx: F.bx, by: F.by };
+}
+// ---------------------------------------------------------------------------
+// the volume raymarch's ray setup (ISO_PLAN B): the INVERSE of cubeQuads
+// ---------------------------------------------------------------------------
+// (r, u) are orthonormal and the projection is orthographic, so the third axis
+// n = r x u closes an orthonormal frame of the box-unit world and every ray is PARALLEL:
+// nine numbers, computed here once per card apply, invert the whole mapping. A fragment
+// at clip (cx, cy) marching to depth t sits at the box FRACTION coordinates
+//     p = (0.5, 0.5, 0.5) + cx*ru + cy*uv + t*dv
+// with dv = -n/e pointing away from the camera, so t is a true LENGTH in box units --
+// which is how the box-unit metric gets into the march's step, and hence into the
+// opacity, with no further factors. `cel` carries the box-unit cell sizes (Lx/nx, Ly/ny,
+// Lz/nz over Lx), which the shader's shading normal and its wireframe both need.
+// Layout: 5 vec4 (ru, uv, dv, cel, par) -- `par` = (level, opacity) is the card's, and
+// is written by setDisplayMode, not here.
+const VOL_U_FLOATS = 20;
+function volRay(g, nx, ny, nz) {
+  const B = cubeBasis(g), r = B.r, u = B.u, e = B.e, sc = B.sc;
+  const n = [r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0]];
+  const out = new Float32Array(VOL_U_FLOATS);
+  for (let i = 0; i < 3; i++) {
+    out[i] = r[i] / (sc * e[i]);          // d(box fraction) / d(clip x)
+    out[4 + i] = u[i] / (sc * e[i]);      // d(box fraction) / d(clip y)
+    out[8 + i] = -n[i] / e[i];            // ... / d(depth), into the screen
+  }
+  out[12] = e[0] / nx; out[13] = e[1] / ny; out[14] = e[2] / nz;
+  return out;
 }
 // field lines (REFINE_PLAN K, K2.2): the seed grid is FL_SIDE x FL_SIDE on the bottom
 // face -- ONE constant, no UI. The march runs only while something consumes it (a lines
@@ -1003,7 +1208,9 @@ class Solver {
         new Float32Array([LSRK33.alpha[s], LSRK33.beta[s], LSRK33.gamma[s], 0]));
     }
     d.queue.writeBuffer(this.buf.stage[3], 0, new Float32Array([0, 0, 1, 0]));
-    d.queue.writeBuffer(this.buf.cubeU, 0, cubeQuads());
+    // this.g, not the live solver: a rebuild clears `solver` before constructing the
+    // new one, and the faces must be drawn with THIS box's aspect
+    d.queue.writeBuffer(this.buf.cubeU, 0, cubeQuads(this.g));
   }
 
   _buildPipelines() {
@@ -1033,6 +1240,10 @@ class Solver {
       maxPartial: cp(S.maxPartial, "maxPartial"), maxFinal: cp(S.maxFinal, "maxFinal"),
       maxPartialFace: cp(S.maxPartialFace, "maxPartialFace"),
       maxFinalFace: cp(S.maxFinalFace, "maxFinalFace"),
+      // ... and the volume-sized instances (the vol view's target IS dispR)
+      vecMagVol: cp(S.vecMagVol, "vecMagVol"),
+      maxPartialVol: cp(S.maxPartialVol, "maxPartialVol"),
+      maxFinalVol: cp(S.maxFinalVol, "maxFinalVol"),
       colorize: cp(S.colorize, "colorize"),
       vecMag: cp(S.vecMag, "vecMag"), vecGather: cp(S.vecGather, "vecGather"),
       cutPrep: cp(S.cutPrep, "cutPrep"), vecMagSq: cp(S.vecMagSq, "vecMagSq"),
@@ -1056,6 +1267,15 @@ class Solver {
       layout: "auto",
       vertex: { module: cmod, entryPoint: "vs" },
       fragment: { module: cmod, entryPoint: "fs", targets: [{ format: canvasFormat }] },
+      primitive: { topology: "triangle-list" }
+    });
+    // the volume raymarch (ISO_PLAN B): the same shape, one draw of the full-canvas
+    // triangle, with the display volume read as a storage buffer in the fragment stage
+    const vmod = mod(S.renderVol, "renderVol");
+    this.plVol = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: vmod, entryPoint: "vs" },
+      fragment: { module: vmod, entryPoint: "fs", targets: [{ format: canvasFormat }] },
       primitive: { topology: "triangle-list" }
     });
     this.sampler = d.createSampler({ magFilter: "linear", minFilter: "linear" });
@@ -1155,6 +1375,9 @@ class Solver {
       // ~1.5 * nrs floats each, a rounding error next to the nz * nrs volumes)
       arrows: d.createBuffer({ size: this.narrow * 8, usage: SQ }),
       maxPartF: d.createBuffer({ size: this.nPartF * 4, usage: SQ }),
+      // the volume view's autoscale partials: nr/1024 floats, i.e. one thousandth of
+      // dispR -- the whole vol view allocates nothing else, its target BEING dispR
+      maxPartV: d.createBuffer({ size: this.nPartR * 4, usage: SQ }),
       facesA: d.createBuffer({ size: this.nface * 4, usage: SQ }),
       facesB: d.createBuffer({ size: this.nface * 4, usage: SQ }),
       facesC: d.createBuffer({ size: this.nface * 4, usage: SQ }),
@@ -1163,16 +1386,21 @@ class Solver {
       // is switched off)
       contMx: contPer(() => d.createBuffer({ size: 4, usage: SQ })),
       contB: contPer(() => d.createBuffer({ size: 16, usage: SQ })),
-      mode: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // MODE_BYTES, not 16: prepDisp reads the two band ends past the historical four
+      // words out of this same uniform (ISO_PLAN D)
+      mode: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // the raymarch's ray setup + this card's level / opacity (5 vec4; see volRay)
+      volU: d.createBuffer({ size: VOL_U_FLOATS * 4,
+                             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to the sigma chain's SECOND vector: z- for sigma_c, b for sigma_r
       // (rewritten per card by setDisplayMode -- see dispSigmaMate). Only its `mode`
       // field is ever read (by prepDisp): sliceExtract / faceExtract run off the chain's
       // main Mode uniform for BOTH halves, so modeM.zslice is dead weight. setDisplayMode
       // keeps it in step with the main uniform anyway, so the two never disagree if some
       // future kernel does start reading it.
-      modeM: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      modeM: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to each contour set's potential (phi or psi), same plane
-      modeC: contPer(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
+      modeC: contPer(() => d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
     const ftex = (w, h) => d.createTexture({
       size: [w, h], format: "rgba8unorm",
@@ -1267,7 +1495,13 @@ class Solver {
                   { binding: 2, resource: texX.createView() },
                   { binding: 3, resource: texY.createView() },
                   { binding: 4, resource: { buffer: P.cubeU } }]
-      })
+      }),
+      // vol target: the collapse and the autoscale on the WHOLE volume, and the
+      // raymarch reading that volume (dispR) plus its max and this card's uniforms
+      vecMagVol: bgOf(this.pl.vecMagVol, [B.dispR, B.dispR2]),
+      maxPartialVol: bgOf(this.pl.maxPartialVol, [B.dispR, B.maxPartV]),
+      maxFinalVol: bgOf(this.pl.maxFinalVol, [B.maxPartV, B.maxVal]),
+      renderVol: bgOf(this.plVol, [B.dispR, B.maxVal, B.mode, B.volU])
     };
     // the two display TARGETS: identical kernel sequences at different lengths, so
     // _dispPass is written once and the cube costs no second copy of the mode logic.
@@ -1291,11 +1525,24 @@ class Solver {
               mag: bg.vecMagFace, magsqA: bg.magSqFA, magsqB: bg.magSqFB,
               msum: bg.maxSumPartialFace, sig: bg.sigmaCombineFace,
               mpart: bg.maxPartialFace, mfin: bg.maxFinalFace }
+      },
+      // ... and the third: the volume itself (ISO_PLAN B). Its extraction is the EMPTY
+      // one -- dispR / dispR2 already hold what the other two targets gather out of
+      // them -- which is the one thing `ex: null` says to _dispHalf. The two sigma modes
+      // never reach here: they would need FOUR real volumes to combine and there are two,
+      // so setDisplayMode resolves a sigma card in the vol view to the cube faces.
+      vol: {
+        n: Math.ceil(nr / 256), np: this.nPartR, arrows: null,
+        pl: { ex: null, mag: this.pl.vecMagVol, magsq: null, msum: null, sig: null,
+              mpart: this.pl.maxPartialVol, mfin: this.pl.maxFinalVol },
+        bg: { ex: null, exH1: null, mag: bg.vecMagVol, magsqA: null, magsqB: null,
+              msum: null, sig: null, mpart: bg.maxPartialVol, mfin: bg.maxFinalVol }
       }
     };
     // the two sets' slice extractions are the two the sigma_c chain already declares
     bg.contSlice = [bg.sliceDisp2, bg.sliceDisp2H1];
-    return { mode: 0, cube: 0, lines: 0, cont: [0, 0], zslice: 0, buf: B, tex, texZ, texX, texY, bg, tg };
+    return { mode: 0, cube: 0, lines: 0, vol: 0, cont: [0, 0], zslice: 0,
+             buf: B, tex, texZ, texX, texY, bg, tg };
   }
 
   // chain ci, built on first use
@@ -1307,6 +1554,7 @@ class Solver {
   // per-card display state, for the card system and the overlays
   modeOf(ci) { const D = this.disp[ci | 0]; return D ? D.mode : 0; }
   cubeOf(ci) { const D = this.disp[ci | 0]; return D ? D.cube : 0; }
+  volOf(ci) { const D = this.disp[ci | 0]; return D ? D.vol : 0; }
   zsliceOf(ci) { const D = this.disp[ci | 0]; return D ? D.zslice : 0; }
 
   destroy() {
@@ -1360,10 +1608,21 @@ class Solver {
     const D = this.chain(ci), o = opt || {};
     D.mode = sel | 0;
     D.lines = o.lines ? 1 : 0;
-    D.cube = (o.cube || D.lines) ? 1 : 0;
+    // The VOLUME view (ISO_PLAN B) renders scalar and vector-magnitude fields. The two
+    // sigma modes cannot be marched: combining them needs four real volumes and a chain
+    // has two, and a third would be a volume-sized allocation -- so a sigma card asking
+    // for the volume falls back to the cube faces, the nearest 3D view and the one whose
+    // chain already does exactly that work. Resolved HERE, once, so the render, the
+    // caption and the overlays all read one answer.
+    D.vol = (o.vol && !D.lines && !dispIsSigma(D.mode)) ? 1 : 0;
+    D.cube = (o.cube || D.lines || (o.vol && !D.vol)) ? 1 : 0;
     D.cont = (o.cont || [0, 0]).slice();
     if (zslice !== undefined) D.zslice = Math.max(0, Math.min(this.g.nz - 1, zslice | 0));
-    const u = new Uint32Array([D.mode, D.zslice, (cmap | 0), 0]);
+    // `o.band` is the card's DISPLAY-ONLY k_perp band (ISO_PLAN D). It rides every uniform
+    // this chain preps a field through -- the card's own, the sigma mate and the two contour
+    // potentials -- so one card shows one band, contours included, and nothing else moves.
+    // The volume view inherits it for free: what it marches IS this chain's dispR.
+    const u = modeWords(D.mode, D.zslice, cmap, o.band);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = dispSigmaMate(D.mode);           // the sigma second half, same z slice
                                             // (z- for sigma_c, b for sigma_r)
@@ -1372,6 +1631,13 @@ class Solver {
       u[0] = D.cont[i] || DISP_PHI;
       this.device.queue.writeBuffer(D.buf.modeC[i], 0, u);
     }
+    // the raymarch's ray setup (this box, this projection) plus this card's two knobs.
+    // Written here and nowhere else: a rebuild makes new chains, so the ray can never
+    // outlive the box it inverts.
+    const vr = volRay(this.g, this.g.nx, this.g.ny, this.g.nz);
+    vr[16] = o.level === undefined ? VOL_LEVEL : o.level;
+    vr[17] = o.opac === undefined ? VOL_OPAC : o.opac;
+    this.device.queue.writeBuffer(D.buf.volU, 0, vr);
     setContLevels(this.device, D, o.nlev, o.plain);
   }
 
@@ -1564,14 +1830,19 @@ class Solver {
     p.setBindGroup(0, half ? D.bg.prepDispM : D.bg.prepDisp);
     p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
     this.encodeInv3D(p, 1, D.bg.zInvDisp, D.bg.colsInvDisp, D.bg.rowsC2RDisp);
-    p.setPipeline(T.pl.ex);
-    p.setBindGroup(0, (half ? T.bg.exH1 : T.bg.ex)[0]);
-    p.dispatchWorkgroups(T.n);
+    // the vol target's extraction is the empty one: dispR / dispR2 ARE its target
+    if (T.pl.ex) {
+      p.setPipeline(T.pl.ex);
+      p.setBindGroup(0, (half ? T.bg.exH1 : T.bg.ex)[0]);
+      p.dispatchWorkgroups(T.n);
+    }
     if (!twoComp) return;
     this.encodeInv3D(p, 1, D.bg.zInvDisp2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2);
-    p.setPipeline(T.pl.ex);
-    p.setBindGroup(0, (half ? T.bg.exH1 : T.bg.ex)[1]);
-    p.dispatchWorkgroups(T.n);
+    if (T.pl.ex) {
+      p.setPipeline(T.pl.ex);
+      p.setBindGroup(0, (half ? T.bg.exH1 : T.bg.ex)[1]);
+      p.dispatchWorkgroups(T.n);
+    }
   }
 
   // the whole mode chain on one target: extraction, the vector / sigma collapse and
@@ -1633,10 +1904,10 @@ class Solver {
   // canvas -- no plate, no blend state, no second colorize kernel.
   render(ctx, ci) {
     const d = this.device, D = this.chain(ci || 0), mode = D.mode;
-    const cube = !!D.cube, lines = !!D.lines;
+    const cube = !!D.cube, lines = !!D.lines, vol = !!D.vol;
     const enc = d.createCommandEncoder();
     const p = enc.beginComputePass();
-    if (!lines) this._dispPass(p, D, mode, cube ? D.tg.cube : D.tg.slice);
+    if (!lines) this._dispPass(p, D, mode, vol ? D.tg.vol : (cube ? D.tg.cube : D.tg.slice));
     if (cube && !lines && dispIsVector(mode)) {
       // arrows on the visible TOP face (REFINE_PLAN I2.3): the same two components on
       // the same plane that face shows, gathered through the slice kernels -- the
@@ -1649,8 +1920,13 @@ class Solver {
       p.setPipeline(this.pl.vecGather); p.setBindGroup(0, D.bg.vecGather);
       p.dispatchWorkgroups(Math.ceil(this.narrow / 64));
     }
-    this._dispCont(p, D);
-    if (cube) {
+    // the contour overlay is an IN-PLANE object drawn on a face, so the volume view has
+    // nowhere to put it -- and skipping it saves a full volume transform per active set
+    if (!vol) this._dispCont(p, D);
+    if (vol) {
+      // no colorize pass at all: the raymarch's fragment shader owns the colormap, and
+      // it reads the volume the pass above just left in dispR
+    } else if (cube) {
       p.setPipeline(this.pl.colorizeCube); p.setBindGroup(0, D.bg.colorizeCube);
       p.dispatchWorkgroups(Math.ceil(Math.max(this.g.nx, this.g.nz) / 8),
                            Math.ceil(Math.max(this.g.ny, this.g.nx) / 8));
@@ -1665,7 +1941,8 @@ class Solver {
         clearValue: lines ? FL_BG : { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store"
       }]
     });
-    if (cube) { rp.setPipeline(this.plCube); rp.setBindGroup(0, D.bg.renderCube); rp.draw(6, lines ? 1 : 3); }
+    if (vol) { rp.setPipeline(this.plVol); rp.setBindGroup(0, D.bg.renderVol); rp.draw(3); }
+    else if (cube) { rp.setPipeline(this.plCube); rp.setBindGroup(0, D.bg.renderCube); rp.draw(6, lines ? 1 : 3); }
     else { rp.setPipeline(this.plRender); rp.setBindGroup(0, D.bg.render); rp.draw(3); }
     rp.end();
     d.queue.submit([enc.finish()]);
@@ -1760,8 +2037,8 @@ function uiZDiss() {
 // Lz is a free parameter of the grid: every kz-derived quantity already reads it
 // (makeGrid's twoPiLz -> kz/kzd/z_diss_k, solver.parKfac for the parallel-spectrum
 // abscissa, autoZDiss's kz cutoff, the IC's z coordinate and the packet envelopes).
-// The one thing it does NOT stretch is the cube-face view, which draws the box as a
-// unit cube regardless of aspect ratio.
+// ... and since ISO_PLAN A the cube-face view stretches with it too (cubeQuads draws
+// the box with edge lengths (Lx, Ly, Lz)/Lx).
 function uiLz() { return parseFloat(el("selLz").value) * Math.PI; }
 function uiParams() {
   const [np, nz] = uiRes(), eps = uiEps();
@@ -1906,6 +2183,16 @@ function sliceOfCard(c) {
   if (s === "zm") return trackIdx[1];
   return c.rSlice ? (parseInt(c.rSlice.value, 10) | 0) : 0;
 }
+// the VOLUME view's caption (ISO_PLAN B): where the shells sit -- ± the level for a
+// signed field, one shell for a magnitude -- and, when the overlay is on, the one thing
+// about it a reader has to know, since the polylines are 2D canvas ink over a picture
+// that has its own depth. DRAFT copy, for Alfred's pass (the preset-text precedent).
+function volCaption(c) {
+  const one = dispIsVector(solver.modeOf(c.ci));
+  return "  (volume: " + (one ? "shell at " : "shells at ±") + Math.round(100 * c.level())
+    + "% of the range)"
+    + (c.volLinesOn() ? "; the field lines draw in front of the shells, not through them" : "");
+}
 // the trackers run while ANY card follows a packet -- a display card or (since Phase H)
 // a self-contained cut chart, both of which expose the same zsrc()/rSlice pair
 function trackingOn() {
@@ -1947,7 +2234,9 @@ async function planeTrackHook(sv) {
 // own with no lines card anywhere. The along-line SAMPLES are a second readback of four
 // times the size and only the chart reads them, so they come back only when it is open.
 let flData = null, flPar = null, flAt = 0;
-const flLinesOn = () => cards.disp.some(d => d.linesView());
+// ... and since ISO_PLAN B a VOLUME card with its overlay checkbox ticked is a third
+// consumer of the polylines (not of the along-line samples): same march, same 2 Hz.
+const flLinesOn = () => cards.disp.some(d => d.linesView() || d.volLinesOn());
 // The along-line SAMPLE readback has TWO consumers since ANISO_PLAN: a spectrum card
 // showing "k∥ (field line)", and an anisotropy card whose curve selector wants the
 // field-line measure (its default "both", or "fl"; "z" wants only the coordinate
@@ -1996,6 +2285,10 @@ const DISP_FIELDS = [
   { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
   { v: 0, t: "vorticity", d: "&omega; = &nabla;&sup2;&phi; = z&#770;&middot;&nabla;&times;u" },
   { v: 1, t: "current", d: "j = &nabla;&sup2;&psi; = z&#770;&middot;&nabla;&times;b" },
+  { v: 10, t: "Elsasser &omega;&#8314;",
+    d: "&omega;&#8314; = &nabla;&sup2;&zeta;&#8314; = &omega; + j, &zeta;&#8314; = &phi; + &psi;" },
+  { v: 11, t: "Elsasser &omega;&#8315;",
+    d: "&omega;&#8315; = &nabla;&sup2;&zeta;&#8315; = &omega; &minus; j, &zeta;&#8315; = &phi; &minus; &psi;" },
   { v: 6, t: "Elsasser |z&#8314;|", d: "z&#8314; = u + b" },
   { v: 7, t: "Elsasser |z&#8315;|", d: "z&#8315; = u &minus; b" },
   { v: 8, t: "cross helicity &sigma;_c",
@@ -2026,14 +2319,43 @@ const PRESETS = {
     // the kz stabiliser is a fixed function of the grid; the perpendicular diss gets the
     // marginal estimate as its t=0 seed and the auto-diss controller from there
     prep: () => { autoZDiss(); autoDissSeed(); },
-    // two displays, each riding the energy centroid of one packet
-    layout: { disp: [{ sel: 6, zsrc: "zp" }, { sel: 7, zsrc: "zm" }],
+    // Three VOLUME displays (ISO_PLAN Phase C). The IC, the grid and every `set` value
+    // above are untouched -- the packets are the movie and this is a view change.
+    //   j leads: the collision's physics -- mutual shearing, growth of perpendicular
+    //     structure, sheet formation -- lives in j = grad_perp^2 psi and nowhere else,
+    //     and signed translucent shells of it are the Howes/Verniero/Klein 2016 frame.
+    //   omega+- follow: a packet is purely zeta+ or zeta-, so an omega+ card shows one
+    //     packet with the other invisible. That pair does the job the old tracked
+    //     |z+| / |z-| cards did -- one card per packet -- over the whole box instead of
+    //     one plane, and it is what the plan's (cut) two-hue z+- mode was for.
+    // No zsrc: the volume IS the 3D default view (ZSRC_DEFAULT_CUBE), so the preset only
+    // sets the two knobs. Both are BELOW their defaults, for two reasons: the incoming
+    // packets set the autoscale and the structure the collision MAKES is weaker than they
+    // are, so the shells must sit lower to show it; and the box is 4:1, so a ray down the
+    // field crosses four box units rather than one and the default extinction reads as a
+    // solid slab. On-device numbers (ISO_PLAN's checklist) -- these are a starting point.
+    layout: { disp: [{ sel: 1, level: 0.25, opac: 7 },
+                     { sel: 10, level: 0.3, opac: 7 }, { sel: 11, level: 0.3, opac: 7 }],
               charts: ["energy", "spectrum"] },
+    // ---- DRAFT COPY (ISO_PLAN Phase C) --------------------------------------------
+    // The hint below is the implementing agent's draft, awaiting Alfred's wording pass --
+    // the standing precedent for preset text (P2 item, FEEDBACK 2026-08-10).
     hint: "Counter-propagating A / B Elsasser packets at 64&sup2;&times;256, L<sub>z</sub> = 8&pi;: "
-      + "they meet head-on at z = L<sub>z</sub>/2, each display riding one packet. "
-      + "&sigma;<sub>z</sub> sets the packet length and hence &chi; &mdash; the line under the IC "
-      + "controls gives &chi;<sup>&plusmn;</sup> (weak collision &lt;&lt;1, strong &gtrsim;1) and "
-      + "the meeting time. Switch the IC preset to <b>sinusoidal z&plusmn; packets</b> for the "
+      + "they meet head-on at z = L<sub>z</sub>/2. The three displays are volume renders of "
+      + "the whole box &mdash; first the current j = &nabla;&sup2;&psi;, where the "
+      + "collision happens, then the two Elsasser vorticities "
+      + "&omega;<sup>&plusmn;</sup> = &nabla;&sup2;&zeta;<sup>&plusmn;</sup>, one per "
+      + "packet: a packet is purely &zeta;<sup>+</sup> or &zeta;<sup>&minus;</sup>, so each of "
+      + "those cards sees one packet and is blind to the other. Watch the shells shear where "
+      + "the two overlap. The perpendicular structure that appears there <i>is</i> the "
+      + "nonlinear interaction, and it is what the spectrum chart measures filling in at high "
+      + "k<sub>&perp;</sub>. &sigma;<sub>z</sub> sets the packet length and hence &chi; &mdash; "
+      + "press <b>show params</b> and the line under the IC controls gives &chi;<sup>&plusmn;</sup> (weak collision "
+      + "&lt;&lt;1, strong &gtrsim;1) and the meeting time; each card's two sliders set where "
+      + "its shells sit and how solid they read. A volume shows the whole box, so there is "
+      + "nothing left for plane tracking to do &mdash; switch a card's view back to <b>cube "
+      + "faces</b> or <b>track z&plusmn;</b> to ride one packet on a plane again. Switch the "
+      + "IC preset to <b>sinusoidal z&plusmn; packets</b> for the "
       + "textbook version of the same collision: z<sup>+</sup> &prop; y&#770; sin x against "
       + "z<sup>&minus;</sup> &prop; x&#770; sin y, one perpendicular mode each, so the "
       + "interaction is a single beat rather than a spectrum of them."
@@ -2325,12 +2647,13 @@ async function boot() {
     zsliceOf: sliceOfCard,
     arrowXform: cubeTopXform,
     lineXform: cubeFrame,                             // the whole box, for the field lines
-    caption: c => c.linesView() && !c.contOn()
+    caption: c => (solver && solver.volOf(c.ci) ? volCaption(c)
+      : c.linesView() && !c.contOn()
       ? FL_SIDE * FL_SIDE + " B⊥ field lines"
       : (c.linesView()
         ? FL_SIDE * FL_SIDE + " B⊥ field lines  (top face: contours at iz "
         : (solver && solver.cubeOf(c.ci) ? "  (cube faces, top iz " : "  (iz "))
-        + sliceOfCard(c) + ")",
+        + sliceOfCard(c) + ")"),
     onLayout: () => {
       planeAt = 0;                                    // re-track on the next frame
       syncLabels();

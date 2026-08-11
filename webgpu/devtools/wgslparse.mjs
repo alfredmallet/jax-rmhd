@@ -6,8 +6,13 @@
 // pipeline on every real device -- "target" is reserved). So this script additionally
 // scans every declared identifier (let/var/const/fn/params) against the WGSL spec's
 // reserved-word list and fails on a hit.
-import { WgslReflect } from '/tmp/chk/node_modules/wgsl_reflect/wgsl_reflect.module.js';
+// wgsl_reflect from wherever it is installed (WGSL_REFLECT=<path> overrides, the same
+// idiom names.mjs uses for acorn -- checkiso.js points it at devtools/node_modules)
 import fs from 'fs';
+import path from 'path';
+const { WgslReflect } = await import(
+  process.env.WGSL_REFLECT ? path.resolve(process.env.WGSL_REFLECT)
+                           : '/tmp/chk/node_modules/wgsl_reflect/wgsl_reflect.module.js');
 
 const RESERVED = new Set(`NULL Self abstract active alignas alignof as asm asm_fragment
 async attribute auto await become binding_array cast catch class co_await co_return

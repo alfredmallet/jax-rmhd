@@ -199,6 +199,14 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       the flow.</li>
     <li><b>current</b>: j = &nabla;&sup2;&psi;, the electric current. Thin bright
       sheets of it are where reconnection happens.</li>
+    <!-- DRAFT copy (ISO_PLAN Phase C): written by the implementing agent, awaiting
+         Alfred's wording pass, like the preset text before it. -->
+    <li><b>Elsasser &omega;<sup>+</sup></b> and <b>&omega;<sup>&minus;</sup></b>:
+      &omega;<sup>&plusmn;</sup> = &nabla;&sup2;&zeta;<sup>&plusmn;</sup> = &omega; &plusmn; j,
+      where &zeta;<sup>&plusmn;</sup> = &phi; &plusmn; &psi; are the potentials of
+      z<sup>&plusmn;</sup>. Each is the vorticity of one travelling wave on its own: a packet
+      moving one way along the field shows up in one of them and is invisible in the other,
+      which is how you tell two colliding packets apart.</li>
     <li><b>Elsasser |z<sup>+</sup>|</b> and <b>|z<sup>&minus;</sup>|</b>:
       z<sup>&plusmn;</sup> = u &plusmn; b, the two waves travelling in opposite directions
       along the background field. Turbulence needs both: a lone z<sup>+</sup> travels
@@ -222,8 +230,14 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     strong.</p>
   <p>The last drop-down is the <b>colormap</b>: afmhot, viridis, RdBu or grayscale, per
     card.</p>
-  <p>In 3D each card also has a <b>view</b> drop-down. <b>z slice</b> shows one plane,
-    picked by the slider beside it. <b>track z<sup>+</sup></b> and
+  <!-- DRAFT (ISO_PLAN Phase D) — awaiting Alfred's wording pass -->
+  <p>The two narrow sliders are the <a href="#filter">scale filter</a>: they keep only a band
+    of structure sizes in the picture, and they are wide open (off) to begin with. They change
+    the picture only &mdash; never the run.</p>
+  <!-- DRAFT (ISO_PLAN Phase C) — awaiting Alfred's wording pass -->
+  <p>In 3D each card also has a <b>view</b> drop-down, and it opens on <b>volume</b> &mdash;
+    the whole box, drawn see-through, which has its own section below. <b>z slice</b> shows
+    one plane, picked by the slider beside it. <b>track z<sup>+</sup></b> and
     <b>track z<sup>&minus;</sup></b> follow a wave packet as it moves, so the display
     rides along with it. <b>cube faces</b> draws the three visible outer faces of the box
     instead of one plane (the top face is the card's own plane, so a tracking cube card
@@ -237,6 +251,78 @@ press the green <b>Run</b>, and change one thing at a time.</p>
   <p>Along the bottom of each card, on the caption line: a <b>colorbar</b> showing the
     card's colormap and the range the colours currently mean, and the <b>save</b> and
     <b>rec</b> buttons.</p>
+</details>
+
+<details>
+  <!-- DRAFT copy (ISO_PLAN Phase C): written by the implementing agent, awaiting
+       Alfred's wording pass, like the preset text before it. -->
+  <summary>the 3D volume view</summary>
+  <p><b>volume</b> is the view a 3D display card opens on, and the one the Alfv&eacute;n-wave
+    collision preset is built around. Instead of one plane, or the three outer faces, it
+    draws the whole box see-through: for every pixel on screen it shoots a ray through the
+    box and adds up what that ray passes through. The box is drawn with its real
+    proportions, so a long L<sub>z</sub> is a long column and not a cube.</p>
+  <p>What it draws is not the field everywhere &mdash; that would be fog &mdash; but two
+    surfaces of constant value, one at <b>+level</b> and one at <b>&minus;level</b> of the
+    range the colorbar is showing, softened into shells rather than left as hard skins. At
+    these resolutions a hard surface shows the grid it was built on and a soft one does not.
+    The positive shell takes one end of the card's colormap and the negative shell the other,
+    the same colours the slice views use, so the two agree. Quantities that can only be
+    positive (|u|, |b|, |z<sup>&plusmn;</sup>|) get the one shell instead of two.</p>
+  <p>The two sliders in the card header belong to this view and appear only in it.
+    <b>level</b> is where the shells sit, as a fraction of the colour range: low picks up
+    weak structure and fills the box, high keeps only the strongest cores. How thick the
+    shells are follows the level (it is 0.4 of it), so there is no third slider.
+    <b>opacity</b> is how solidly they draw &mdash; low is a haze you can see through, high
+    and the front of the box hides the back of it. Both are per card, and both are only how
+    the picture is drawn: the simulation neither sees them nor cares.</p>
+  <p>Two things change in the card header. The <b>arrows</b> checkbox becomes <b>lines</b>
+    and overlays the magnetic field lines through the whole box; it is off to begin with,
+    because the lines are drawn <i>on top of</i> the picture rather than woven into it, so a
+    line that ought to be behind a shell will still be in front of it. And the contour
+    controls disappear: contours are drawn on a plane, and there is no plane here.</p>
+  <p>The two &sigma; quantities cannot be volume-rendered &mdash; they are built from four
+    fields at once and a card has room for two &mdash; so a card asking for
+    &sigma;<sub>c</sub> or &sigma;<sub>r</sub> in this view quietly shows <b>cube faces</b>
+    instead, and its two sliders hide with the view they belong to.</p>
+  <p>Marching a volume is the most expensive drawing these pages do. If a card feels heavy,
+    one volume card with the others on slices is a fair trade &mdash; and the picture does
+    not change with the machine: the shells sit where the sliders say either way.</p>
+</details>
+
+<details id="filter">
+  <!-- DRAFT copy (ISO_PLAN Phase D): written by the implementing agent, awaiting
+       Alfred's wording pass, like the preset text before it. -->
+  <summary>the scale filter &mdash; looking at one range of sizes at a time</summary>
+  <p>The two narrow sliders on every display card are a <b>filter on the picture</b>, in both
+    apps. They keep only structures within a range of perpendicular sizes: the left handle is
+    the lowest wavenumber k<sub>&perp;</sub> kept, the right handle the highest, both counted
+    in box wavenumbers &mdash; the same units the spectrum chart's horizontal axis uses, so a
+    band you pick here is a stretch of that axis. Wide open (left at 0, right at the far end)
+    is off, and off is exactly off: the picture is then the same picture, pixel for pixel, as
+    if the sliders did not exist.</p>
+  <p><b>It filters the picture and nothing else.</b> The simulation is not filtered: the run,
+    the time step, the energies, the spectra and the field lines all carry
+    the whole field. (Saving or recording a filtered card saves the filtered picture &mdash;
+    what you see is what you get.) Two cards can show two different bands of the same instant side by side,
+    which is what the control is for. The caption says so whenever a band is active, because a
+    filtered picture looks like a different simulation and is not one.</p>
+  <p>Why bother: turbulence is many sizes at once, and the big structures are the bright ones,
+    so a raw snapshot mostly shows the big ones. Slide the band up during a developed run and
+    the picture rescales to what is left &mdash; sheets and eddies that get <i>thinner across
+    the magnetic field</i> as you go up, while staying long <i>along</i> it. That growing
+    elongation is the same thing the
+    <a href="#aniso">anisotropy k<sub>&#8741;</sub>/k<sub>&perp;</sub> chart</a> measures as a
+    falling curve; here you are looking at it directly. In 2D the same band shows the
+    small-scale sheets and the alignment between flow and field. Filtered snapshots like these
+    are how the anisotropy was first measured (Cho &amp; Vishniac; Maron &amp; Goldreich) &mdash;
+    the difference is that here the band is a slider and the run keeps going.</p>
+  <p>Practical notes. The edges of the band are soft, about one wavenumber wide, on purpose: a
+    hard cut rings, and the ringing would look like structure that is not there. A narrow band
+    at a high wavenumber is a small amount of energy, and the colour scale follows the filtered
+    field, so it will amplify whatever is there &mdash; including grid noise, at the very top
+    of the range. In 3D the band applies to the volume view too, which is the payoff: a
+    band-passed j&#8741; in a long box, one range of scales at a time.</p>
 </details>
 
 <details>
@@ -286,11 +372,13 @@ press the green <b>Run</b>, and change one thing at a time.</p>
   </ul>
   <!-- DRAFT copy (ANISO_PLAN Phase C): written by the implementing agent, awaiting
        Alfred's wording pass, like the preset text before it. -->
-  <p><b>anisotropy k<sub>&#8741;</sub>/k<sub>&perp;</sub></b> (3D) &mdash; how stretched
-    the eddies are along the background magnetic field, scale by scale. Turbulence in a
-    magnetised plasma does not make round eddies: the smaller they get, the longer and
+  <p id="aniso"><b>anisotropy k<sub>&#8741;</sub>/k<sub>&perp;</sub></b> (3D) &mdash; how
+    stretched the eddies are along the background magnetic field, scale by scale. Turbulence
+    in a magnetised plasma does not make round eddies: the smaller they get, the longer and
     thinner they are along the field. This chart measures that, and it is the one plot
-    where the theory of the last thirty years is directly visible.</p>
+    where the theory of the last thirty years is directly visible. To see the same thing by
+    eye rather than as a curve, put a display card's
+    <a href="#filter">scale filter</a> on a narrow band and slide it up.</p>
   <p>It is built from the two spectra of the chart above, with no extra work asked of the
     GPU. For a given amount of energy at small scales, it asks which perpendicular scale
     and which parallel scale hold that much, and plots one against the other; doing it for
@@ -379,7 +467,10 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       along z, so the parallel and perpendicular spectra can differ.</li>
     <li><b>Alfven-wave collision</b> &mdash; two wave packets travelling towards each
       other along the field, meeting head-on in the middle of the box. This is the
-      elementary event that turbulence in a magnetised plasma is built out of.</li>
+      elementary event that turbulence in a magnetised plasma is built out of.
+      <!-- DRAFT (ISO_PLAN Phase C) — awaiting Alfred's wording pass -->
+      It opens with three volume views of the box: the current, where the collision does
+      its work, and one Elsasser vorticity per packet.</li>
   </ul>
 </details>
 

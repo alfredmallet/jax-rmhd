@@ -1,9 +1,9 @@
 # Isosurface plan: box-unit aspect + semi-transparent volume view + scale filter
 
 Four phases, executed by agents in order, each gated by adversarial review (fresh
-reviewer, SEND-BACK on majors). Base: current working tree (f79b14a + the uncommitted
-2026-08-10 feedback batch); rebase over ANISO if it lands first — no file conflicts
-expected beyond `rmhd3d.html` hunk adjacency. **Physics WGSL is untouched: every
+reviewer, SEND-BACK on majors). Base: **c3c7195** (clean tree, 2026-08-10 —
+ANISO landed as 316ea96+c3c7195; the earlier "rebase over ANISO" caveat is
+resolved). **Physics WGSL is untouched: every
 physics kernel must remain byte-identical, and the checks assert it. No RNG-adjacent
 changes anywhere in this plan.** Sequencing with the other open plans: ANISO
 (in flight, another agent) → this plan → ANISO_PLAN_2 (2D spectrum; reuses

@@ -151,9 +151,13 @@ const drain = () => {
 };
 // one rendered frame of card 0 (no solver.step: the physics is irrelevant here)
 const frame = () => { run("function(){ cards.disp[0].render(); }"); return drain()[0]; };
+// (3D, since ISO_PLAN B: the card opens on the VOLUME, which draws no plane and hence no
+// contour overlay at all -- so the tracer puts it on a plane, which is the view whose
+// dataflow this is about)
 const setCard = (contVal, sel) => run(`function(cv, s){
   const c = cards.disp[0];
   if (s !== null) c.selField.value = String(s);
+  if (c.selZSrc) c.selZSrc.value = "manual";
   c.selCont.value = String(cv);
   c.apply();
 }`, contVal, sel === undefined ? null : sel);
@@ -274,8 +278,8 @@ setTimeout(() => {
 
   // card retype / chain reuse: close card 0, add a new one on the same chain slot
   console.log("\n-- close the card and re-add on the same chain slot");
-  run(`function(){ addDisplayCard({ sel: 0 }); cardsSync(); cardClose(cards.disp[0]);
-                   addDisplayCard({ sel: 2, cont: 3 }); cardsSync(); }`);
+  run(`function(){ addDisplayCard({ sel: 0, zsrc: "manual" }); cardsSync(); cardClose(cards.disp[0]);
+                   addDisplayCard({ sel: 2, cont: 3, zsrc: "manual" }); cardsSync(); }`);
   drain();
   names();                                   // the re-add built a NEW chain slot: name it too
   const st = run(`function(){ return cards.disp.map(d => ({ ci: d.ci, sel: Number(d.sel()),
