@@ -928,7 +928,7 @@ const TWOCARD = `function(){
   for (const u of globalThis.UW) if (!w[u[0]]) w[u[0]] = u[1];
   return { a: A.band(), b: B.band(), ca: A.cap.innerHTML, cb: B.cap.innerHTML, w: w,
            shown: [A.rBLo.style.display, B.rBLo.style.display],
-           lab: A.rBLo.lab ? A.rBLo.lab.innerHTML : null }; }`;
+           lab: A.rBLo.labSpan ? A.rBLo.labSpan.innerHTML : null }; }`;
 // ... and the same card with the checkbox unticked: the handle keeps its value, and the
 // filter is off anyway -- hidden control, zero band words, no caption
 const FILTEROFF = `function(){

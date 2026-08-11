@@ -1895,7 +1895,8 @@ function _rngLab(parent, cls, min, max, step, v, title, lab) {
   s.innerHTML = lab;
   if (title) l.title = title;
   const r = _rng(l, cls, min, max, step, v, title);
-  r.lab = l;
+  r.lab = l;                              // the whole group, for _rngShow
+  r.labSpan = s;                          // the text alone, for anything reading it back
   return r;
 }
 function _rngShow(r, on) {
