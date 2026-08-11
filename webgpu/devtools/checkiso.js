@@ -42,6 +42,11 @@ const BASE = "c3c7195";                 // ISO_PLAN's base commit (ANISO landed)
 //   vecMagVol, maxPartialVol, maxFinalVol
 //                            volume-length INSTANTIATIONS of templates the slice and face
 //                            targets already emit -- asserted below to be exactly that
+// Alfred's on-device feedback round 2 (2026-08-10) moved NOTHING in this set and nothing
+// outside it: every item in that batch is UI (labels, two page-wide checkboxes, one slider
+// removed, a preset's IC and card count) except item 6, whose answer was a measurement --
+// the raymarch is converged, so it was not touched (see leg 6 and renderVol's own note).
+// The expectations below are therefore the SAME as Phase B's, deliberately.
 const DISPLAY = new Set(["render", "renderCube", "colorize", "colorizeCube", "prepDisp"]);
 // ... and what each page's Phase B diff is expected to BE, kernel by kernel. A display
 // kernel that moved and is not here fails the leg; so does one here that did not move,
@@ -218,7 +223,13 @@ const CORNER = [(a, b) => [a, b, 1], (a, b) => [1, b, a], (a, b) => [b, 1, a]];
 const QCORNER = [[0, 0, 0], [1, 0, 2], [0, 1, 4], [1, 1, 6]];
 const READ = `function(){ return { Lz: solver.g.Lz, Lx: solver.g.Lx, Ly: solver.g.Ly,
   q: Array.from(cubeQuads()), F: cubeFrame(), T: cubeTopXform(), cap: ASPECT_CAP }; }`;
-async function legAspect() {
+// ... the same read on the BASE page, which has no ASPECT_CAP (it predates Phase A)
+const READB = READ.replace(", cap: ASPECT_CAP", "");
+// the panel's aspect checkbox (feedback round 2, item 1), and the select's rebuild handler
+const SETLZ = `function(v){ const s = document.getElementById("selLz"); s.value = v; s.onchange(); }`;
+const SETASP = `function(on){ const c = document.getElementById("cbAspect");
+  c.checked = on; c.onchange(); return c.checked; }`;
+async function legAspect(state) {
   const env = await boot(dir, "rmhd3d.html");
   const opts = env.run(`function(){ return document.getElementById("selLz").options.map(o => o.value); }`);
   ok("selLz still offers 2pi..16pi", opts.join(",") === "2,4,8,16", opts.join(","));
@@ -232,10 +243,12 @@ async function legAspect() {
      (code.match(/const ASPECT_CAP =/g) || []).length === 1 &&
      /ASPECT_CAP > 0 \? Math\.min\(.*ASPECT_CAP\)/.test(code),
      (code.match(/const ASPECT_CAP =/g) || []).length + " declaration(s)");
+  ok("the aspect toggle is on by default (the true shape is what the box IS)",
+     env.run(`function(){ return document.getElementById("cbAspect").checked; }`) === true);
   let ref = null;
   for (const v of opts) {
     // the REAL path: the select's own rebuild handler makes a new solver at that Lz
-    env.run(`function(v){ const s = document.getElementById("selLz"); s.value = v; s.onchange(); }`, v);
+    env.run(SETLZ, v);
     const g = env.run(READ), tag = v + "pi: ";
     const e = edges(g.q), rho = g.Lz / g.Lx;
     ok(tag + "the solver really rebuilt at Lz = " + v + "pi",
@@ -277,7 +290,44 @@ async function legAspect() {
        Math.abs(g.T.ox - (F.ox + F.cx)) < 1e-9 && Math.abs(g.T.ax - F.ax) < 1e-9 &&
        Math.abs(g.T.by - F.by) < 1e-9);
   }
-  ok("stub boot raised no failures", env.fails.length === 0, env.fails.join(" | "));
+  // ---- the toggle OFF: the unit cube, and the BASE COMMIT's unit cube ------------
+  // Unticked, boxUnits reports [1,1,1] whatever Lz is -- which is exactly what cubeQuads
+  // drew before ISO_PLAN A. So the assertion is not "the ratios are 1" (they would be at
+  // Lz = 2pi anyway) but "the twelve drawn corners are the BASE commit's twelve corners,
+  // float for float, at every Lz": the toggle really does hand back the old picture.
+  const bd = state.baseDir || baseDir();
+  const benv = bd ? await boot(bd, "rmhd3d.html") : null;
+  ok("aspect off: the base page is bootable for the comparison", !!benv, bd ? "" : "git show failed");
+  ok("the aspect toggle really unticks", env.run(SETASP, false) === false);
+  let dq = 0, bad3 = 0, offZX = 0;
+  for (const v of opts) {
+    env.run(SETLZ, v);
+    const g = env.run(READ), e = edges(g.q), tag = v + "pi: ";
+    // a CUBE is not three equal projected edges (the projection foreshortens each axis
+    // differently); it is the same three, whatever Lz says. So: the ratio at 2pi, held.
+    if (!offZX) offZX = len(e.z) / len(e.x);
+    ok(tag + "aspect off: the drawn shape does not move with Lz",
+       rel(len(e.z) / len(e.x), offZX) < 1e-9 && rel(g.Lz, v * Math.PI) < 1e-12,
+       "z:x = " + (len(e.z) / len(e.x)).toFixed(9) + " at Lz = " + g.Lz.toFixed(4));
+    if (!benv) continue;
+    benv.run(SETLZ, v);
+    const b = benv.run(READB);
+    for (let i = 0; i < g.q.length; i++) dq = Math.max(dq, Math.abs(g.q[i] - b.q[i]));
+    // ... and the frame the field lines / arrows ride is the base's too
+    for (const k of Object.keys(b.F)) if (Math.abs(g.F[k] - b.F[k]) > 1e-9) bad3++;
+  }
+  ok("aspect off: cubeQuads IS " + BASE + "'s, at every Lz", benv && dq === 0 && bad3 === 0,
+     "max |delta corner| = " + dq + ", " + bad3 + " frame components moved");
+  // ... and back on, the SAME live solver draws the 4:1 column again (the toggle is a
+  // projection switch, not a rebuild: nothing about the run moved either way)
+  env.run(SETASP, true);
+  env.run(SETLZ, "8");
+  const back = edges(env.run(READ).q);
+  ok("  ... and ticking it back restores the elongation, with no rebuild",
+     rel((len(back.z) / len(back.x)) / offZX, 4) < 1e-5,
+     "z:x back to " + ((len(back.z) / len(back.x)) / offZX).toFixed(6) + " cubes");
+  ok("stub boot raised no failures", env.fails.length === 0 && (!benv || benv.fails.length === 0),
+     env.fails.concat(benv ? benv.fails : []).join(" | "));
 }
 
 // ---------------------------------------------------------------------------
@@ -433,12 +483,14 @@ function refMarch(K, U, fld, mode, mx, cmap, cp) {
 // the synthetic volumes the two marches are compared on: an offset Gaussian blob (signed
 // by `sgn`), plus the empty one -- 16 x 16 x 8, indexed iz * NX*NY + ix * NY + iy, which
 // is the layout the display chain's dispR carries
-function blob(N, sgn) {
+// (`s2` is the blob's squared width: the default is the fat one every leg below marches,
+// and leg 6's thin-shell case narrows it until the +-level shells are skins)
+function blob(N, sgn, s2) {
   const [NX, NY, NZ] = N, f = new Float32Array(NX * NY * NZ);
   if (!sgn) return f;
   for (let iz = 0; iz < NZ; iz++) for (let ix = 0; ix < NX; ix++) for (let iy = 0; iy < NY; iy++) {
     const x = (ix + 0.5) / NX - 0.42, y = (iy + 0.5) / NY - 0.58, z = (iz + 0.5) / NZ - 0.5;
-    f[iz * NX * NY + ix * NY + iy] = sgn * Math.exp(-(x * x + y * y + z * z) / 0.02);
+    f[iz * NX * NY + ix * NY + iy] = sgn * Math.exp(-(x * x + y * y + z * z) / (s2 || 0.02));
   }
   return f;
 }
@@ -590,6 +642,42 @@ async function legMarch(state) {
   const empty = runVol(M, src, blob(K.n, 0), 1, 1, CM, U, [pix[1]])[0];
   ok("  ... while an empty volume marches to (near) nothing", Math.max(...empty) < 0.15,
      "brightest channel " + Math.max(...empty).toFixed(3));
+  // ---- a THIN shell, and whether VOL_STEPS resolves it (feedback round 2, item 6) ----
+  // Alfred reported "rippling" in the volume view. The hypothesis was step-size banding, so
+  // the leg now asks the question directly, on a blob steep enough that the +-level shells
+  // are skins rather than fog: (a) the emitted march is STILL the reference march there,
+  // and (b) the reference march at VOL_STEPS is the same picture as the same march at 4x
+  // VOL_STEPS -- i.e. the loop is converged and a step dither would add noise rather than
+  // remove an artefact. That is how the hypothesis was answered off-line too, on a
+  // synthetic turbulent j at 64^2 x 256 in a 4:1 box: 256 steps vs 3072 differ by <1/255
+  // rms (~7/255 peak), and one ray per pixel vs 4x4 rays by ~1/255 rms (both re-measured
+  // independently at review, seed-robust). This leg keeps that true, loosely: the 4e-3
+  // gate holds down to ~64 steps on this blob and trips near 32 (measured at review), so
+  // it bounds how far an on-device fallback can cut the step count, not every halving.
+  const thin = blob(K.n, 1, 0.004);
+  const UT = Float32Array.from(U);
+  UT[16] = 0.12;                                  // a low level on a steep blob = a skin
+  const pixT = [cl([0.42, 0.58, 0.5]), cl([0.36, 0.64, 0.5]),
+                cl([0.3, 0.7, 0.62]), cl([0.5, 0.5, 0.35])];
+  const gotT = runVol(M, src, thin, 1, 1, CM, UT, pixT);
+  let emT = 0, inkT = 0, conv = 0;
+  const K4 = Object.assign({}, K, { steps: 4 * K.steps });
+  for (let i = 0; i < pixT.length; i++) {
+    const w = refMarch(K, UT, thin, 1, 1, x => cmap(x), pixT[i]).c;
+    const w4 = refMarch(K4, UT, thin, 1, 1, x => cmap(x), pixT[i]).c;
+    for (let c = 0; c < 3; c++) {
+      emT = Math.max(emT, Math.abs(gotT[i][c] - w[c]));
+      conv = Math.max(conv, Math.abs(w4[c] - w[c]));
+    }
+    inkT = Math.max(inkT, ...gotT[i]);
+  }
+  ok("the emitted march == the CPU reference on a THIN shell too", emT < 1e-5 && inkT > 0.05,
+     "max |delta| = " + emT.toExponential(2) + ", brightest " + inkT.toFixed(3));
+  // 4e-3 = 1/255, six times the 6.5e-4 this measures today: deterministic arithmetic, so
+  // the headroom is for a future shader change, not for machine noise
+  ok("  ... and " + K.steps + " steps resolve that shell: 4x as many draw the same picture",
+     conv < 4e-3, "max |delta| vs " + K4.steps + " steps = " + conv.toExponential(2)
+       + " (" + (255 * conv).toFixed(1) + "/255)");
 }
 
 // 7. the omega+- entries, and the shells each field-table entry raises
@@ -659,16 +747,22 @@ async function legShells(state) {
 // 8. the collision preset (Phase C)
 // ---------------------------------------------------------------------------
 // Phase C is a VIEW change over an untouched initial condition, so the leg asserts both
-// halves. First the page: booted at ?demo=collision, it must open on a volume of j with
-// the preset's own level/opacity on that card, at Lz = 8pi, with the chi line alive --
+// halves. First the page: booted at ?demo=collision, it must open on ONE volume of j with
+// the preset's own level/opacity on that card, at Lz = 8pi, on the SINUSOID IC (Alfred's
+// on-device call, feedback round 2 item 7: the sinusoids fill the box, so the shells are
+// surfaces you can read, and the letter packets are one entry away in the IC select) --
 // driven through the real preset machinery (presetBoot -> cardsLayout), not read off the
-// registry. Then the IC itself: the packet code is compared FUNCTION BY FUNCTION against
-// BASE, so "the packet IC stays" is checked and not asserted in a comment.
-const IC_FNS = { "common.js": ["icPresetFields", "icGaussZ", "packetGeom", "chiEstimate"],
+// registry. Then the IC itself: BOTH packet ICs are compared FUNCTION BY FUNCTION against
+// BASE, so "the IC code is untouched, only which one the preset opens on changed" is
+// checked and not asserted in a comment.
+const IC_FNS = { "common.js": ["icPresetFields", "icGaussZ", "packetGeom", "chiEstimate",
+                               "icSinePlanes", "icSineZeta", "icZExtrude", "icLetterZeta"],
                  "rmhd3d.html": ["applyIC", "icInfoLine"] };
-// ... plus the two one-liners that decide WHICH presets are packet presets and how long
-// their packets are (the collision preset writes the second into its slider)
-const IC_DECLS = ["const IC_SIGMA_Z_FRAC =", "const icIsPacketIC ="];
+// ... plus the one-liners that decide WHICH presets are packet presets, how long their
+// packets are (the collision preset writes the second into its slider) and what the
+// sinusoids' mode number and perpendicular scale are (chi reads the last one)
+const IC_DECLS = ["const IC_SIGMA_Z_FRAC =", "const icIsPacketIC =", "const IC_SINE =",
+                  "const IC_SINE_N =", "const icSigmaSine ="];
 // the source of `function NAME(`, brace-matched from its declaration. Every brace in these
 // six bodies -- comments and strings included -- is balanced, so the naive count is exact;
 // an unbalanced one could only over-extract, which makes the comparison stricter.
@@ -695,31 +789,33 @@ async function legCollision() {
              zsrcKeys: L.map(s => Object.keys(s).sort().join("+")),
              chi: document.getElementById("icinfo").innerHTML,
              cards: cards.disp.map(c => [c.sel(), c.volView(), solver.volOf(c.ci),
-                                         c.level(), c.opac(), c.rSlice.disabled]),
+                                         c.level(), c.opac(), c.rSlice.disabled,
+                                         c.rSlice.style.display]),
              charts: cards.chart.map(c => c.type()),
              defView: ZSRC_DEFAULT_CUBE }; }`);
   ok("?demo=collision selects the collision preset", G.sel === "collision", G.sel);
-  ok("  ... on the packet IC, at Lz = 8pi (64^2 x 256)",
-     G.ic === "letters" && rel(G.Lz, 8 * Math.PI) < 1e-12 && G.nz === 256,
+  ok("  ... on the SINUSOID packet IC, at Lz = 8pi (64^2 x 256)",
+     G.ic === "sine" && rel(G.Lz, 8 * Math.PI) < 1e-12 && G.nz === 256,
      G.ic + ", Lz = " + G.Lz.toFixed(4) + ", nz = " + G.nz);
-  // the LEAD card is a volume of j (mode 1) -- resolved by the solver, not just by the
-  // select -- with the preset's two knobs on it and its plane slider dead
+  ok("  ... which is still a PACKET preset (envelopes, sigma_z, the meeting time)",
+     env.run(`function(){ return icIsPacketIC(document.getElementById("selIC").value); }`) === true);
+  // the ONE card is a volume of j (mode 1) -- resolved by the solver, not just by the
+  // select -- with the preset's two knobs on it and its plane slider dead AND gone
   const c0 = G.cards[0] || [];
-  ok("the lead card is a VOLUME of j (mode 1), with its plane slider dead",
-     c0[0] === 1 && c0[1] === true && c0[2] === 1 && c0[5] === true,
-     JSON.stringify(c0));
+  ok("the card is a VOLUME of j (mode 1), with its plane slider dead",
+     G.cards.length === 1 && c0[0] === 1 && c0[1] === true && c0[2] === 1 && c0[5] === true,
+     JSON.stringify(G.cards));
   ok("  ... carrying the preset's level / opacity, not the defaults",
      c0[3] === 0.25 && c0[4] === 7, "level " + c0[3] + ", opacity " + c0[4]);
-  // ... flanked by the two Elsasser vorticities, one packet each, also marched
-  ok("  ... flanked by omega+ and omega- volume cards (one packet each)",
-     G.cards.length === 3 && G.cards[1][0] === 10 && G.cards[2][0] === 11 &&
-     G.cards.slice(1).every(c => c[1] === true && c[2] === 1 && c[3] === 0.3 && c[4] === 7),
-     JSON.stringify(G.cards.slice(1)));
+  // ... and that dead slider is REMOVED, not merely greyed (item 5)
+  ok("  ... and the dead plane slider is hidden, not just disabled", c0[6] === "none", c0[6]);
   // the ratified "vol is the default view": the preset sets level/opacity and NOTHING else
   // per card, so it never has to name a view
   ok("  ... and the preset names no view: vol is the default it inherits",
-     G.defView === "vol" && G.zsrcKeys.join(" ") === "level+opac+sel level+opac+sel level+opac+sel",
+     G.defView === "vol" && G.zsrcKeys.join(" ") === "level+opac+sel",
      G.zsrcKeys.join(" "));
+  // the chi line: the sinusoids are a packet preset, so it carries the packet clause too,
+  // with kbar_perp the single mode's own exact wavenumber (icSigmaSine, not an estimate)
   ok("the chi readout is alive under the IC controls",
      /&chi;<sup>\+<\/sup> [\d.]/.test(G.chi) && /meeting at t = [\d.]/.test(G.chi),
      G.chi.replace(/<[^>]*>/g, "").slice(0, 96));
@@ -813,19 +909,39 @@ const UTRACE = `function(){
     return orig(b, off, data);
   };
 }`;
-// two cards, two bands: the second card is left wide open, and its uniform must say so
+// the panel's filter checkbox (feedback round 2, item 4): the handles are opt-in, so every
+// snippet below that means to exercise the filter has to ask for them first. Ticking it by
+// hand rather than through onchange() keeps the shared stub localStorage out of it.
+const FILTERON = `function(on){ const c = document.getElementById("cbFilter");
+  c.checked = on; cardsSync(); return c.checked; }`;
+// two cards, two filters: the second card is left wide open, and its uniform must say so
 const TWOCARD = `function(){
   while (cards.disp.length < 2) addDisplayCard();
   cardsSync();
   const A = cards.disp[0], B = cards.disp[1];
   for (const c of [A, B]) if (c.selZSrc) c.selZSrc.value = "manual";   // an ordinary field view
-  A.rBLo.value = "2"; A.rBHi.value = "6";
-  B.rBLo.value = "0"; B.rBHi.value = String(B.rBHi.max);
+  A.rBLo.value = "2";
+  B.rBLo.value = "0";
   globalThis.UW = [];
   A.apply(); B.apply();
   const w = {};
   for (const u of globalThis.UW) if (!w[u[0]]) w[u[0]] = u[1];
-  return { a: A.band(), b: B.band(), ca: A.cap.innerHTML, cb: B.cap.innerHTML, w: w }; }`;
+  return { a: A.band(), b: B.band(), ca: A.cap.innerHTML, cb: B.cap.innerHTML, w: w,
+           shown: [A.rBLo.style.display, B.rBLo.style.display],
+           lab: A.rBLo.lab ? A.rBLo.lab.innerHTML : null }; }`;
+// ... and the same card with the checkbox unticked: the handle keeps its value, and the
+// filter is off anyway -- hidden control, zero band words, no caption
+const FILTEROFF = `function(){
+  const c = document.getElementById("cbFilter");
+  c.checked = false;
+  const A = cards.disp[0];
+  A.rBLo.value = "5";
+  globalThis.UW = [];
+  cardsSync();
+  const w = {};
+  for (const u of globalThis.UW) if (!w[u[0]]) w[u[0]] = u[1];
+  return { band: A.band(), slider: A.rBLo.value, cap: A.cap.innerHTML,
+           shown: A.rBLo.style.display, w: w }; }`;
 // ... over every display mode, view and colormap BOTH commits offer (the omega+- modes and
 // the vol view are Phase B's, so they are not in a sweep that has to run on base too)
 const USWEEP = `function(modes, views){
@@ -978,9 +1094,15 @@ async function legFilter(state) {
     ok("  ... and the EXECUTED kernel is bit-identical to " + BASE + "'s on the same state",
        dbad.length === 0, dbad.length ? "differ at " + dbad.slice(0, 3).join(" ") : "10 modes, both components");
 
-    // the uniforms the page writes, against the same sweep on the base page
+    // the uniforms the page writes, against the same sweep on the base page. The filter's
+    // handles are turned ON for it (they are opt-in since item 4) and left at 0: "the
+    // control is there and wide open" is the statement worth making bitwise, since "the
+    // control is absent" writes zeros by construction. The base page has no such checkbox,
+    // hence the two separate runs.
     const modes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
       views = is3d ? ["manual", "zp", "zm", "cube", "cubezp", "cubezm", "lines"] : [null];
+    ok(page + ": the filter handles can be asked for (they are off by default)",
+       env.run(FILTERON, true) === true);
     env.run(UTRACE);
     const cur = env.run(USWEEP, modes, views);
     const benv = await boot(bd, page);
@@ -999,21 +1121,39 @@ async function legFilter(state) {
     ok("  ... and the display uniforms it writes are " + BASE + "'s, with two zero band words",
        ubad.length === 0 && zbad === 0 && cur.length === bas.length && cur.length > 0,
        ubad.length ? ubad.slice(0, 2).join(" | ") : cur.length + " writes swept, " + zbad + " non-zero band words");
-    // ---- two cards, two bands, and a caption that owns up to it ---------------
+    // ---- two cards, two filters, and a caption that owns up to it -------------
+    // The UI is ONE handle since item 3: the page writes [k_min, 0], and that 0 is the
+    // kernel's "this end is off", i.e. the exact 1.0 above -- a high-pass to the dealias
+    // cut, spelled the way the factor's own gate wants it. (The two-ended factor is still
+    // what the sweeps above test; only the control lost an end.)
     const T = env.run(TWOCARD);
     const bandOf = n => { const a = Uint8Array.from(T.w[n] || []);
                           return a.length === 32 ? Array.from(new Float32Array(a.buffer, 16, 2)) : null; };
     const b0 = bandOf("0:mode"), b1 = bandOf("1:mode"), m0 = bandOf("0:modeM"), c0 = bandOf("0:modeC[0]");
-    ok(page + ": two cards carry two bands -- one filtered, one wide open",
-       T.a.join(",") === "2,6" && T.b.join(",") === "0,0" &&
-       b0 && b0.join(",") === "2,6" && b1 && b1.join(",") === "0,0",
+    ok(page + ": two cards carry two filters -- one high-passed, one wide open",
+       T.a.join(",") === "2,0" && T.b.join(",") === "0,0" &&
+       b0 && b0.join(",") === "2,0" && b1 && b1.join(",") === "0,0",
        JSON.stringify({ a: T.a, b: T.b, u0: b0, u1: b1 }));
     ok("  ... on every uniform that card preps a field through (mate, contour potentials)",
-       m0 && m0.join(",") === "2,6" && c0 && c0.join(",") === "2,6",
+       m0 && m0.join(",") === "2,0" && c0 && c0.join(",") === "2,0",
        JSON.stringify({ modeM: m0, modeC0: c0 }));
-    ok("  ... and only the filtered card's caption says so",
-       /display filter/.test(T.ca) && !/display filter/.test(T.cb),
+    // the caption Alfred asked for (item 8), verbatim, and only where a filter is live
+    ok("  ... and only the filtered card's caption says so, as k_perp = k_min:k_max",
+       /<i>filter<\/i>: k&perp; = 2:k<sub>max<\/sub>/.test(T.ca) && !/filter/.test(T.cb),
        T.ca.replace(/<[^>]*>/g, "").slice(-48));
+    // the handle is labelled and present on both cards (item 2 / item 4)
+    ok("  ... and the handle is on screen, labelled",
+       T.shown.join(",") === "," && /k<sub>min<\/sub>/.test(T.lab || ""),
+       JSON.stringify(T.shown) + " " + T.lab);
+    // ---- and unticked, the filter is GONE: no handle, no words, no caption ----
+    const F = env.run(FILTEROFF);
+    const zeroBand = Object.keys(F.w).length > 0 &&
+      Object.keys(F.w).every(n => F.w[n].length === 32 && F.w[n].slice(16).every(x => x === 0));
+    ok(page + ": unticked, the filter is absent AND bitwise off",
+       F.band.join(",") === "0,0" && F.shown === "none" && !/filter/.test(F.cap) && zeroBand,
+       JSON.stringify({ band: F.band, shown: F.shown, uniforms: Object.keys(F.w).length }));
+    ok("  ... with the handle's own value kept, for the next tick of the box",
+       F.slider === "5", F.slider);
     ok("  ... and both boots raised no failures", env.fails.length === 0 && benv.fails.length === 0,
        env.fails.concat(benv.fails).join(" | "));
   }

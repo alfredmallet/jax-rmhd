@@ -127,9 +127,10 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     <li><b>Kelvin&ndash;Helmholtz shear layers</b> and <b>tearing mode</b> (2D only)
       &mdash; two equilibria plus a small seed perturbation, which then grow. They bring
       their own physical knobs (below).</li>
-    <li><b>sinusoidal z&plusmn; packets</b> (3D only) &mdash; the textbook wave collision:
-      one packet is a single wave in x, the other a single wave in y, so their interaction
-      is one clean beat instead of a spectrum of them.</li>
+    <li><b>sinusoidal z&plusmn; packets</b> (3D only) &mdash; the textbook wave collision,
+      and what the collision demo opens on: one packet is a single wave in x, the other a
+      single wave in y, so their interaction is one clean beat instead of a spectrum of
+      them, and each fills the box rather than sitting in it as a blob.</li>
   </ul>
   <p>The two <b>amp</b> sliders set how strong the starting fields are. Normally they are
     labelled <b>&zeta;<sup>+</sup> amp</b> and <b>&zeta;<sup>&minus;</sup> amp</b> and set
@@ -230,14 +231,17 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     strong.</p>
   <p>The last drop-down is the <b>colormap</b>: afmhot, viridis, RdBu or grayscale, per
     card.</p>
-  <!-- DRAFT (ISO_PLAN Phase D) — awaiting Alfred's wording pass -->
-  <p>The two narrow sliders are the <a href="#filter">scale filter</a>: they keep only a band
-    of structure sizes in the picture, and they are wide open (off) to begin with. They change
-    the picture only &mdash; never the run.</p>
+  <!-- DRAFT (ISO_PLAN Phase D, one handle since the 2026-08-10 feedback) — awaiting
+       Alfred's wording pass -->
+  <p>A narrow <b>filter k<sub>min</sub></b> slider appears on every card once you tick
+    <b>k&perp; filter</b> in the displays &amp; charts panel: it is the
+    <a href="#filter">scale filter</a>, and it drops everything larger than the size you
+    set. It is off to begin with, and it changes the picture only &mdash; never the run.</p>
   <!-- DRAFT (ISO_PLAN Phase C) — awaiting Alfred's wording pass -->
   <p>In 3D each card also has a <b>view</b> drop-down, and it opens on <b>volume</b> &mdash;
     the whole box, drawn see-through, which has its own section below. <b>z slice</b> shows
-    one plane, picked by the slider beside it. <b>track z<sup>+</sup></b> and
+    one plane, picked by the slider beside it &mdash; a slider that is only there in that
+    mode, since the other views have no single plane to pick. <b>track z<sup>+</sup></b> and
     <b>track z<sup>&minus;</sup></b> follow a wave packet as it moves, so the display
     rides along with it. <b>cube faces</b> draws the three visible outer faces of the box
     instead of one plane (the top face is the card's own plane, so a tracking cube card
@@ -247,7 +251,9 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     Next to <b>+ display</b> / <b>+ chart</b> there is a page-wide <b>tracking</b>
     drop-down deciding how those trackers follow a packet: <b>energy centroid</b>
     (smooth, the default) or <b>peak plane</b> (the single strongest plane, which jumps
-    about more).</p>
+    about more) &mdash; and, beside it, <b>true box shape</b>, which is what draws the box
+    with its real edge lengths. Untick it and the box is drawn as a cube whatever
+    L<sub>z</sub> says, which is how these pages looked before.</p>
   <p>Along the bottom of each card, on the caption line: a <b>colorbar</b> showing the
     card's colormap and the range the colours currently mean, and the <b>save</b> and
     <b>rec</b> buttons.</p>
@@ -261,7 +267,9 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     collision preset is built around. Instead of one plane, or the three outer faces, it
     draws the whole box see-through: for every pixel on screen it shoots a ray through the
     box and adds up what that ray passes through. The box is drawn with its real
-    proportions, so a long L<sub>z</sub> is a long column and not a cube.</p>
+    proportions, so a long L<sub>z</sub> is a long column and not a cube &mdash; untick
+    <b>true box shape</b> in the displays &amp; charts panel if you would rather have the
+    cube back.</p>
   <p>What it draws is not the field everywhere &mdash; that would be fog &mdash; but two
     surfaces of constant value, one at <b>+level</b> and one at <b>&minus;level</b> of the
     range the colorbar is showing, softened into shells rather than left as hard skins. At
@@ -269,10 +277,10 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     The positive shell takes one end of the card's colormap and the negative shell the other,
     the same colours the slice views use, so the two agree. Quantities that can only be
     positive (|u|, |b|, |z<sup>&plusmn;</sup>|) get the one shell instead of two.</p>
-  <p>The two sliders in the card header belong to this view and appear only in it.
-    <b>level</b> is where the shells sit, as a fraction of the colour range: low picks up
+  <p>The two labelled sliders in the card header belong to this view and appear only in it.
+    <b>% range</b> is where the shells sit, as a fraction of the colour range: low picks up
     weak structure and fills the box, high keeps only the strongest cores. How thick the
-    shells are follows the level (it is 0.4 of it), so there is no third slider.
+    shells are follows that level (it is 0.4 of it), so there is no third slider.
     <b>opacity</b> is how solidly they draw &mdash; low is a haze you can see through, high
     and the front of the box hides the back of it. Both are per card, and both are only how
     the picture is drawn: the simulation neither sees them nor cares.</p>
@@ -293,36 +301,40 @@ press the green <b>Run</b>, and change one thing at a time.</p>
 <details id="filter">
   <!-- DRAFT copy (ISO_PLAN Phase D): written by the implementing agent, awaiting
        Alfred's wording pass, like the preset text before it. -->
-  <summary>the scale filter &mdash; looking at one range of sizes at a time</summary>
-  <p>The two narrow sliders on every display card are a <b>filter on the picture</b>, in both
-    apps. They keep only structures within a range of perpendicular sizes: the left handle is
-    the lowest wavenumber k<sub>&perp;</sub> kept, the right handle the highest, both counted
-    in box wavenumbers &mdash; the same units the spectrum chart's horizontal axis uses, so a
-    band you pick here is a stretch of that axis. Wide open (left at 0, right at the far end)
+  <summary>the scale filter &mdash; looking at the small scales on their own</summary>
+  <p>Tick <b>k&perp; filter</b> in the displays &amp; charts panel and every display card
+    grows a narrow <b>filter k<sub>min</sub></b> slider: a <b>filter on the picture</b>, in
+    both apps. It keeps only structures smaller than a size you choose &mdash; k<sub>&perp;</sub>
+    at or above the handle, counted in box wavenumbers, which is the unit the spectrum chart's
+    horizontal axis uses, so where you put the handle is a place on that axis. The top of the
+    range is always the dealias cut, i.e. the smallest thing the run resolves. At 0 the filter
     is off, and off is exactly off: the picture is then the same picture, pixel for pixel, as
-    if the sliders did not exist.</p>
+    if the slider did not exist. Untick the box and the sliders go away again.</p>
   <p><b>It filters the picture and nothing else.</b> The simulation is not filtered: the run,
     the time step, the energies, the spectra and the field lines all carry
     the whole field. (Saving or recording a filtered card saves the filtered picture &mdash;
-    what you see is what you get.) Two cards can show two different bands of the same instant side by side,
-    which is what the control is for. The caption says so whenever a band is active, because a
+    what you see is what you get.) Two cards can show two different cuts of the same instant
+    side by side, which is what the control is for. The caption says
+    <b>filter: k&perp; = 10:k<sub>max</sub></b> whenever it is active, because a
     filtered picture looks like a different simulation and is not one.</p>
   <p>Why bother: turbulence is many sizes at once, and the big structures are the bright ones,
-    so a raw snapshot mostly shows the big ones. Slide the band up during a developed run and
+    so a raw snapshot mostly shows the big ones. Slide the handle up during a developed run and
     the picture rescales to what is left &mdash; sheets and eddies that get <i>thinner across
     the magnetic field</i> as you go up, while staying long <i>along</i> it. That growing
     elongation is the same thing the
     <a href="#aniso">anisotropy k<sub>&#8741;</sub>/k<sub>&perp;</sub> chart</a> measures as a
-    falling curve; here you are looking at it directly. In 2D the same band shows the
+    falling curve; here you are looking at it directly. In 2D the same cut shows the
     small-scale sheets and the alignment between flow and field. Filtered snapshots like these
     are how the anisotropy was first measured (Cho &amp; Vishniac; Maron &amp; Goldreich) &mdash;
-    the difference is that here the band is a slider and the run keeps going.</p>
-  <p>Practical notes. The edges of the band are soft, about one wavenumber wide, on purpose: a
-    hard cut rings, and the ringing would look like structure that is not there. A narrow band
-    at a high wavenumber is a small amount of energy, and the colour scale follows the filtered
+    the difference is that here the scale is a slider and the run keeps going.</p>
+  <p>Practical notes. The edge of the filter is soft, about one wavenumber wide, on purpose: a
+    hard cut rings, and the ringing would look like structure that is not there. What is left
+    high up is a small amount of energy, and the colour scale follows the filtered
     field, so it will amplify whatever is there &mdash; including grid noise, at the very top
-    of the range. In 3D the band applies to the volume view too, which is the payoff: a
-    band-passed j&#8741; in a long box, one range of scales at a time.</p>
+    of the range. That is the honest reason the sliders are off until you ask for them: it is
+    a tool for a developed run, not a knob for a first look. In 3D it applies to the volume
+    view too, which is the payoff: a filtered j&#8741; in a long box, one range of scales at
+    a time.</p>
 </details>
 
 <details>
@@ -378,7 +390,7 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     thinner they are along the field. This chart measures that, and it is the one plot
     where the theory of the last thirty years is directly visible. To see the same thing by
     eye rather than as a curve, put a display card's
-    <a href="#filter">scale filter</a> on a narrow band and slide it up.</p>
+    <a href="#filter">scale filter</a> on and slide it up.</p>
   <p>It is built from the two spectra of the chart above, with no extra work asked of the
     GPU. For a given amount of energy at small scales, it asks which perpendicular scale
     and which parallel scale hold that much, and plots one against the other; doing it for
@@ -468,9 +480,9 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     <li><b>Alfven-wave collision</b> &mdash; two wave packets travelling towards each
       other along the field, meeting head-on in the middle of the box. This is the
       elementary event that turbulence in a magnetised plasma is built out of.
-      <!-- DRAFT (ISO_PLAN Phase C) — awaiting Alfred's wording pass -->
-      It opens with three volume views of the box: the current, where the collision does
-      its work, and one Elsasser vorticity per packet.</li>
+      <!-- DRAFT (ISO_PLAN Phase C, re-led on the sinusoids) — awaiting Alfred's pass -->
+      It opens on the sinusoidal pair, whose surfaces fill the box and are the easiest to
+      read, shown as one volume view of the current, where the collision does its work.</li>
   </ul>
 </details>
 

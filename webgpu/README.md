@@ -556,8 +556,10 @@ Everything stays adjustable afterwards. There are no separate demo pages.
   **2D `tearing mode`** (`rmhd2d.html?demo=tearing`) — the two equilibrium demos; see
   the next section.
 - **3D `Alfven-wave collision`** (`rmhd3d.html?demo=collision`) — 64²×256, Lz = 8π,
-  forcing off, two counter-propagating letter packets, each display card riding the
-  energy centroid of one of them.
+  forcing off, two counter-propagating **sinusoidal** packets, on one volume view of j∥.
+  (It opened on the letter packets until the on-device pass: the sinusoids fill the box,
+  so their shells read as surfaces rather than as two blobs in a long column. The letters
+  are one entry away in the IC dropdown, unchanged.)
 
 ## Equilibrium demos: Kelvin–Helmholtz and tearing (2D)
 
@@ -808,8 +810,9 @@ they interact through exactly one beat, (z⁻·∇)z⁺ = a⁺a⁻k₁ˣ sin(k�
 PACKET preset in every other respect: the same `icGaussZ` + `packetGeom` envelopes, so
 σ_z, the ≥ 5σ_z placement, the trackers and the meeting time above are unchanged, and its
 k̄⊥ in the χ line is the mode's own 1/k₁ = Lx/2π (the one case where it is not an
-estimate). The collision preset's *default* IC is still the letters; this is a second
-entry in the IC dropdown.
+estimate). It is the collision preset's *default* IC since the on-device pass (a
+space-filling pair is far easier to read as isosurfaces than two localized blobs); the
+letters remain an entry in the same dropdown, and neither IC's code moved.
 
 **Plane tracking.** Because z is spectral, "the energy in plane iz" is not a k-space
 partial sum: `readPlaneEnergy` forms z± = φ±ψ, inverse-transforms *along z only*

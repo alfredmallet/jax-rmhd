@@ -114,6 +114,11 @@ controlsBuild({
       { k: "hintdiv", id: "icinfo" }
     ] }),
     ctrlGrpDisp([
+      // the box's drawn shape, page-wide (feedback round 2, item 1): on = the true edge
+      // lengths (Lx, Ly, Lz), off = the unit cube every view was drawn as before ISO_PLAN A
+      { k: "cbl", id: "cbAspect", t: "true box shape", v: true,
+        ti: "draw the box with its real edge lengths, so a long Lz reads as a column; "
+          + "untick to draw it as a cube whatever Lz is" },
       { k: "lab", t: "tracking" },
       { k: "sel", id: "selTrack", o: [["centroid", "energy centroid"], ["argmax", "peak plane (10% hysteresis)"]],
         ti: 'how a card\'s "track z⁺/z⁻" slice source follows its packet' }
@@ -851,6 +856,17 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
   //            Front to back, early exit at VOL_AMAX.
   //   frame    a faint wireframe where the entry (front edges) or exit (back edges)
   //            point sits at the end of two box axes at once -- no extra geometry
+  // VOL_STEPS is CONVERGED, measured twice (builder + independent review re-run, two RNG
+  // seeds; Alfred's "rippling" report, feedback round 2 item 6): over a synthetic turbulent
+  // j (spectrum piled at the dealias cut, 4:1 box), 256 steps agree with 3072 to ~7/255
+  // peak and <1/255 rms, and one ray per pixel agrees with 4x4 rays per pixel to ~1/255
+  // rms. So a dither is not a fix here: pixel-origin jitter measurably degrades the
+  // picture (rms 0.8 -> 2.3 of 255 vs the supersampled reference) and a step-offset dither
+  // is cost-neutral with nothing to hide. Leg 6 of checkiso gates the convergence.
+  // Whatever the on-device rippling is, it is NOT this loop undersampling; convergence is
+  // blind to sources shared by both marches (trilinear scalloping, real spectral ringing
+  // at the cut that a +-level skin exposes and a colormapped slice hides) -- those are the
+  // open candidates for the on-device pass (first test: raise % range and see if it goes).
   S.renderVol = pre + `
 const VOL_STEPS: i32 = 256;
 const VOL_AMAX: f32 = 0.98;
@@ -1018,9 +1034,14 @@ const ASPECT_CAP = 0;
 // none given the LIVE solver's is used, which is what lets cubeFrame -- and through it
 // the field lines, the arrow overlay and the lines-view box -- read the same box off
 // the same projection without threading an argument through any of them.
+// The panel's "true box shape" checkbox (feedback round 2, item 1) is read HERE and
+// nowhere else: unticked, the box is the base's unit cube again and every consumer --
+// cubeQuads, cubeFrame, the field lines, the arrows, the raymarch's ray -- follows from
+// this one return, because all of them go through this one projection.
 function boxUnits(g) {
   const b = g || (solver ? solver.g : null);
-  if (!b) return [1, 1, 1];
+  const cb = el("cbAspect");
+  if (!b || (cb && !cb.checked)) return [1, 1, 1];
   const cap = v => (ASPECT_CAP > 0 ? Math.min(v, ASPECT_CAP) : v);
   return [1, cap(b.Ly / b.Lx), cap(b.Lz / b.Lx)];
 }
@@ -1208,10 +1229,13 @@ class Solver {
         new Float32Array([LSRK33.alpha[s], LSRK33.beta[s], LSRK33.gamma[s], 0]));
     }
     d.queue.writeBuffer(this.buf.stage[3], 0, new Float32Array([0, 0, 1, 0]));
-    // this.g, not the live solver: a rebuild clears `solver` before constructing the
-    // new one, and the faces must be drawn with THIS box's aspect
-    d.queue.writeBuffer(this.buf.cubeU, 0, cubeQuads(this.g));
+    this.uploadBox();
   }
+
+  // the drawn box's twelve corners. this.g, not the live solver: a rebuild clears `solver`
+  // before constructing the new one, and the faces must be drawn with THIS box's aspect.
+  // Called again when the aspect toggle moves the projection under a live solver.
+  uploadBox() { this.device.queue.writeBuffer(this.buf.cubeU, 0, cubeQuads(this.g)); }
 
   _buildPipelines() {
     const d = this.device;
@@ -2314,51 +2338,51 @@ const PRESETS = {
   collision: {
     label: "Alfven-wave collision",
     set: { selRes: "64,256", selLz: "8", selHyper: "4", cbForce: false, cbAutoDiss: true,
-           selIC: "letters", rAmpP: "-0.7", rAmpM: "-0.7", cbAmpLock: true,
+           selIC: IC_SINE, rAmpP: "-0.7", rAmpM: "-0.7", cbAmpLock: true,
            rSigZ: String(IC_SIGMA_Z_FRAC), selTrack: "centroid", rCflEvery: "4" },
     // the kz stabiliser is a fixed function of the grid; the perpendicular diss gets the
     // marginal estimate as its t=0 seed and the auto-diss controller from there
     prep: () => { autoZDiss(); autoDissSeed(); },
-    // Three VOLUME displays (ISO_PLAN Phase C). The IC, the grid and every `set` value
-    // above are untouched -- the packets are the movie and this is a view change.
-    //   j leads: the collision's physics -- mutual shearing, growth of perpendicular
-    //     structure, sheet formation -- lives in j = grad_perp^2 psi and nowhere else,
-    //     and signed translucent shells of it are the Howes/Verniero/Klein 2016 frame.
-    //   omega+- follow: a packet is purely zeta+ or zeta-, so an omega+ card shows one
-    //     packet with the other invisible. That pair does the job the old tracked
-    //     |z+| / |z-| cards did -- one card per packet -- over the whole box instead of
-    //     one plane, and it is what the plan's (cut) two-hue z+- mode was for.
+    // ONE VOLUME display of j (ISO_PLAN Phase C, then Alfred's on-device pass: item 7).
+    // The IC code and the grid are untouched -- what changed is which IC the preset opens
+    // on and how many cards it opens.
+    //   the SINUSOIDS lead now: z+ ∝ yhat sin x against z- ∝ xhat sin y fills the box, so
+    //     the shells are surfaces you can read at a glance; the letter packets are two
+    //     small blobs in a long column, which is the harder first look. The letters stay
+    //     one entry away in the IC select.
+    //   j alone: the collision's physics -- mutual shearing, growth of perpendicular
+    //     structure, sheet formation -- lives in j = grad_perp^2 psi and nowhere else, and
+    //     signed translucent shells of it are the Howes/Verniero/Klein 2016 frame. The
+    //     omega+- pair (one card per packet) is one "+ display" away and the hint says so.
     // No zsrc: the volume IS the 3D default view (ZSRC_DEFAULT_CUBE), so the preset only
     // sets the two knobs. Both are BELOW their defaults, for two reasons: the incoming
     // packets set the autoscale and the structure the collision MAKES is weaker than they
     // are, so the shells must sit lower to show it; and the box is 4:1, so a ray down the
     // field crosses four box units rather than one and the default extinction reads as a
     // solid slab. On-device numbers (ISO_PLAN's checklist) -- these are a starting point.
-    layout: { disp: [{ sel: 1, level: 0.25, opac: 7 },
-                     { sel: 10, level: 0.3, opac: 7 }, { sel: 11, level: 0.3, opac: 7 }],
-              charts: ["energy", "spectrum"] },
-    // ---- DRAFT COPY (ISO_PLAN Phase C) --------------------------------------------
+    layout: { disp: [{ sel: 1, level: 0.25, opac: 7 }], charts: ["energy", "spectrum"] },
+    // ---- DRAFT COPY (ISO_PLAN Phase C, re-led on the sinusoids by item 7) ----------
     // The hint below is the implementing agent's draft, awaiting Alfred's wording pass --
     // the standing precedent for preset text (P2 item, FEEDBACK 2026-08-10).
-    hint: "Counter-propagating A / B Elsasser packets at 64&sup2;&times;256, L<sub>z</sub> = 8&pi;: "
-      + "they meet head-on at z = L<sub>z</sub>/2. The three displays are volume renders of "
-      + "the whole box &mdash; first the current j = &nabla;&sup2;&psi;, where the "
-      + "collision happens, then the two Elsasser vorticities "
-      + "&omega;<sup>&plusmn;</sup> = &nabla;&sup2;&zeta;<sup>&plusmn;</sup>, one per "
-      + "packet: a packet is purely &zeta;<sup>+</sup> or &zeta;<sup>&minus;</sup>, so each of "
-      + "those cards sees one packet and is blind to the other. Watch the shells shear where "
-      + "the two overlap. The perpendicular structure that appears there <i>is</i> the "
-      + "nonlinear interaction, and it is what the spectrum chart measures filling in at high "
-      + "k<sub>&perp;</sub>. &sigma;<sub>z</sub> sets the packet length and hence &chi; &mdash; "
-      + "press <b>show params</b> and the line under the IC controls gives &chi;<sup>&plusmn;</sup> (weak collision "
-      + "&lt;&lt;1, strong &gtrsim;1) and the meeting time; each card's two sliders set where "
-      + "its shells sit and how solid they read. A volume shows the whole box, so there is "
-      + "nothing left for plane tracking to do &mdash; switch a card's view back to <b>cube "
-      + "faces</b> or <b>track z&plusmn;</b> to ride one packet on a plane again. Switch the "
-      + "IC preset to <b>sinusoidal z&plusmn; packets</b> for the "
-      + "textbook version of the same collision: z<sup>+</sup> &prop; y&#770; sin x against "
-      + "z<sup>&minus;</sup> &prop; x&#770; sin y, one perpendicular mode each, so the "
-      + "interaction is a single beat rather than a spectrum of them."
+    hint: "Two counter-propagating sinusoidal Elsasser packets at 64&sup2;&times;256, "
+      + "L<sub>z</sub> = 8&pi;: z<sup>+</sup> &prop; y&#770; sin x against "
+      + "z<sup>&minus;</sup> &prop; x&#770; sin y, one perpendicular mode each, meeting "
+      + "head-on at z = L<sub>z</sub>/2. The display is a volume render of the whole box "
+      + "showing the current j = &nabla;&sup2;&psi;, where the collision happens: watch the "
+      + "shells shear where the two packets overlap. The perpendicular structure that appears "
+      + "there <i>is</i> the nonlinear interaction, and it is what the spectrum chart measures "
+      + "filling in at high k<sub>&perp;</sub>. &sigma;<sub>z</sub> sets the packet length and "
+      + "hence &chi; &mdash; press <b>show params</b> and the line under the IC controls gives "
+      + "&chi;<sup>&plusmn;</sup> (weak collision &lt;&lt;1, strong &gtrsim;1) and the meeting "
+      + "time; the card's two sliders set where its shells sit and how solid they read. Add a "
+      + "display and pick the Elsasser vorticities "
+      + "&omega;<sup>&plusmn;</sup> = &nabla;&sup2;&zeta;<sup>&plusmn;</sup> to separate the "
+      + "two packets: a packet is purely &zeta;<sup>+</sup> or &zeta;<sup>&minus;</sup>, so an "
+      + "&omega;<sup>+</sup> card sees one of them and is blind to the other. A volume shows "
+      + "the whole box, so there is nothing left for plane tracking to do &mdash; switch a "
+      + "card's view to <b>cube faces</b> or <b>track z&plusmn;</b> to ride one packet on a "
+      + "plane again. Switch the IC preset to <b>letter packets A / B</b> for two localized "
+      + "packets instead: a spectrum of perpendicular modes rather than a single beat."
   }
 };
 
@@ -2663,6 +2687,9 @@ async function boot() {
   wireCommonControls({ presets: PRESETS, sliders: ["rZDiss"], rebuildOn: ["selLz"] });
   el("btnAutoZDiss").onclick = autoZDiss;
   el("selTrack").onchange = () => { planeAt = 0; };    // re-track on the next frame
+  // the box shape moved: re-upload the drawn corners, and re-apply the cards, which is
+  // what rewrites each chain's ray uniform (setDisplayMode owns volRay)
+  el("cbAspect").onchange = () => { if (solver) solver.uploadBox(); cardsSync(); };
   bootApply(pre);
   loop();
 }

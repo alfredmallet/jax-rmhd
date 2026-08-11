@@ -1881,6 +1881,23 @@ function _rng(parent, cls, min, max, step, v, title) {
   if (title) r.title = title;
   return r;
 }
+// ... and the same slider with a SHORT LABEL in front of it, the shape the IC editor's
+// "z plane" control already has (FEEDBACK 2026-08-10 round 2, item 2: an unlabelled
+// header slider is a mystery knob). Label and slider are one control, so the label is
+// stashed on the slider and _rngShow moves both.
+function _rngLab(parent, cls, min, max, step, v, title, lab) {
+  const l = _mk("label", null, parent);
+  l.innerHTML = lab;
+  if (title) l.title = title;
+  const r = _rng(parent, cls, min, max, step, v, title);
+  r.lab = l;
+  return r;
+}
+function _rngShow(r, on) {
+  if (!r) return;
+  r.style.display = on ? "" : "none";
+  if (r.lab) r.lab.style.display = on ? "" : "none";
+}
 
 // The per-card z-plane source (3D only): "manual" plus a plane slider, or one of the
 // two packet trackers. BOTH card kinds have one -- a display card picks the plane it
@@ -1930,13 +1947,23 @@ function _zSrcPlane(v) {
 // integrates 1 - exp(-opacity * shell * dt), so it does not move with the step count).
 // The shell WIDTH rides the level (w = 0.4*level in the shader), not a third slider.
 const VOL_LEVEL = 0.35, VOL_OPAC = 12;
-// the per-card k_perp BAND-PASS (ISO_PLAN D), in BOTH apps: two integer handles in units of
-// the box wavenumber, kept one shell apart, in the forcing band's own idiom (uiFshell). It
-// is a DISPLAY filter -- one factor in prepDisp, nothing the solver steps and no chart sees
-// it -- and it is wide open by default, which is bitwise OFF (see bandFac in physics.js).
-// The travel is the dealias cut, i.e. the last shell the spectrum chart bins, so the two
-// controls speak the same k as that chart.
+// the per-card k_perp filter (ISO_PLAN D), in BOTH apps: ONE integer handle in units of the
+// box wavenumber, in the forcing band's own idiom (uiFshell). It is a DISPLAY filter -- one
+// factor in prepDisp, nothing the solver steps and no chart sees it -- and at 0 it is
+// bitwise OFF (see bandFac in physics.js). The travel is the dealias cut, i.e. the last
+// shell the spectrum chart bins, so the control speaks the same k as that chart.
+//
+// It was a two-handle BAND until the on-device pass (feedback round 2, item 3): Alfred ran
+// the high handle at the cut every time, so the control is a plain HIGH-PASS now and the
+// high end is permanently the cut -- which is the k_hi = 0 case of the same kernel factor,
+// i.e. the exact 1.0 that keeps an unfiltered card bitwise unfiltered. The kernel keeps
+// both ends (ANISO_PLAN_2 reuses them); only the UI lost one.
 const bandTop = () => (solver && solver.nb) || 32;
+// ... and the sliders are OPT-IN (item 4): Alfred's "the filter doesn't really work that
+// well" -- so one page-wide checkbox in the displays & charts panel decides whether every
+// card carries the handle at all. Unticked (the default) the handles are gone AND the
+// filter is forced wide open, so an ordinary visit never touches the band arithmetic.
+const bandFilterOn = () => { const c = el("cbFilter"); return !!(c && c.checked); };
 // the contour overlay's per-card selectors (REFINE_PLAN I2.4), in BOTH apps: in-plane
 // field lines of psi (B_perp) or streamlines of phi, on the plane the card displays --
 // or BOTH at once (J2.2), which is the alignment view. The value IS the potential's
@@ -2251,21 +2278,21 @@ class DisplayCard {
     // the volume view's two knobs, hidden (like the contour count) wherever they mean
     // nothing. 3D only: cfg.cube is what says this app has a box to march.
     if (cfg.cube) {
-      this.rLevel = _rng(head, "zslider", 0.05, 0.95, 0.01, VOL_LEVEL,
-                         "volume view: shell level, as a fraction of the colour range "
-                         + "(the shells sit at ±level, and their width rides it)");
-      this.rOpac = _rng(head, "zslider", 1, 40, 1, VOL_OPAC,
-                        "volume view: opacity of the shells");
+      this.rLevel = _rngLab(head, "zslider", 0.05, 0.95, 0.01, VOL_LEVEL,
+                            "volume view: shell level, as a fraction of the colour range "
+                            + "(the shells sit at ±level, and their width rides it)",
+                            "% range");
+      this.rOpac = _rngLab(head, "zslider", 1, 40, 1, VOL_OPAC,
+                           "volume view: opacity of the shells", "opacity");
     }
-    // the display-only k_perp band (ISO_PLAN D), both apps, every view: wide open to begin
-    // with, i.e. off. Their travel follows the grid in apply().
-    const nb = bandTop();
-    this.rBLo = _rng(head, "zslider", 0, nb, 1, 0,
-                     "display filter: hide k⊥ below this, in units of the box wavenumber "
-                     + "(left end = no low cut). The simulation itself is NOT filtered.");
-    this.rBHi = _rng(head, "zslider", 1, nb, 1, nb,
-                     "display filter: hide k⊥ above this (right end = no high cut). "
-                     + "The simulation itself is NOT filtered.");
+    // the display-only k_perp high-pass (ISO_PLAN D + item 3), both apps, every view: at 0,
+    // i.e. off, and absent altogether unless the panel's filter checkbox is ticked (item 4).
+    // Its travel follows the grid in apply().
+    this.rBLo = _rngLab(head, "zslider", 0, bandTop(), 1, 0,
+                        "display filter: hide k⊥ below this, in units of the box wavenumber "
+                        + "(left end = off; the top end is always the dealias cut). "
+                        + "The simulation itself is NOT filtered.",
+                        "filter k<sub>min</sub>");
     this.selCont = _sel(head, _contOpts(), "in-plane field lines: psi -> B_perp, phi -> streamlines");
     this.selLev = _sel(head, CONT_LEVELS.map(n => ({ v: n, t: n + " levels" })), "contour level count");
     this.selBg = _sel(head, [{ v: "0", t: "field bg" }, { v: "1", t: "plain bg" }],
@@ -2333,7 +2360,7 @@ class DisplayCard {
     if (this.selZSrc) this.selZSrc.onchange = apply;
     if (this.rSlice) this.rSlice.oninput = apply;
     if (this.rLevel) { this.rLevel.oninput = apply; this.rOpac.oninput = apply; }
-    this.rBLo.oninput = apply; this.rBHi.oninput = apply;
+    this.rBLo.oninput = apply;
     this.btnClose.onclick = () => cardClose(this);
     this.btnSave.onclick = () => this.saveShot();
     this.btnRec.onclick = () => this.recToggle();
@@ -2351,25 +2378,24 @@ class DisplayCard {
   level() { return this.rLevel ? parseFloat(this.rLevel.value) : VOL_LEVEL; }
   opac() { return this.rOpac ? parseFloat(this.rOpac.value) : VOL_OPAC; }
   // the card's k_perp band as prepDisp reads it: [k_lo, k_hi] in box wavenumbers, an end at
-  // 0 meaning that end is OFF. The handles are kept one shell apart (uiFshell's rule -- a
-  // crossed pair would show an empty picture), and an end at the far stop reports 0: below
-  // the first shell there is nothing to cut, and at the dealias cut the high end already
-  // passes everything the solver keeps. Wide open therefore writes (0, 0), and a (0, 0)
-  // band is not arithmetic the kernel does at all.
+  // 0 meaning that end is OFF. The high end is permanently the dealias cut, which is that
+  // end off (item 3), so the pair the page writes is [k_min, 0] -- and it is [0, 0], i.e.
+  // arithmetic the kernel does not do at all, both at the slider's left stop and whenever
+  // the panel's filter checkbox is unticked. k_min stops one shell below the cut: a filter
+  // that cut everything would show an empty picture (uiFshell's rule, one handle short).
   band() {
-    let lo = parseInt(this.rBLo.value, 10) | 0, hi = parseInt(this.rBHi.value, 10) | 0;
-    hi = Math.max(hi, lo + 1); lo = Math.min(lo, hi - 1);
-    this.rBLo.value = String(lo); this.rBHi.value = String(hi);
-    return [lo > 0 ? lo : 0, hi < bandTop() ? hi : 0];
+    if (!bandFilterOn()) return [0, 0];
+    const lo = Math.max(0, Math.min(parseInt(this.rBLo.value, 10) | 0, bandTop() - 1));
+    this.rBLo.value = String(lo);
+    return [lo, 0];
   }
   bandOn() { const b = this.band(); return b[0] > 0 || b[1] > 0; }
   // ... and, when it is on, the caption says so: a filtered picture must never be mistaken
-  // for the field itself (DRAFT copy -- Alfred's wording pass)
+  // for the field itself (wording: Alfred, feedback round 2 item 8)
   bandCap() {
     const b = this.band();
     if (!(b[0] > 0 || b[1] > 0)) return "";
-    return " &mdash; <i>display filter</i>: k&perp;/k&#8321; "
-      + (b[0] > 0 ? b[0] : "0") + "&ndash;" + (b[1] > 0 ? b[1] : "cut") + " only";
+    return " &mdash; <i>filter</i>: k&perp; = " + b[0] + ":k<sub>max</sub>";
   }
   // the field lines over the volume: the arrows checkbox, read in its vol state, and only
   // where a field is actually marched (the sigma modes fall back to the cube faces)
@@ -2404,13 +2430,11 @@ class DisplayCard {
     const cfg = cards.cfg;
     this._resize();
     if (this.rSlice) this.rSlice.max = String(Math.max(0, cfg.nz() - 1));
-    // the band handles travel out to the live dealias cut; a card sitting wide open stays
-    // wide open when the grid (and with it the cut) moves under it
+    // the filter handle travels out to the live dealias cut; a card sitting at 0 stays off
+    // when the grid (and with it the cut) moves under it
     const nb = bandTop();
-    if (parseInt(this.rBHi.max, 10) !== nb) {
-      const wasTop = parseInt(this.rBHi.value, 10) >= parseInt(this.rBHi.max, 10);
-      this.rBLo.max = String(nb); this.rBHi.max = String(nb);
-      if (wasTop) this.rBHi.value = String(nb);
+    if (parseInt(this.rBLo.max, 10) !== nb) {
+      this.rBLo.max = String(nb);
       this.rBLo.value = String(Math.min(parseInt(this.rBLo.value, 10), nb));
     }
     // ENTERING the lines view turns psi contours on: the transparent top face is the
@@ -2438,16 +2462,22 @@ class DisplayCard {
     // cube view, so it is live in both -- and dead whenever a tracker owns the plane, or
     // in either whole-box view (the lines face is the top BOUNDARY, K2.5; the volume has
     // no plane at all)
-    if (this.rSlice) this.rSlice.disabled = lines || vol || this.zsrc() !== "manual";
+    if (this.rSlice) {
+      this.rSlice.disabled = lines || vol || this.zsrc() !== "manual";
+      // ... and a dead plane slider is REMOVED, not just greyed (item 5): a whole-box view
+      // has no plane, so the control is not "unavailable", it is meaningless there. The
+      // .disabled flag stays as it was for anything that reads it (the checks do).
+      _rngShow(this.rSlice, !this.rSlice.disabled);
+    }
     // ... but a sigma card in vol view fell back to the cube faces (setDisplayMode), so
     // level/opacity would march nothing and the checkbox would overlay nothing: hide the
     // sliders and grey the checkbox rather than show live-looking controls the card ignores
     const rvol = vol && !!solver && !dispIsSigma(solver.modeOf(this.ci));
     this.cbArrow.disabled = vol && !rvol;
-    if (this.rLevel) {
-      this.rLevel.style.display = rvol ? "" : "none";
-      this.rOpac.style.display = rvol ? "" : "none";
-    }
+    _rngShow(this.rLevel, rvol);
+    _rngShow(this.rOpac, rvol);
+    // the filter handle is there only when the panel asks for it (item 4)
+    _rngShow(this.rBLo, bandFilterOn());
     // the contour overlay is an IN-PLANE object, so it goes away with the plane: the
     // volume view draws no plate for it and its potential pass is skipped (Solver.render)
     this.selCont.style.display = vol ? "none" : "";
@@ -2891,10 +2921,10 @@ function addDisplayCard(state) {
     if (state.zslice !== undefined && c.rSlice) c.rSlice.value = String(state.zslice);
     if (state.level !== undefined && c.rLevel) c.rLevel.value = String(state.level);
     if (state.opac !== undefined && c.rOpac) c.rOpac.value = String(state.opac);
-    // the k_perp band, as a preset may ask for it: [k_lo, k_hi] in box wavenumbers
-    if (state.band !== undefined) {
-      c.rBLo.value = String(state.band[0]); c.rBHi.value = String(state.band[1]);
-    }
+    // the k_perp filter, as a preset may ask for it. It is one handle since item 3, but a
+    // stored [k_lo, k_hi] pair still reads: the high end is the cut now, so only k_lo is
+    // taken and an old pair loads silently rather than erroring.
+    if (state.band !== undefined) c.rBLo.value = String(state.band[0]);
     if (state.cont !== undefined) c.selCont.value = String(state.cont);
     if (state.nlev !== undefined) c.selLev.value = String(state.nlev);
     if (state.plain !== undefined) c.selBg.value = state.plain ? "1" : "0";
@@ -3135,14 +3165,16 @@ const ctrlGrpIC = o => ({
 // displays & charts: the two add buttons, plus whatever page-wide extras follow
 const ctrlGrpDisp = extra => ({
   id: "grpDisp", summary: "displays &amp; charts", keep: true, rows: [
+    // the two add buttons, the page-wide display toggles, then whatever the page adds.
+    // The k_perp filter's handle is opt-in and OFF here (item 4): the panel is where the
+    // display-wide switches live, and the hint that used to explain the two band sliders
+    // went with the second slider (its content lives in docs.html's scale-filter section).
     [{ k: "btn", id: "btnAddDisp", t: "+ display" },
-     { k: "btn", id: "btnAddChart", t: "+ chart" }].concat(extra || []),
-    // ISO_PLAN D, DRAFT copy (Alfred's wording pass): the one line that has to be said out
-    // loud, because a band-passed picture looks like a different simulation and is not one
-    [{ k: "hint", t: "the two narrow sliders on a display card are a <b>k&perp; band "
-        + "filter on the picture only</b>: the run, the spectra and the field lines are "
-        + "never filtered. Slide the band up during a developed run and the structures "
-        + "get thinner across the field while staying long along it." }]
+     { k: "btn", id: "btnAddChart", t: "+ chart" },
+     { k: "cbl", id: "cbFilter", t: "k&perp; filter", v: false,
+       ti: "give every display card a k_perp filter slider: it hides structure below the "
+         + "wavenumber you set, in the PICTURE only -- the run, the spectra and the field "
+         + "lines are never filtered" }].concat(extra || [])
   ]
 });
 
@@ -3772,6 +3804,20 @@ function wireCommonControls(opts) {
     let show = false;
     try { show = localStorage.getItem("taranisShowParams") === "1"; } catch (e) {}
     paramsShow(show);
+  }
+  // the k_perp filter's opt-in (item 4), remembered exactly like that toggle: off on a
+  // first visit, and a visitor who wants the handles asks for them once. Ticking it only
+  // has to re-apply every card -- that is what shows the handles and rewrites the band
+  // words -- so there is no second path for the filter to come on by.
+  const cf = el("cbFilter");
+  if (cf) {
+    let on = false;
+    try { on = localStorage.getItem("taranisFilter") === "1"; } catch (e) {}
+    cf.checked = on;
+    cf.onchange = () => {
+      try { localStorage.setItem("taranisFilter", cf.checked ? "1" : "0"); } catch (e) {}
+      cardsSync();
+    };
   }
   // the preset's explanatory text rides the sticky topbar as its own full-width last
   // row (Alfred 2026-08-10 follow-up), so it stays on screen while the page scrolls

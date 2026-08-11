@@ -220,6 +220,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   every option, y:x does not move, the 0.92 autoscale still fits the elongated box and
   stays tight against the canvas, and `cubeFrame` reproduces all 12 projected corners
   (so the field lines, the box wireframe and the arrow overlay ride the same projection).
+  Both states of the panel's `true box shape` checkbox are driven: unticked, the drawn shape
+  stops moving with `L_z` AND the twelve corners are the BASE COMMIT's corners float for
+  float (the toggle really hands the old unit cube back), and ticking it puts the 4:1 column
+  back under the same solver.
   A last leg makes the `ASPECT_CAP` on-device edit on a COPY of the page and boots that,
   so the display-cap switch is known to work before anyone flips it.
   The Phase B legs RUN the raymarch: `volRay`'s uniform is asserted to invert `cubeQuads`
@@ -228,18 +232,24 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   through the three faces the cube draws; then the EMITTED fragment shader is executed by
   wgsl_reflect's WGSL interpreter (wrapped in a compute entry that calls `fs`) on a
   synthetic offset Gaussian blob and compared, pixel by pixel, with a CPU reference march
-  written independently here (~1e-6 achieved, 1e-5 tolerance). A last leg drives the same
+  written independently here (~1e-6 achieved, 1e-5 tolerance). Since Alfred's "rippling"
+  report the same leg also marches a THIN-shell blob (a steep blob at a low level, where a
+  coarse march would first alias) and asserts that the reference march at `VOL_STEPS` is the
+  same picture as the same march at 4x that — the loop is CONVERGED, which is why the answer
+  to that report was a measurement and not a dither. A last leg drives the same
   execution over every field-table entry — a negative blob must raise a shell exactly where
   the table says the field is signed — checks that the sigma modes fall back to the cube
   faces, and derives `prepDisp`'s two omega+- branches from its own vorticity branch.
   The Phase C leg boots the page at `?demo=collision` and asserts what the preset actually
-  OPENS: a volume of j (resolved by the solver, not just by the select) carrying the
-  preset's own level/opacity, flanked by the two omega+- volumes, at L_z = 8pi with the chi
-  line alive and the plane sliders dead — and that the preset names no view at all, the
-  volume being the default it inherits. Its other half is the promise that Phase C is a
-  VIEW change: the packet IC's own functions (`icPresetFields`, `icGaussZ`, `packetGeom`,
-  `chiEstimate`, `applyIC`, `icInfoLine`) are brace-matched out of both the working tree and
-  the base checkout and compared byte for byte.
+  OPENS: ONE volume of j (resolved by the solver, not just by the select) carrying the
+  preset's own level/opacity, on the SINUSOID packet IC at L_z = 8pi, with the chi line
+  alive and the plane slider not merely dead but gone — and that the preset names no view at
+  all, the volume being the default it inherits. Its other half is the promise that the
+  preset only ever chooses among UNTOUCHED initial conditions: both packet ICs' own functions
+  (`icPresetFields`, `icGaussZ`, `packetGeom`, `chiEstimate`, `icSinePlanes`, `icSineZeta`,
+  `icZExtrude`, `icLetterZeta`, `applyIC`, `icInfoLine`) and the five one-line declarations
+  around them are brace-matched out of both the working tree and the base checkout and
+  compared byte for byte.
   The Phase D leg does for the k⊥ display filter what the Phase B legs do for the raymarch:
   it EXECUTES the emitted `prepDisp` (same interpreter) and mirrors it in fp64. The factor
   swept over k⊥ is the half-cosine band to ~1e-7, inside [0,1], monotone across each edge and
@@ -251,7 +261,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   the executed kernel's output is bit-identical to the base kernel's on the same state, and
   the Mode uniforms the page writes over a sweep of modes / views / colormaps are the BASE
   page's bytes (booted from the base checkout, the same sweep) with two zero band words after
-  them. Later phases append to the `LEGS` list at the bottom.
+  them — that sweep now runs with the panel's `k⊥ filter` checkbox ticked and the handle at 0,
+  since "the control is there and wide open" is the statement worth making bitwise. The UI
+  side of the same leg follows the control as it is now: ONE handle per card writing
+  `[k_min, 0]` (the high end is permanently the dealias cut, which is the kernel's "this end
+  is off"), labelled and visible only while the checkbox is ticked, a caption reading
+  `filter: k⊥ = 10:k_max` on the filtered card and nothing on the wide-open one, and — with
+  the checkbox unticked — no handle, no caption, and zero band words on every uniform the
+  card preps a field through. Later phases append to the `LEGS` list at the bottom.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

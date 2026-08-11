@@ -90,6 +90,10 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
    selects beside it -- not like the close button, which owns the row's right edge */
 .cardhead .optbtn { padding: 2px 7px; font-size: 12px; line-height: 1.2; color: #9aa5b4; }
 .cardhead .cbl { display: inline-flex; align-items: center; gap: 3px; color: #9aa5b4; font-size: 12px; }
+/* a short label in front of a header slider (the volume level / opacity knobs and the
+   filter handle): sized like the selects beside it, and never squeezed -- the slider is
+   the flexible item on that row, not its name */
+.cardhead label { flex: none; color: #9aa5b4; font-size: 12px; }
 .cardhead .zslider { flex: 1 1 70px; min-width: 60px; width: auto; }
 .cardhead button.x { margin-left: auto; padding: 1px 7px; line-height: 1.2; color: #9aa5b4; }
 .viewcap { color: #7a8494; font-size: 11.5px; margin-top: 5px; }
