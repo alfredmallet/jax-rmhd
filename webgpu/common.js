@@ -1798,26 +1798,110 @@ function gen2dPanel(o) {
   const floor = Math.min(specFloor(out.map(p => [p]), hi, lo), 0.1 * hi);
   return { d, rows: out, hi, floor, nzb };
 }
-// the colorbar's three labels: log colour, so the middle of the strip is the GEOMETRIC
-// mean of the two ends
+// The cell colour, as ONE function of a value -- what the `gc` select picks:
+//   log  (the default) the rule this card was born with: the panel's own specFloor to the
+//        peak, which is this file's single "below this is noise" convention and the only
+//        mapping on which an inertial range is visible at all;
+//   lin  0 to the peak. It shows almost nothing -- a spectrum falls over decades -- and is
+//        exactly why it is worth being able to look: it is the honest picture of how much
+//        of the energy sits at the outer scale.
+// Returned unclamped; the caller clamps to [0,1] as it always did.
+function gen2dCscale(G, o) {
+  const lf = Math.log10(G.floor), lh = Math.log10(G.hi);
+  return ((o && o.gc) === "lin")
+    ? v => v / Math.max(G.hi, 1e-300)
+    : v => (Math.log10(v) - lf) / Math.max(lh - lf, 1e-9);
+}
+// the colorbar's three labels, off the SAME select, because the strip is painted with the
+// same ramp: the middle of a LOG strip is the geometric mean of its ends, the middle of a
+// LINEAR one the arithmetic mean, and the low end of a linear one is zero, not the floor
 function gen2dBarTicks(o) {
   const G = gen2dPanel(o);
   if (!G) return ["", "", ""];
+  if ((o && o.gc) === "lin") return [cbarFmt(0), cbarFmt(0.5 * G.hi), cbarFmt(G.hi)];
   return [cbarFmt(G.floor), cbarFmt(Math.sqrt(G.floor * G.hi)), cbarFmt(G.hi)];
 }
-// the two overlays, behind one checkbox and OFF by default (Alfred, this session):
-//   * GS95 -- k∥ ∝ k⊥^(2/3), critical balance, the line the ridge is being compared with.
-//     It is ANCHORED on the measured ridge of the lowest band (the fit line's "pin to
-//     field" convention), so what is on the plot is a SLOPE, never an absolute claim;
-//   * the anisotropy card's own extracted curve, k∥(k⊥) = (k∥/k⊥)·k⊥ off `anisoCurves`.
-// The ridge, per band: the k∥ of the largest cell in the row (0 for an empty row, which is
-// what the anchor walk below tests for).
+// the overlays, behind one checkbox and OFF by default (Alfred, this session):
+//   * THREE reference slopes -- GS95 (2/3), Boldyrev 2006 (1/2) and isotropic (1) --
+//     drawn as straight lines on this log-log frame, each in its own dash and its own
+//     grey/white/green so they are told apart where they cross;
+//   * the anisotropy card's own extracted curves, k∥(k⊥) = (k∥/k⊥)·k⊥ off `anisoCurves`,
+//     which are MEASUREMENTS of this same snapshot and are labelled as such.
+// The ridge, per band: the k∥ of the largest cell in the row (0 for an empty row). It is
+// no longer what the reference lines anchor on (gen2dTop is -- see below); it stays because
+// the ridge is the card's own summary of a column and is what check2dspec's recovery leg
+// measures the known law against.
 function gen2dRidge(pts) {
   let k = 0, v = 0;
   for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] > v) { v = pts[i + 1]; k = pts[i]; }
   return k;
 }
-const GEN2D_GS = 2 / 3;
+// The upper BOUNDARY of the excited region in one column: the largest k∥ whose cell is
+// still above the panel's floor (0 for a column with nothing in it). This, not the argmax
+// ridge, is what a critical-balance slope is a statement about -- the cascade FILLS
+// k∥ ≲ k∥(k⊥), so the relation is the edge of the filled region and the eye should be
+// comparing the slope with that edge (Alfred, this session).
+// Measured against `G.floor` -- the panel's own noise floor -- and NOT against the colour
+// mapping, so flipping the colour scale does not move the lines.
+function gen2dTop(pts, floor) {
+  let k = 0;
+  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] >= floor && pts[i] > k) k = pts[i];
+  return k;
+}
+// [exponent, label, colour, dash]. Theory palette: greys and a green, all dashed, kept
+// clear of the anisotropy card's own blue / orange, which on this card mean "measured".
+const GEN2D_SLOPES = [
+  [2 / 3, "k∥ ∝ k⊥^2/3 (GS95)", COL.guide, [5, 4]],
+  [1 / 2, "k∥ ∝ k⊥^1/2 (Boldyrev 2006)", COL.cut, [2, 3]],
+  [1, "k∥ ∝ k⊥ (isotropic)", COL.et, [8, 3, 2, 3]]
+];
+// The anchor of one reference slope: A = max over bands of k∥_top(band) / k_c^exponent,
+// so the line A·k⊥^p sits JUST ABOVE the measured envelope -- touching it at the band where
+// the envelope presses hardest against that slope, and above it everywhere else. The same
+// rule for all three, which is what makes them comparable with each other and with the
+// boundary. Only the SLOPE is ever a claim here: the intercept is chosen by this rule and
+// says nothing about the plasma. 0 when no column has anything in it -- then no line.
+function gen2dAnchor(G, p) {
+  let A = 0;
+  for (let j = 0; j < G.rows.length && j < G.d.bands.length; j++) {
+    const kt = gen2dTop(G.rows[j], G.floor);
+    if (kt > 0) A = Math.max(A, kt / Math.pow(G.d.bands[j].kc, p));
+  }
+  return A;
+}
+// The plot's FRAME, as data -- the specCurves seam once more (no canvas, no DOM), so the
+// axes are one computation that node can read instead of a set of numbers buried in the
+// draw. Both ends of both axes are the drawn cells' own edges, and nothing else:
+//   x  The extent of a band's COLUMN is the MIDPOINT (in log k⊥) between its neighbours'
+//      centres, not its own [lo, hi]: the bands deliberately overlap (gen2dBands), so their
+//      own ends would paint over each other and the picture would depend on the draw order.
+//      A single-band set falls back to that one band's ends, which is all there is. The
+//      axis then runs from the first column's left edge to the last one's right edge
+//      (FEEDBACK item 1). It used to run 1 .. nb, and the band set starts at fitKA (3 for
+//      the default shell) with the first CENTRE a half-octave above that -- so a fifth of
+//      the canvas was axis no band had ever been cut in. Nothing is lost with it: there is
+//      no measurement below the first edge to show.
+//   y  |k∥| over its own bins, 1..nzb, in the same kunit as k⊥ -- so a k⊥^(2/3) line is a
+//      statement and not a unit conversion. The floor is bin 1 ITSELF, not half a bin below
+//      it (FEEDBACK item 2), because bin 1 is the injection scale: the 3D forcing's z
+//      envelope is A·cos(2πz/Lz) + B·sin(2πz/Lz) (rmhd3d's `envFn`), whose z-FFT is nonzero
+//      on kz index ±1 and exactly zero on every other plane. So the axis starts at the
+//      forced fundamental -- which is k∥ = 1 only because every preset here fixes Lz = 2π;
+//      on an 8π box the same fundamental is 0.25, and pinning the floor at 1 there would
+//      CLIP three resolved bins. Nothing resolved is clipped this way: what hangs below the
+//      frame is the bottom half of the lowest row of cells, and the frame clip takes it,
+//      which is right -- there is no energy below the fundamental to draw.
+function gen2dFrame(G) {
+  const d = G.d, lb = d.bands.map(b => Math.log10(b.kc)), pk = d.parKfac;
+  const edge = j => {
+    if (lb.length < 2) return Math.log10(j === 0 ? d.bands[0].lo : d.bands[0].hi);
+    if (j === 0) return lb[0] - 0.5 * (lb[1] - lb[0]);
+    if (j >= lb.length) return lb[lb.length - 1] + 0.5 * (lb[lb.length - 1] - lb[lb.length - 2]);
+    return 0.5 * (lb[j - 1] + lb[j]);
+  };
+  return { lb, edge, xlo: edge(0), xhi: edge(lb.length),
+           ylo: Math.log10(pk), yhi: Math.log10((G.nzb + 0.5) * pk) };
+}
 function drawGen2D(c, o) {
   if (!c) return;
   const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
@@ -1827,40 +1911,37 @@ function drawGen2D(c, o) {
     ? "generating… band " + gen2d.done + "/" + Math.max(gen2d.total, gen2d.done, 1) : "";
   const G = gen2dPanel(o);
   if (!G) { c.fillText(prog || "E(k⊥, k∥) — press generate", x0 + 6, y0 + 13); return; }
-  const d = G.d, nb = Math.max(2, d.nb), nzb = G.nzb, pk = d.parKfac;
-  const xmax = Math.log10(nb);
-  const XL = L => x0 + L / xmax * (x1 - x0);         // a log10 k⊥ -> pixels
+  const d = G.d, pk = d.parKfac;
+  const F = gen2dFrame(G), lb = F.lb, edge = F.edge;
+  const xlo = F.xlo, xhi = F.xhi, xw = Math.max(xhi - xlo, 1e-9);
+  const XL = L => x0 + (L - xlo) / xw * (x1 - x0);   // a log10 k⊥ -> pixels
   const X = k => XL(Math.log10(k));
-  // y is |k∥| over its own bins, 1..nzb, in the same kunit as k⊥ -- so a k⊥^(2/3) line
-  // is a statement and not a unit conversion. The axis spans the drawn CELL edges.
-  const ylo = Math.log10(0.5 * pk), yhi = Math.log10((nzb + 0.5) * pk);
+  const ylo = F.ylo, yhi = F.yhi;
   const YL = L => px(y1 - (L - ylo) / (yhi - ylo) * (y1 - y0));
   const Y = k => YL(Math.log10(k));
 
   const kfmt = (m, e) => String(Math.round(m * Math.pow(10, e) * 1e6) / 1e6);
   for (const tk of logTicks(ylo, yhi, (y1 - y0) / Math.max(yhi - ylo, 1e-9), kfmt))
     yTick(c, YL(Math.log10(tk[0])), x0, x1, tk[2], tk[1]);
-  for (const tk of logTicks(0, xmax, (x1 - x0) / Math.max(xmax, 1e-9), (m, e) => String(m * Math.pow(10, e))))
-    xTick(c, X(tk[0]), y0, y1, SH - 8, X(tk[0]) > x1 - 20 ? "" : tk[2], tk[1]);
+  // the axis is named the way the spectrum and anisotropy charts name theirs -- x on the
+  // tick line, y in the hint, no rotated text anywhere in this file. It also OWNS the left
+  // of that line exactly as the end-of-axis label owns the right: a tick label whose
+  // centred box would run into either stays unlabelled (FEEDBACK item 6). The old label
+  // carried "(y: k∥ / kunit)" too, 26 characters at ~6 px each, which reached past the
+  // half-decade mark and sat under two of them.
+  const xlab = "k⊥ / kunit", xlabR = x0 + 4 + c.measureText(xlab).width + 4;
+  const kend = v => String(Math.round(v * (v < 10 ? 10 : 1)) / (v < 10 ? 10 : 1));
+  for (const tk of logTicks(xlo, xhi, (x1 - x0) / xw, (m, e) => String(m * Math.pow(10, e)))) {
+    const xp = X(tk[0]);
+    const clear = xp - 0.5 * c.measureText(tk[2]).width > xlabR && xp <= x1 - 20;
+    xTick(c, xp, y0, y1, SH - 8, clear ? tk[2] : "", tk[1]);
+  }
   c.fillStyle = COL.txt; c.textAlign = "center";
-  c.fillText(String(nb), x1, SH - 8);
+  c.fillText(kend(Math.pow(10, xhi)), x1, SH - 8);
   c.textAlign = "left";
-  // both axes on the one line the other charts label: no chart here rotates text (and the
-  // y axis of every one of them is named in its hint, not on the canvas)
-  c.fillText("k⊥ / kunit  (y: k∥ / kunit)", x0 + 4, SH - 8);
+  c.fillText(xlab, x0 + 4, SH - 8);
 
-  // The x extent of a band's column is the MIDPOINT (in log k⊥) between its neighbours'
-  // centres, not its own [lo, hi]: the bands deliberately overlap (gen2dBands), so their
-  // own ends would paint over each other and the picture would depend on the draw order.
-  // A single-band set falls back to that one band's ends, which is all there is.
-  const lb = d.bands.map(b => Math.log10(b.kc));
-  const edge = j => {
-    if (lb.length < 2) return Math.log10(j === 0 ? d.bands[0].lo : d.bands[0].hi);
-    if (j === 0) return lb[0] - 0.5 * (lb[1] - lb[0]);
-    if (j >= lb.length) return lb[lb.length - 1] + 0.5 * (lb[lb.length - 1] - lb[lb.length - 2]);
-    return 0.5 * (lb[j - 1] + lb[j]);
-  };
-  const lf = Math.log10(G.floor), lh = Math.log10(G.hi);
+  const cs = gen2dCscale(G, o);
   c.save();
   c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
   for (let j = 0; j < G.rows.length && j < lb.length; j++) {
@@ -1868,7 +1949,7 @@ function drawGen2D(c, o) {
     const pts = G.rows[j];
     for (let i = 0; i < pts.length; i += 2) {
       const kp = pts[i];
-      const t = Math.max(0, Math.min(1, (Math.log10(pts[i + 1]) - lf) / Math.max(lh - lf, 1e-9)));
+      const t = Math.max(0, Math.min(1, cs(pts[i + 1])));
       const rgb = cmapRGB(GEN2D_CMAP, t);
       c.fillStyle = "rgb(" + rgb.map(v => Math.round(255 * v)).join(",") + ")";
       // one cell = one (band, |k∥| bin): half a bin either side of its own k∥, which is
@@ -1877,33 +1958,43 @@ function drawGen2D(c, o) {
       c.fillRect(xa, ya, Math.max(1, xb - xa), Math.max(1, yb - ya));
     }
   }
-  // the forcing shell, in the marker every other k⊥ chart carries -- the band set starts
-  // just above it (fitKA), so it is where this picture begins to mean anything
+  // The forcing-shell markers, the dashes every other k⊥ chart carries. They are kept ONLY
+  // where they still fall inside the axis -- and now that the axis starts at the first
+  // band's own left edge (which is above fitKA, which is above the shell) they generally
+  // will not, so they simply do not draw. Deliberately not clamped to the frame: a marker
+  // pinned to the left edge would claim the shell is at the start of the measured range,
+  // which is the one thing it is not.
   c.strokeStyle = COL.shell; c.setLineDash([2, 3]); c.lineWidth = 1;
   for (const kf of (d.fshell || [])) {
-    if (kf >= 1 && kf <= nb) {
+    const lk = Math.log10(kf);
+    if (kf > 0 && lk >= xlo && lk <= xhi) {
       const x = Math.round(X(kf)) + 0.5;
       c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
     }
   }
   c.setLineDash([]);
+  // Legend order, held to deliberately: THEORY first (the three straight slopes, as a
+  // block), MEASURED second (the anisotropy card's two curves). The reader should be able
+  // to see at a glance which entries are predictions and which are this snapshot's own
+  // numbers; the labels say so too.
   const items = [];
   if ((o && o.gov) === "on") {
-    // GS95, anchored on the lowest band that HAS a ridge (pin-to-field, as the fit lines
-    // here all do). With no ridge anywhere there is nothing to anchor to and no line.
-    let A = 0;
-    for (let j = 0; j < G.rows.length && j < lb.length && !A; j++) {
-      const kr = gen2dRidge(G.rows[j]);
-      if (kr > 0) A = kr / Math.pow(d.bands[j].kc, GEN2D_GS);
-    }
-    if (A > 0) {
-      const ka = Math.pow(10, edge(0)), kb = Math.pow(10, edge(lb.length));
-      c.strokeStyle = COL.guide; c.setLineDash([5, 4]); c.lineWidth = 1.4;
+    // The three reference slopes, each anchored so it lies JUST ABOVE the upper boundary
+    // of the filled region (gen2dAnchor / gen2dTop). Same rule for all three, so their
+    // slopes can be read against each other and against the boundary; the intercept is a
+    // consequence of the rule and is never a claim. No non-empty column anywhere -> no
+    // anchor and no lines, as before.
+    const ka = Math.pow(10, xlo), kb = Math.pow(10, xhi);
+    c.lineWidth = 1.4;
+    for (const [p, lab, col, dash] of GEN2D_SLOPES) {
+      const A = gen2dAnchor(G, p);
+      if (!(A > 0)) continue;
+      c.strokeStyle = col; c.setLineDash(dash);
       c.beginPath();
-      c.moveTo(X(ka), Y(A * Math.pow(ka, GEN2D_GS)));
-      c.lineTo(X(kb), Y(A * Math.pow(kb, GEN2D_GS)));
+      c.moveTo(X(ka), Y(A * Math.pow(ka, p)));
+      c.lineTo(X(kb), Y(A * Math.pow(kb, p)));
       c.stroke(); c.setLineDash([]);
-      items.push(["k∥ ∝ k⊥^2/3 (GS95)", COL.guide, [4, 3]]);
+      items.push([lab, col, dash]);
     }
     // ... and the anisotropy card's extracted skeleton, off the SNAPSHOT's own spectra
     // (which ride in the same object) rather than off the live ones: a static heatmap and
@@ -1917,7 +2008,10 @@ function drawGen2D(c, o) {
     for (let i = 0; i < A2.curves.length; i++) {
       const cv = A2.curves[i], a = cv[0];
       if (a.length < 4) continue;
-      const lab = i < A2.nGlob ? "k∥z (aniso)" : "k∥B (aniso)";
+      // named MEASURED, at length: these two are data (the anisotropy card's
+      // equal-cumulative-energy matching of this snapshot's own two 1D spectra), and next
+      // to three straight reference slopes the old "k∥z (aniso)" read like a fourth one
+      const lab = i < A2.nGlob ? "k∥z measured (aniso card)" : "k∥B measured (aniso card)";
       c.strokeStyle = cv[1]; c.setLineDash(cv[2] || []); c.beginPath();
       for (let m = 0; m < a.length; m += 2) {
         // the aniso curve is the RATIO k∥/k⊥ against k⊥; times k⊥ it is this plot's k∥
@@ -2153,7 +2247,11 @@ const CHART_TYPES = {
   // snapshot above. 3D only and placeholderless in 2D (no k∥ to bin), by the same `avail`
   // the anisotropy card uses. `bar: fn` gives it the display cards' small colorbar --
   // a heatmap is the one chart whose y is not the quantity.
-  // DRAFT text (hint below) -- for Alfred's pass.
+  // The hint below is Alfred's own copy (his feedback round, this session), no longer a
+  // draft. What it deliberately does NOT carry any more -- the Cho-Vishniac contrast, the
+  // per-band-b⊥ caveat on the field-line panel, the ~20-bins / fp32 warning and the
+  // "let the collision develop first" note -- all live in docs.html, in full sentences,
+  // under #gen2d: the hint is the one-breath version and the manual is the long one.
   gen2d: {
     label: "2D spectrum E(k&perp;,k&#8741;)", w: SW, h: SH,
     avail: cfg => cfg.zslice, bar: o => gen2dBarTicks(o), cmap: GEN2D_CMAP,
@@ -2169,24 +2267,26 @@ const CHART_TYPES = {
         o: [["fl", "field line"], ["z", "coordinate"]] },
       { id: "gq", ti: "which energy is binned; E± = E_u + E_b ± H_c",
         o: [["tot", "E_u+E_b"], ["zp", "E&#8314;"], ["zm", "E&#8315;"]] },
+      // the cell colour mapping. Log first, so it is the default (a select with no `v`
+      // takes its first option) -- a spectrum falls over decades and linear shows one cell.
+      { id: "gc", ti: "colour scale for the cells: log from the noise floor to the peak "
+          + "(the default), or linear from 0 to the peak",
+        o: [["log", "log colour"], ["lin", "linear colour"]] },
       { id: "gov", k: "cbl", t: "overlays",
-        ti: "the k∥ ∝ k⊥^2/3 (GS95) reference line, anchored on the lowest band's own "
-          + "ridge, and the anisotropy card's extracted k∥(k⊥) off this same snapshot" }
+        ti: "three reference slopes — GS95 (2/3), Boldyrev 2006 (1/2) and isotropic (1) — "
+          + "each laid just above the upper edge of the filled region so only the slope is "
+          + "a claim, plus the anisotropy card's MEASURED k∥(k⊥) off this same snapshot" }
     ],
     draw: (c, d, o) => drawGen2D(c, o),
-    hint: "E(k&perp;, k&#8741;) from ONE frozen snapshot (<b>generate</b> pauses the run and "
-      + "band-passes the field in k&perp;, band by band); colour is log E, y is k&#8741;/kunit. "
-      + "The ridge bending right is critical balance seen whole. Switching panel is the "
-      + "Cho&ndash;Vishniac contrast on the same snapshot: the <i>coordinate</i> ridge FLATTENS "
-      + "at high k&perp; because field-line wander decorrelates the z frame, while the "
-      + "<i>field line</i> one keeps bending. One caveat on that half: each row's lines are "
-      + "traced through THAT BAND's own b&perp;, not the full field, so the large-scale "
-      + "wander doing most of the decorrelating is left out &mdash; against the full-field "
-      + "technique this panel under-shows the contrast at high k&perp;. "
-      + "Read the SHAPE and that contrast, not an "
-      + "exponent &mdash; at these resolutions there are only ~20 usable k&#8741; bins and the "
-      + "arithmetic is fp32, so the ridge is fuzzy (the quantitative version is a bigger-machine "
-      + "exercise). In the collision preset, let it develop first."
+    barTi: o => "colour range of the plotted quantity ("
+      + ((o && o.gc) === "lin" ? "linear scale, so the middle tick is the arithmetic mean"
+                               : "log scale, so the middle tick is the geometric mean") + ")",
+    hint: "two-dimensional spectrum E(k&perp;, k&#8741;) from one frozen snapshot "
+      + "(<b>generate</b> pauses the run and band-passes the field in k&perp;, band by "
+      + "band); colour is E &mdash; log by default, linear on the colour select &mdash; and "
+      + "y is k&#8741;/kunit. overlay lines correspond to GS95 (k&#8741; &prop; "
+      + "k&perp;<sup>2/3</sup>), Boldyrev 2006 (k&#8741; &prop; k&perp;<sup>1/2</sup>), and "
+      + "isotropic (k&#8741; &prop; k&perp;)."
   }
 };
 // which chart types this app offers (the equilibrium ones are 2D-only)
@@ -3211,13 +3311,18 @@ class ChartCard {
   // cbarFmt. Only types that declare `bar(opts)` get one; retyping the card takes it away
   // again, which is why it is built here and not in the constructor.
   _barBuild(T) {
-    if (this.foot) { this.root.removeChild(this.foot); this.foot = null; this.barT = null; }
+    if (this.foot) {
+      this.root.removeChild(this.foot); this.foot = null; this.barT = null; this.barD = null;
+    }
     if (!T.bar) return;
     // appended, then the hint is re-appended after it -- the same "move it back to last"
     // idiom the close button uses, so the card reads canvas / colorbar / hint
     this.foot = _mk("div", "viewfoot", this.root);
     this.root.removeChild(this.hint); this.root.appendChild(this.hint);
-    const bar = _mk("div", "cbar", this.foot);
+    // the bar div is kept because a type whose colour SCALE is an option (gen2d's `gc`)
+    // re-titles it per draw, through `barTi(opts)`; without one the static log wording
+    // below stands, which is what every other bar-carrying type means
+    const bar = this.barD = _mk("div", "cbar", this.foot);
     bar.title = "colour range of the plotted quantity (log scale, so the middle tick is "
       + "the geometric mean)";
     const bcv = _mk("canvas", "cbarcv", bar);
@@ -3251,6 +3356,7 @@ class ChartCard {
     if (this.barT && T.bar) {
       const t = T.bar(o);
       for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
+      if (this.barD && T.barTi) this.barD.title = T.barTi(o);
     }
   }
   // ---- pinned ghost spectra (PINCURVE Phase B) -------------------------------

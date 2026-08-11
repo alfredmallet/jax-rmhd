@@ -1174,8 +1174,8 @@ async function legChoreography(state) {
   const env = await boot(dir, "rmhd3d.html");
   const card = env.run(`function(){ const c = addChartCard("gen2d"); cardsSync(); return c; }`);
   const ids = env.run("function(c){ return c.optEls.map(s => s.__optId).join(','); }", card);
-  ok("a gen2d card builds with its four controls (generate / panel / lane / overlays)",
-     card && card.optEls.length === 4 && ids === "gen,gp,gq,gov", ids);
+  ok("a gen2d card builds with its five controls (generate / panel / lane / colour / overlays)",
+     card && card.optEls.length === 5 && ids === "gen,gp,gq,gc,gov", ids);
   ok("  ... and a colorbar, because on this chart the plotted quantity IS the colour",
      env.run("function(c){ return !!c.foot && !!c.barT && c.barT.length === 3; }", card));
   ok("  ... the overlays box is a checkbox reading on/off, and starts OFF",
@@ -1288,9 +1288,312 @@ async function legChoreography(state) {
        c.selType.value = "energy"; c.selType.onchange();
        const away = c.optEls.length + ":" + !!c.foot;
        c.selType.value = "gen2d"; c.selType.onchange();
-       return away === "1:false" && c.optEls.length === 4 && !!c.foot && !!gen2d.data; }`));
+       return away === "1:false" && c.optEls.length === 5 && !!c.foot && !!gen2d.data; }`));
   ok("both boots raised no failures", env.fails.length === 0 && env2.fails.length === 0,
      env.fails.concat(env2.fails).join(" | "));
+}
+
+// ===========================================================================
+// 7. the plot itself: axis limits, the k∥ floor, the three anchors, the colour scale
+// ===========================================================================
+// Alfred's first feedback round on the card, gated the way the rest of it is: the frame is
+// read as DATA off the app's own `gen2dFrame` (the specCurves seam), and then every claim
+// is made a second time in PIXELS off a recording of the real `drawGen2D` on the real card,
+// so a correct frame drawn wrongly still fails. The only arithmetic this script owns is the
+// affine log -> pixel mirror `MAP` below, which is two lines and is exactly what the check
+// is entitled to re-derive.
+//
+// One thing to be clear about, because it is what the whole leg turns on: the reference
+// slopes are anchored on the upper BOUNDARY of the filled region (the largest k∥ above the
+// panel's floor, per band), not on the argmax ridge. So a line must lie at or above the
+// boundary at EVERY band and touch it at one -- that pair of statements is the anchor rule,
+// and either half alone would pass on a line that is merely somewhere near the data.
+//
+// Everything drawGen2D puts on the canvas, recorded: cells (fillRect + the fill colour),
+// stroked polylines (begin / move / line / stroke, with colour and dash), and text (with
+// the alignment and the width the app's OWN measureText gives it, so the label-collision
+// check measures what the app measured). The card is driven through its real controls and
+// its real `draw`, so the option wiring is under test too.
+const SETOPT = `function(vals){
+  const c = cards.chart.filter(x => x.type() === "gen2d")[0];
+  for (const s of c.optEls) {
+    const v = vals[s.__optId];
+    if (v === undefined) continue;
+    if (s.__optChk) s.__optChk.checked = (v === "on"); else s.value = v;
+  }
+  c._optSync();
+  return c.optVals(); }`;
+const DRAWREC = `function(vals){
+  const c = cards.chart.filter(x => x.type() === "gen2d")[0], cx = c.cx;
+  const rec = { cells: [], lines: [], text: [] };
+  const keep = {};
+  for (const m of ["fillRect", "beginPath", "moveTo", "lineTo", "stroke", "setLineDash", "fillText"])
+    keep[m] = cx[m];
+  let dash = [], poly = null;
+  cx.setLineDash = d => { dash = (d || []).slice(); return keep.setLineDash.call(cx, d); };
+  cx.beginPath = () => { poly = []; return keep.beginPath.call(cx); };
+  cx.moveTo = (x, y) => { if (poly) poly.push(x, y); return keep.moveTo.call(cx, x, y); };
+  cx.lineTo = (x, y) => { if (poly) poly.push(x, y); return keep.lineTo.call(cx, x, y); };
+  cx.stroke = () => {
+    if (poly && poly.length) rec.lines.push({ p: poly.slice(), col: String(cx.strokeStyle),
+                                              dash: dash.slice(), w: cx.lineWidth });
+    poly = null;
+    return keep.stroke.call(cx);
+  };
+  cx.fillRect = (x, y, w, h) => {
+    rec.cells.push([x, y, w, h, String(cx.fillStyle)]);
+    return keep.fillRect.call(cx, x, y, w, h);
+  };
+  cx.fillText = (t, x, y) => {
+    rec.text.push([String(t), x, y, cx.textAlign, cx.measureText(String(t)).width]);
+    return keep.fillText.call(cx, t, x, y);
+  };
+  try { c.draw(null); } finally { for (const m of Object.keys(keep)) cx[m] = keep[m]; }
+  rec.bars = c.barT.map(x => x.innerHTML);
+  rec.barTi = c.barD ? c.barD.title : "";
+  return rec; }`;
+// the frame and the panel, as data
+const FRAME = `function(){
+  const c = cards.chart.filter(x => x.type() === "gen2d")[0], o = c.optVals();
+  const G = gen2dPanel(o);
+  if (!G) return null;
+  const F = gen2dFrame(G);
+  return { xlo: F.xlo, xhi: F.xhi, ylo: F.ylo, yhi: F.yhi, lb: F.lb.slice(),
+           e0: F.edge(0), eN: F.edge(F.lb.length), pk: G.d.parKfac, nzb: G.nzb, nb: G.d.nb,
+           fshell: (G.d.fshell || []).slice(), kA: fitKA(G.d.nb, G.d.fshell),
+           kc: G.d.bands.map(b => b.kc), floor: G.floor, hi: G.hi,
+           top: G.rows.map(r => gen2dTop(r, G.floor)),
+           ridge: G.rows.map(r => gen2dRidge(r)),
+           slopes: GEN2D_SLOPES.map(s => [s[0], s[1], s[2], s[3].slice()]),
+           anchor: GEN2D_SLOPES.map(s => gen2dAnchor(G, s[0])),
+           COL: { shell: COL.shell, ek: COL.ek, em: COL.em, txt: COL.txt } }; }`;
+const GEO = `function(){ return { l: PADS.l, r: PADS.r, t: PADS.t, b: PADS.b, W: SW, H: SH }; }`;
+
+async function legPlot(state) {
+  const env = await boot(dir, "rmhd3d.html");
+  env.run(`function(){ addChartCard("gen2d"); cardsSync(); }`);
+  installSynth(env);
+  ok("the press completes, so there is a plot to measure", await pressGenerate(env));
+  const P = env.run(GEO);
+  const x0 = P.l, x1 = P.W - P.r, y0 = P.t, y1 = P.H - P.b;
+  env.run(SETOPT, { gp: "fl", gq: "tot", gc: "log", gov: "off" });
+  const F = env.run(FRAME);
+  if (!F) { ok("the panel has rows to plot", false); return; }
+  // the app's own affine log -> pixel maps, mirrored (the only arithmetic this leg owns)
+  const MX = L => x0 + (L - F.xlo) / (F.xhi - F.xlo) * (x1 - x0);
+  const MY = L => y1 - (L - F.ylo) / (F.yhi - F.ylo) * (y1 - y0);
+  const L10 = Math.log10;
+
+  // ---- item 1: the x axis IS the drawn columns ----------------------------
+  ok("the x axis starts at the first column's left edge and ends at the last one's right",
+     F.xlo === F.e0 && F.xhi === F.eN &&
+     rel(F.xlo, F.lb[0] - 0.5 * (F.lb[1] - F.lb[0])) < 1e-12 &&
+     rel(F.xhi, F.lb[F.lb.length - 1] + 0.5 * (F.lb[F.lb.length - 1] - F.lb[F.lb.length - 2])) < 1e-12,
+     "k⊥ " + Math.pow(10, F.xlo).toFixed(2) + " .. " + Math.pow(10, F.xhi).toFixed(2));
+  ok("  ... so the low-k⊥ blank is gone: it no longer starts at k⊥ = 1, below every band",
+     F.xlo > L10(F.kA) && F.xlo > 0.5 * L10(F.kc[0]) && F.xlo < L10(F.kc[0]),
+     "starts at " + Math.pow(10, F.xlo).toFixed(2) + ", band anchor kA = " + F.kA
+     + ", first band centre " + F.kc[0].toFixed(2));
+
+  // ---- item 2: the k∥ floor is the forcing fundamental ---------------------
+  ok("the k∥ axis starts AT the first bin -- the forcing fundamental -- not half a bin below",
+     F.ylo === L10(F.pk) && F.ylo > L10(0.5 * F.pk) &&
+     rel(F.yhi, L10((F.nzb + 0.5) * F.pk)) < 1e-12,
+     "k∥ " + Math.pow(10, F.ylo) + " .. " + Math.pow(10, F.yhi).toFixed(2)
+     + " (parKfac = " + F.pk + ")");
+  // ... and it is the FUNDAMENTAL, not the number 1: on a 4x longer box the same forcing
+  // injects at k∥ = 0.25, and a floor pinned at 1 would clip two resolved octaves
+  const F8 = env.run(`function(pk){
+    const d = gen2d.data, was = d.parKfac;
+    d.parKfac = pk;
+    const F = gen2dFrame(gen2dPanel({ gp: "fl", gq: "tot" }));
+    d.parKfac = was;
+    return { ylo: F.ylo, yhi: F.yhi }; }`, 0.25 * F.pk);
+  ok("  ... and it TRACKS the box: a 4x longer Lz moves the floor to the new fundamental",
+     rel(F8.ylo, L10(0.25 * F.pk)) < 1e-12 && rel(F8.yhi, L10((F.nzb + 0.5) * 0.25 * F.pk)) < 1e-12,
+     "floor " + Math.pow(10, F8.ylo) + " at parKfac " + (0.25 * F.pk));
+
+  // ---- the pixels: the cells fill the frame exactly ------------------------
+  const R = env.run(DRAWREC);
+  const cells = R.cells.filter(c => /^rgb\(/.test(c[4]));
+  const cx0 = Math.min(...cells.map(c => c[0])), cx1 = Math.max(...cells.map(c => c[0] + c[2]));
+  ok("DRAWN: the columns span the frame exactly, left edge to right edge",
+     cells.length > 20 && cx0 === x0 && cx1 === x1,
+     cells.length + " cells, x " + cx0 + ".." + cx1 + " (frame " + x0 + ".." + x1 + ")");
+  const cyTop = Math.min(...cells.map(c => c[1])), cyBot = Math.max(...cells.map(c => c[1] + c[3]));
+  const botTop = Math.min(...cells.filter(c => c[1] + c[3] === cyBot).map(c => c[1]));
+  ok("  ... nothing above the frame, and the lowest bin's bottom half hangs below it (clipped)",
+     cyTop >= y0 && cyBot > y1 && y1 - botTop >= 8,
+     "top " + cyTop + " (frame " + y0 + "), bottom " + cyBot + " (frame " + y1
+     + "), lowest row " + (y1 - botTop) + " px visible");
+
+  // ---- item 6: the axis label owns the left of the tick line ---------------
+  const tl = R.text.filter(t => t[2] === P.H - 8);
+  const lab = tl.filter(t => t[3] === "left")[0];
+  const box = t => t[3] === "left" ? [t[1], t[1] + t[4]]
+                 : t[3] === "right" ? [t[1] - t[4], t[1]] : [t[1] - 0.5 * t[4], t[1] + 0.5 * t[4]];
+  let clash = "";
+  for (const t of tl) {
+    if (t === lab) continue;
+    const a = box(lab), b = box(t);
+    if (b[0] < a[1] && b[1] > a[0] && !clash) clash = JSON.stringify(t[0]) + " at " + b.join("..");
+  }
+  ok("the x-axis label collides with no tick label on its own baseline",
+     !!lab && !clash, lab ? JSON.stringify(lab[0]) + " spans " + box(lab).map(v => v.toFixed(0)).join("..")
+                            + ", " + (tl.length - 1) + " labels beside it" + (clash ? "; HITS " + clash : "")
+                          : "no axis label drawn");
+  ok("  ... and it names the x axis only, as the other k charts do (y is named in the hint)",
+     !!lab && lab[0].indexOf("(y:") < 0 && lab[0].indexOf("k⊥") === 0 &&
+     C.CHART_TYPES.gen2d.hint.indexOf("k&#8741;/kunit") >= 0,
+     lab ? JSON.stringify(lab[0]) : "-");
+
+  // ---- item 1 again: the forcing markers are DROPPED, not clamped ----------
+  const shells = R.lines.filter(l => l.col === F.COL.shell);
+  ok("the forcing-shell markers fall outside the new axis and are simply not drawn",
+     shells.length === 0 && F.fshell.every(k => L10(k) < F.xlo),
+     "fshell [" + F.fshell.join(", ") + "], axis starts at "
+     + Math.pow(10, F.xlo).toFixed(2) + " -- " + shells.length + " markers");
+  const SH2 = env.run(`function(kf){
+    const d = gen2d.data, was = d.fshell;
+    d.fshell = [kf];
+    const c = cards.chart.filter(x => x.type() === "gen2d")[0], cx = c.cx;
+    const ob = cx.beginPath, om = cx.moveTo, os = cx.stroke;
+    let poly = null, out = [];
+    cx.beginPath = () => { poly = []; };
+    cx.moveTo = (x, y) => { if (poly) poly.push(x, y); };
+    cx.stroke = () => { if (poly && poly.length) out.push([String(cx.strokeStyle), poly.slice()]); poly = null; };
+    try { c.draw(null); } finally { cx.beginPath = ob; cx.moveTo = om; cx.stroke = os; d.fshell = was; }
+    return out.filter(o => o[0] === COL.shell); }`, Math.pow(10, 0.5 * (F.xlo + F.xhi)));
+  ok("  ... but the marker code still bites: a shell INSIDE the range draws one, in place",
+     SH2.length === 1 && Math.abs(SH2[0][1][0] - MX(0.5 * (F.xlo + F.xhi))) <= 1,
+     SH2.length + " marker(s)" + (SH2.length ? " at x = " + SH2[0][1][0].toFixed(1)
+       + " (want " + MX(0.5 * (F.xlo + F.xhi)).toFixed(1) + ")" : ""));
+
+  // ---- items 3 + 4: three slopes, anchored on the upper boundary -----------
+  ok("three reference slopes are declared -- GS95 2/3, Boldyrev 1/2 and isotropic 1",
+     F.slopes.length === 3 &&
+     F.slopes.map(s => s[0]).join(",") === [2 / 3, 1 / 2, 1].join(",") &&
+     /GS95/.test(F.slopes[0][1]) && /Boldyrev/.test(F.slopes[1][1]) && /isotropic/.test(F.slopes[2][1]),
+     F.slopes.map(s => s[1]).join(" | "));
+  ok("  ... visually distinguishable: three different colours and three different dashes",
+     new Set(F.slopes.map(s => s[2])).size === 3 &&
+     new Set(F.slopes.map(s => s[3].join(","))).size === 3 &&
+     F.slopes.every(s => [F.COL.ek, F.COL.em].indexOf(s[2]) < 0),
+     F.slopes.map(s => s[2] + " [" + s[3].join(",") + "]").join(" | "));
+  // the anchor rule, mirrored: A = max over bands of k∥_top / k_c^p
+  let anchBad = 0;
+  for (let i = 0; i < F.slopes.length; i++) {
+    let A = 0;
+    for (let j = 0; j < F.kc.length; j++)
+      if (F.top[j] > 0) A = Math.max(A, F.top[j] / Math.pow(F.kc[j], F.slopes[i][0]));
+    if (rel(F.anchor[i], A) > 1e-12) anchBad++;
+  }
+  ok("  ... each anchored by max over bands of k∥_top / k_c^p (the boundary, not the ridge)",
+     anchBad === 0 && F.anchor.every(a => a > 0) &&
+     F.top.some((t, j) => t > 0 && Math.abs(t - F.ridge[j]) > 1e-12),
+     "A = " + F.anchor.map(a => a.toPrecision(4)).join(", ")
+     + "; boundary " + F.top.map(t => t.toFixed(1)).join(" ")
+     + " vs ridge " + F.ridge.map(t => t.toFixed(1)).join(" "));
+  // ... and in PIXELS, on the real canvas: overlays on, three straight 2-point strokes
+  env.run(SETOPT, { gov: "on" });
+  const RO = env.run(DRAWREC);
+  const cols = F.slopes.map(s => s[2]);
+  // (the legend's own 12-px keys are strokes in the same three colours -- the plot lines are
+  // the ones that run the full width of the frame, and both sets must be there)
+  const inCol = l => l.p.length === 4 && cols.indexOf(l.col) >= 0;
+  const refs = RO.lines.filter(l => inCol(l) && Math.abs(l.p[0] - x0) < 1e-6 &&
+                                    Math.abs(l.p[2] - x1) < 1e-6);
+  const keys = RO.lines.filter(l => inCol(l) && l.p[0] > x0 && l.p[2] - l.p[0] < 20);
+  ok("with overlays ON the three slopes are drawn, each straight across the whole axis, "
+     + "each with its own legend key",
+     refs.length === 3 && new Set(refs.map(l => l.col)).size === 3 &&
+     keys.length === 3 && new Set(keys.map(l => l.col)).size === 3 &&
+     refs.every(l => l.dash.length >= 2),
+     refs.map(l => l.col + " " + l.p.map(v => v.toFixed(0)).join(",")).join(" | "));
+  // THE rule: at every band the line is at or above the boundary cell (pixel y is smaller
+  // going up), and at one band it touches. Both halves, per line.
+  let above = 0, touch = 0, worst = "";
+  for (const l of refs) {
+    const yAt = xp => l.p[1] + (l.p[3] - l.p[1]) * (xp - l.p[0]) / (l.p[2] - l.p[0]);
+    let bad = 0, hit = 0, mx = 0;
+    for (let j = 0; j < F.kc.length; j++) {
+      if (!(F.top[j] > 0)) continue;
+      const dy = yAt(MX(L10(F.kc[j]))) - MY(L10(F.top[j]));   // <= 0 means at or above
+      if (dy > 0.5) { bad++; mx = Math.max(mx, dy); }
+      if (Math.abs(dy) <= 0.5) hit++;
+    }
+    if (!bad) above++;
+    if (hit) touch++;
+    if (bad && !worst) worst = l.col + " dips " + mx.toFixed(1) + " px below";
+  }
+  ok("  ... and each lies AT OR ABOVE the boundary at every band, touching it at one",
+     above === 3 && touch === 3, above + "/3 clear of the boundary, " + touch + "/3 touching it"
+     + (worst ? "; " + worst : ""));
+  env.run(SETOPT, { gov: "off" });
+  const ROff = env.run(DRAWREC);
+  ok("  ... and with overlays OFF none of them is drawn",
+     ROff.lines.filter(l => l.p.length === 4 && cols.indexOf(l.col) >= 0).length === 0);
+
+  // ---- item 5: the measured curves are labelled as measurements ------------
+  const labs = RO.text.filter(t => /measured/.test(t[0])).map(t => t[0]);
+  const theory = RO.text.filter(t => /∝/.test(t[0])).map(t => t[0]);
+  ok("the legend calls the anisotropy curves MEASURED, and names all three theory exponents",
+     labs.length === 2 && /k∥z/.test(labs[0]) && /k∥B/.test(labs[1]) && theory.length === 3 &&
+     /2\/3/.test(theory[0]) && /1\/2/.test(theory[1]),
+     theory.concat(labs).join(" | "));
+  ok("  ... with the three predictions FIRST and the two measurements after them",
+     RO.text.filter(t => /∝|measured/.test(t[0])).map(t => /measured/.test(t[0]) ? "m" : "t")
+       .join("") === "tttmm");
+
+  // ---- item 7: the colour scale toggle ------------------------------------
+  const dflt = env.run("function(){ const c = cards.chart.filter(x => x.type() === 'gen2d')[0];"
+    + " const s = c.optEls.filter(s => s.__optId === 'gc')[0];"
+    + " return { v: s.value, o: s.options.map(o => o.value).join(',') }; }");
+  ok("the colour scale is its own control, log by default",
+     dflt.v === "log" && dflt.o === "log,lin", "gc = " + dflt.v + " of [" + dflt.o + "]");
+  const Rlog = env.run(DRAWREC);
+  env.run(SETOPT, { gc: "lin" });
+  const Rlin = env.run(DRAWREC);
+  const lum = s => s.slice(4, -1).split(",").reduce((a, v) => a + (+v), 0);
+  const bright = r => r.cells.filter(c => /^rgb\(/.test(c[4])).reduce((s, c) => s + lum(c[4]), 0);
+  const geom = r => r.cells.filter(c => /^rgb\(/.test(c[4])).map(c => c.slice(0, 4).join(",")).join("|");
+  // the brightest CELL, by luminance and not by string order (both scales map the peak
+  // value to the top of the ramp, so this one colour must survive the toggle unchanged)
+  const peak = r => r.cells.filter(c => /^rgb\(/.test(c[4]))
+    .map(c => c[4]).sort((a, b) => lum(a) - lum(b)).pop();
+  ok("  ... and it really repaints: same cells, dimmer, with the peak cell unchanged",
+     geom(Rlog) === geom(Rlin) && bright(Rlin) < bright(Rlog) && peak(Rlog) === peak(Rlin),
+     "brightness " + bright(Rlog).toFixed(0) + " log -> " + bright(Rlin).toFixed(0) + " lin");
+  ok("the colorbar labels follow the scale: geometric mean on log, arithmetic on linear",
+     Rlog.bars[0] === cbarFmtJs(F.floor) && Rlog.bars[1] === cbarFmtJs(Math.sqrt(F.floor * F.hi)) &&
+     Rlin.bars[0] === "0" && Rlin.bars[1] === cbarFmtJs(0.5 * F.hi) &&
+     Rlog.bars[2] === Rlin.bars[2] && Rlog.bars[1] !== Rlin.bars[1],
+     "log [" + Rlog.bars.join(" .. ") + "]  lin [" + Rlin.bars.join(" .. ") + "]");
+  ok("  ... and so does the colorbar's own tooltip",
+     /log scale/.test(Rlog.barTi) && /arithmetic mean/.test(Rlin.barTi) &&
+     !/log scale/.test(Rlin.barTi), Rlin.barTi);
+
+  // ---- item 8: the hint is Alfred's copy, and docs.html says the same ------
+  const h = C.CHART_TYPES.gen2d.hint;
+  ok("the hint is Alfred's copy: the three slopes named, the colour scale not asserted as log",
+     /^two-dimensional spectrum/.test(h) && /GS95/.test(h) && /Boldyrev 2006/.test(h) &&
+     /isotropic/.test(h) && /log by default/.test(h) && !/colour is log E/.test(h) &&
+     (h.match(/\(/g) || []).length === (h.match(/\)/g) || []).length,
+     h.length + " chars, parens balanced");
+  const doc = fs.readFileSync(path.join(dir, "docs.html"), "utf8");
+  const sec = doc.slice(doc.indexOf('id="gen2d"'), doc.indexOf('id="gen2d"') + 6000);
+  ok("  ... and the manual entry carries the same three slopes, the boundary rule and the "
+     + "colour toggle",
+     /Boldyrev 2006/.test(sec) && /isotropic/.test(sec) && /2\/3/.test(sec) &&
+     /linear colour/.test(sec) && /upper edge/.test(sec) && /injection scale/.test(sec));
+  ok("the 3D page boots clean through all of it", env.fails.length === 0, env.fails.join(" | "));
+}
+// cbarFmt, mirrored (the labels are compared against the values this leg computed itself)
+function cbarFmtJs(v) {
+  if (!isFinite(v)) return "";
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  return (a >= 1e4 || a < 1e-2) ? v.toExponential(1) : v.toPrecision(3);
 }
 
 // ---------------------------------------------------------------------------
@@ -1300,7 +1603,8 @@ const LEGS = [
   ["3. state invariance: a press leaves (phi_k, psi_k) bitwise unchanged", legInvariance],
   ["4. the fp64 mirror: band factor x gradient x periodogram row", legMirror],
   ["5. ridge recovery, the band set, and the coordinate panel's anchor", legRidge],
-  ["6. the press: pause / resume choreography and plot persistence", legChoreography]
+  ["6. the press: pause / resume choreography and plot persistence", legChoreography],
+  ["7. the plot: axis limits, the k∥ floor, the three anchors, the colour scale", legPlot]
 ];
 (async () => {
   const state = { cur: {}, base: {} };

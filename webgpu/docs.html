@@ -425,9 +425,13 @@ press the green <b>Run</b>, and change one thing at a time.</p>
   <p id="gen2d"><b>2D spectrum E(k<sub>&perp;</sub>,k<sub>&#8741;</sub>)</b> (3D) &mdash; the
     picture the chart above reduces to a curve: how much energy sits at each combination of
     a perpendicular and a parallel scale, drawn as a heatmap. Bright is more energy (the
-    colorbar under it gives the range; the scale is logarithmic, so the middle tick is the
-    geometric mean of the two ends). The bright ridge running up and to the right, bending
-    over as it goes, <i>is</i> critical balance.</p>
+    colorbar under it gives the range). The bright ridge running up and to the right, bending
+    over as it goes, <i>is</i> critical balance. Both axes cover exactly what was measured
+    and no more: across, from the left-hand edge of the first perpendicular band to the
+    right-hand edge of the last (nothing below the first band was ever cut out of the
+    field, so there is no axis for it); up, from the parallel scale the forcing itself
+    injects at &mdash; the forcing's z profile is a single cosine over the box, so the
+    first parallel bin <i>is</i> the injection scale &mdash; to the last resolved bin.</p>
   <ul>
     <li><b>generate</b> is how it fills in, and it is the only chart here that works that
       way. Pressing it <b>pauses the run</b> and measures every perpendicular band on that
@@ -447,10 +451,27 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       the full field's lines, the contrast at small perpendicular scales would be
       stronger than what is drawn here, not weaker.</li>
     <li><b>which energy</b> is the anisotropy card's: the total, or one Elsasser field.</li>
-    <li><b>overlays</b> (off by default) adds two guides: the straight
-      k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub><sup>2/3</sup> line critical balance
-      predicts, laid on the ridge at the left-hand end so that only its <i>slope</i> is a
-      claim, and the anisotropy chart's own extracted curve for the same snapshot.</li>
+    <li><b>log colour</b> / <b>linear colour</b> is the scale the cells are painted on.
+      Log (the default) runs from the same noise floor the spectrum charts use up to the
+      peak, and is the only scale on which an inertial range is visible at all; linear runs
+      from zero to the peak, which shows almost nothing &mdash; and that is the point of
+      having it, because it is the honest picture of how much of the energy sits at the
+      outer scale. The colorbar's middle tick follows: the geometric mean of the two ends
+      on the log scale, the arithmetic mean on the linear one.</li>
+    <li><b>overlays</b> (off by default) adds five lines, three predictions and two
+      measurements. The predictions are straight reference slopes:
+      k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub><sup>2/3</sup> (critical balance, GS95),
+      k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub><sup>1/2</sup> (Boldyrev 2006) and
+      k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub> (isotropic, the null case). Each is laid
+      just above the <i>upper edge</i> of the filled part of the plot &mdash; touching it
+      where the edge presses hardest against that slope and clear of it everywhere else
+      &mdash; because in critical balance the relation is the <i>boundary</i> of the
+      excited region rather than the line of brightest cells: the cascade fills everything
+      below k<sub>&#8741;</sub>(k<sub>&perp;</sub>). So compare the boundary's bend with
+      the three slopes; only the slopes are claims, never the heights, which are set by
+      that rule. The measurements are the anisotropy chart's own two curves for this same
+      snapshot, labelled <b>measured</b> in the legend so they cannot be mistaken for a
+      fourth prediction.</li>
     <li>Read the shape, not a number. At these resolutions there are only about twenty
       usable parallel bins and the arithmetic is single precision, so the ridge is a fuzzy
       band rather than a line; measuring an exponent off it is a job for a bigger machine.
