@@ -2,10 +2,11 @@
 
 **This file is repo-facing**: how the thing is built, what the contracts are, why each
 piece is the way it is, and how to verify a change. The **user-facing** documentation —
-every button and every chart, in plain language — is `docs.html`, which is a page of the
-app set itself and is what `rmhd2d.html` / `rmhd3d.html` link at the top.
-Nothing here is linked from those pages. When a control changes, `docs.html` changes with
-it; when the *reason* for a control changes, this file does.
+every button and every chart, in plain language — is `docs.html`, and the reading list
+that takes a visitor from the demo to the literature is `reading.html`. Both are pages of
+the app set itself and both are linked from the `.sub` line of `rmhd2d.html` /
+`rmhd3d.html`. Nothing here is linked from those pages. When a control changes,
+`docs.html` changes with it; when the *reason* for a control changes, this file does.
 
 Two browser apps over one shared core: `rmhd2d.html` (2D) and `rmhd3d.html` (3D
 spectral-z, the `z_spectral=True` path — Alfvén coupling applied exactly via the
@@ -79,6 +80,15 @@ programmatically; do not try to hand-edit a 180 kB line).
   Same stylesheet, no script, no build step. It is the page the apps link at the top; the
   accuracy rule when editing it is that every control named there must exist by id in the
   built panel (`controlsBuild`'s spec fragments and each app's own spec).
+- `reading.html` — the annotated reading list: four "basics" sections (RMHD's origins,
+  plasma physics, turbulence, heliophysics) then Alfred's own tour of the arguments the
+  field has had, one `<details>` per thread. Same skeleton and stylesheet as `docs.html`,
+  no script, no build step; linked from the `.sub` line of both apps and of `docs.html`.
+  It is the ONLY page with outbound links, so two rules apply when editing it: every
+  external `<a>` carries `target="_blank" rel="noopener"`, and every citation is a
+  publisher DOI where one exists (arXiv only as a fallback). Its handful of page-specific
+  rules (`h2`, `ul.refs`, `.todo`) live in a `<style>` block in the file rather than in
+  `style.css`, which stays owned by the apps.
 - `rmhd2d.html`, `rmhd3d.html` — the two apps. Each holds ONLY its inlined reference
   vectors, its dimension-specific WGSL and `Solver`, and its UI layout and defaults, on
   top of `<script src="common.js">` and `<script src="physics.js">` (in that order).
