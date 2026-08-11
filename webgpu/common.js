@@ -1886,10 +1886,15 @@ function _rng(parent, cls, min, max, step, v, title) {
 // header slider is a mystery knob). Label and slider are one control, so the label is
 // stashed on the slider and _rngShow moves both.
 function _rngLab(parent, cls, min, max, step, v, title, lab) {
-  const l = _mk("label", null, parent);
-  l.innerHTML = lab;
+  // one flex item, not two: a label ELEMENT wrapping both the text and the slider, so
+  // the header's flex-wrap cannot split them onto different lines and the slider's
+  // growth is capped by the group's basis (laptop feedback: "opacity" and its slider
+  // parted ways, and the bare slider grew to fill the row)
+  const l = _mk("label", "rngl", parent);
+  const s = _mk("span", null, l);
+  s.innerHTML = lab;
   if (title) l.title = title;
-  const r = _rng(parent, cls, min, max, step, v, title);
+  const r = _rng(l, cls, min, max, step, v, title);
   r.lab = l;
   return r;
 }
@@ -3013,7 +3018,9 @@ function chartsReset() {
 //   num  <input type=number> v, w (px)                 btn  <button id>t</button>
 //   cb   bare checkbox (v = checked)
 //   cbl  checkbox inside <label class="cbl">t</label> (v = checked)
-// `t` is HTML (the entities the markup used); `ti` is plain text.
+// `t` is HTML (the entities the markup used) EXCEPT for cbl, whose t is a text node --
+// give it literal characters (⊥ not &perp;), or the entity shows verbatim; `ti` is
+// plain text.
 function _ctrlItem(row, it) {
   const put = (tag, cls) => _mk(tag, cls, row);
   let e;
@@ -3171,7 +3178,7 @@ const ctrlGrpDisp = extra => ({
     // went with the second slider (its content lives in docs.html's scale-filter section).
     [{ k: "btn", id: "btnAddDisp", t: "+ display" },
      { k: "btn", id: "btnAddChart", t: "+ chart" },
-     { k: "cbl", id: "cbFilter", t: "k&perp; filter", v: false,
+     { k: "cbl", id: "cbFilter", t: "k⊥ filter", v: false,
        ti: "give every display card a k_perp filter slider: it hides structure below the "
          + "wavenumber you set, in the PICTURE only -- the run, the spectra and the field "
          + "lines are never filtered" }].concat(extra || [])

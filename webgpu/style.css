@@ -95,6 +95,13 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
    the flexible item on that row, not its name */
 .cardhead label { flex: none; color: #9aa5b4; font-size: 12px; }
 .cardhead .zslider { flex: 1 1 70px; min-width: 60px; width: auto; }
+/* label + slider as ONE wrapping unit (.rngl, from _rngLab): they can never land on
+   different lines, and the slider grows only within the group's cap instead of eating
+   the whole row on a wide card */
+.cardhead label.rngl { display: inline-flex; align-items: center; gap: 4px;
+                       flex: 0 1 150px; min-width: 100px; }
+.cardhead label.rngl span { flex: none; }
+.cardhead label.rngl .zslider { flex: 1 1 50px; min-width: 40px; }
 .cardhead button.x { margin-left: auto; padding: 1px 7px; line-height: 1.2; color: #9aa5b4; }
 .viewcap { color: #7a8494; font-size: 11.5px; margin-top: 5px; }
 /* a display card's FOOTER: the caption, then the colorbar and the two capture buttons
