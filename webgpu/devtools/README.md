@@ -270,7 +270,7 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   the checkbox unticked — no handle, no caption, and zero band words on every uniform the
   card preps a field through. Later phases append to the `LEGS` list at the bottom.
 - `check2dspec.js [dir]` — the ANISO_PLAN_2 gates: the generated E(k&perp;, k&#8741;) card, its
-  band-gated `prepGrads` sweep (Phase A) and its coordinate binning kernel (Phase B). Six
+  band-gated `prepGrads` sweep (Phase A) and its coordinate binning kernel (Phase B). Seven
   legs. The emission first: every kernel parses, `names.mjs` clean, `dup.py` showing no
   clone inside a file, and both pages' WHOLE dump byte-identical to the plan's base commit
   with exactly two kernels ADDED (`prepGradsBand`, `specParBand`) and none removed — which
@@ -315,14 +315,26 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   (log-spaced, octave-wide, overlapping, between `fitKA` and the shared `specKnee`), the real
   sweep, the real periodogram, and `gen2dRidge` landing within ONE k&#8741; bin of the law on both
   panels — with the coordinate one FLATTENING where the field-line one keeps climbing, which
-  is the Cho&ndash;Vishniac contrast the card exists for; the same leg checks the extra UNBANDED
-  row (`parFL`) the sweep takes so the overlay's k&#8741;B curve has a field-line leg to draw at
-  all. The last leg is Alfred's choreography as
+  is the Cho&ndash;Vishniac contrast the card exists for; the same leg checks that the sweep
+  still takes its extra UNBANDED pass (`parFL`) &mdash; which fed the measured overlay curves
+  and, since Alfred's second feedback round dropped those, has no consumer left and is kept
+  only pending a cleanup of the sweep. The choreography leg is Alfred's model as
   a sequence: press while running &rarr; paused, with the plot and its `generated @ t` legend;
   Run &rarr; unmoved; IC reset and full solver rebuild &rarr; still standing; second press &rarr;
   replaced; a press on a DEAD field &rarr; NOT replaced (an all-zero sweep is the null path,
   and the band set alone would not have caught it); no solver &rarr; button disabled and a
-  forced press declines quietly. CI reports, never gates.
+  forced press declines quietly. The last leg is the PLOT, both feedback rounds: the axis
+  ends are the drawn columns' own edges and the k&#8741; floor is the forcing fundamental
+  (tracked on a 4&times; box); the card's own GSW&times;GSH box makes the plot area square to
+  the pixel; the three theory slopes are declared as 2/3, 1/2 and 1 under Alfred's GS95 /
+  B06 / iso labels and drawn on ONE legend line with three swatches; the boundary per band is
+  recomputed here from the raw rows and the floor, with planted sub-floor and 1.05&times;-floor
+  cells that must be excluded by the noise margin; each slope is anchored on the boundary
+  cell's TOP EDGE and is verified in pixels to clear the filled cells at every band and touch
+  at one; the y axis is raised by the legend's own measured height, so no cell reaches the
+  legend while every cell still sits exactly where the frame's map puts it; and the two
+  measured anisotropy curves are gone, strokes, labels and call site alike. CI reports,
+  never gates.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

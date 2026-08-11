@@ -524,6 +524,16 @@ const EW = 420, EH = 200, SW = 420, SH = 240, CW = 420, CH = 140;
 const PADE = { l: 54, r: 10, t: 10, b: 20 };
 const PADS = { l: 54, r: 10, t: 10, b: 22 };
 const PADC = { l: 54, r: 10, t: 10, b: 20 };
+// The generated 2D spectrum card gets a box of its own (Alfred, second feedback round): a
+// heatmap is read as a MAP, and SW x SH makes its plot area a 356 x 208 letterbox. Width
+// stays at SW deliberately -- a chart canvas is drawn in logical pixels and then scaled to
+// the card's width, so changing it would change the on-screen size of the 10 px chart font
+// relative to every other card. The height is then whatever makes the frame INSIDE PADS
+// exactly SQUARE, derived rather than typed so the two can never drift: 10 + 356 + 22 =
+// 388. Nothing in the card grid has to move for it -- .card.chart is width: 100% and
+// canvas.chart is width: 100%, height: auto on an aspect-ratio box, so this card is simply
+// ~1.6x taller in its column than the spectrum card above it, at every viewport.
+const GSW = SW, GSH = PADS.t + (GSW - PADS.l - PADS.r) + PADS.b;
 const COL = { ek: "#6fb3ff", em: "#ff9c6b", et: "#9ee493",
               zp: "#c58cf5", zm: "#5fd7c8",          // the Elsasser pair, in every chart
               grid: "#232833", grid2: "#1a1e26", axis: "#39404d", txt: "#8a94a3",
@@ -762,17 +772,38 @@ const linTicks = n => Array.from({ length: n + 1 }, (_, i) => [i / n, i % 2 === 
 
 // items: [label, colour, dash?]. Wraps onto further lines at xmax, so a chart with
 // four series plus a guide line still shows every key.
-function legend(c, x, y, items, xmax) {
-  let lx = x, ly = y;
+// An entry is [label, colour, dash] -- or a GROUP, a list of such triples in entry[0],
+// which is laid out as ONE unwrappable unit: several swatch + label pairs that always share
+// a line. (Alfred, second gen2d round: the three theory slopes want to read "GS95 B06 iso"
+// on one line, each with its own dash and colour, rather than as three stacked entries.)
+// The wrap test is made on the group's TOTAL width, so a group either fits on the current
+// line or starts a new one and is never broken across two. A plain triple is a group of
+// one, which is why every other chart's legend is untouched by this.
+function legend(c, x, y, items, xmax) { return _legendRun(c, x, y, items, xmax, true); }
+// The same layout WITHOUT drawing, returning the number of lines it takes. A chart that
+// must keep empty canvas under its own legend has to know that height before it can fix
+// its axes, and the only honest way to know it is to run the real layout (the wrapping
+// depends on measureText, on the labels and on the card's width).
+function legendLines(c, x, items, xmax) { return _legendRun(c, x, 0, items, xmax, false); }
+function _legendRun(c, x, y, items, xmax, draw) {
+  let lx = x, ly = y, lines = 1;
+  const segw = s => 15 + c.measureText(s[0]).width + 11;
   for (const it of items) {
-    const w = 15 + c.measureText(it[0]).width + 11;
-    if (xmax && lx > x && lx + w > xmax) { lx = x; ly += 12; }
-    c.strokeStyle = it[1]; c.lineWidth = 2; c.setLineDash(it[2] || []);
-    c.beginPath(); c.moveTo(lx, ly - 3); c.lineTo(lx + 12, ly - 3); c.stroke();
-    c.setLineDash([]);
-    c.fillStyle = it[1]; c.fillText(it[0], lx + 15, ly);
-    lx += w;
+    const segs = Array.isArray(it[0]) ? it[0] : [it];
+    let w = 0;
+    for (const s of segs) w += segw(s);
+    if (xmax && lx > x && lx + w > xmax) { lx = x; ly += 12; lines++; }
+    for (const s of segs) {
+      if (draw) {
+        c.strokeStyle = s[1]; c.lineWidth = 2; c.setLineDash(s[2] || []);
+        c.beginPath(); c.moveTo(lx, ly - 3); c.lineTo(lx + 12, ly - 3); c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = s[1]; c.fillText(s[0], lx + 15, ly);
+      }
+      lx += segw(s);
+    }
   }
+  return lines;
 }
 
 // The two energy-trace modes (REFINE_PLAN H.2), from the SAME history:
@@ -1821,14 +1852,15 @@ function gen2dBarTicks(o) {
   if ((o && o.gc) === "lin") return [cbarFmt(0), cbarFmt(0.5 * G.hi), cbarFmt(G.hi)];
   return [cbarFmt(G.floor), cbarFmt(Math.sqrt(G.floor * G.hi)), cbarFmt(G.hi)];
 }
-// the overlays, behind one checkbox and OFF by default (Alfred, this session):
-//   * THREE reference slopes -- GS95 (2/3), Boldyrev 2006 (1/2) and isotropic (1) --
-//     drawn as straight lines on this log-log frame, each in its own dash and its own
-//     grey/white/green so they are told apart where they cross;
-//   * the anisotropy card's own extracted curves, k∥(k⊥) = (k∥/k⊥)·k⊥ off `anisoCurves`,
-//     which are MEASUREMENTS of this same snapshot and are labelled as such.
+// the theory slopes, behind one checkbox and OFF by default: THREE reference slopes --
+// GS95 (2/3), Boldyrev 2006 (1/2) and isotropic (1) -- drawn as straight lines on this
+// log-log frame, each in its own dash and its own grey/white/green so they are told apart
+// where they cross. They are the ONLY thing the checkbox draws (Alfred, second round: the
+// two measured anisotropy-card curves that used to ride along with them were dropped --
+// "don't think they are helpful" -- and with them the measured-vs-prediction distinction
+// this card's legend and manual entry used to have to make).
 // The ridge, per band: the k∥ of the largest cell in the row (0 for an empty row). It is
-// no longer what the reference lines anchor on (gen2dTop is -- see below); it stays because
+// not what the reference lines anchor on (gen2dTop is -- see below); it stays because
 // the ridge is the card's own summary of a column and is what check2dspec's recovery leg
 // measures the known law against.
 function gen2dRidge(pts) {
@@ -1837,23 +1869,41 @@ function gen2dRidge(pts) {
   return k;
 }
 // The upper BOUNDARY of the excited region in one column: the largest k∥ whose cell is
-// still above the panel's floor (0 for a column with nothing in it). This, not the argmax
-// ridge, is what a critical-balance slope is a statement about -- the cascade FILLS
-// k∥ ≲ k∥(k⊥), so the relation is the edge of the filled region and the eye should be
-// comparing the slope with that edge (Alfred, this session).
+// still meaningfully above the panel's floor (0 for a column with nothing in it). This, not
+// the argmax ridge, is what a critical-balance slope is a statement about -- the cascade
+// FILLS k∥ ≲ k∥(k⊥), so the relation is the edge of the filled region and the eye should be
+// comparing the slope with that edge (Alfred, first round).
 // Measured against `G.floor` -- the panel's own noise floor -- and NOT against the colour
 // mapping, so flipping the colour scale does not move the lines.
+//
+// GEN2D_TOPMARGIN is a NOISE margin, and it is not cosmetic (review of the first round).
+// The test used to be `>= floor` exactly, and the boundary is a MAX over bins: one cell
+// sitting at 1.05x the floor at the top of one column therefore moves that column's
+// boundary to the top of the plot, and because all three anchors are a max over bands
+// (below) it drags every reference line with it -- 0.71 decades, 47% of the frame, on the
+// reviewer's demonstration. A cell at 1.05x the floor is exactly the fp32 periodogram fuzz
+// this card's own manual entry warns about, so that is not a hypothetical: it fires on real
+// snapshots and wrecks the one comparison the overlay exists for. Requiring the cell to be
+// at least 2x the floor -- half of the panel's LOWEST decade of colour, still far below
+// anything the eye reads as filled -- costs nothing on a real edge, where the spectrum is
+// falling steeply and the neighbouring bins are orders of magnitude apart, and takes the
+// single-fuzzy-cell excursion out. Alfred can veto it on-device; it is one number.
+const GEN2D_TOPMARGIN = 2;
 function gen2dTop(pts, floor) {
   let k = 0;
-  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] >= floor && pts[i] > k) k = pts[i];
+  const thr = GEN2D_TOPMARGIN * floor;
+  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] >= thr && pts[i] > k) k = pts[i];
   return k;
 }
-// [exponent, label, colour, dash]. Theory palette: greys and a green, all dashed, kept
-// clear of the anisotropy card's own blue / orange, which on this card mean "measured".
+// [exponent, label, colour, dash]. Labels are Alfred's abbreviations, kept exactly, because
+// all three ride on ONE legend line (second round) and the long forms -- "k∥ ∝ k⊥^2/3
+// (GS95)" and friends -- took a line each. The long forms live in the checkbox's tooltip
+// and in docs.html, where there is room for them. Theory palette: greys and a green, all
+// dashed, kept clear of the anisotropy card's own blue / orange.
 const GEN2D_SLOPES = [
-  [2 / 3, "k∥ ∝ k⊥^2/3 (GS95)", COL.guide, [5, 4]],
-  [1 / 2, "k∥ ∝ k⊥^1/2 (Boldyrev 2006)", COL.cut, [2, 3]],
-  [1, "k∥ ∝ k⊥ (isotropic)", COL.et, [8, 3, 2, 3]]
+  [2 / 3, "GS95", COL.guide, [5, 4]],
+  [1 / 2, "B06", COL.cut, [2, 3]],
+  [1, "iso", COL.et, [8, 3, 2, 3]]
 ];
 // The anchor of one reference slope: A = max over bands of k∥_top(band) / k_c^exponent,
 // so the line A·k⊥^p sits JUST ABOVE the measured envelope -- touching it at the band where
@@ -1861,11 +1911,17 @@ const GEN2D_SLOPES = [
 // rule for all three, which is what makes them comparable with each other and with the
 // boundary. Only the SLOPE is ever a claim here: the intercept is chosen by this rule and
 // says nothing about the plasma. 0 when no column has anything in it -- then no line.
+//
+// "k∥_top" here is the top EDGE of the top filled cell, kt + half a bin, not its centre
+// (review of the first round). A cell is drawn as a rectangle half a bin either side of its
+// own k∥ (drawGen2D), so anchoring on the centre put the line through the middle of the
+// filled pixels at the touching band -- visibly resting ON the data rather than on top of
+// it, which is not what "just above the boundary" says.
 function gen2dAnchor(G, p) {
   let A = 0;
   for (let j = 0; j < G.rows.length && j < G.d.bands.length; j++) {
     const kt = gen2dTop(G.rows[j], G.floor);
-    if (kt > 0) A = Math.max(A, kt / Math.pow(G.d.bands[j].kc, p));
+    if (kt > 0) A = Math.max(A, (kt + 0.5 * G.d.parKfac) / Math.pow(G.d.bands[j].kc, p));
   }
   return A;
 }
@@ -1891,7 +1947,24 @@ function gen2dAnchor(G, p) {
 //      CLIP three resolved bins. Nothing resolved is clipped this way: what hangs below the
 //      frame is the bottom half of the lowest row of cells, and the frame clip takes it,
 //      which is right -- there is no energy below the fundamental to draw.
-function gen2dFrame(G) {
+//
+// HEADROOM (Alfred, second round). The legend block sits at the top left of the frame, and
+// the top left of the frame is exactly where the low-k⊥ / high-k∥ corner of the data is, so
+// the legend was reading over the cells. `hleg` (the legend's own measured height in pixels
+// -- see legendLines) and `hplot` (the frame's height in pixels) raise `yhi` ABOVE the top
+// of the resolved range by just enough that the whole legend block sits over empty canvas:
+// the resolved top (nzb + 1/2) is placed hleg pixels below the top of the frame, so
+//   (ytop - ylo) / (yhi - ylo) = (hplot - hleg) / hplot.
+// This is a change of AXIS LIMIT and nothing else. The ticks and their labels run on across
+// the added range (logTicks is handed the new span), every cell keeps the same k∥, and no
+// cell moves relative to the axis -- the whole plot is simply drawn at a slightly smaller
+// pixels-per-decade. The reserve is deliberately measured against the top of the RESOLVED
+// range rather than against the topmost non-empty cell: the empty space is then the same
+// from one press to the next instead of breathing with the data, and since no cell can be
+// above the resolved top it clears every one of them. Clamped at a third of the frame, so a
+// pathologically tall legend cannot squash the plot into nothing; with hleg = 0 (the
+// default) this is exactly the old frame.
+function gen2dFrame(G, hleg, hplot) {
   const d = G.d, lb = d.bands.map(b => Math.log10(b.kc)), pk = d.parKfac;
   const edge = j => {
     if (lb.length < 2) return Math.log10(j === 0 ? d.bands[0].lo : d.bands[0].hi);
@@ -1899,20 +1972,58 @@ function gen2dFrame(G) {
     if (j >= lb.length) return lb[lb.length - 1] + 0.5 * (lb[lb.length - 1] - lb[lb.length - 2]);
     return 0.5 * (lb[j - 1] + lb[j]);
   };
-  return { lb, edge, xlo: edge(0), xhi: edge(lb.length),
-           ylo: Math.log10(pk), yhi: Math.log10((G.nzb + 0.5) * pk) };
+  const ylo = Math.log10(pk), ytop = Math.log10((G.nzb + 0.5) * pk);
+  const H = hplot > 0 ? hplot : 0;
+  const L = H > 0 ? Math.max(0, Math.min(hleg || 0, H / 3)) : 0;
+  const yhi = L > 0 ? ylo + (ytop - ylo) * H / (H - L) : ytop;
+  return { lb, edge, xlo: edge(0), xhi: edge(lb.length), ylo, ytop, yhi };
+}
+// The card's LEGEND and the FRAME that leaves room for it, as one computation -- the
+// specCurves seam again, so the draw and any reader (node) get the same answer instead of
+// two opinions. The legend has to be settled before the axes are, because the y axis is
+// stretched by the block's own height (gen2dFrame's headroom) and that height is not known
+// until its wrapping is: it depends on the labels, on measureText and on the card's width.
+// The list is
+//   * the header, which says which panel and which moment (the pin convention);
+//   * ONE grouped entry carrying all three theory slopes, each with its own dash and
+//     colour swatch (Alfred, second round) -- present only for the slopes that actually
+//     have an anchor, and only with the checkbox on;
+//   * the sweep's progress line while a press is in flight.
+// The height is MEASURED on a list that always carries the theory group, ticked or not.
+// The alternative -- measuring what is actually drawn -- would rescale the whole heatmap
+// the moment the reader ticks the box, which is exactly when they are trying to compare a
+// slope with the boundary. The cost is a line of empty axis with the box off, which is
+// honest axis and costs nothing to read.
+function gen2dLayout(c, G, o, prog) {
+  const P = PADS, x1 = GSW - P.r, y0 = P.t, y1 = GSH - P.b, d = G.d;
+  const lgx = P.l + 6, lgxm = x1 - 30;
+  const head = [((o && o.gp) === "z" ? "coordinate k∥z" : "field line k∥B") +
+                " — generated @ t = " + (isFinite(d.t) ? d.t.toFixed(2) : "?"), COL.txt];
+  const refs = [];
+  if ((o && o.gov) === "on")
+    for (const s of GEN2D_SLOPES) {
+      const A = gen2dAnchor(G, s[0]);
+      if (A > 0) refs.push([s[0], A, s[2], s[3], s[1]]);      // p, A, colour, dash, label
+    }
+  const items = [head], meas = [head, [GEN2D_SLOPES.map(s => [s[1], s[2], s[3]])]];
+  if (refs.length) items.push([refs.map(r => [r[4], r[2], r[3]])]);
+  if (prog) { items.push([prog, COL.txt]); meas.push([prog, COL.txt]); }
+  const hleg = 12 * legendLines(c, lgx, meas, lgxm) + 4;   // baselines 12 apart + descenders
+  return { items, refs, lgx, lgxm, hleg, F: gen2dFrame(G, hleg, y1 - y0) };
 }
 function drawGen2D(c, o) {
   if (!c) return;
-  const P = PADS, x0 = P.l, x1 = SW - P.r, y0 = P.t, y1 = SH - P.b;
-  chartFrame(c, SW, SH, P);
+  const P = PADS, x0 = P.l, x1 = GSW - P.r, y0 = P.t, y1 = GSH - P.b;
+  chartFrame(c, GSW, GSH, P);
   c.textAlign = "left"; c.fillStyle = COL.txt;
   const prog = gen2d.busy
     ? "generating… band " + gen2d.done + "/" + Math.max(gen2d.total, gen2d.done, 1) : "";
   const G = gen2dPanel(o);
   if (!G) { c.fillText(prog || "E(k⊥, k∥) — press generate", x0 + 6, y0 + 13); return; }
   const d = G.d, pk = d.parKfac;
-  const F = gen2dFrame(G), lb = F.lb, edge = F.edge;
+  const LY = gen2dLayout(c, G, o, prog);
+  const items = LY.items, refs = LY.refs, lgx = LY.lgx, lgxm = LY.lgxm;
+  const F = LY.F, lb = F.lb, edge = F.edge;
   const xlo = F.xlo, xhi = F.xhi, xw = Math.max(xhi - xlo, 1e-9);
   const XL = L => x0 + (L - xlo) / xw * (x1 - x0);   // a log10 k⊥ -> pixels
   const X = k => XL(Math.log10(k));
@@ -1934,12 +2045,12 @@ function drawGen2D(c, o) {
   for (const tk of logTicks(xlo, xhi, (x1 - x0) / xw, (m, e) => String(m * Math.pow(10, e)))) {
     const xp = X(tk[0]);
     const clear = xp - 0.5 * c.measureText(tk[2]).width > xlabR && xp <= x1 - 20;
-    xTick(c, xp, y0, y1, SH - 8, clear ? tk[2] : "", tk[1]);
+    xTick(c, xp, y0, y1, GSH - 8, clear ? tk[2] : "", tk[1]);
   }
   c.fillStyle = COL.txt; c.textAlign = "center";
-  c.fillText(kend(Math.pow(10, xhi)), x1, SH - 8);
+  c.fillText(kend(Math.pow(10, xhi)), x1, GSH - 8);
   c.textAlign = "left";
-  c.fillText(xlab, x0 + 4, SH - 8);
+  c.fillText(xlab, x0 + 4, GSH - 8);
 
   const cs = gen2dCscale(G, o);
   c.save();
@@ -1973,63 +2084,26 @@ function drawGen2D(c, o) {
     }
   }
   c.setLineDash([]);
-  // Legend order, held to deliberately: THEORY first (the three straight slopes, as a
-  // block), MEASURED second (the anisotropy card's two curves). The reader should be able
-  // to see at a glance which entries are predictions and which are this snapshot's own
-  // numbers; the labels say so too.
-  const items = [];
-  if ((o && o.gov) === "on") {
-    // The three reference slopes, each anchored so it lies JUST ABOVE the upper boundary
-    // of the filled region (gen2dAnchor / gen2dTop). Same rule for all three, so their
-    // slopes can be read against each other and against the boundary; the intercept is a
-    // consequence of the rule and is never a claim. No non-empty column anywhere -> no
-    // anchor and no lines, as before.
-    const ka = Math.pow(10, xlo), kb = Math.pow(10, xhi);
-    c.lineWidth = 1.4;
-    for (const [p, lab, col, dash] of GEN2D_SLOPES) {
-      const A = gen2dAnchor(G, p);
-      if (!(A > 0)) continue;
-      c.strokeStyle = col; c.setLineDash(dash);
-      c.beginPath();
-      c.moveTo(X(ka), Y(A * Math.pow(ka, p)));
-      c.lineTo(X(kb), Y(A * Math.pow(kb, p)));
-      c.stroke(); c.setLineDash([]);
-      items.push([lab, col, dash]);
-    }
-    // ... and the anisotropy card's extracted skeleton, off the SNAPSHOT's own spectra
-    // (which ride in the same object) rather than off the live ones: a static heatmap and
-    // a curve from a later moment would be two different fields. BOTH its legs ride: `par`
-    // (k∥ along z) comes with the ⊥ spectrum readback the band window was cut from, and
-    // `parFL` (k∥ along the field lines) is the sweep's own extra UNBANDED row, which is
-    // why the k∥B curve is drawn here and not just the coordinate one. It draws with no
-    // aniso card open, and simply contributes nothing when the matching finds no range.
-    const A2 = anisoCurves(d, { aq: o && o.gq, ad: "both" });
-    c.lineWidth = 1.4;
-    for (let i = 0; i < A2.curves.length; i++) {
-      const cv = A2.curves[i], a = cv[0];
-      if (a.length < 4) continue;
-      // named MEASURED, at length: these two are data (the anisotropy card's
-      // equal-cumulative-energy matching of this snapshot's own two 1D spectra), and next
-      // to three straight reference slopes the old "k∥z (aniso)" read like a fourth one
-      const lab = i < A2.nGlob ? "k∥z measured (aniso card)" : "k∥B measured (aniso card)";
-      c.strokeStyle = cv[1]; c.setLineDash(cv[2] || []); c.beginPath();
-      for (let m = 0; m < a.length; m += 2) {
-        // the aniso curve is the RATIO k∥/k⊥ against k⊥; times k⊥ it is this plot's k∥
-        const x = X(a[m]), y = Y(a[m + 1] * a[m]);
-        if (m === 0) c.moveTo(x, y); else c.lineTo(x, y);
-      }
-      c.stroke(); c.setLineDash([]);
-      items.push([lab, cv[1], cv[2]]);
-    }
+  // The three reference slopes, each anchored so it lies JUST ABOVE the upper boundary of
+  // the filled region (gen2dAnchor / gen2dTop). Same rule for all three, so their slopes
+  // can be read against each other and against the boundary; the intercept is a consequence
+  // of the rule and is never a claim. `refs` was settled with the legend above, so a slope
+  // with no anchor (no non-empty column anywhere) is neither drawn nor legended.
+  const ka = Math.pow(10, xlo), kb = Math.pow(10, xhi);
+  c.lineWidth = 1.4;
+  for (const [p, A, col, dash] of refs) {
+    c.strokeStyle = col; c.setLineDash(dash);
+    c.beginPath();
+    c.moveTo(X(ka), Y(A * Math.pow(ka, p)));
+    c.lineTo(X(kb), Y(A * Math.pow(kb, p)));
+    c.stroke(); c.setLineDash([]);
   }
   c.restore();
   // the cells overpaint chartFrame's border, so it is re-stroked over them
   c.strokeStyle = COL.axis; c.lineWidth = 1;
   c.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
-  items.unshift([((o && o.gp) === "z" ? "coordinate k∥z" : "field line k∥B") +
-                 " — generated @ t = " + (isFinite(d.t) ? d.t.toFixed(2) : "?"), COL.txt]);
-  if (prog) items.push([prog, COL.txt]);
-  legend(c, x0 + 6, y0 + 12, items, x1 - 30);
+  // ... and the block the axis made room for, drawn exactly where it was measured
+  legend(c, lgx, y0 + 12, items, lgxm);
 }
 
 // ---------------------------------------------------------------------------
@@ -2253,7 +2327,8 @@ const CHART_TYPES = {
   // "let the collision develop first" note -- all live in docs.html, in full sentences,
   // under #gen2d: the hint is the one-breath version and the manual is the long one.
   gen2d: {
-    label: "2D spectrum E(k&perp;,k&#8741;)", w: SW, h: SH,
+    // its own box, not the shared SW x SH: a heatmap wants a SQUARE plot area (GSW / GSH)
+    label: "2D spectrum E(k&perp;,k&#8741;)", w: GSW, h: GSH,
     avail: cfg => cfg.zslice, bar: o => gen2dBarTicks(o), cmap: GEN2D_CMAP,
     opts: () => [
       { id: "gen", k: "btn", t: "generate", onClick: () => gen2dRun(),
@@ -2272,10 +2347,13 @@ const CHART_TYPES = {
       { id: "gc", ti: "colour scale for the cells: log from the noise floor to the peak "
           + "(the default), or linear from 0 to the peak",
         o: [["log", "log colour"], ["lin", "linear colour"]] },
-      { id: "gov", k: "cbl", t: "overlays",
-        ti: "three reference slopes — GS95 (2/3), Boldyrev 2006 (1/2) and isotropic (1) — "
-          + "each laid just above the upper edge of the filled region so only the slope is "
-          + "a claim, plus the anisotropy card's MEASURED k∥(k⊥) off this same snapshot" }
+      // "overlays" was the name while this drew the anisotropy card's measured curves too;
+      // with those gone (Alfred, second round) the box toggles the three straight reference
+      // slopes and nothing else, so it says so.
+      { id: "gov", k: "cbl", t: "theory slopes",
+        ti: "three reference slopes — GS95 (k∥ ∝ k⊥^2/3), Boldyrev 2006 (k∥ ∝ k⊥^1/2) and "
+          + "isotropic (k∥ ∝ k⊥) — each laid just above the upper edge of the filled "
+          + "region, so only the slope is ever a claim and never the height" }
     ],
     draw: (c, d, o) => drawGen2D(c, o),
     barTi: o => "colour range of the plotted quantity ("
@@ -2284,9 +2362,10 @@ const CHART_TYPES = {
     hint: "two-dimensional spectrum E(k&perp;, k&#8741;) from one frozen snapshot "
       + "(<b>generate</b> pauses the run and band-passes the field in k&perp;, band by "
       + "band); colour is E &mdash; log by default, linear on the colour select &mdash; and "
-      + "y is k&#8741;/kunit. overlay lines correspond to GS95 (k&#8741; &prop; "
+      + "y is k&#8741;/kunit. the theory slopes are GS95 (k&#8741; &prop; "
       + "k&perp;<sup>2/3</sup>), Boldyrev 2006 (k&#8741; &prop; k&perp;<sup>1/2</sup>), and "
-      + "isotropic (k&#8741; &prop; k&perp;)."
+      + "isotropic (k&#8741; &prop; k&perp;), legended <b>GS95</b> / <b>B06</b> / <b>iso</b> "
+      + "and laid just above the upper edge of the filled region."
   }
 };
 // which chart types this app offers (the equilibrium ones are 2D-only)

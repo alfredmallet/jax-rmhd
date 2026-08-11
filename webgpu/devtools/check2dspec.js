@@ -154,7 +154,8 @@ vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(dir, "common.js"), "utf8"), sandbox, { filename: "common.js" });
 const C = vm.runInContext(
   "({ flSpectrum, gen2dBands, GEN_NBAND, GEN_BAND_W, fitKA, specKnee, _anisoLeg, _anisoPeak,"
-  + " ANISO_LANES, CHART_TYPES })", sandbox);
+  + " ANISO_LANES, CHART_TYPES, gen2dTop, GEN2D_TOPMARGIN, GEN2D_SLOPES, logTicks,"
+  + " legend, legendLines, PADS, GSW, GSH, SW, SH })", sandbox);
 
 // ===========================================================================
 // 1. the emission: parses, resolves, and is base's plus exactly two kernels
@@ -1094,19 +1095,22 @@ async function legRidge(state) {
                    + (P.z.ridge[P.z.n - 1] / P.z.pk).toFixed(1) : "no panel");
   // the lane select is the shared E+- algebra: the coordinate rows carry E_u : E_b : H_c
   // = 0.6 : 0.4 : 0.1, so tot = 1.0, zp = 1.1, zm = 0.9 of the same peak
-  // the overlay's FIELD-LINE leg, which is only real because the sweep takes one extra
-  // UNBANDED row: `par` (k∥ along z) rides in with the ⊥ spectrum readback, but nothing
-  // else on this page hands the snapshot a field-line parallel spectrum, so without
-  // `parFL` the k∥B curve of the overlay is a branch that can never be taken.
+  // The sweep's extra UNBANDED row. It existed for ONE consumer -- the k∥B leg of the
+  // measured overlay curves -- and Alfred dropped those in his second round, so as of
+  // 2026-08-11 `parFL` is computed, shipped and read by nobody but this assertion. It is
+  // deliberately left in place (removing it changes the sweep, its progress `total` and the
+  // legs that pin those, which is not a display-side change) and flagged for a later
+  // cleanup, so what this row now pins is the STATUS QUO: the pass still runs and still
+  // produces a well-formed row, and the day it is removed this line is the reminder that
+  // the sweep's shape changed on purpose.
   const OV = env.run(`function(){
-    const d = gen2d.data, A = anisoCurves(d, { ad: "both" });
+    const d = gen2d.data;
     let s = 0; for (let i = 0; i < (d.parFL || []).length; i++) s += d.parFL[i];
-    return { has: !!d.parFL, n: d.parFL ? d.parFL.length : 0, sum: s, nzb: d.nzb,
-             nGlob: A.nGlob, ncurve: A.curves.length,
-             labs: A.curves.map(c => c[3]).join(" | ") }; }`);
-  ok("the snapshot carries an UNBANDED field-line row, so the overlay's k∥B leg is drawable",
-     OV.has && OV.n === 3 * OV.nzb && OV.sum > 0 && OV.ncurve - OV.nGlob >= 1,
-     OV.n + " floats, " + OV.ncurve + " aniso curve(s) [" + OV.labs + "]");
+    return { has: !!d.parFL, n: d.parFL ? d.parFL.length : 0, sum: s, nzb: d.nzb }; }`);
+  ok("the sweep still takes its extra UNBANDED field-line pass (now consumer-less: see note)",
+     OV.has && OV.n === 3 * OV.nzb && OV.sum > 0,
+     OV.n + " floats, sum " + OV.sum.toPrecision(4) + " -- orphaned by the second feedback "
+     + "round, kept for a later cleanup");
   const L = ["tot", "zp", "zm"].map(q => env.run(PANEL, "z", q));
   ok("the lane select is ANISO_LANES' own E+- = E_u + E_b +- H_c",
      L.every(p => p && p.n === P.z.n) && rel(L[1].hi, 1.1 * L[0].hi) < 1e-5 &&
@@ -1174,13 +1178,19 @@ async function legChoreography(state) {
   const env = await boot(dir, "rmhd3d.html");
   const card = env.run(`function(){ const c = addChartCard("gen2d"); cardsSync(); return c; }`);
   const ids = env.run("function(c){ return c.optEls.map(s => s.__optId).join(','); }", card);
-  ok("a gen2d card builds with its five controls (generate / panel / lane / colour / overlays)",
+  ok("a gen2d card builds with its five controls (generate / panel / lane / colour / theory)",
      card && card.optEls.length === 5 && ids === "gen,gp,gq,gc,gov", ids);
   ok("  ... and a colorbar, because on this chart the plotted quantity IS the colour",
      env.run("function(c){ return !!c.foot && !!c.barT && c.barT.length === 3; }", card));
-  ok("  ... the overlays box is a checkbox reading on/off, and starts OFF",
-     env.run("function(c){ const o = c.optVals(); return o.gov === 'off' &&"
-             + " !!c.optEls.filter(s => s.__optId === 'gov')[0].__optChk; }", card));
+  // it was "overlays" while it also drew the anisotropy card's measured curves; with those
+  // gone (second round) it toggles the three theory slopes alone, and says so
+  ok("  ... the theory-slopes box is a checkbox reading on/off, starts OFF, and is no longer "
+     + "called `overlays`",
+     env.run("function(c){ const o = c.optVals();"
+             + " const s = c.optEls.filter(s => s.__optId === 'gov')[0];"
+             + " let t = ''; for (const k of s.children || []) if (k.kind === '#text') t += k.textContent;"
+             + " return o.gov === 'off' && !!s.__optChk && t.indexOf('theory') >= 0"
+             + " && t.indexOf('overlay') < 0; }", card));
   const st = () => env.run("function(){ const c = cards.chart.filter(x => x.type() === 'gen2d')[0];"
     + " const b = c.optEls.filter(s => s.__optId === 'gen')[0];"
     + " return { running: running, busy: gen2d.busy, dis: !!b.disabled, has: !!gen2d.data,"
@@ -1296,7 +1306,11 @@ async function legChoreography(state) {
 // ===========================================================================
 // 7. the plot itself: axis limits, the k∥ floor, the three anchors, the colour scale
 // ===========================================================================
-// Alfred's first feedback round on the card, gated the way the rest of it is: the frame is
+// Alfred's first AND second feedback rounds on the card, gated the way the rest of it is:
+// the second round drops the two measured overlay curves, gives the legend its y headroom,
+// puts the three theory slopes on one legend line, squares the plot area, moves the anchor
+// onto the boundary cell's TOP EDGE and puts a noise margin on the boundary itself. The
+// frame is
 // read as DATA off the app's own `gen2dFrame` (the specCurves seam), and then every claim
 // is made a second time in PIXELS off a recording of the real `drawGen2D` on the real card,
 // so a correct frame drawn wrongly still fails. The only arithmetic this script owns is the
@@ -1352,22 +1366,35 @@ const DRAWREC = `function(vals){
   rec.bars = c.barT.map(x => x.innerHTML);
   rec.barTi = c.barD ? c.barD.title : "";
   return rec; }`;
-// the frame and the panel, as data
+// the frame and the panel, as data. `ylo`/`ytop` are the axis the DATA occupies and `yhi`
+// the axis the plot is DRAWN on -- they differ by the legend headroom, and the second-round
+// leg below mirrors that relation instead of taking it on trust. The panel's rows ride out
+// whole so the boundary rule can be recomputed here from (k, v) pairs + the floor rather
+// than by calling the app's `gen2dTop` on both sides of the comparison.
 const FRAME = `function(){
   const c = cards.chart.filter(x => x.type() === "gen2d")[0], o = c.optVals();
   const G = gen2dPanel(o);
   if (!G) return null;
-  const F = gen2dFrame(G);
-  return { xlo: F.xlo, xhi: F.xhi, ylo: F.ylo, yhi: F.yhi, lb: F.lb.slice(),
+  const LY = gen2dLayout(c.cx, G, o, ""), F = LY.F;
+  return { hleg: LY.hleg, nleg: legendLines(c.cx, LY.lgx, LY.items, LY.lgxm),
+           lgx: LY.lgx, lgxm: LY.lgxm,
+           raw: (function(){ const R = gen2dFrame(G); return { ylo: R.ylo, yhi: R.yhi }; })(),
+           xlo: F.xlo, xhi: F.xhi, ylo: F.ylo, ytop: F.ytop, yhi: F.yhi, lb: F.lb.slice(),
            e0: F.edge(0), eN: F.edge(F.lb.length), pk: G.d.parKfac, nzb: G.nzb, nb: G.d.nb,
            fshell: (G.d.fshell || []).slice(), kA: fitKA(G.d.nb, G.d.fshell),
            kc: G.d.bands.map(b => b.kc), floor: G.floor, hi: G.hi,
+           rows: G.rows.map(r => Array.prototype.slice.call(r)),
            top: G.rows.map(r => gen2dTop(r, G.floor)),
            ridge: G.rows.map(r => gen2dRidge(r)),
+           margin: GEN2D_TOPMARGIN,
            slopes: GEN2D_SLOPES.map(s => [s[0], s[1], s[2], s[3].slice()]),
            anchor: GEN2D_SLOPES.map(s => gen2dAnchor(G, s[0])),
            COL: { shell: COL.shell, ek: COL.ek, em: COL.em, txt: COL.txt } }; }`;
-const GEO = `function(){ return { l: PADS.l, r: PADS.r, t: PADS.t, b: PADS.b, W: SW, H: SH }; }`;
+// the gen2d card's OWN box (GSW x GSH), not the shared spectrum one -- second-round item 4
+const GEO = `function(){
+  const c = cards.chart.filter(x => x.type() === "gen2d")[0];
+  return { l: PADS.l, r: PADS.r, t: PADS.t, b: PADS.b, W: GSW, H: GSH, SW: SW, SH: SH,
+           ar: c.cv.style.aspectRatio || "" }; }`;
 
 async function legPlot(state) {
   const env = await boot(dir, "rmhd3d.html");
@@ -1384,6 +1411,19 @@ async function legPlot(state) {
   const MY = L => y1 - (L - F.ylo) / (F.yhi - F.ylo) * (y1 - y0);
   const L10 = Math.log10;
 
+  // ---- second-round item 4: the card's own box, with a SQUARE plot area ----
+  ok("the gen2d card has dimensions of its own, not the shared spectrum SW x SH",
+     P.W === C.GSW && P.H === C.GSH && !(P.W === P.SW && P.H === P.SH) &&
+     C.CHART_TYPES.gen2d.w === C.GSW && C.CHART_TYPES.gen2d.h === C.GSH &&
+     C.CHART_TYPES.spectrum.w === P.SW && C.CHART_TYPES.spectrum.h === P.SH,
+     "gen2d " + P.W + "x" + P.H + ", spectrum " + P.SW + "x" + P.SH);
+  ok("  ... and the PLOT AREA inside PADS is square, to the pixel",
+     (x1 - x0) === (y1 - y0) && (x1 - x0) > 200,
+     "plot " + (x1 - x0) + " x " + (y1 - y0) + " (was " + (P.SW - P.l - P.r) + " x "
+     + (P.SH - P.t - P.b) + ")");
+  ok("  ... and the real canvas carries that ratio, so the card renders it",
+     P.ar.replace(/\s/g, "") === C.GSW + "/" + C.GSH, "aspect-ratio: " + P.ar);
+
   // ---- item 1: the x axis IS the drawn columns ----------------------------
   ok("the x axis starts at the first column's left edge and ends at the last one's right",
      F.xlo === F.e0 && F.xhi === F.eN &&
@@ -1398,9 +1438,10 @@ async function legPlot(state) {
   // ---- item 2: the k∥ floor is the forcing fundamental ---------------------
   ok("the k∥ axis starts AT the first bin -- the forcing fundamental -- not half a bin below",
      F.ylo === L10(F.pk) && F.ylo > L10(0.5 * F.pk) &&
-     rel(F.yhi, L10((F.nzb + 0.5) * F.pk)) < 1e-12,
-     "k∥ " + Math.pow(10, F.ylo) + " .. " + Math.pow(10, F.yhi).toFixed(2)
-     + " (parKfac = " + F.pk + ")");
+     rel(F.ytop, L10((F.nzb + 0.5) * F.pk)) < 1e-12 &&
+     rel(F.raw.yhi, F.ytop) < 1e-12,
+     "k∥ " + Math.pow(10, F.ylo) + " .. " + Math.pow(10, F.ytop).toFixed(2)
+     + " resolved (drawn to " + Math.pow(10, F.yhi).toFixed(2) + ", parKfac = " + F.pk + ")");
   // ... and it is the FUNDAMENTAL, not the number 1: on a 4x longer box the same forcing
   // injects at k∥ = 0.25, and a floor pinned at 1 would clip two resolved octaves
   const F8 = env.run(`function(pk){
@@ -1408,9 +1449,9 @@ async function legPlot(state) {
     d.parKfac = pk;
     const F = gen2dFrame(gen2dPanel({ gp: "fl", gq: "tot" }));
     d.parKfac = was;
-    return { ylo: F.ylo, yhi: F.yhi }; }`, 0.25 * F.pk);
+    return { ylo: F.ylo, ytop: F.ytop }; }`, 0.25 * F.pk);
   ok("  ... and it TRACKS the box: a 4x longer Lz moves the floor to the new fundamental",
-     rel(F8.ylo, L10(0.25 * F.pk)) < 1e-12 && rel(F8.yhi, L10((F.nzb + 0.5) * 0.25 * F.pk)) < 1e-12,
+     rel(F8.ylo, L10(0.25 * F.pk)) < 1e-12 && rel(F8.ytop, L10((F.nzb + 0.5) * 0.25 * F.pk)) < 1e-12,
      "floor " + Math.pow(10, F8.ylo) + " at parKfac " + (0.25 * F.pk));
 
   // ---- the pixels: the cells fill the frame exactly ------------------------
@@ -1438,6 +1479,15 @@ async function legPlot(state) {
     const a = box(lab), b = box(t);
     if (b[0] < a[1] && b[1] > a[0] && !clash) clash = JSON.stringify(t[0]) + " at " + b.join("..");
   }
+  // The end-of-axis label is the centred one at the right edge; everything else on this
+  // baseline is an INTERIOR tick label. There has to be at least one, or the collision test
+  // below is a statement about the empty set -- a mutation that suppressed every interior
+  // label (the `clear` test in drawGen2D always false) used to pass it (review, this round).
+  const endLab = tl.filter(t => t[3] === "center" && Math.abs(t[1] - x1) < 1e-6)[0];
+  const inner = tl.filter(t => t !== lab && t !== endLab && String(t[0]).length);
+  ok("interior x tick labels survive the label-owns-its-space rule -- the set is not empty",
+     inner.length >= 1,
+     inner.length + " interior label(s): " + inner.map(t => t[0]).join(" "));
   ok("the x-axis label collides with no tick label on its own baseline",
      !!lab && !clash, lab ? JSON.stringify(lab[0]) + " spans " + box(lab).map(v => v.toFixed(0)).join("..")
                             + ", " + (tl.length - 1) + " labels beside it" + (clash ? "; HITS " + clash : "")
@@ -1470,31 +1520,86 @@ async function legPlot(state) {
        + " (want " + MX(0.5 * (F.xlo + F.xhi)).toFixed(1) + ")" : ""));
 
   // ---- items 3 + 4: three slopes, anchored on the upper boundary -----------
-  ok("three reference slopes are declared -- GS95 2/3, Boldyrev 1/2 and isotropic 1",
+  // Second round: the labels are Alfred's abbreviations and are compared VERBATIM, because
+  // they are what the one-line legend can fit. The exponents are asserted as numbers (they
+  // are the physics), and the long names they abbreviate must survive somewhere a reader
+  // can find them -- the checkbox's tooltip and the manual.
+  ok("three reference slopes are declared -- 2/3, 1/2 and 1, labelled GS95 / B06 / iso",
      F.slopes.length === 3 &&
      F.slopes.map(s => s[0]).join(",") === [2 / 3, 1 / 2, 1].join(",") &&
-     /GS95/.test(F.slopes[0][1]) && /Boldyrev/.test(F.slopes[1][1]) && /isotropic/.test(F.slopes[2][1]),
-     F.slopes.map(s => s[1]).join(" | "));
+     F.slopes.map(s => s[1]).join(",") === "GS95,B06,iso",
+     F.slopes.map(s => s[1] + " = " + s[0].toFixed(3)).join(" | "));
+  const govTi = C.CHART_TYPES.gen2d.opts().filter(s => s.id === "gov")[0] || {};
+  ok("  ... and the long names live where there is room for them: the control's own tooltip",
+     /GS95/.test(govTi.ti) && /Boldyrev 2006/.test(govTi.ti) && /isotropic/.test(govTi.ti) &&
+     /2\/3/.test(govTi.ti) && /1\/2/.test(govTi.ti) && govTi.t === "theory slopes",
+     JSON.stringify(govTi.t) + ": " + govTi.ti);
   ok("  ... visually distinguishable: three different colours and three different dashes",
      new Set(F.slopes.map(s => s[2])).size === 3 &&
      new Set(F.slopes.map(s => s[3].join(","))).size === 3 &&
      F.slopes.every(s => [F.COL.ek, F.COL.em].indexOf(s[2]) < 0),
      F.slopes.map(s => s[2] + " [" + s[3].join(",") + "]").join(" | "));
-  // the anchor rule, mirrored: A = max over bands of k∥_top / k_c^p
-  let anchBad = 0;
-  for (let i = 0; i < F.slopes.length; i++) {
-    let A = 0;
-    for (let j = 0; j < F.kc.length; j++)
-      if (F.top[j] > 0) A = Math.max(A, F.top[j] / Math.pow(F.kc[j], F.slopes[i][0]));
-    if (rel(F.anchor[i], A) > 1e-12) anchBad++;
+
+  // ---- the boundary itself, recomputed here from the RAW rows --------------
+  // Not by calling the app's gen2dTop: this leg then mirrors the anchor rule with the app
+  // on BOTH sides of the comparison, and a mutation of the boundary test (>= floor to > 0,
+  // say) passes unseen -- which is exactly what the reviewer demonstrated on the first
+  // round. `F.rows` is the panel's own (k, v) pair list per band and `F.floor` its noise
+  // floor; the rule is re-stated here in three lines, margin included.
+  const topJs = (r, thr) => {
+    let k = 0;
+    for (let i = 0; i < r.length; i += 2) if (r[i + 1] >= thr && r[i] > k) k = r[i];
+    return k;
+  };
+  const thr = F.margin * F.floor;
+  const topWant = F.rows.map(r => topJs(r, thr));
+  ok("the boundary per band, recomputed here from the raw rows and the floor, matches",
+     F.top.length === topWant.length && F.top.every((t, j) => t === topWant[j]) &&
+     F.top.some(t => t > 0),
+     F.top.map(t => (t / F.pk).toFixed(0)).join(" ") + " bins");
+  // ... and a cell BELOW the margin must not be able to claim the boundary. Two plants per
+  // row: one at half the floor (plain sub-floor noise) and one at 1.05x the floor -- the
+  // fp32 periodogram fuzz that the old `>= floor` test would have taken, moving that band's
+  // boundary to the top of the plot and, through the max over bands, all three anchors with
+  // it (0.71 decades on the reviewer's demonstration).
+  const kPlant = F.nzb * F.pk;
+  let plantBad = 0, oldWouldMove = 0;
+  for (let j = 0; j < F.rows.length; j++) {
+    if (!(F.top[j] > 0) || F.top[j] >= kPlant) continue;
+    for (const v of [0.5 * F.floor, 1.05 * F.floor]) {
+      const r = F.rows[j].concat([kPlant, v]);
+      if (topJs(r, thr) !== F.top[j]) plantBad++;
+      if (C.gen2dTop(r, F.floor) !== F.top[j]) plantBad++;
+      if (v > F.floor && topJs(r, F.floor) !== F.top[j]) oldWouldMove++;   // the old rule
+    }
   }
-  ok("  ... each anchored by max over bands of k∥_top / k_c^p (the boundary, not the ridge)",
-     anchBad === 0 && F.anchor.every(a => a > 0) &&
+  ok("  ... and a planted sub-floor / 1.05x-floor cell above it is EXCLUDED, by both",
+     plantBad === 0 && oldWouldMove > 0 && C.GEN2D_TOPMARGIN >= 2,
+     "margin x" + C.GEN2D_TOPMARGIN + "; the bare `>= floor` rule would have moved "
+     + oldWouldMove + " band(s) to bin " + (kPlant / F.pk).toFixed(0));
+
+  // the anchor rule, mirrored: A = max over bands of (k∥_top + half a bin) / k_c^p. The
+  // half bin is second-round item 5: a cell is DRAWN half a bin either side of its own k∥,
+  // so anchoring on the centre put the line through the middle of the filled pixels.
+  let anchBad = 0, anchCentre = 0;
+  for (let i = 0; i < F.slopes.length; i++) {
+    let A = 0, Ac = 0;
+    for (let j = 0; j < F.kc.length; j++)
+      if (topWant[j] > 0) {
+        A = Math.max(A, (topWant[j] + 0.5 * F.pk) / Math.pow(F.kc[j], F.slopes[i][0]));
+        Ac = Math.max(Ac, topWant[j] / Math.pow(F.kc[j], F.slopes[i][0]));
+      }
+    if (rel(F.anchor[i], A) > 1e-12) anchBad++;
+    if (rel(F.anchor[i], Ac) < 1e-12) anchCentre++;      // still on the centre: not fixed
+  }
+  ok("  ... each anchored by max over bands of (k∥_top + half a bin) / k_c^p -- the TOP EDGE "
+     + "of the boundary cell, not its centre",
+     anchBad === 0 && anchCentre === 0 && F.anchor.every(a => a > 0) &&
      F.top.some((t, j) => t > 0 && Math.abs(t - F.ridge[j]) > 1e-12),
      "A = " + F.anchor.map(a => a.toPrecision(4)).join(", ")
      + "; boundary " + F.top.map(t => t.toFixed(1)).join(" ")
      + " vs ridge " + F.ridge.map(t => t.toFixed(1)).join(" "));
-  // ... and in PIXELS, on the real canvas: overlays on, three straight 2-point strokes
+  // ... and in PIXELS, on the real canvas: slopes on, three straight 2-point strokes
   env.run(SETOPT, { gov: "on" });
   const RO = env.run(DRAWREC);
   const cols = F.slopes.map(s => s[2]);
@@ -1504,21 +1609,23 @@ async function legPlot(state) {
   const refs = RO.lines.filter(l => inCol(l) && Math.abs(l.p[0] - x0) < 1e-6 &&
                                     Math.abs(l.p[2] - x1) < 1e-6);
   const keys = RO.lines.filter(l => inCol(l) && l.p[0] > x0 && l.p[2] - l.p[0] < 20);
-  ok("with overlays ON the three slopes are drawn, each straight across the whole axis, "
-     + "each with its own legend key",
+  ok("with the theory box ON the three slopes are drawn, each straight across the whole "
+     + "axis, each with its own legend key",
      refs.length === 3 && new Set(refs.map(l => l.col)).size === 3 &&
      keys.length === 3 && new Set(keys.map(l => l.col)).size === 3 &&
      refs.every(l => l.dash.length >= 2),
      refs.map(l => l.col + " " + l.p.map(v => v.toFixed(0)).join(",")).join(" | "));
-  // THE rule: at every band the line is at or above the boundary cell (pixel y is smaller
-  // going up), and at one band it touches. Both halves, per line.
+  // THE rule: at every band the line is at or above the TOP EDGE of the boundary cell
+  // (pixel y is smaller going up), and at one band it touches that edge. Both halves, per
+  // line. Against the cell's CENTRE this used to pass with the line buried in the pixels.
   let above = 0, touch = 0, worst = "";
   for (const l of refs) {
     const yAt = xp => l.p[1] + (l.p[3] - l.p[1]) * (xp - l.p[0]) / (l.p[2] - l.p[0]);
     let bad = 0, hit = 0, mx = 0;
     for (let j = 0; j < F.kc.length; j++) {
-      if (!(F.top[j] > 0)) continue;
-      const dy = yAt(MX(L10(F.kc[j]))) - MY(L10(F.top[j]));   // <= 0 means at or above
+      if (!(topWant[j] > 0)) continue;
+      // <= 0 means at or above the drawn cell's own top edge
+      const dy = yAt(MX(L10(F.kc[j]))) - MY(L10(topWant[j] + 0.5 * F.pk));
       if (dy > 0.5) { bad++; mx = Math.max(mx, dy); }
       if (Math.abs(dy) <= 0.5) hit++;
     }
@@ -1526,24 +1633,109 @@ async function legPlot(state) {
     if (hit) touch++;
     if (bad && !worst) worst = l.col + " dips " + mx.toFixed(1) + " px below";
   }
-  ok("  ... and each lies AT OR ABOVE the boundary at every band, touching it at one",
+  ok("  ... and each clears the filled pixels at every band, touching the top edge at one",
      above === 3 && touch === 3, above + "/3 clear of the boundary, " + touch + "/3 touching it"
      + (worst ? "; " + worst : ""));
+
+  // ---- second-round item 3: ONE legend line, three swatches ----------------
+  // the legend's own texts: left-aligned, and up at the top of the frame (the x-axis label
+  // is left-aligned too, but it sits on the tick baseline at the bottom)
+  const legTxt = RO.text.filter(t => t[3] === "left" && t[2] < y0 + 80 && t[1] >= F.lgx);
+  const theory = legTxt.filter(t => ["GS95", "B06", "iso"].indexOf(t[0]) >= 0);
+  const head = legTxt.filter(t => /generated @ t =/.test(t[0]));
+  ok("the legend names the three slopes by Alfred's abbreviations and nothing longer",
+     theory.length === 3 && theory.map(t => t[0]).join(",") === "GS95,B06,iso" &&
+     head.length === 1,
+     legTxt.map(t => JSON.stringify(t[0])).join(" "));
+  ok("  ... all three on ONE line, in order, each with its own dash / colour swatch",
+     theory.length === 3 && new Set(theory.map(t => t[2])).size === 1 &&
+     theory[0][1] < theory[1][1] && theory[1][1] < theory[2][1] &&
+     keys.length === 3 && new Set(keys.map(l => l.p[1])).size === 1 &&
+     Math.abs(keys[0].p[1] - (theory[0][2] - 3)) < 1e-6 &&
+     new Set(keys.map(l => l.dash.join(","))).size === 3,
+     "baseline y = " + theory[0][2] + ", labels at x " +
+     theory.map(t => t[1].toFixed(0)).join(", "));
+  // two lines with the box on (header, then all three slopes together) -- not the four the
+  // old one-entry-per-slope legend took -- and one with it off, while the RESERVE stays at
+  // the two-line height either way so the axis cannot jump under the reader
+  ok("  ... and the whole block is 2 lines, not 4: header, then the three together",
+     new Set(legTxt.map(t => t[2])).size === 2 && F.hleg === 12 * 2 + 4 && F.nleg === 1,
+     "canvas shows " + new Set(legTxt.map(t => t[2])).size + " lines with the box on, "
+     + F.nleg + " with it off; " + F.hleg + " px reserved either way");
+
+  // ---- second-round item 2: y headroom, so the legend clears the data ------
+  const legBase = Array.from(new Set(legTxt.map(t => t[2]))).sort((a, b) => a - b);
+  const legBot = legBase[legBase.length - 1] + 3;              // baseline + descenders
+  ok("the y axis is raised ABOVE the resolved range to make room for the legend",
+     F.yhi > F.ytop && rel(F.hleg, 12 * legBase.length + 4) < 1e-12 &&
+     Math.abs(MY(F.ytop) - (y0 + F.hleg)) < 1e-6,
+     "resolved top k∥ = " + Math.pow(10, F.ytop).toFixed(1) + " at y = "
+     + MY(F.ytop).toFixed(1) + ", axis top " + Math.pow(10, F.yhi).toFixed(1)
+     + " at y = " + y0 + " (" + (F.hleg).toFixed(0) + " px reserved)");
+  const cellsO = RO.cells.filter(c => /^rgb\(/.test(c[4]));
+  const cTop = Math.min(...cellsO.map(c => c[1]));
+  ok("  ... so the legend block sits over EMPTY canvas: no drawn cell reaches it",
+     cellsO.length > 20 && cTop >= legBot && legBot > y0,
+     "legend ends at y = " + legBot + ", topmost cell at y = " + cTop);
+  // and it is not a decoration: on the un-extended axis the top row WOULD have been under it
+  const MYraw = L => y1 - (L - F.ylo) / (F.raw.yhi - F.ylo) * (y1 - y0);
+  let kCell = 0;
+  for (const r of F.rows) for (let i = 0; i < r.length; i += 2) if (r[i] > kCell) kCell = r[i];
+  ok("  ... and it is doing work: without it the topmost cells would be under the legend",
+     kCell > 0 && MYraw(L10(kCell + 0.5 * F.pk)) < legBot,
+     "top cell would sit at y = " + MYraw(L10(kCell + 0.5 * F.pk)).toFixed(1)
+     + " vs the legend's " + legBot);
+  // the axis stays honest: the ticks are generated over the DRAWN span, so the added strip
+  // carries gridlines and labels like the rest of it
+  const tkAll = C.logTicks(F.ylo, F.yhi, (y1 - y0) / (F.yhi - F.ylo),
+                           (m, e) => String(Math.round(m * Math.pow(10, e) * 1e6) / 1e6));
+  const tkAdd = tkAll.filter(t => L10(t[0]) > F.ytop);
+  const grid = RO.lines.filter(l => l.p.length === 4 && Math.abs(l.p[0] - x0) < 1e-6 &&
+                                    Math.abs(l.p[2] - x1) < 1e-6 && l.p[1] === l.p[3]);
+  const gridUp = grid.filter(l => l.p[1] < MY(F.ytop) - 0.5);
+  ok("  ... and the ticks carry on across it -- the added range is real axis, not a margin",
+     tkAdd.length >= 1 && gridUp.length >= tkAdd.length &&
+     C.logTicks(F.ylo, F.ytop, (y1 - y0) / (F.ytop - F.ylo)).every(
+       t => tkAll.some(u => u[0] === t[0])),
+     tkAdd.length + " tick(s) above the resolved top ("
+     + tkAdd.map(t => t[0]).join(", ") + "), " + gridUp.length + " gridlines drawn there");
+  // no cell moves against the axis: every recorded cell is where the frame's own map puts it
+  let cellBad = 0;
+  for (let j = 0; j < F.rows.length; j++) {
+    const r = F.rows[j];
+    for (let i = 0; i < r.length; i += 2) {
+      const ya = Math.round(MY(L10(r[i] + 0.5 * F.pk))), yb = Math.round(MY(L10(r[i] - 0.5 * F.pk)));
+      if (!cellsO.some(c => c[1] === ya && c[1] + c[3] === Math.max(ya + 1, yb))) cellBad++;
+    }
+  }
+  ok("  ... and every cell sits exactly where the frame's map puts it, half a bin either side",
+     cellBad === 0, cellBad + " of " + cellsO.length + " cells off the map");
+
   env.run(SETOPT, { gov: "off" });
   const ROff = env.run(DRAWREC);
-  ok("  ... and with overlays OFF none of them is drawn",
+  ok("with the theory box OFF none of the three is drawn",
      ROff.lines.filter(l => l.p.length === 4 && cols.indexOf(l.col) >= 0).length === 0);
+  ok("  ... but the axis does NOT jump: the headroom is measured on the full legend either way",
+     (() => { const F2 = env.run(FRAME);
+              return F2 && F2.hleg === F.hleg && rel(F2.yhi, F.yhi) < 1e-12; })(),
+     "hleg " + F.hleg + " px with the box on and off alike");
 
-  // ---- item 5: the measured curves are labelled as measurements ------------
-  const labs = RO.text.filter(t => /measured/.test(t[0])).map(t => t[0]);
-  const theory = RO.text.filter(t => /∝/.test(t[0])).map(t => t[0]);
-  ok("the legend calls the anisotropy curves MEASURED, and names all three theory exponents",
-     labs.length === 2 && /k∥z/.test(labs[0]) && /k∥B/.test(labs[1]) && theory.length === 3 &&
-     /2\/3/.test(theory[0]) && /1\/2/.test(theory[1]),
-     theory.concat(labs).join(" | "));
-  ok("  ... with the three predictions FIRST and the two measurements after them",
-     RO.text.filter(t => /∝|measured/.test(t[0])).map(t => /measured/.test(t[0]) ? "m" : "t")
-       .join("") === "tttmm");
+  // ---- second-round item 1: the two measured curves are GONE ---------------
+  // They were the anisotropy card's own k∥(k⊥), drawn in ITS colours (COL.ek / COL.em) and
+  // legended "measured". Neither the strokes nor the words may be anywhere on this canvas
+  // in either state of the checkbox, and the card must no longer even ask for them.
+  const anisoCols = [F.COL.ek, F.COL.em];
+  const measured = r => r.lines.filter(l => anisoCols.indexOf(l.col) >= 0).length
+                      + r.text.filter(t => /measured|aniso/i.test(t[0])).length;
+  ok("the two MEASURED anisotropy curves are gone from the card, box on and box off",
+     measured(RO) === 0 && measured(ROff) === 0,
+     "on: " + measured(RO) + " strokes/labels, off: " + measured(ROff));
+  const src = fs.readFileSync(path.join(dir, "common.js"), "utf8");
+  const draw = src.slice(src.indexOf("function drawGen2D("));
+  ok("  ... and drawGen2D no longer calls anisoCurves at all",
+     draw.slice(0, draw.indexOf("\nfunction ", 10)).indexOf("anisoCurves") < 0 &&
+     src.indexOf("anisoCurves") > 0,          // still there for the anisotropy card itself
+     "anisoCurves survives only in drawAniso");
 
   // ---- item 7: the colour scale toggle ------------------------------------
   const dflt = env.run("function(){ const c = cards.chart.filter(x => x.type() === 'gen2d')[0];"
@@ -1580,13 +1772,60 @@ async function legPlot(state) {
      /isotropic/.test(h) && /log by default/.test(h) && !/colour is log E/.test(h) &&
      (h.match(/\(/g) || []).length === (h.match(/\)/g) || []).length,
      h.length + " chars, parens balanced");
+  ok("  ... and it drops the measured-vs-prediction distinction with the curves that made it",
+     !/measured/i.test(h) && !/aniso/i.test(h) && /theory slopes/.test(h) &&
+     /<b>GS95<\/b>/.test(h) && /<b>B06<\/b>/.test(h) && /<b>iso<\/b>/.test(h),
+     h);
   const doc = fs.readFileSync(path.join(dir, "docs.html"), "utf8");
   const sec = doc.slice(doc.indexOf('id="gen2d"'), doc.indexOf('id="gen2d"') + 6000);
   ok("  ... and the manual entry carries the same three slopes, the boundary rule and the "
      + "colour toggle",
      /Boldyrev 2006/.test(sec) && /isotropic/.test(sec) && /2\/3/.test(sec) &&
      /linear colour/.test(sec) && /upper edge/.test(sec) && /injection scale/.test(sec));
+  ok("  ... names the control <b>theory slopes</b>, gives the three abbreviations, and no "
+     + "longer promises any measured curve",
+     /<b>theory slopes<\/b>/.test(sec) && /<b>GS95<\/b>/.test(sec) && /<b>B06<\/b>/.test(sec) &&
+     /<b>iso<\/b>/.test(sec) && !/<b>measured<\/b>/.test(sec) &&
+     !/anisotropy chart's own two curves/.test(sec),
+     "gen2d section, " + sec.length + " chars scanned");
+  ok("  ... and it states BOTH second-round corrections: the noise margin and the headroom",
+     /twice the noise floor/.test(sec) && /top edge of the last filled cell/.test(sec) &&
+     /carries on a little past that last bin/.test(sec) && /no cell moves against the axis/.test(sec));
   ok("the 3D page boots clean through all of it", env.fails.length === 0, env.fails.join(" | "));
+
+  // ---- the legend primitive itself, since it grew a GROUP form -------------
+  // The generic change (a list of triples in item[0] is one unwrappable unit) must leave
+  // the ordinary form bit for bit as it was -- every other chart in the file uses it.
+  const mk = () => {
+    const rec = [];
+    return { rec, cx: { measureText: s => ({ width: 6 * String(s).length }),
+                        strokeStyle: "", fillStyle: "", lineWidth: 0,
+                        setLineDash(d) { this._d = (d || []).join(","); },
+                        beginPath() {}, moveTo(x, y) { rec.push(["m", x, y, this._d]); },
+                        lineTo() {}, stroke() {}, fillText(t, x, y) { rec.push(["t", t, x, y]); } } };
+  };
+  const flat = [["aaa", "#111"], ["bb", "#222", [1, 2]], ["c", "#333", [3, 4]]];
+  const grouped = [[flat]];
+  const a = mk(), b = mk(), n1 = C.legend(a.cx, 10, 20, flat, 1000),
+        n2 = C.legend(b.cx, 10, 20, grouped, 1000);
+  ok("legend(): a group laid out on one line is byte-identical to the same items loose",
+     JSON.stringify(a.rec) === JSON.stringify(b.rec) && n1 === 1 && n2 === 1,
+     a.rec.length + " ops each");
+  const narrow = 10 + 15 + 6 * 3 + 11 + 5;      // room for the first entry and no more
+  const c1 = mk(), c2 = mk();
+  C.legend(c1.cx, 10, 20, flat, narrow);
+  C.legend(c2.cx, 10, 20, grouped, narrow);
+  const ys = r => Array.from(new Set(r.filter(o => o[0] === "t").map(o => o[3])));
+  ok("  ... but at a width that cannot hold it, the group moves as ONE and never splits",
+     ys(c1.rec).length === 3 && ys(c2.rec).length === 1 &&
+     C.legendLines(c1.cx, 10, flat, narrow) === 3 &&
+     C.legendLines(c2.cx, 10, grouped, narrow) === 1,
+     "loose wraps onto " + ys(c1.rec).length + " lines, the group stays on "
+     + ys(c2.rec).length);
+  ok("  ... and legendLines counts what legend() draws, plain items and groups alike",
+     C.legendLines(mk().cx, 10, flat, 1000) === 1 &&
+     C.legendLines(mk().cx, 10, flat.concat(grouped), narrow) ===
+       ys((() => { const m = mk(); C.legend(m.cx, 10, 20, flat.concat(grouped), narrow); return m.rec; })()).length);
 }
 // cbarFmt, mirrored (the labels are compared against the values this leg computed itself)
 function cbarFmtJs(v) {

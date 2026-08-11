@@ -431,7 +431,11 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     right-hand edge of the last (nothing below the first band was ever cut out of the
     field, so there is no axis for it); up, from the parallel scale the forcing itself
     injects at &mdash; the forcing's z profile is a single cosine over the box, so the
-    first parallel bin <i>is</i> the injection scale &mdash; to the last resolved bin.</p>
+    first parallel bin <i>is</i> the injection scale &mdash; to the last resolved bin. The
+    axis then carries on a little past that last bin, ticks and all, purely so the legend
+    has empty canvas to sit on instead of covering the top left of the picture: the extra
+    strip is real axis with nothing measured in it, and no cell moves against the axis
+    because of it.</p>
   <ul>
     <li><b>generate</b> is how it fills in, and it is the only chart here that works that
       way. Pressing it <b>pauses the run</b> and measures every perpendicular band on that
@@ -458,20 +462,21 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       having it, because it is the honest picture of how much of the energy sits at the
       outer scale. The colorbar's middle tick follows: the geometric mean of the two ends
       on the log scale, the arithmetic mean on the linear one.</li>
-    <li><b>overlays</b> (off by default) adds five lines, three predictions and two
-      measurements. The predictions are straight reference slopes:
+    <li><b>theory slopes</b> (off by default) adds three straight reference lines, legended
+      <b>GS95</b>, <b>B06</b> and <b>iso</b> on a single line of the legend:
       k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub><sup>2/3</sup> (critical balance, GS95),
       k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub><sup>1/2</sup> (Boldyrev 2006) and
       k<sub>&#8741;</sub> &prop; k<sub>&perp;</sub> (isotropic, the null case). Each is laid
-      just above the <i>upper edge</i> of the filled part of the plot &mdash; touching it
-      where the edge presses hardest against that slope and clear of it everywhere else
-      &mdash; because in critical balance the relation is the <i>boundary</i> of the
-      excited region rather than the line of brightest cells: the cascade fills everything
-      below k<sub>&#8741;</sub>(k<sub>&perp;</sub>). So compare the boundary's bend with
-      the three slopes; only the slopes are claims, never the heights, which are set by
-      that rule. The measurements are the anisotropy chart's own two curves for this same
-      snapshot, labelled <b>measured</b> in the legend so they cannot be mistaken for a
-      fourth prediction.</li>
+      just clear of the <i>upper edge</i> of the filled part of the plot &mdash; touching
+      the top edge of the last filled cell where that edge presses hardest against the
+      slope, and above it everywhere else &mdash; because in critical balance the relation
+      is the <i>boundary</i> of the excited region rather than the line of brightest cells:
+      the cascade fills everything below k<sub>&#8741;</sub>(k<sub>&perp;</sub>). So compare
+      the boundary's bend with the three slopes; only the slopes are claims, never the
+      heights, which are set by that rule. &ldquo;Filled&rdquo; here means a cell at least
+      twice the noise floor rather than merely at it: a single cell of single-precision
+      fuzz at the top of one column would otherwise drag all three lines up together, by
+      most of the height of the frame.</li>
     <li>Read the shape, not a number. At these resolutions there are only about twenty
       usable parallel bins and the arithmetic is single precision, so the ridge is a fuzzy
       band rather than a line; measuring an exponent off it is a job for a bigger machine.

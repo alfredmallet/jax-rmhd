@@ -2452,7 +2452,15 @@ async function fieldLineHook(sv) {
 // One submit and one readback per band with a yield between them (~1 s in all at 256²×64):
 // the browser stays responsive, and a rebuild mid-sweep is caught by the `sv !== solver`
 // test the field-line hook already uses. One iteration more than there are bands: the
-// UNBANDED row (`parFL`) the overlay's k∥B curve is drawn from — see below.
+// UNBANDED row (`parFL`) the overlay's k∥B curve was drawn from — see below.
+//
+// ORPHANED AS OF Alfred's second feedback round (2026-08-11): the two measured anisotropy
+// curves were dropped from the card, and `parFL` had no other consumer — it is now computed,
+// shipped on the snapshot and read by nobody but check2dspec. It is left in place ON PURPOSE
+// for now: removing it changes the sweep (one fewer readGenBand pass, one fewer progress
+// step, a different `total`) and the checks that pin those, which is a separate change from
+// a display-side feedback round. Flagged for a later cleanup; until then it costs one extra
+// band iteration of an already ~1 s one-shot press.
 //
 // The COORDINATE companion (Phase B) comes off the same press and out of the same object:
 // `crows`, band for band with `rows`, the same [E_u | E_b | H_c] over the same |k∥| bins,
@@ -2491,10 +2499,12 @@ async function gen2dSpec(opts) {
   if (sv !== solver) return null;
   // ... and ONE unbanded row, which is not a row of the plot at all: it is the WHOLE
   // field's parallel spectrum along the field lines, `parFL`, the leg the anisotropy
-  // overlay needs to draw its k∥B curve over this snapshot instead of over the live
+  // overlay needed to draw its k∥B curve over this snapshot instead of over the live
   // state. `par` above is that curve's z leg and comes free with readSpectrum; the
   // field-line leg has no such readback here, so the sweep takes it — one extra band
   // iteration, the same march on the same seeds with both band ends off.
+  // NOTE (2026-08-11): that overlay is gone and this row now has NO consumer — see the
+  // header comment above. Kept for now rather than removed with a display-side change.
   const smpAll = await sv.readGenBand({ lo: 0, hi: 0 });
   if (sv !== solver) return null;
   const parFL = flSpectrum(smpAll, GEN_SIDE * GEN_SIDE, sv.g.nz);
