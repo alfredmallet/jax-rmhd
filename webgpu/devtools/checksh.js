@@ -22,6 +22,8 @@ const ok = (name, pass, note) => {
   if (!pass) bad++;
   console.log((pass ? "  PASS  " : "  FAIL  ") + name + (note ? "   [" + note + "]" : ""));
 };
+// a reported number with no pass/fail semantics -- never counts toward `bad`
+const info = (name, note) => console.log("  INFO  " + name + (note ? "   [" + note + "]" : ""));
 const rel = (a, b) => Math.abs(a - b) / Math.max(1e-300, Math.abs(b));
 
 // the reference vectors, straight out of the page's single inlined JSON line
@@ -188,7 +190,8 @@ function runPage(page) {
   // energies back exactly (the chart only PLOTS bins 1..nb-1)
   const nb = Math.floor(Math.min(nx, ny) / 3);
   const bins = [];
-  let su = 0, sb = 0, sh = 0, plotted = 0;
+  const cutx = nx / 3, cuty = ny / 3, cutz = nz / 3;
+  let su = 0, sb = 0, sh = 0, plotted = 0, outside = 0;
   for (let m = 0; m < nm; m++) {
     const kx = kxOfM(m), ky = kyOfM(m), ksq = kx * kx + ky * ky;
     const w = 0.5 * ksq * g.yfac(mpOf(m) % nky) * g.invN2;
@@ -201,6 +204,11 @@ function runPage(page) {
     bins[b][0] += eu; bins[b][1] += eb; bins[b][2] += h;
     su += eu; sb += eb; sh += h;
     if (b >= 1 && b < nb) plotted += eu + eb;
+    // the app's own dealias mask, mirrored (gridB's perp ellipse; gridZ's kz cut in 3D)
+    const ix = Math.floor(mpOf(m) / nky), iy = mpOf(m) % nky, iz = Math.floor(m / (nkx * nky));
+    const ixs = ix < nx / 2 ? ix : ix - nx, izs = iz < nz / 2 ? iz : iz - nz;
+    if ((ixs / cutx) * (ixs / cutx) + (iy / cuty) * (iy / cuty) >= 1 ||
+        (nz > 1 && Math.abs(izs) >= cutz)) outside += eu + eb;
   }
   ok("sum_k E_u(k) == E_kin", rel(su, ek) < 1e-12, "sum " + su.toPrecision(12));
   ok("sum_k E_b(k) == E_mag", rel(sb, em) < 1e-12);
@@ -213,10 +221,16 @@ function runPage(page) {
   }
   ok("every bin's E+-(k) = E_u+E_b+-H_c is non-negative", negs === 0,
      "max |H_c(k)|/(E_u+E_b) = " + worst.toFixed(6));
-  // (informational, and unchanged by Phase H: the chart's x range is k < nb = min/3,
-  // so the few dealiased-away corner modes above it are not drawn)
-  ok("the plotted bins 1..nb-1 hold essentially all the energy", plotted > 0.99 * (ek + em),
-     "nb = " + nb + ", plotted " + (100 * plotted / (ek + em)).toFixed(3) + "%");
+  // The chart draws bins 1..nb-1 only: shell nb straddles the dealias ellipse (part of
+  // its annulus is masked away), so its E(k) would be a partial-shell undercount --
+  // dropping it is deliberate. The modes it holds are LIVE, though, and how much energy
+  // sits there is a property of the state, not an invariant (3.7% on the 16x16x8
+  // reference A, 0.03% on the 2D page) -- so that number is reported, not gated. The
+  // gated invariant is the mask itself: nothing survives outside it.
+  ok("no energy outside the app's dealias mask (the spectra bin only live modes)",
+     outside === 0, "sum there " + outside.toExponential(1));
+  info("the plotted bins 1..nb-1 hold " + (100 * plotted / (ek + em)).toFixed(3) +
+       "% of the energy", "nb = " + nb + "; the rest is kept modes binned at k >= nb");
 
   // ---- 4. the cut card's four component lines -------------------------------
   // cutPrep: e^{i kx Lx/2} = (-1)^ix, and in 3D the plane's kz phase; then rowsC2R.
