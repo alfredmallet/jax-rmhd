@@ -21,6 +21,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `MediaRecorder`), `VideoFrame`, `EncodedVideoChunk`, a `Blob` that KEEPS the bytes, and
   `setInterval` as a hand-driven pump — `env.tick(n)` fires exactly n frames, so a "30 s"
   recording costs no wall clock, and `env.fireTimeout(ms)` fires the armed 30 s hard stop.
+  The RESULT STRIP (2026-08-11) added the other half of that path: a byte-keeping `File`
+  (a `Blob` with a name, and the bytes survive the rewrap, so what was SHARED can be
+  compared with what was written), `navigator.canShare` / `navigator.share` logging every
+  payload on `caps.shares` behind two knobs on `env.share` — `can` (an engine that cannot
+  share files must simply grow no button) and `reject` (a named error, `AbortError` being
+  the visitor closing the sheet) — and `Date`, because the MediaRecorder leg times itself
+  by wall clock: `env.advance(ms)` moves the clock, so a "12 s" recording costs no wall
+  clock either.
   A fourth argument carries the boot knobs: `{noGpu: true}` removes `navigator.gpu`, so
   `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
@@ -75,7 +83,17 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   vp9 pick and the 30 fps stream, the MP4 negotiation on an engine that offers it, that
   deleting `MediaRecorder` with WebCodecs off removes the rec button and leaves `save`
   alone, and that WebCodecs alone (no `MediaRecorder`: the iOS case this is all for) still
-  offers it.
+  offers it. Since the RESULT STRIP (2026-08-11) every stop on both legs is asserted to
+  download NOTHING by itself and to leave one `.recres` on the card's footer instead: the
+  size and length text computed here from the stubbed bytes and the pumped frame count
+  (leg 1 quotes the frames it MUXED, so the drop-frame guard shortens it; leg 2 quotes
+  `env.advance`'s wall clock), the download button yielding the same `ftyp+mdat+moov`
+  bytes as before, a share button present exactly when `env.share.can` says the engine can
+  share files, `navigator.share` handed a File with the right name and byte-identical
+  contents, a `NotAllowedError` rejection falling back to a download while an `AbortError`
+  does not, dismiss removing the strip with a second dismiss inert, and a new take
+  replacing the old strip rather than stacking a second one. Destroy-mid-record is the one
+  path that still downloads directly, and is asserted to.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
@@ -370,7 +388,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
 - `layout.js [dir]` — control-row wrap audit at 360/768/1200 px, off the BUILT element
   tree of a booted page (controls + every card header, and since items 12/13 the display
   card's `.viewfoot` too — the colorbar block is a fixed-width flex item and the save /
-  rec buttons sit beside it).
+  rec buttons sit beside it). The recording result strip is audited as a row of its own:
+  it only exists after a take, so the script hands a card a finished file through
+  `recResult` and measures the widest version of it (download + share + dismiss).
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`).
 - `cmapcheck.js` — colormap table vs emitted WGSL vs matplotlib reference.

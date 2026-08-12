@@ -15,7 +15,7 @@ const VIEWPORTS = [360, 768, 1200];
 const BODY_PAD = { 360: 2 * 10 + 2 * 12, 768: 2 * 14 + 2 * 12, 1200: 2 * 14 + 2 * 12 };  // body + #controls
 let bad = 0;
 const need = [/\.row\s*\{[^}]*flex-wrap:\s*wrap/, /\.cardhead\s*\{[^}]*flex-wrap:\s*wrap/,
-              /#topbar\s*\{[^}]*flex-wrap:\s*wrap/];
+              /#topbar\s*\{[^}]*flex-wrap:\s*wrap/, /\.recres\s*\{[^}]*flex-wrap:\s*wrap/];
 for (const re of need) {
   if (!re.test(css)) { bad++; console.log("FAIL  css: no flex-wrap for " + re.source.slice(0, 12)); }
 }
@@ -49,6 +49,11 @@ function itemWidth(e) {
   // the colorbar block is a fixed-width flex item (strip + tick row), so it must fit
   if (cls.indexOf("cbar") >= 0) return ["colorbar", 134];
   if (cls.indexOf("viewcap") >= 0) return ["caption", 0];  // wraps as text
+  // the finished recording's strip: a full-width footer line that wraps INSIDE itself, so
+  // as an item of the footer it costs nothing -- its own buttons are measured as a row of
+  // their own (CARD_ROWS below), which is where a "download" too wide to fit would show
+  if (cls.indexOf("recres") >= 0) return ["result strip", 0];
+  if (cls.indexOf("recinfo") >= 0) return ["result text", 0];  // wraps as text
   if (cls.indexOf("hint") >= 0) return ["hint", 0];   // wraps as text, not a fixed item
   return null;
 }
@@ -72,7 +77,7 @@ function rowsOf(env) {
 // the widest single item of the flex rows the card system builds at runtime: the header,
 // and (FEEDBACK_2026-08-10 items 12/13) the display card's FOOTER, which carries the
 // colorbar and the save / record buttons on the caption line
-const CARD_ROWS = ["cardhead", "viewfoot"];
+const CARD_ROWS = ["cardhead", "viewfoot", "recres"];
 function cardHeadItems(env) {
   const heads = [];
   for (const host of [env.getEl("displays"), env.getEl("charts")]) {
@@ -95,6 +100,13 @@ for (const page of ["rmhd2d.html", "rmhd3d.html"]) {
     for (const t of Object.keys(CHART_TYPES)) if (!cards.chart.some(c => c.type() === t)) addChartCard(t);
     cardsSync();
   }`);
+  // the recording result strip exists only after a take, so hand a card a finished file
+  // straight through recResult -- the ONE place both recording legs converge on. The stub
+  // engine's canShare says yes, so the widest version of the strip (download + share +
+  // dismiss) is the one measured.
+  env.run(`function(){ cards.disp[0].recResult(
+    new window.Blob([new Uint8Array(1200)], { type: "video/mp4" }),
+    "taranis-rmhd-vorticity-t12.345.mp4", 12.3); }`);
   const rows = rowsOf(env).concat(cardHeadItems(env));
   for (const V of VIEWPORTS) {
     const avail = V - BODY_PAD[V];

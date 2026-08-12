@@ -2763,6 +2763,44 @@ function dlBlob(blob, name) {
   a.click();
   setTimeout(() => window.URL.revokeObjectURL(u), 10000);
 }
+// ---- what happens to a FINISHED recording (Alfred, 2026-08-11) -------------
+// Neither leg hands its file straight to dlBlob any more. On a phone the download is
+// silent: the file lands somewhere in Files and is then hard to find and harder to send
+// on, which is the opposite of what a 12 s clip of a simulation is for. So the file waits
+// on the card's footer behind a little line of text -- "click start, wait, click stop,
+// then a little text appears saying file size, video length, and a download/share button"
+// -- and the visitor says where it goes. See DisplayCard.recResult, the ONE place both
+// legs converge on.
+//
+// Sizes in SI units (kB = 1000 B), which is what a phone's file listing quotes back, and
+// only one decimal on the MB -- the number is here to say "small enough to send" or "too
+// big to send", not to be exact.
+function recSizeText(bytes) {
+  const b = Math.max(0, Math.floor(bytes) || 0);
+  const k = Math.round(b / 1e3);          // decide the unit on the ROUNDED kB, so
+  if (k < 1000) return k + " kB";         // 999.6 kB says "1.0 MB", never "1000 kB"
+  return (b / 1e6).toFixed(1) + " MB";
+}
+// ... and the length in seconds: a decimal only while the clip is short enough for one to
+// mean anything. Each leg measures its own honest number -- see the two call sites.
+function recLenText(sec) {
+  const s = isFinite(sec) && sec > 0 ? sec : 0;
+  return (s < 10 ? s.toFixed(1) : String(Math.round(s))) + " s";
+}
+// The share button exists only where the engine can really share a FILE: Web Share level
+// 2, i.e. iOS/Android and a couple of desktop browsers. Capability detection, never a UA
+// string (Alfred's standing "degrade silently"): the File is built once, offered to
+// canShare, and if that says no the strip simply grows no share button and download stays
+// the only -- and on a desktop the obvious -- way out. Both constructor and canShare are
+// wrapped because an engine that has the names but dislikes the payload should decline
+// quietly rather than take the recording down with it.
+function recShareFile(blob, name) {
+  try {
+    if (!window.File || !navigator.canShare) return null;
+    const f = new window.File([blob], name, { type: blob.type || "video/mp4" });
+    return navigator.canShare({ files: [f] }) ? f : null;
+  } catch (e) { return null; }
+}
 // taranis-<page>-<field>-t<time>.<ext>
 const DISP_SLUG = ["vorticity", "current", "phi", "psi", "u", "b", "zplus", "zminus",
                    "sigma_c", "sigma_r"];
@@ -2953,6 +2991,7 @@ class DisplayCard {
     // It wraps, so a narrow card drops them onto their own line instead of squeezing
     // the caption.
     const foot = _mk("div", "viewfoot", root);
+    this.foot = foot;                     // the result strip is appended here (recResult)
     this.cap = _mk("div", "viewcap", foot);
     this.bar = _mk("div", "cbar", foot);
     this.barCv = _mk("canvas", "cbarcv", this.bar);
@@ -2987,6 +3026,7 @@ class DisplayCard {
     this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
     this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
     this.recBusy = false;                 // a config probe is in flight
+    this.resEl = null;                    // the finished recording's strip, while it waits
     this.dead = false;                    // set by destroy(), so a late probe cannot start
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
@@ -3230,18 +3270,86 @@ class DisplayCard {
   recLive() { this.btnRec.innerHTML = "stop"; this.btnRec.classList.add("reclive"); }
   recIdle() { this.btnRec.innerHTML = "rec"; this.btnRec.classList.remove("reclive"); }
 
-  // ---- leg 2: MediaRecorder (the fallback, unchanged in behaviour) ----------
+  // The ONE place a finished file is handed over, whichever leg wrote it -- the same
+  // discipline the two stop paths already keep (see the note by recToggle). `seconds` is
+  // each leg's own honest length: leg 1 counts the frames it actually MUXED (dropped ones
+  // never made it into the file), leg 2 has no frame count of its own and quotes wall
+  // clock. Nothing is downloaded here: the strip below is the whole point of the change.
+  recResult(blob, name, seconds) {
+    if (!blob || !blob.size) return;            // nothing was recorded: say nothing
+    // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
+    // async flush lands here, and a strip on a removed footer would be a file the visitor
+    // can never reach -- so closing a card mid-recording keeps its old behaviour and
+    // downloads on the spot. A surprise file is better than a lost one.
+    if (this.dead || !this.foot) { dlBlob(blob, name); return; }
+    this.recClear();
+    const s = _mk("div", "recres", this.foot);
+    this.resEl = s;
+    _mk("span", "recinfo", s).innerHTML =
+      recSizeText(blob.size) + " · " + recLenText(seconds);
+    const dl = _mk("button", "capbtn", s);
+    dl.innerHTML = "download";
+    dl.title = "download " + name;
+    dl.onclick = () => dlBlob(blob, name);
+    // share is offered only where a file can really be shared (recShareFile); on a desktop
+    // that cannot, the strip is just text and a download, which is what a desktop wants.
+    const file = recShareFile(blob, name);
+    if (file) {
+      const sh = _mk("button", "capbtn", s);
+      sh.innerHTML = "share";
+      sh.title = "send " + name + " to another app";
+      sh.onclick = () => {
+        // AbortError is the visitor closing the sheet -- a decision, not a failure, so it
+        // must not then push the file at them anyway. Anything else (no permission, an
+        // engine that lied about canShare) falls back to the download rather than
+        // swallowing the recording. share() is called SYNCHRONOUSLY in the click: an
+        // engine with strict transient-activation rules (old iOS Safari -- the fallback
+        // leg's own audience) can refuse a share deferred even one microtask, which
+        // would turn every share press into the silent download this strip exists to
+        // avoid. The try/catch folds a synchronous throw into the same rejection path
+        // (adversarial review 2026-08-12, MINOR 2).
+        let p;
+        try { p = navigator.share({ files: [file] }); } catch (e) { p = Promise.reject(e); }
+        Promise.resolve(p).catch(e => { if (!e || e.name !== "AbortError") dlBlob(blob, name); });
+      };
+    }
+    const x = _mk("button", "capbtn recx", s);
+    x.innerHTML = "&times;";
+    x.title = "dismiss this recording";
+    x.onclick = () => this.recClear();
+  }
+  // drop the strip -- and with the node go the handlers, and with the handlers the only
+  // references this card kept to the blob and the File, so the bytes can be collected
+  recClear() {
+    const s = this.resEl;
+    this.resEl = null;
+    if (s && s.parentNode) s.parentNode.removeChild(s);
+  }
+
+  // ---- leg 2: MediaRecorder (the fallback; recResult is where it ends) ------
   recStartMR() {
+    // a new take replaces the last one's result: two strips on one footer would be two
+    // files with the same name a press apart, and the visitor pressing start again has
+    // said which one they care about. Cleared HERE, in each leg's start, and not in
+    // recToggle: a press whose probe then fails to start anything (a WebCodecs-only
+    // engine that dislikes this canvas size) must not have thrown away the one file the
+    // visitor still had (adversarial review 2026-08-12, MINOR 1).
+    this.recClear();
     const mime = recMime(), chunks = [];
     const r = new window.MediaRecorder(this.cv.captureStream(REC_FPS),
                                        mime ? { mimeType: mime } : undefined);
     const name = shotName(this.barMode, recExt(mime));
+    // this leg hands back an opaque container built by the engine, so the frames in it are
+    // not ours to count: wall clock from start() to onstop is the only length it can
+    // honestly quote (leg 1, which writes the file itself, counts samples instead)
+    const t0 = Date.now();
     r.ondataavailable = e => { if (e && e.data && e.data.size) chunks.push(e.data); };
     r.onstop = () => {
       clearTimeout(this.recStop);
       this.rec = null; this.recStop = 0;
       this.recIdle();
-      dlBlob(new window.Blob(chunks, { type: mime || "video/mp4" }), name);
+      this.recResult(new window.Blob(chunks, { type: mime || "video/mp4" }), name,
+                     (Date.now() - t0) / 1000);
     };
     this.rec = r;
     r.start();
@@ -3251,6 +3359,7 @@ class DisplayCard {
 
   // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
   recStartWC(cfg) {
+    this.recClear();                      // same rule as recStartMR: replace on START
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
     W.enc = new window.VideoEncoder({
@@ -3308,7 +3417,11 @@ class DisplayCard {
     const fin = () => {
       try { W.enc.close(); } catch (e) {}
       const mp4 = mp4Mux({ width: W.w, height: W.h, fps: REC_FPS, avcC: W.avcC, chunks: W.chunks });
-      if (mp4) dlBlob(new window.Blob([mp4], { type: "video/mp4" }), W.name);
+      // the length is the samples that ended up IN the file over the fixed 30 fps the
+      // sample table declares -- honest under the drop-frame guard, where a slow machine
+      // records fewer seconds of wall clock than the clip lasts
+      if (mp4) this.recResult(new window.Blob([mp4], { type: "video/mp4" }), W.name,
+                              W.chunks.length / REC_FPS);
     };
     // flush() delivers the frames the encoder is still holding, so it has to complete
     // before the mux -- and its rejection is not a reason to lose the file either.

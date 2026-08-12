@@ -942,6 +942,34 @@ setTimeout(async () => {
       if (hasMoof(b)) fail(what + ": the file contains a moof -- it is FRAGMENTED");
       return { name: dl.name, size: b.length, boxes: bx.join("+") };
     };
+    // The RESULT STRIP (Alfred, 2026-08-11). A finished recording is no longer thrown at
+    // the downloader: it waits on the card's FOOTER behind its own size and length, with a
+    // download button, a share button where the engine can share files, and a dismiss --
+    // because on a phone a silent download lands in Files and is then hard to send on.
+    // These read that strip off the booted page and press its buttons.
+    const stripOf = () => run(`function(){ const d = cards.disp[0], s = d.resEl;
+      const n = d.foot.children.filter(c => (c.className || "").indexOf("recres") >= 0).length;
+      const btn = s ? s.children.filter(c => c.kind === "button") : [];
+      return { on: !!s, n: n, cls: s && s.className, foot: !!s && s.parentNode === d.foot,
+               txt: s ? s.children.filter(c => c.kind === "span").map(c => c.innerHTML).join("") : "",
+               btns: btn.map(c => c.innerHTML), tips: btn.map(c => c.title) }; }`);
+    const stripPress = lab => run(`function(lab){ const s = cards.disp[0].resEl;
+      const b = s && s.children.filter(c => c.kind === "button" && c.innerHTML === lab)[0];
+      if (!b) return false;
+      b.onclick(); return true; }`, lab);
+    // what that line should READ, computed here from the stubbed bytes and the pumped
+    // frame count rather than read back off the page
+    const sizeTxt = b => { const k = Math.round(b / 1e3);
+      return k < 1000 ? k + " kB" : (b / 1e6).toFixed(1) + " MB"; };
+    const lenTxt = s => (s < 10 ? s.toFixed(1) : String(Math.round(s))) + " s";
+    // one take: press, pump n frames, press again -- leg 1's toggle with its async probe
+    const wcTake = async n => {
+      run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+      await new Promise(r => setTimeout(r, 5));
+      env.tick(n);
+      run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+      await new Promise(r => setTimeout(r, 5));
+    };
     const wcPress = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
       return { busy: d.recBusy, live: !!d.wc, mr: !!d.rec }; }`);
     if (!wcPress.busy || wcPress.live || wcPress.mr)
@@ -996,7 +1024,9 @@ setTimeout(async () => {
       fail("the pump did not recover after the stall: " + JSON.stringify(wcAfter));
     console.log(tag + " backpressure: " + wcDrop.drop + " frames dropped at queue " +
                 wcDrop.q + ", " + wcAfter.n + " kept");
-    // STOP by button: flush, mux, one download -- and the button back to its idle state
+    // STOP by button: flush, mux -- and then the strip, NOT a download. The button goes
+    // back to its idle state on the same path it always did.
+    const nWcDl = env.caps.downloads.length;
     run(`function(){ cards.disp[0].btnRec.onclick(); }`);
     await new Promise(r => setTimeout(r, 5));          // flush() is a promise
     const wcOff = run(`function(){ const d = cards.disp[0];
@@ -1004,9 +1034,99 @@ setTimeout(async () => {
                hot: d.btnRec.classList.contains("reclive") }; }`);
     if (wcOff.live || wcOff.label !== "rec" || wcOff.hot || wcOff.cap)
       fail("the WebCodecs recording did not stop: " + JSON.stringify(wcOff));
+    if (env.caps.downloads.length !== nWcDl)
+      fail("stopping a recording downloaded the file by itself -- the strip is the point");
+    // the file's own size, off the last blob the page built. The strip rewraps it as a
+    // File for the share sheet and that File carries the same bytes (asserted below), so
+    // either answer is the size of the recording.
+    const wcSize = env.caps.blobs[env.caps.blobs.length - 1].size;
+    const st1 = stripOf();
+    if (!st1.on || !st1.foot || st1.n !== 1 || st1.cls !== "recres")
+      fail("no result strip on the footer after the recording: " + JSON.stringify(st1));
+    else {
+      // 70 muxed frames at 30 fps: the DROPPED ones are not in the file and must not be
+      // in the length either
+      const want = sizeTxt(wcSize) + " · " + lenTxt(wcAfter.chunks / 30);
+      if (st1.txt !== want) fail('the strip reads "' + st1.txt + '", not "' + want + '"');
+      if (st1.btns.join(",") !== "download,share,&times;")
+        fail("the strip's buttons are " + JSON.stringify(st1.btns));
+      if (st1.tips.some(t => !t)) fail("a strip button has no title tooltip: " + JSON.stringify(st1.tips));
+      console.log(tag + " result strip: " + st1.txt + " [" + st1.btns.join(" ") + "]");
+    }
+    // ... and the download button is where the file actually comes out, bytes and all
+    if (!stripPress("download")) fail("the strip has no download button");
     const wcMp4 = mp4File("WebCodecs stop");
     if (wcMp4) console.log(tag + " record (WebCodecs) -> " + wcMp4.name + " " +
                            wcMp4.boxes + ", " + wcMp4.size + " B");
+    // SHARE: offered only where the engine can share FILES (capability detection, no UA
+    // sniffing anywhere), and what it hands the sheet must be the recording itself.
+    const nShare = env.caps.shares.length, nShDl = env.caps.downloads.length;
+    if (!stripPress("share")) fail("no share button on an engine whose canShare says yes");
+    await new Promise(r => setTimeout(r, 5));
+    const shd = env.caps.shares[nShare];
+    if (!shd || !shd.files || shd.files.length !== 1)
+      fail("share() was handed " + JSON.stringify(shd && Object.keys(shd)));
+    else if (wcMp4) {
+      const f = shd.files[0], ref = env.caps.downloads[nShDl - 1].blob.bytes;
+      if (f.name !== wcMp4.name) fail("shared " + f.name + " but downloaded " + wcMp4.name);
+      if (f.type !== "video/mp4") fail("the shared File's type is " + f.type);
+      if (!f.bytes || f.bytes.length !== ref.length || f.bytes.some((v, i) => v !== ref[i]))
+        fail("the shared File is not the downloaded file's bytes");
+      else console.log(tag + " share -> " + f.name + " (" + f.type + ", " + f.bytes.length +
+                       " B, byte-identical to the download)");
+    }
+    if (env.caps.downloads.length !== nShDl)
+      fail("a share that SUCCEEDED downloaded the file as well");
+    // a rejected share: anything but AbortError is a real failure and must fall back to
+    // the download rather than lose the recording ...
+    env.share.reject = "NotAllowedError";
+    stripPress("share");
+    await new Promise(r => setTimeout(r, 5));
+    if (env.caps.downloads.length !== nShDl + 1)
+      fail("a failed share did not fall back to a download");
+    else mp4File("share fallback");
+    // ... whereas AbortError is the visitor CLOSING the sheet, which is a decision, not a
+    // failure: pushing the file at them anyway is exactly the behaviour being removed
+    env.share.reject = "AbortError";
+    const nAb = env.caps.downloads.length;
+    stripPress("share");
+    await new Promise(r => setTimeout(r, 5));
+    if (env.caps.downloads.length !== nAb)
+      fail("a share the visitor closed downloaded the file anyway");
+    env.share.reject = "";
+    console.log(tag + " share rejection: NotAllowedError -> download, AbortError -> nothing");
+    // DISMISS: the strip goes, and a second dismiss is inert rather than an error
+    if (!stripPress("&times;")) fail("the strip has no dismiss button");
+    const st2 = stripOf();
+    if (st2.on || st2.n !== 0) fail("dismiss left the strip on the footer: " + JSON.stringify(st2));
+    run(`function(){ const d = cards.disp[0]; d.recClear(); d.recClear(); }`);
+    if (stripOf().on) fail("a second dismiss brought the strip back");
+    console.log(tag + " strip dismissed, footer clean, a second dismiss inert");
+    // an engine WITHOUT file sharing: the same strip, download only. Turning canShare off
+    // is the ONLY difference -- there is no UA string anywhere in this path.
+    env.share.can = false;
+    await wcTake(9);
+    const st3 = stripOf();
+    if (!st3.on || st3.btns.join(",") !== "download,&times;")
+      fail("an engine that cannot share files still grew a share button: " + JSON.stringify(st3));
+    if (st3.txt.indexOf(" · 0.3 s") < 0)
+      fail("9 muxed frames at 30 fps are not what the strip says: " + st3.txt);
+    // ... and a NEW take REPLACES the result: the old strip goes at the press, and one
+    // strip -- not two files a press apart -- comes back at the stop
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const during = stripOf();
+    if (during.on || during.n !== 0)
+      fail("starting a new recording kept the old result strip: " + JSON.stringify(during));
+    env.tick(12);
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const st4 = stripOf();
+    if (!st4.on || st4.n !== 1 || st4.txt.indexOf(" · 0.4 s") < 0)
+      fail("the new take did not replace the strip: " + JSON.stringify(st4));
+    env.share.can = true;
+    stripPress("&times;");
+    console.log(tag + " no file sharing -> download only; a new take replaces the strip");
     // the 30 s HARD STOP takes the same path: fire the armed timeout by hand
     run(`function(){ cards.disp[0].btnRec.onclick(); }`);
     await new Promise(r => setTimeout(r, 5));
@@ -1017,8 +1137,17 @@ setTimeout(async () => {
     const capped = run(`function(){ const d = cards.disp[0];
       return { live: !!d.wc, label: d.btnRec.innerHTML }; }`);
     if (capped.live || capped.label !== "rec") fail("the 30 s cap did not stop it: " + JSON.stringify(capped));
-    if (mp4File("30 s cap")) console.log(tag + " 30 s hard stop -> file written, button reset");
-    // DESTROY mid-recording: closing the card writes what it has rather than losing it
+    // the cap is a stop like any other, so it lands on the strip too
+    const stCap = stripOf();
+    if (!stCap.on || stCap.txt.indexOf(" · 0.1 s") < 0)
+      fail("the 30 s cap left no strip (or the wrong one): " + JSON.stringify(stCap));
+    if (!stripPress("download")) fail("the capped recording's strip has no download button");
+    if (mp4File("30 s cap")) console.log(tag + " 30 s hard stop -> strip, then file, button reset");
+    stripPress("&times;");
+    // DESTROY mid-recording: closing the card writes what it has rather than losing it.
+    // This is the ONE case that still downloads by itself: destroy() sets `dead` before
+    // the async flush lands, the card's footer is gone, and a strip with nowhere to live
+    // would lose the file silently -- which is worse than an unasked-for download.
     const destroyed = await (async () => {
       run(`function(){ while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
                        addDisplayCard(); cardsSync();
@@ -1032,6 +1161,35 @@ setTimeout(async () => {
     })();
     if (!destroyed) fail("closing a card mid-recording lost the file");
     else if (mp4File("destroy mid-record")) console.log(tag + " card closed mid-record -> file still written");
+    // a press that can start NOTHING must not cost the visitor the file they still had:
+    // a WebCodecs-only engine (MediaRecorder gone -- the iOS shape) whose probe turns
+    // this canvas down must leave the old strip standing. The clear lives in the legs'
+    // STARTS, not in recToggle (adversarial review 2026-08-12, MINOR 1).
+    await wcTake(6);
+    const stKeep = stripOf();
+    if (!stKeep.on) fail("no strip to preserve before the dead-probe press");
+    run(`function(){
+      recProbes.clear();                  // drop the cached yes, so the next press probes
+      window._pOldICS = window.VideoEncoder.isConfigSupported;
+      window._pOldMR = window.MediaRecorder;
+      window.VideoEncoder.isConfigSupported = () => Promise.resolve({ supported: false });
+      window.MediaRecorder = undefined;
+      cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const afterDead = run(`function(){ const d = cards.disp[0];
+      const r = { wc: !!d.wc, mr: !!d.rec, busy: d.recBusy, label: d.btnRec.innerHTML };
+      window.VideoEncoder.isConfigSupported = window._pOldICS;
+      window.MediaRecorder = window._pOldMR;
+      delete window._pOldICS; delete window._pOldMR;
+      recProbes.clear();                  // ... and drop the cached no, for the legs below
+      return r; }`);
+    if (afterDead.wc || afterDead.mr || afterDead.busy || afterDead.label !== "rec")
+      fail("the dead-probe press left something running: " + JSON.stringify(afterDead));
+    const stKept = stripOf();
+    if (!stKept.on || stKept.txt !== stKeep.txt)
+      fail("a press whose probe failed threw the old result away: " + JSON.stringify(stKept));
+    stripPress("&times;");
+    console.log(tag + " dead probe, no fallback -> nothing starts and the old strip survives");
     // NO avcC: an engine whose metadata never carries a decoder description cannot give
     // us a playable mp4, so the app must bail to MediaRecorder on the spot -- one frame
     // in, still recording -- and leave WebCodecs off for the rest of the session.
@@ -1061,10 +1219,23 @@ setTimeout(async () => {
       fail("record did not start: " + JSON.stringify(rec1));
     if (rec1.fps !== run("function(){ return REC_FPS; }")) fail("captureStream fps: " + rec1.fps);
     if (rec1.mime !== "video/webm;codecs=vp9") fail("record picked " + rec1.mime);
+    // this leg hands back a container it did not write, so it cannot count samples: its
+    // length is WALL CLOCK, and the stub owns the clock (env.advance) exactly as it owns
+    // leg 1's frame pump, so "12 s" costs no wall clock here either
+    const nMrDl = env.caps.downloads.length;
+    env.advance(12000);
     const rec2 = run(`function(){ const d = cards.disp[0]; d.btnRec.onclick();
       return { live: !!d.rec, label: d.btnRec.innerHTML, hot: d.btnRec.classList.contains("reclive") }; }`);
     if (rec2.live || rec2.label !== "rec" || rec2.hot)
       fail("record did not stop: " + JSON.stringify(rec2));
+    if (env.caps.downloads.length !== nMrDl)
+      fail("the MediaRecorder leg downloaded its file by itself instead of offering it");
+    const stMr = stripOf();
+    const wantMr = sizeTxt(env.caps.blobs[env.caps.blobs.length - 1].size) + " · 12 s";
+    if (!stMr.on || stMr.txt !== wantMr)
+      fail('the MediaRecorder leg\'s strip reads "' + (stMr.txt || "") + '", not "' + wantMr + '"');
+    else console.log(tag + " result strip (MediaRecorder, wall clock): " + stMr.txt);
+    if (!stripPress("download")) fail("the MediaRecorder leg's strip has no download button");
     const webm = env.caps.downloads[env.caps.downloads.length - 1];
     if (!webm || !/\.webm$/.test(webm.name) || !(webm.blob && webm.blob.size > 0))
       fail("record produced no webm download: " + JSON.stringify(webm));
@@ -1078,10 +1249,28 @@ setTimeout(async () => {
       const mime = d.rec && d.rec.mimeType; d.btnRec.onclick();
       M.isTypeSupported = old; return mime; }`);
     if (mp4mime !== "video/mp4;codecs=avc1") fail("mp4-capable engine picked " + mp4mime);
+    if (!stripPress("download")) fail("the mp4-engine take left no strip to download from");
     const mp4 = env.caps.downloads[env.caps.downloads.length - 1];
     if (!mp4 || !/\.mp4$/.test(mp4.name) || !(mp4.blob && mp4.blob.type.indexOf("mp4") >= 0 && mp4.blob.size > 0))
       fail("mp4 record download wrong: " + JSON.stringify(mp4 && mp4.name));
     else console.log(tag + " record (mp4 engine) -> " + mp4.name + " (" + mp4.blob.type + ")");
+    // DESTROY mid-recording on THIS leg too: the dead branch is recResult's, but the stop
+    // that reaches it is MediaRecorder's own onstop -- a different route than leg 1's
+    // flush, so it gets its own assertion (adversarial review 2026-08-12, MINOR 3)
+    const mrDestroyed = await (async () => {
+      run(`function(){ while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
+                       addDisplayCard(); cardsSync();
+                       cards.disp[cards.disp.length - 1].btnRec.onclick(); }`);
+      await new Promise(r => setTimeout(r, 5));
+      env.advance(700);
+      const n = env.caps.downloads.length;
+      run(`function(){ cardClose(cards.disp[cards.disp.length - 1]); cardsSync(); }`);
+      await new Promise(r => setTimeout(r, 5));
+      return env.caps.downloads.length > n ? env.caps.downloads[env.caps.downloads.length - 1] : null;
+    })();
+    if (!mrDestroyed || !/\.webm$/.test(mrDestroyed.name) || !(mrDestroyed.blob && mrDestroyed.blob.size > 0))
+      fail("closing a card mid-MediaRecorder-recording lost the file: " + JSON.stringify(mrDestroyed && mrDestroyed.name));
+    else console.log(tag + " card closed mid-record (MediaRecorder) -> file still written");
     // ... and with NEITHER leg available the button is simply not there (an engine with
     // no MediaRecorder and no WebCodecs; WebCodecs is still off from the bail above)
     const noRec = run(`function(){

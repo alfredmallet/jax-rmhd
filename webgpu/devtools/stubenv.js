@@ -49,17 +49,20 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   // that the handler merely ran: `caps.blobs` (what toBlob / new Blob made),
   // `caps.downloads` ({name, blob} per <a download>.click()), `caps.recs` (MediaRecorders).
   const caps = { blobs: [], downloads: [], recs: [], urls: new Map(),
-                 encs: [], frames: [], timeouts: [] };
+                 encs: [], frames: [], timeouts: [], files: [], shares: [] };
   let urlN = 0;
   const mkBlob = (type, size) => { const b = { type: type || "", size: size || 0, __blob: 1 }; caps.blobs.push(b); return b; };
-  // A blob part is either another stub blob (the MediaRecorder leg) or a Uint8Array (the
-  // WebCodecs leg, whose whole point is the BYTES it wrote) -- so the bytes are kept, and
-  // a consumer can walk the mp4 the muxer produced box by box.
+  // A blob part is either another stub blob (the MediaRecorder leg, or the finished file
+  // rewrapped as a File for the share sheet) or a Uint8Array (the WebCodecs leg, whose
+  // whole point is the BYTES it wrote) -- so the bytes are kept and carried through the
+  // rewrap, and a consumer can walk the mp4 the muxer produced box by box wherever it
+  // ended up.
   function BlobStub(parts, o) {
     let n = 0;
     const keep = [];
     for (const p of (parts || [])) {
       if (p && p.byteLength !== undefined) { n += p.byteLength; keep.push(p); }
+      else if (p && p.__blob && p.bytes) { n += p.bytes.byteLength; keep.push(p.bytes); }
       else n += (p && p.size) || 0;
     }
     const b = mkBlob(o && o.type, n);
@@ -71,6 +74,42 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     }
     caps.blobs[caps.blobs.length - 1] = this;
   }
+  // ---- File + Web Share (the result strip, 2026-08-11) ------------------------
+  // A File is a Blob with a name, and it is the object the share sheet is handed -- so it
+  // keeps the bytes too (above), and a consumer can assert that what was SHARED is the
+  // file that was written, not merely that a handler ran. `caps.files` is every File the
+  // page built, `caps.shares` every navigator.share() payload.
+  function FileStub(parts, name, o) {
+    BlobStub.call(this, parts, o);
+    this.name = String(name === undefined ? "" : name);
+    this.lastModified = clock;
+    caps.files.push(this);
+  }
+  // Two knobs, because both branches are real engines: `can` is whether this engine can
+  // share FILES at all (a desktop that cannot must simply grow no share button), and
+  // `reject` makes share() reject with a named error -- "AbortError" being the visitor
+  // closing the sheet, which must NOT then download at them, against anything else, which
+  // must. Reached from a consumer as `env.share`.
+  const share = { can: true, reject: "" };
+  const canShareStub = d => !!(share.can && d && d.files && d.files.length);
+  const shareStub = d => {
+    if (!canShareStub(d)) return Promise.reject(new Error("share() of something unshareable"));
+    caps.shares.push(d);
+    if (!share.reject) return Promise.resolve();
+    const e = new Error(share.reject);
+    e.name = share.reject;
+    return Promise.reject(e);
+  };
+  // ---- the clock -------------------------------------------------------------
+  // The recorder's leg 2 has no frame count of its own and times itself by wall clock, so
+  // the clock is the stub's: `env.advance(ms)` moves it and a "12 s recording" costs no
+  // wall clock, exactly as `env.tick(n)` does for leg 1's frame pump. Nothing else in the
+  // apps reads Date, so this shadows it wholesale rather than patching `now` in place.
+  let clock = 17e11;
+  function DateStub(...a) { return a.length ? new Date(...a) : new Date(clock); }
+  DateStub.now = () => clock;
+  DateStub.parse = Date.parse; DateStub.UTC = Date.UTC;
+  const advance = ms => { clock += ms; };
   function MediaRecorderStub(stream, o) {
     this.stream = stream; this.mimeType = (o && o.mimeType) || "video/webm";
     this.state = "inactive"; this.ondataavailable = null; this.onstop = null;
@@ -454,12 +493,16 @@ module.exports = function makeEnv(dir, page, demo, opts) {
               // deleting them (bootstub).
               URL: URLStub, Blob: BlobStub, MediaRecorder: MediaRecorderStub,
               VideoEncoder: VideoEncoderStub, VideoFrame: VideoFrameStub,
-              EncodedVideoChunk: EncodedVideoChunkStub },
+              EncodedVideoChunk: EncodedVideoChunkStub,
+              // the result strip feature-detects `window.File` before building one
+              File: FileStub },
     location: { search, href: "file:///x/" + page + search },
     URLSearchParams, navigator: {
       // ANALYTICS_PLAN phase 2: contactBody reads userAgent, and every real browser has
       // one -- a stub without it would exercise only the absent branch.
       userAgent: "stubenv/1.0 (node; not a browser)",
+      // Web Share level 2, which is what the result strip's share button is detected on
+      canShare: canShareStub, share: shareStub,
       gpu: noGpu ? null : {
         getPreferredCanvasFormat: () => "bgra8unorm",
         // `info` mirrors the recent-Chrome adapter.info contactBody stashes into gpuInfo.
@@ -477,7 +520,7 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8Array, Uint8ClampedArray,
     Map, Set, Error, Promise, Number, String, Array, Object, isFinite, parseInt, parseFloat,
     setTimeout: setTimeoutStub, clearTimeout: clearTimeoutStub,
-    setInterval: setIntervalStub, clearInterval: clearIntervalStub,
+    setInterval: setIntervalStub, clearInterval: clearIntervalStub, Date: DateStub,
     GPUBufferUsage: { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, UNIFORM: 8, MAP_READ: 16 },
     GPUTextureUsage: { STORAGE_BINDING: 1, TEXTURE_BINDING: 2 },
     GPUMapMode: { READ: 1 },
@@ -490,5 +533,5 @@ module.exports = function makeEnv(dir, page, demo, opts) {
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
   return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, caps,
-           tick, fireTimeout, store, is3d: page.indexOf("3d") >= 0 };
+           tick, fireTimeout, advance, share, store, is3d: page.indexOf("3d") >= 0 };
 };

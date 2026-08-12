@@ -118,6 +118,15 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
 .viewfoot .capbtn { flex: 0 0 auto; padding: 1px 6px; font-size: 11px; line-height: 1.4;
                     color: #9aa5b4; margin-bottom: 1px; }
 .viewfoot .capbtn.reclive { color: #ff8b8b; border-color: #6b2a2a; }
+/* a finished recording waits here (recResult): size + length, then download / share.
+   `flex: 1 0 100%` takes a whole new line of the footer, under the buttons that made it,
+   so it never squeezes the caption or the colorbar and there is nothing to squeeze it
+   either; it wraps on its own at a narrow card, whence the flex-wrap. */
+.recres { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center;
+          justify-content: flex-end; gap: 4px 8px; margin-top: 3px; }
+.recinfo { color: #9aa5b4; font-size: 11.5px; font-variant-numeric: tabular-nums;
+           margin-right: auto; }
+.viewfoot .capbtn.recx { padding: 1px 5px; color: #7a8494; }
 
 /* the border lives on the wrapper, so the absolutely-positioned overlays
    (inset 0 of the padding box) line up with the WebGPU canvas exactly at every scale */
