@@ -26,9 +26,25 @@
 // ---------------------------------------------------------------------------
 const el = id => document.getElementById(id);
 const statusEl = document.getElementById("status");
-function showStatus(msg, kind) {
+// The one authoritative per-browser/per-platform WebGPU support matrix (W3C WebGPU
+// working group). The two GPU-failure banners link here INSTEAD of naming
+// --enable-unsafe-webgpu: the experimental-flag route is documented upstream for anyone
+// determined, and this page never tells a visitor to switch off their browser's safety.
+const WEBGPU_STATUS_URL = "https://github.com/gpuweb/gpuweb/wiki/Implementation-Status";
+function showStatus(msg, kind, linkUrl) {
   statusEl.className = kind || "info";
   statusEl.textContent = msg;
+  // Optional trailing link, appended as a NODE: #status stays textContent-only for the
+  // message itself, so no status string is ever parsed as HTML (some carry driver text).
+  if (linkUrl) {
+    const a = document.createElement("a");
+    a.textContent = "full browser-support matrix";
+    a.href = linkUrl;
+    a.target = "_blank";
+    a.rel = "noopener";
+    statusEl.appendChild(a);
+    statusEl.appendChild(document.createTextNode("."));
+  }
 }
 // any uncaught error anywhere -> visible on the page, never a silently dead UI
 window.addEventListener("error", e => showStatus("Error: " + e.message, "err"));
@@ -488,16 +504,49 @@ async function initGPU(opts) {
 // opts.maxLimits asks the adapter for its own reported limits (always a legal request):
 // the 3D app's 8-field gradient stack is 129 MiB at 256^2x64, past the DEFAULT 128 MiB
 // storage-binding limit.
+// Coarse UA sniff for the two failure banners ONLY -- it picks which safe advice to
+// show, never gates a feature, so a wrong guess costs one slightly-off sentence.
+// (Support facts as of 2026-08: gpuweb Implementation-Status wiki. Chrome/Linux is
+// default-on only for Intel Gen12+ (144+) and NVIDIA >=535.183.01 under Wayland
+// (147+); Firefox/Linux is Nightly-only, expected stable during 2026.)
+function gpuFailEnv() {
+  const ua = navigator.userAgent || "";
+  return { linux: /Linux/.test(ua) && !/Android/.test(ua), firefox: /Firefox\//.test(ua) };
+}
 async function initGPUTry(opts) {
   if (!navigator.gpu) {
-    showStatus("WebGPU is not available in this browser. Use Chrome 113+ (or Edge) on a machine "
-      + "with a supported GPU; on Linux you may need --enable-unsafe-webgpu.", "err");
+    const env = gpuFailEnv();
+    showStatus("WebGPU is not available in this browser. "
+      + (env.firefox && env.linux
+        ? "Firefox does not ship WebGPU on Linux yet (expected during 2026); on this machine "
+          + "a current Chrome may work. "
+        : "Browsers that have it: Chrome/Edge 113+, Firefox 141+ on Windows or 147+ on macOS, "
+          + "and Safari 26+. ")
+      + "See the ", "err", WEBGPU_STATUS_URL);
     return false;
   }
   let adapter = null;
   try { adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }); }
   catch (e) { showStatus("requestAdapter failed: " + e.message, "err"); return false; }
-  if (!adapter) { showStatus("No WebGPU adapter found (no compatible GPU, or WebGPU is disabled).", "err"); return false; }
+  if (!adapter) {
+    const env = gpuFailEnv();
+    showStatus("No WebGPU adapter found: the browser has WebGPU, but could not use this "
+      + "machine's GPU. "
+      + (env.linux
+        ? "On Linux, Chrome enables WebGPU by default only for Intel Gen12+ GPUs (Chrome 144+) "
+          + "and NVIDIA GPUs with driver 535.183.01 or newer in a Wayland session (Chrome 147+). "
+          + "Typing chrome://gpu into the address bar shows why it is off on this machine; "
+          + "updating the graphics driver (and, for NVIDIA, logging into a Wayland session) is "
+          + "the safe fix. "
+        : env.firefox
+          ? "Firefox's about:support page (Graphics section) shows why; updating the graphics "
+            + "driver is the usual fix. "
+          : "Check that hardware acceleration is enabled in the browser's settings and that the "
+            + "graphics driver is current; typing chrome://gpu into the address bar shows the "
+            + "WebGPU status. ")
+      + "See the ", "err", WEBGPU_STATUS_URL);
+    return false;
+  }
   // The one line the contact link (contactBuild) needs out of here: WHICH GPU. A bug
   // report that names the adapter is worth ten that say "it didn't work". `adapter.info`
   // is a recent-Chrome property and the older async `requestAdapterInfo()` has been
