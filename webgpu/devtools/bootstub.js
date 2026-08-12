@@ -1435,6 +1435,263 @@ setTimeout(async () => {
     await new Promise(r => setTimeout(r, 5));
     stripPress("&times;");
     console.log(tag + " watchdog parked on a visible page: 5 timer ticks encoded nothing");
+    // ---- RECASYNC_PLAN (2026-08-12): leg 1's GPU-READBACK capture path ----------
+    // A due slot no longer builds a VideoFrame from the CANVAS -- 15-17 ms of synchronous
+    // readback per capture on Alfred's iPhone (?recdebug, on-device), which is what pushed
+    // every slot-due loop pass past its vsync window -- but submits a copyTextureToBuffer
+    // and returns; the frame is built from those BYTES when the map resolves, in an
+    // ordered chain that assigns the index, the timestamp and the keyframe flag at ENCODE
+    // time. The stub defaults the VideoFrame-from-bytes capability OFF, which is exactly
+    // why every leg above ran UNEDITED on the canvas path it was written against (the
+    // app's own probe then latches `recBufOff`, for the honest reason). These legs turn
+    // the capability on and drive the maps by hand, as env.tick() drives the timer.
+    const bufArm = on => {
+      env.bufFrames(!!on);
+      run(`function(){ recBufOff = false; recBufTried = false; recProbes.clear(); }`);
+    };
+    const recPress = async () => {
+      run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+      await new Promise(r => setTimeout(r, 5));
+    };
+    const wcState = () => run(`function(){ const W = cards.disp[0].wc;
+      if (!W) return null;
+      return { n: W.n, pend: W.pend, drop: W.drop, rafN: W.rafN, wdN: W.wdN, w: W.w, h: W.h,
+               chunks: W.chunks.length, bufOn: W.bufOn, fmt: W.fmt, bpr: W.bpr, pad: W.pad,
+               pool: W.pool ? W.pool.length : -1, gone: W.gone, chain: !!W.chain,
+               busy: W.pool ? W.pool.filter(e => e.busy).length : -1,
+               tV: W.tV, tE: W.tE, tL: W.tL,
+               sync: W.chunks.map((c, i) => (c.key ? i : -1)).filter(i => i >= 0) }; }`);
+    const POOL = run("function(){ return REC_POOL; }");
+    // a take's own rhythm: capture a pool's worth of slots, let those maps land, repeat
+    const bufPump = async k => {
+      for (let i = 0; i < k; i += POOL) {
+        rafCap(Math.min(POOL, k - i));
+        env.maps();
+        await new Promise(r => setTimeout(r, 0));
+      }
+    };
+    bufArm(true);
+    const nProbeFr = env.caps.frames.length;
+    await recPress();
+    // (a) the capability probe itself: a 2x2 frame of the canvas's own format, built from
+    // 16 bytes inside the press's existing await and closed again
+    const pf = env.caps.frames[nProbeFr];
+    if (!pf || pf.kind !== "bytes" || pf.codedWidth !== 2 || pf.codedHeight !== 2 || !pf.closed)
+      fail("the VideoFrame-from-bytes probe did not run: " + JSON.stringify(pf));
+    const bufOn = wcState();
+    if (!bufOn || !bufOn.bufOn || bufOn.fmt !== "BGRX" || pf.format !== "BGRX")
+      fail("the buffer capture path did not arm on a capable engine: " + JSON.stringify(bufOn));
+    // the always-on half of the plan: the canvas is configured COPY_SRC as well as
+    // RENDER_ATTACHMENT (an explicit usage REPLACES the default, so both must be named)
+    const cfgU = run(`function(){ const c = cards.disp[0].ctx.__cfg;
+      return { u: c && c.usage, want: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+               fmt: c && c.format, alpha: c && c.alphaMode }; }`);
+    if (cfgU.u !== cfgU.want || cfgU.alpha !== "opaque")
+      fail("the display canvas is not configured for the capture path: " + JSON.stringify(cfgU));
+    env.holdMaps(true);
+    const nBufFr = env.caps.frames.length, nCopy = env.caps.copies.length;
+    rafCap(3);
+    // THE POINT: three slots captured and NOTHING encoded yet -- no VideoFrame built, no
+    // chunk, nothing waited for on the main thread. Only three GPU copies were submitted.
+    const held = wcState();
+    if (held.n !== 0 || held.chunks !== 0 || held.pend !== 3 || held.busy !== 3)
+      fail("a capture waited on its readback instead of deferring: " + JSON.stringify(held));
+    // the ordered encode chain exists as an object, which is what the stop drains and what
+    // keeps arrival order = encode order on an engine whose maps resolve as they please.
+    // (Under this stub each resolution encodes synchronously, so the ORDER cannot tell the
+    // chain from a bare handler; its presence can, and the two stop routes key on it.)
+    if (!held.chain) fail("the buffer path encoded without an ordered chain");
+    if (env.caps.frames.length !== nBufFr)
+      fail("a VideoFrame was built before the map resolved -- that is the cost being moved");
+    if (env.caps.copies.length !== nCopy + 3 || env.mapsPending() !== 3)
+      fail("three due slots did not submit three copies: " + (env.caps.copies.length - nCopy) +
+           " copies, " + env.mapsPending() + " maps");
+    const cp = env.caps.copies[env.caps.copies.length - 1];
+    if (cp.bpr % 256 || cp.bpr < 4 * cp.w || cp.w !== held.w || cp.h !== held.h)
+      fail("the copy geometry is not the 256-aligned canvas: " + JSON.stringify(cp));
+    env.maps();
+    await new Promise(r => setTimeout(r, 5));
+    const landed = wcState();
+    if (landed.n !== 3 || landed.chunks !== 3 || landed.rafN !== 3 || landed.pend !== 0 || landed.busy !== 0)
+      fail("the resolved maps did not encode three frames and free the pool: " + JSON.stringify(landed));
+    const bf = env.caps.frames.slice(nBufFr);
+    if (bf.length !== 3 || bf.some(f => f.kind !== "bytes"))
+      fail("the buffer path built " + bf.length + " frames, kinds " +
+           JSON.stringify(bf.map(f => f.kind)) + " -- a canvas frame here is the old cost");
+    if (bf.some(f => f.format !== "BGRX" || f.codedWidth !== landed.w || f.codedHeight !== landed.h))
+      fail("a frame from bytes is not the canvas's format and size: " +
+           JSON.stringify(bf.map(f => [f.format, f.codedWidth, f.codedHeight])));
+    if (bf.some((f, i) => f.timestamp !== Math.round(i * 1e6 / 30)) || bf.some(f => !f.closed))
+      fail("the drained frames are not a closed, fixed-1/30-s series: " +
+           JSON.stringify(bf.map(f => f.timestamp)));
+    // ?recdebug: `vf` is now the MAIN-THREAD half (copy + submit -- one clock read's worth
+    // under the stub's 250 ms/read clock), `enc` the chain half (build from bytes AND
+    // encode, so two), and `lag` the capture-to-encode latency the async tail costs
+    if (landed.tV !== 250 || landed.tE !== 500 || !(landed.tL > 0))
+      fail("the ?recdebug vf/enc/lag numbers are not wired for the buffer path: " +
+           JSON.stringify([landed.tV, landed.tE, landed.tL]));
+    await bufPump(32);
+    const bufFull = wcState();
+    if (bufFull.n !== 35 || bufFull.chunks !== 35 || JSON.stringify(bufFull.sync) !== "[0,30]")
+      fail("the buffer path's 35-frame take is wrong: " + JSON.stringify(bufFull));
+    await recPress();
+    if (!stripPress("download")) fail("the buffer-path recording's strip has no download button");
+    const bufMp4 = mp4File("buffer capture");
+    if (bufMp4) {
+      const ss = stssOf(env.caps.downloads[env.caps.downloads.length - 1].blob.bytes);
+      if (JSON.stringify(ss) !== "[1,31]")
+        fail("the buffer-path file's stss is " + JSON.stringify(ss) + ", not the forced keyframes");
+      console.log(tag + " buffer capture: 35 frames from BYTES, 0 canvas frames, " +
+                  bufMp4.boxes + ", stss " + JSON.stringify(ss));
+    }
+    stripPress("&times;");
+    // (b) OUT-OF-ORDER MAPS: mapAsync resolution order across distinct buffers is not a
+    // thing to rely on, so the index/timestamp/keyframe are assigned at ENCODE time inside
+    // one chain. Resolving three maps in REVERSE arrival order must therefore still give a
+    // monotonic 1/30 s series with no hole -- fewer frames is honest, a gap in the sample
+    // table is not (mp4Mux writes a UNIFORM stts, which checkmp4 asserts).
+    await recPress();
+    const nRevFr = env.caps.frames.length;
+    rafCap(3);
+    env.maps(true);
+    await new Promise(r => setTimeout(r, 5));
+    rafCap(3);
+    env.maps(true);
+    await new Promise(r => setTimeout(r, 5));
+    const rev = wcState();
+    const revFr = env.caps.frames.slice(nRevFr);
+    if (rev.n !== 6 || rev.chunks !== 6 || rev.pend !== 0)
+      fail("reversed map resolutions lost frames: " + JSON.stringify(rev));
+    if (revFr.length !== 6 || revFr.some((f, i) => f.timestamp !== Math.round(i * 1e6 / 30)))
+      fail("reversed maps broke the timestamp series: " + JSON.stringify(revFr.map(f => f.timestamp)));
+    await recPress();
+    if (!stripPress("download")) fail("the out-of-order take has no download button");
+    if (mp4File("out-of-order maps"))
+      console.log(tag + " maps resolved in REVERSE: 6 frames, timestamps still 0..167 ms in step");
+    stripPress("&times;");
+    // (c) POOL EXHAUSTION: with all REC_POOL buffers waiting on their maps the readback is
+    // genuinely behind, so a further due slot is DROPPED -- counted, never queued, never
+    // waited for. The honesty rule the encoder's backpressure already follows.
+    await recPress();
+    const nExFr = env.caps.frames.length, nExCp = env.caps.copies.length;
+    rafCap(POOL);
+    const full = wcState();
+    rafCap(1);
+    const over = wcState();
+    if (over.pend !== POOL || over.busy !== POOL || env.caps.copies.length !== nExCp + POOL)
+      fail("a slot with no free staging buffer still took one: " + JSON.stringify(over));
+    if (!(over.drop > full.drop) || over.n !== 0 || env.caps.frames.length !== nExFr)
+      fail("the exhausted slot was not counted as a drop: " + JSON.stringify([full.drop, over.drop]));
+    env.maps();
+    await new Promise(r => setTimeout(r, 5));
+    const back = wcState();
+    if (back.n !== POOL || back.chunks !== POOL || back.busy !== 0)
+      fail("the pool did not come back after its maps resolved: " + JSON.stringify(back));
+    await recPress();
+    stripPress("&times;");
+    console.log(tag + " pool exhaustion: " + POOL + " in flight, the 4th slot dropped, pool reused");
+    // (f) PADDED ROWS, and a canvas RESIZED under a live take. copyTextureToBuffer wants a
+    // 256-aligned bytesPerRow: every preset width is already aligned, but the box is
+    // user-sizable, so a width whose row is not is a real case -- the mapped rows are
+    // compacted into a tight buffer before the frame is built from them. And a canvas that
+    // changes size mid-take (a preset or grid change rebuilds the cards) would put a copy
+    // of the new size against an encoder configured for the old one, so that slot is
+    // dropped rather than turned into a validation error.
+    run(`function(){ cards.disp[0].cv.width = 500; }`);
+    await recPress();
+    const nPadFr = env.caps.frames.length;
+    rafCap(2);
+    env.maps();
+    await new Promise(r => setTimeout(r, 5));
+    const padS = wcState();
+    const padFr = env.caps.frames.slice(nPadFr);
+    if (padS.w !== 500 || !padS.pad || padS.bpr !== 2048 || padS.n !== 2)
+      fail("the padded-row take is not padded (or did not encode): " + JSON.stringify(padS));
+    if (padFr.length !== 2 || padFr.some(f => f.kind !== "bytes" || f.codedWidth !== 500))
+      fail("the compacted rows did not become 500-wide frames from bytes: " +
+           JSON.stringify(padFr.map(f => [f.kind, f.codedWidth])));
+    const nRsCp = env.caps.copies.length, rs0 = wcState();
+    run(`function(){ cards.disp[0].cv.width = 512; }`);        // resized under the take
+    rafCap(1);
+    const rs1 = wcState();
+    if (rs1.n !== rs0.n || rs1.pend !== 0 || env.caps.copies.length !== nRsCp)
+      fail("a canvas resized mid-take still copied into the old geometry: " + JSON.stringify(rs1));
+    if (!(rs1.drop > rs0.drop)) fail("the resized slot was not counted as a drop");
+    await recPress();
+    stripPress("&times;");
+    console.log(tag + " padded rows: bpr " + padS.bpr + " for a 500 px canvas, rows compacted; " +
+                "a mid-take resize drops the slot");
+    // (d) STOP WITH CAPTURES IN FLIGHT: the stop bars new captures, then DRAINS the ones
+    // already submitted before flushing and muxing -- otherwise the last slots of a take
+    // would die in three staging buffers about to be destroyed.
+    await recPress();
+    rafCap(2);
+    const inFlight = wcState();
+    if (inFlight.pend !== 2) fail("nothing was in flight to drain: " + JSON.stringify(inFlight));
+    const drained = await (async () => {
+      run(`function(){ cards.disp[0].btnRec.onclick(); }`);      // stop, maps still parked
+      const p = run(`function(){ return { wc: !!cards.disp[0].wc }; }`);
+      env.maps();                                                // ... and now they land
+      await new Promise(r => setTimeout(r, 10));
+      return p;
+    })();
+    if (drained.wc) fail("the stop did not retire the recording while it drained");
+    const stDrain = stripOf();
+    if (!stDrain.on || stDrain.txt.indexOf(" · 0.1 s") < 0)
+      fail("the drained captures did not reach the file: " + JSON.stringify(stDrain));
+    if (!stripPress("download")) fail("the drained take has no download button");
+    if (mp4File("drained stop")) console.log(tag + " stop drained 2 in-flight captures into the file");
+    stripPress("&times;");
+    // ... and the other half of that rule: a map that NEVER resolves must not hold the
+    // file hostage. One of three resolves, the drain times out after REC_DRAIN_MS, what
+    // landed is muxed, the pool is destroyed -- and the two late maps, rejected by that
+    // destroy, find a torn-down recording and do nothing at all.
+    await recPress();
+    rafCap(3);
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    env.maps(false, 1);
+    const hungW = run(`function(){ return cards.disp[0].wc; }`);
+    await new Promise(r => setTimeout(r, run("function(){ return REC_DRAIN_MS; }") + 60));
+    const stHung = stripOf();
+    if (hungW) fail("the stop left the recording live while it waited for a hung map");
+    if (!stHung.on) fail("a hung readback lost the whole take instead of muxing what landed");
+    if (env.mapsPending() !== 0 || env.maps() !== 0)
+      fail("destroying the pool left " + env.mapsPending() + " maps parked on dead buffers");
+    if (!stripPress("download")) fail("the timed-out take has no download button");
+    if (mp4File("drain timeout"))
+      console.log(tag + " a hung map timed out after " + run("function(){ return REC_DRAIN_MS; }") +
+                  " ms: 1 frame muxed, pool destroyed, late maps inert");
+    stripPress("&times;");
+    // (e) PROBE-FAIL FALLBACK: an engine whose WebCodecs cannot take a BufferSource keeps
+    // exactly today's canvas path -- capability probe, degrade silently, no UA sniff
+    // anywhere. This re-runs the rAF pump's own assertions under the latch.
+    env.holdMaps(false);
+    bufArm(false);
+    await recPress();
+    const off = wcState();
+    if (off.bufOn || !run("function(){ return recBufOff; }"))
+      fail("a failed VideoFrame-from-bytes probe did not latch the fallback: " + JSON.stringify(off));
+    const nOffFr = env.caps.frames.length, nOffCp = env.caps.copies.length;
+    rafCap(5);
+    const sync = wcState();
+    const offFr = env.caps.frames.slice(nOffFr);
+    if (sync.n !== 5 || sync.chunks !== 5 || sync.rafN !== 5 || sync.pend !== 0)
+      fail("the canvas path did not encode five frames synchronously: " + JSON.stringify(sync));
+    // no copy, no pool, no chain -- and no chain is also what keeps this take's STOP the
+    // synchronous flush-then-mux it has always been
+    if (env.caps.copies.length !== nOffCp || sync.pool !== -1 || sync.tL !== 0 || sync.chain)
+      fail("the fallback path still took a GPU copy: " + JSON.stringify(sync));
+    if (offFr.length !== 5 || offFr.some(f => f.kind !== "canvas") || offFr.some(f => !f.closed))
+      fail("the fallback frames are not closed canvas frames: " +
+           JSON.stringify(offFr.map(f => f.kind)));
+    if (offFr.some((f, i) => f.timestamp !== Math.round(i * 1e6 / 30)) ||
+        offFr.some(f => f.codedWidth !== sync.w))
+      fail("the fallback timestamps/size drifted: " + JSON.stringify(offFr.map(f => f.timestamp)));
+    if (sync.tV !== 250 || sync.tE !== 250)
+      fail("the canvas path's vf/enc split changed: " + JSON.stringify([sync.tV, sync.tE]));
+    await recPress();
+    stripPress("&times;");
+    console.log(tag + " probe-fail fallback: 5 canvas frames, no copies, no pool, lag 0");
     // NO avcC: an engine whose metadata never carries a decoder description cannot give
     // us a playable mp4, so the app must bail to MediaRecorder on the spot -- one frame
     // in, still recording -- and leave WebCodecs off for the rest of the session.

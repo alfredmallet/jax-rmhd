@@ -48,8 +48,11 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   // assert that pressing the buttons really produced a blob-shaped download rather than
   // that the handler merely ran: `caps.blobs` (what toBlob / new Blob made),
   // `caps.downloads` ({name, blob} per <a download>.click()), `caps.recs` (MediaRecorders).
+  // `caps.copies` is every copyTextureToBuffer the recorder's GPU-side capture path
+  // submitted (RECASYNC_PLAN, 2026-08-12), so a leg can say a slot really took a copy --
+  // or, for a dropped slot, that it took none.
   const caps = { blobs: [], downloads: [], recs: [], urls: new Map(),
-                 encs: [], frames: [], timeouts: [], files: [], shares: [] };
+                 encs: [], frames: [], timeouts: [], files: [], shares: [], copies: [] };
   let urlN = 0;
   const mkBlob = (type, size) => { const b = { type: type || "", size: size || 0, __blob: 1 }; caps.blobs.push(b); return b; };
   // A blob part is either another stub blob (the MediaRecorder leg, or the finished file
@@ -145,11 +148,40 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   // description, which must make the app bail to MediaRecorder).
   const WC_AVCC = new Uint8Array([1, 0x42, 0x00, 0x1e, 0xff, 0xe1, 0, 4,
                                   0x67, 0x42, 0x00, 0x1e, 1, 0, 4, 0x68, 0xce, 0x3c, 0x80]);
+  // Two constructors, because the recorder has two capture paths (RECASYNC_PLAN,
+  // 2026-08-12): from the CANVAS (the sync path, and the watchdog always) and from BYTES
+  // (a BufferSource plus format/codedWidth/codedHeight -- the GPU-readback path). `kind`
+  // is which one a leg is looking at, so "the pump built no canvas frames at all" is a
+  // checkable statement. VideoFrame-from-bytes is a real CAPABILITY some engines lack, and
+  // the app probes for it, so it is a knob here: `env.bufFrames(true)` turns it on and it
+  // defaults OFF -- which is what keeps every leg written before this plan on exactly the
+  // canvas path it was written against, with the app's own `recBufOff` latch set for the
+  // honest reason.
+  let bufFrames = false;
   function VideoFrameStub(src, o) {
-    if (!src || !src.getContext) fail("VideoFrame built from something that is not a canvas");
+    const bytes = !!(src && src.byteLength !== undefined && !src.getContext);
+    if (bytes) {
+      if (!bufFrames) throw new TypeError("VideoFrame from a BufferSource: not supported here");
+      const f = o && o.format, w = (o && o.codedWidth) | 0, h = (o && o.codedHeight) | 0;
+      if (!f) fail("VideoFrame from bytes with no format");
+      if (!(w > 0) || !(h > 0)) fail("VideoFrame from bytes with no coded size");
+      // TIGHT bytes, exactly: the app passes no `layout`, so a buffer bigger than the
+      // frame is not "padding the constructor will skip" -- the extra bytes simply push
+      // every row along and the picture shears. Which is precisely what a 256-aligned
+      // copyTextureToBuffer hands back on a width whose row is not aligned, so this is the
+      // check that the padded rows were COMPACTED (RECASYNC_PLAN, 2026-08-12).
+      if (src.byteLength !== w * h * 4)
+        fail("VideoFrame from bytes: " + src.byteLength + " B is not the tight " +
+             (w * h * 4) + " B of a " + w + "x" + h + " " + f + " frame");
+      this.kind = "bytes"; this.format = f;
+      this.codedWidth = w; this.codedHeight = h;
+    } else {
+      if (!src || !src.getContext) fail("VideoFrame built from something that is not a canvas");
+      this.kind = "canvas"; this.format = "";
+      this.codedWidth = (src && src.width) | 0; this.codedHeight = (src && src.height) | 0;
+    }
     this.timestamp = (o && o.timestamp) | 0;
     this.duration = o && o.duration;
-    this.codedWidth = (src && src.width) | 0; this.codedHeight = (src && src.height) | 0;
     this.closed = false;
     caps.frames.push(this);
   }
@@ -431,8 +463,45 @@ module.exports = function makeEnv(dir, page, demo, opts) {
 
   // ---- WebGPU stub -----------------------------------------------------------
   const live = { buffers: 0, textures: 0 };
-  const mkBuf = o => { live.buffers++; return { size: o.size, usage: o.usage,
-    destroy() { live.buffers--; }, async mapAsync() {}, getMappedRange() { return new ArrayBuffer(o.size); }, unmap() {} }; };
+  // mapAsync is normally what it always was -- an immediately resolved promise, which is
+  // what every ordinary readback (readBuf) expects. The recorder's GPU-readback capture
+  // path (RECASYNC_PLAN, 2026-08-12) is the one caller whose whole behaviour is the
+  // LATENCY and the ORDER of those resolutions, so the stub can be told to HOLD them:
+  // `env.holdMaps(true)` parks every subsequent map in a list and `env.maps()` resolves
+  // them by hand -- forwards, reversed, or a few at a time -- exactly as `env.tick()`
+  // drives the timer. Destroying a buffer rejects the maps still parked on it, which is
+  // what a real device does and what the "late map after teardown" path is made of.
+  const pendMaps = [];
+  let holdMaps = false;
+  const mkBuf = o => {
+    live.buffers++;
+    const b = { size: o.size, usage: o.usage, mapped: false, dead: false,
+      destroy() {
+        if (!this.dead) live.buffers--;
+        this.dead = true; this.mapped = false;
+        for (let i = pendMaps.length - 1; i >= 0; i--)
+          if (pendMaps[i].b === this) pendMaps.splice(i, 1)[0].rej(new Error("buffer destroyed"));
+      },
+      mapAsync() {
+        if (this.dead) return Promise.reject(new Error("mapAsync on a destroyed buffer"));
+        if (!holdMaps) { this.mapped = true; return Promise.resolve(); }
+        return new Promise((res, rej) => pendMaps.push({ b: this, res: res, rej: rej }));
+      },
+      getMappedRange() {
+        if (this.dead) fail("getMappedRange on a destroyed buffer");
+        return new ArrayBuffer(o.size);
+      },
+      unmap() { this.mapped = false; } };
+    return b;
+  };
+  // resolve parked maps: `rev` in reverse arrival order (the recorder's chain must survive
+  // that), `n` at most this many (so a leg can leave one in flight across a stop).
+  function maps(rev, n) {
+    const q = pendMaps.splice(0, n === undefined ? pendMaps.length : n);
+    if (rev) q.reverse();
+    for (const m of q) { m.b.mapped = true; m.res(); }
+    return q.length;
+  }
   function mkPass(kind) {
     return {
       setPipeline(p) { if (!p) fail(kind + ": setPipeline(undefined)"); this._p = p; },
@@ -466,6 +535,26 @@ module.exports = function makeEnv(dir, page, demo, opts) {
       beginRenderPass: o => { if (!o.colorAttachments[0].view) fail("render pass without a view"); return mkPass("render"); },
       clearBuffer(b) { if (!b) fail("clearBuffer(undefined)"); },
       copyBufferToBuffer(a, ao, b) { if (!a || !b) fail("copyBufferToBuffer(undefined)"); },
+      // the recorder's canvas capture (RECASYNC_PLAN, 2026-08-12). The stub has no pixels
+      // to move -- getMappedRange hands back zeros, as every other readback here does --
+      // so what is checked is the STRUCTURE the real API validates: a texture, a buffer
+      // big enough for the region, and a 256-aligned bytesPerRow.
+      copyTextureToBuffer(src, dst, size) {
+        if (!src || !src.texture) fail("copyTextureToBuffer from something that is not a texture");
+        if (!dst || !dst.buffer) fail("copyTextureToBuffer into no buffer");
+        else if (!(dst.bytesPerRow > 0) || dst.bytesPerRow % 256)
+          fail("copyTextureToBuffer bytesPerRow " + dst.bytesPerRow + " is not a multiple of 256");
+        else if (size && dst.bytesPerRow < 4 * size.width)
+          fail("copyTextureToBuffer bytesPerRow " + dst.bytesPerRow + " cannot hold a " +
+               size.width + "-px row (adversarial review 2026-08-12, stub laxity)");
+        if (!size || !(size.width > 0) || !(size.height > 0))
+          fail("copyTextureToBuffer of an empty region");
+        else if (dst && dst.buffer && dst.buffer.size < dst.bytesPerRow * size.height)
+          fail("copyTextureToBuffer overflows its staging buffer: " +
+               (dst.bytesPerRow * size.height) + " > " + dst.buffer.size);
+        caps.copies.push({ bpr: dst && dst.bytesPerRow, rows: dst && dst.rowsPerImage,
+                           w: size && size.width, h: size && size.height });
+      },
       finish: () => ({})
     }),
     queue: {
@@ -478,7 +567,11 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     },
     addEventListener() {}, lost: { then() {} }
   };
-  const gpuCanvasCtx = () => ({ configure() {}, getCurrentTexture: () => ({ createView: () => ({ __v: 1 }) }) });
+  // `__cfg` keeps the configure descriptor: the display cards' canvases are configured
+  // COPY_SRC | RENDER_ATTACHMENT for the recorder's capture path (RECASYNC_PLAN,
+  // 2026-08-12), and that is a thing a leg can then assert rather than take on trust.
+  const gpuCanvasCtx = () => ({ __cfg: null, configure(o) { this.__cfg = o; },
+                                getCurrentTexture: () => ({ __tex: 1, createView: () => ({ __v: 1 }) }) });
 
   const search = demo ? "?demo=" + demo : "";
   const sandbox = {
@@ -545,7 +638,10 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     setTimeout: setTimeoutStub, clearTimeout: clearTimeoutStub,
     setInterval: setIntervalStub, clearInterval: clearIntervalStub, Date: DateStub,
     GPUBufferUsage: { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, UNIFORM: 8, MAP_READ: 16 },
-    GPUTextureUsage: { STORAGE_BINDING: 1, TEXTURE_BINDING: 2 },
+    // COPY_SRC / RENDER_ATTACHMENT joined it for the canvas configure (RECASYNC_PLAN,
+    // 2026-08-12). The bits are the stub's own -- nothing here means anything by them
+    // except "distinct" -- so a leg checks the usage against these same constants.
+    GPUTextureUsage: { STORAGE_BINDING: 1, TEXTURE_BINDING: 2, COPY_SRC: 4, RENDER_ATTACHMENT: 8 },
     GPUMapMode: { READ: 1 },
     localStorage: store
   };
@@ -556,5 +652,13 @@ module.exports = function makeEnv(dir, page, demo, opts) {
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
   return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, caps,
-           tick, fireTimeout, advance, share, store, is3d: page.indexOf("3d") >= 0 };
+           tick, fireTimeout, advance, share, store,
+           // RECASYNC_PLAN (2026-08-12): the recorder's async capture path, hand-driven --
+           // `holdMaps(true)` parks mapAsync resolutions, `maps(rev, n)` releases them,
+           // `mapsPending()` counts what is still in flight, and `bufFrames(true)` gives
+           // the engine the VideoFrame-from-bytes capability the app probes for.
+           holdMaps: v => { holdMaps = !!v; }, maps: maps,
+           mapsPending: () => pendMaps.length,
+           bufFrames: v => { bufFrames = !!v; },
+           is3d: page.indexOf("3d") >= 0 };
 };

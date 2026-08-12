@@ -100,7 +100,23 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `recCapture` — the timer carries the same frame index on to 8, re-bases `due`, and the
   tallies split 3/5. (c) watchdog parked: with `document.hidden` flipped false (a visible
   page — restored true after) five timer ticks encode nothing at all, which is the double
-  feed the iPhone stutter came back worse from. Leg 2 (MediaRecorder, which the bail has just switched the page to): the
+  feed the iPhone stutter came back worse from. RECASYNC (2026-08-12) added the BUFFER
+  CAPTURE legs on top: the stub gained `copyTextureToBuffer` (geometry-checked, logged on
+  `caps.copies`), a `VideoFrameStub` that takes `(BufferSource, init)` and records
+  format/dims/kind, `GPUTextureUsage` constants, and a hand-driven map pump —
+  `env.holdMaps(true)` parks every `mapAsync`, `env.maps(rev, n)` releases them (in
+  REVERSE arrival order if asked, which is how the ordered-chain claim is falsified),
+  `env.mapsPending()` counts them, and `env.bufFrames(true)` filters the built
+  VideoFrames to the from-bytes kind. The stub's bytes-capability boots OFF (the plan's
+  fallback option: the OLD legs run the canvas path untouched, and each new leg arms the
+  probe itself) — the knob and the reasoning live at the `bufArm` helper in bootstub. Its legs: a 35-frame take entirely FROM BYTES (0
+  canvas frames, `vf`/`enc`/`lag` wired, stss `[1,31]`); maps resolved in reverse still
+  yielding a monotonic fixed-step timestamp series; pool exhaustion (3 in flight → 4th
+  slot dropped, pool reused after); padded rows (a 500 px canvas → bpr 2048, rows
+  compacted) and a mid-take canvas resize dropping the slot; stop draining in-flight
+  captures into the file; a hung map timing out at 500 ms with the pool destroyed and
+  late maps inert; and the probe-fail fallback running the old canvas path with no
+  copies, no pool, `lag` 0. Leg 2 (MediaRecorder, which the bail has just switched the page to): the
   vp9 pick and the 30 fps stream, the MP4 negotiation on an engine that offers it, that
   deleting `MediaRecorder` with WebCodecs off removes the rec button and leaves `save`
   alone, and that WebCodecs alone (no `MediaRecorder`: the iOS case this is all for) still

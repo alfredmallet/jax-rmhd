@@ -294,11 +294,27 @@ wrap an expired `getCurrentTexture` (the same reason `save` re-renders). A **slo
 keeps it at 30 fps: `W.due` is the next slot's wall clock, a callback before it captures
 nothing (a 120 Hz phone captures on about every 4th and drops nothing), and a loop so late
 that whole further slots went by counts those into `W.drop` and re-bases `due` on *now* —
-never backfilling, since a backfilled frame would sit at a timestamp it never had. Each
-kept frame becomes a `VideoFrame` at `round(n·10⁶/30)` µs encoded with
-`keyFrame: n % 30 === 0`; if `encodeQueueSize` runs past `REC_QMAX` the frame is *dropped*
-and `n` is not advanced, so the timestamps stay an exact 1/30 s apart and a slow machine
-records fewer seconds of wall clock rather than a sample table that lies about its timing.
+never backfilling, since a backfilled frame would sit at a timestamp it never had.
+**What a due slot does** is the RECASYNC part (2026-08-12): building a `VideoFrame`
+*from the canvas* is a synchronous readback on the main thread — 15–17 ms per capture on
+a real iPhone (`?recdebug`), which pushed every slot-due pass past its vsync window and
+was the stutter itself. So on an engine whose WebCodecs can build a `VideoFrame` from
+**bytes** (probed once with a 2×2 frame, `recBufOff` latch, degrade silently), a due slot
+only *submits* a GPU-side `copyTextureToBuffer` of the canvas texture into one of three
+staging buffers (the one always-on cost: every card's context is configured with
+`COPY_SRC`) and returns — microseconds. The bytes arrive when `mapAsync` resolves, a beat
+later, and are encoded inside one **ordered promise chain**, where frame index, timestamp
+`round(n·10⁶/30)` µs and `keyFrame: n % 30 === 0` are all assigned at *encode* time — map
+resolution order across buffers is nothing to rely on, `VideoEncoder` wants monotonic
+timestamps, and `mp4Mux` writes a uniform `stts`, so a dropped or failed capture leaves
+fewer frames and never a hole. No free buffer (three maps in flight), a mid-take canvas
+resize, a failed copy, or `encodeQueueSize` past `REC_QMAX` all *drop* the slot without
+advancing `n`: the timestamps stay an exact 1/30 s apart and a slow machine records fewer
+seconds of wall clock rather than a sample table that lies about its timing. Stop drains
+the in-flight captures first (500 ms cap, so a hung map cannot hold the file hostage,
+and the stragglers count as drops), then flushes, then closes the encoder, frees the
+pool and muxes — on every route out. Engines without the
+bytes constructor keep the old direct `VideoFrame(canvas)` path unchanged.
 The `setInterval` at 1000/30 ms is still there but **demoted to a watchdog**
 (RECRAF_PLAN, 2026-08-12): it re-renders and encodes only where the rAF feeder is
 **known-absent** — `document.hidden` or the editor view. Round 1 parked it on a timing
@@ -313,13 +329,19 @@ stutter visibly on an iPhone: an *extra* full `render()` per tick plus the frame
 the encode, all on the main thread and at an arbitrary phase against the rAF loop. Riding
 the render costs zero extra renders, and the watchdog's second render now recurs only where
 there is no visible display to stutter. A watchdog-fed frame re-bases `W.due` too, so the
-slots it put in the file are never double-booked as drops when the rAF loop resumes. On
-stop (button, timer, `destroy()`, encoder error) it flushes and `mp4Mux` writes the file.
+slots it put in the file are never double-booked as drops when the rAF loop resumes. The
+watchdog keeps the *synchronous* canvas capture even when the buffer path is on: it renders
+off-screen anyway, so a stall costs nothing visible, and the async pool stays out of the
+background-throttled world where a hidden page starves maps of callbacks. On stop (button,
+timer, `destroy()`, encoder error) it drains, flushes and `mp4Mux` writes the file.
 `?recdebug` in the URL adds one readout line per live recording — frames fed by rAF vs
 the watchdog (wd must stay 0 on a visible page), drops, the longest gap between loop
-passes, and the capture cost split into its two halves: max ms in the `VideoFrame`
-construction (`vf`, the canvas copy a Worker could not take off the main thread) vs in
-`encode()` (`enc`, the half it could) — which is how a phone, with no devtools console,
+passes, and the capture cost split: `vf` is the max ms a capture cost the MAIN THREAD
+(copy+submit on the buffer path — expected ≲1 — or the full `VideoFrame(canvas)` readback
+on the sync path), `enc` the max ms in the encode step (on the buffer path that includes
+building the frame from bytes, off the hot path in the chain), and `lag` the max
+capture-submit→encode delay — tens of ms are fine, frames are stamped by index, not
+arrival; it stays 0 on the sync path. This is how a phone, with no devtools console,
 reports what a stutter is made of. Deliberately absent from `docs.html`.
 
 **Why we mux it ourselves.** Chrome's `MediaRecorder` `video/mp4` is a *fragmented* MP4:

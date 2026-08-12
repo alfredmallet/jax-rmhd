@@ -488,7 +488,16 @@ let simT = 0;
 function gpuCanvasCtx(cv) {
   if (!device || !cv || !cv.getContext) return null;
   const c = cv.getContext("webgpu");
-  if (c) c.configure({ device, format: canvasFormat, alphaMode: "opaque" });
+  // COPY_SRC on EVERY display card, recording or not (RECASYNC_PLAN, 2026-08-12): leg 1
+  // now takes its frames by copying the canvas TEXTURE into a staging buffer instead of
+  // building a VideoFrame from the canvas, and this is the ONE place a card's context is
+  // configured -- long before any rec press, so the usage cannot be decided per take.
+  // RENDER_ATTACHMENT has to be named as well: it is what an ABSENT `usage` defaults to,
+  // and an explicit value REPLACES that default rather than adding to it. A texture that
+  // is additionally copyable costs nothing measurable; "renders identically" is an
+  // on-device eyes item all the same, since this one line is always on.
+  if (c) c.configure({ device, format: canvasFormat, alphaMode: "opaque",
+                       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
   return c;
 }
 
@@ -2687,6 +2696,15 @@ const REC_FPS = 30;
 const REC_MAX_MS = 30000;                // hard stop, so a forgotten recording stays small
 const REC_BITRATE = 5e6;                 // 5 Mbit/s constant: ~19 MB for a full 30 s take
 const REC_QMAX = 8;                      // encoder backlog (frames) past which we drop
+// RECASYNC_PLAN (2026-08-12): the staging buffers a take's GPU-side captures land in, and
+// how long a stop waits for the ones still in flight. THREE buffers is "a couple of frames
+// of readback latency is normal, three is the GPU (or the map queue) genuinely behind" --
+// with none free the slot is DROPPED, exactly as encoder backpressure drops one, and
+// nothing ever waits on the main thread. The drain timeout is the other half of that rule:
+// a map that never resolves (a lost device, say) must not hold the finished file hostage,
+// so whatever landed within half a second is what gets muxed and the rest are drops.
+const REC_POOL = 3;
+const REC_DRAIN_MS = 500;
 // ?recdebug: while a recording is live, the readout grows one line per recording card --
 // frames fed by the rAF loop vs by the watchdog, drops, and the longest gap between two
 // loop passes. Diagnostic only, for on-device eyes (a phone has no devtools console);
@@ -2717,6 +2735,33 @@ const recWCConfig = cv =>
      avc: { format: "avc" } });
 let recWCOff = false;                    // set when this engine proves the leg unusable
 const recProbes = new Map();             // "codec WxH" -> Promise<config|null>, probed once
+// ---- RECASYNC_PLAN (2026-08-12): can this engine build a VideoFrame from BYTES? -------
+// That question is the whole of the fast capture path. Constructing a VideoFrame from the
+// CANVAS is a synchronous readback/conversion on the main thread -- 15-17 ms per capture
+// on Alfred's iPhone (?recdebug, on-device), which is what pushed every slot-due loop pass
+// past its vsync window and made a live recording stutter. Copying the canvas texture into
+// a buffer and building the frame from those bytes when the map resolves moves that cost
+// off the hot path entirely. An engine whose WebCodecs cannot take a BufferSource keeps
+// today's canvas path: capability probe, degrade silently, never a UA sniff.
+// The canvas is alphaMode:"opaque", so the honest four-byte formats are the X variants (an
+// alpha channel we never wrote would be a lie the encoder might believe); a canvasFormat
+// not in this table means the sync path, not a guess.
+const REC_BUF_FMT = { bgra8unorm: "BGRX", rgba8unorm: "RGBX" };
+let recBufOff = false;                   // engine latch, same idiom as recWCOff
+let recBufTried = false;                 // ... and probed once per session, like recProbes
+function recBufProbe() {
+  if (recBufTried) return;
+  recBufTried = true;
+  const fmt = REC_BUF_FMT[canvasFormat];
+  if (!fmt) { recBufOff = true; return; }
+  try {
+    // 2x2 of the canvas's own format = 16 bytes. Built and closed here so the answer costs
+    // one frame once, inside the probe the press already awaits.
+    const f = new window.VideoFrame(new Uint8Array(16),
+      { format: fmt, codedWidth: 2, codedHeight: 2, timestamp: 0 });
+    f.close();
+  } catch (e) { recBufOff = true; }
+}
 // ENGINE-level: whether the leg can run at all. The frame size is not part of it -- the
 // button's visibility is decided in the card's constructor, before the canvas has been
 // sized -- so a size the encoder dislikes is caught by the probe instead, which is
@@ -2735,7 +2780,13 @@ function recWCProbe(cv) {
     p = Promise.resolve()
       .then(() => (window.VideoEncoder.isConfigSupported
                    ? window.VideoEncoder.isConfigSupported(cfg) : { supported: true }))
-      .then(r => (r && r.supported === false ? null : cfg))
+      .then(r => {
+        // the buffer-path capability rides THIS resolution (RECASYNC_PLAN, 2026-08-12):
+        // it is synchronous, so answering it here costs the press no second await, and
+        // recStartWC can simply read the settled latch.
+        recBufProbe();
+        return r && r.supported === false ? null : cfg;
+      })
       .catch(() => null);
     recProbes.set(key, p);
   }
@@ -3394,8 +3445,21 @@ class DisplayCard {
     const t0 = performance.now();
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
-                tV: 0, tE: 0,               // max ms in VideoFrame / in encode (recdebug)
-                w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
+                tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
+                w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4"),
+                // ---- RECASYNC_PLAN (2026-08-12): the GPU-readback capture path --------
+                // `bufOn` is decided ONCE per take from the settled probe latch, so a
+                // recording never changes paths under its own feet; `fmt` is the
+                // VideoFrame format the canvas's bytes really are. `pool` (lazy, three
+                // staging buffers, owned by this W) and `pend` are the captures in
+                // flight; `chain` is the ordered encode chain -- null until the buffer
+                // path first uses it, which is also what keeps the sync path's stop
+                // exactly as it was. `gone` is set when the pool is destroyed: a map
+                // resolving after that must find it and do nothing.
+                bufOn: !recBufOff && !!this.ctx && !!device, fmt: REC_BUF_FMT[canvasFormat],
+                pool: null, bpr: 0, pad: false, pend: 0, onDrain: null, gone: false,
+                chain: null, tL: 0,         // max capture->encode lag in ms (recdebug)
+              };
     W.enc = new window.VideoEncoder({
       output: (chunk, meta) => {
         const d = meta && meta.decoderConfig && meta.decoderConfig.description;
@@ -3433,30 +3497,174 @@ class DisplayCard {
   // cadence and the drop-frame guard exist here once, so the two paths cannot drift apart.
   // It does NOT render -- the rAF path is already inside the render's own task, and the
   // watchdog renders itself immediately before calling this.
-  recEncodeFrame(W) {
+  // `src` is the SOURCE of this frame's pixels, and there are two kinds (RECASYNC_PLAN,
+  // 2026-08-12): absent means this card's canvas (the sync path -- the watchdog, and any
+  // engine that cannot take bytes), and a `{bytes, format, w, h}` record means the mapped
+  // GPU copy of it. Everything else -- index, timestamp, keyframe cadence, backpressure --
+  // is identical by construction, which is the point of there being one function.
+  recEncodeFrame(W, src) {
     // backpressure: when the encoder is behind, DROP this frame instead of queueing it.
     // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
     // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
     // wall clock, rather than a file whose sample table lies about its own timing.
     if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
     // the two halves of the capture cost, timed separately (?recdebug, round 3): `vf` is
-    // the VideoFrame construction -- the canvas copy, the classic iOS expense, and the
-    // half a Worker could NOT take (it needs the canvas) -- `enc` is the encode()
-    // submission, the half a Worker could. Which maximum dominates on a real phone is
-    // what picks the next fix, so the phone must be able to say. Two clock reads per
-    // frame; kept unconditional so the numbers exist the moment anyone asks.
+    // what a capture costs the MAIN THREAD and `enc` is what the encode costs. On the sync
+    // path that split is VideoFrame-from-canvas (the classic iOS expense, and the half a
+    // Worker could NOT take) vs encode(); on the buffer path the main-thread half is the
+    // copy+submit timed in recCaptureBuf, and BOTH halves here -- building the frame from
+    // bytes and submitting it -- ride `enc`, because they happen a beat later in the chain
+    // and no longer stretch a display frame. Two clock reads per frame either way; kept
+    // unconditional so the numbers exist the moment anyone asks.
     const t1 = performance.now();
-    const f = new window.VideoFrame(this.cv, { timestamp: Math.round(W.n * 1e6 / REC_FPS),
-                                              duration: Math.round(1e6 / REC_FPS) });
+    const init = { timestamp: Math.round(W.n * 1e6 / REC_FPS),
+                   duration: Math.round(1e6 / REC_FPS) };
+    let f;
+    if (src && src.bytes) {
+      init.format = src.format; init.codedWidth = src.w; init.codedHeight = src.h;
+      f = new window.VideoFrame(src.bytes, init);
+    } else {
+      f = new window.VideoFrame(this.cv, init);
+    }
     const t2 = performance.now();
     // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
     // give. It is also every seek point the file has, stss being built from these.
     try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
     const t3 = performance.now();
-    if (t2 - t1 > W.tV) W.tV = t2 - t1;
-    if (t3 - t2 > W.tE) W.tE = t3 - t2;
+    if (src && src.bytes) { if (t3 - t1 > W.tE) W.tE = t3 - t1; }
+    else {
+      if (t2 - t1 > W.tV) W.tV = t2 - t1;
+      if (t3 - t2 > W.tE) W.tE = t3 - t2;
+    }
     W.n++;
     return true;                            // fed: the callers' rafN/wdN tallies key on this
+  }
+  // ---- the buffer capture path (RECASYNC_PLAN, 2026-08-12) --------------------
+  // The hot half: copy this card's canvas texture into a free staging buffer and submit,
+  // all synchronously in the render's own task (getCurrentTexture is transient), then let
+  // go. Microseconds of command encoding instead of the 15-17 ms a VideoFrame-from-canvas
+  // cost the phone -- the readback itself happens on the GPU's clock and lands in
+  // recEncodeMapped a beat later, which is fine: the timestamps are ours, not the map's.
+  recCaptureBuf(W) {
+    const t1 = performance.now();
+    // the canvas can be resized under a live take (a preset or a grid change rebuilds the
+    // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
+    // a validation error rather than a frame. Drop the slot instead -- the honest-length
+    // rule again -- and let the take end at the size it started.
+    if (this.cv.width !== W.w || this.cv.height !== W.h) { W.drop++; return; }
+    if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
+    let s = null;
+    for (const e of W.pool) if (!e.busy) { s = e; break; }
+    // all three buffers are still waiting on their maps: the readback is genuinely behind,
+    // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
+    if (!s) { W.drop++; return; }
+    try {
+      const ce = device.createCommandEncoder();
+      ce.copyTextureToBuffer({ texture: this.ctx.getCurrentTexture() },
+                             { buffer: s.b, bytesPerRow: W.bpr, rowsPerImage: W.h },
+                             { width: W.w, height: W.h, depthOrArrayLayers: 1 });
+      device.queue.submit([ce.finish()]);
+    } catch (e) {
+      // an engine that accepted the configure but not the copy: fall back to the sync
+      // canvas path for the rest of this take rather than lose every remaining frame
+      W.bufOn = false; W.drop++;
+      return;
+    }
+    s.busy = true; W.pend++;
+    const t2 = performance.now();
+    if (t2 - t1 > W.tV) W.tV = t2 - t1;
+    if (!W.chain) W.chain = Promise.resolve();
+    // THE ORDERED ENCODE CHAIN. mapAsync resolution order across distinct buffers is not
+    // something to rely on, VideoEncoder requires monotonic timestamps, and mp4Mux writes
+    // a UNIFORM stts (checkmp4 asserts equal deltas) -- so index, timestamp and keyframe
+    // are all assigned at ENCODE time, inside one promise chain whose steps cannot
+    // interleave. Whichever capture's bytes arrive first is simply frame n: a dropped or
+    // failed capture leaves fewer frames and NO hole in the sample table.
+    s.b.mapAsync(GPUMapMode.READ).then(
+      () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
+      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
+  }
+  // three staging buffers, made on the first capture of a take (a take that never captures
+  // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
+  // multiple of 256: at every preset size the row is already aligned, but the box is
+  // user-sizable, so the padded case is real and recEncodeMapped compacts it.
+  recPoolMake(W) {
+    const pool = [];
+    try {
+      W.bpr = Math.ceil(W.w * 4 / 256) * 256;
+      W.pad = W.bpr !== W.w * 4;
+      for (let i = 0; i < REC_POOL; i++)
+        pool.push({ b: device.createBuffer({ size: W.bpr * W.h,
+                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), busy: false });
+      W.pool = pool;
+      return true;
+    } catch (e) {
+      // no memory: sync path -- and the buffers a mid-loop throw DID create go back
+      // (adversarial review 2026-08-12, MINOR 3)
+      for (const p of pool) { try { p.b.destroy(); } catch (err) {} }
+      W.bufOn = false; W.pool = null; return false;
+    }
+  }
+  // one capture accounted for, whichever way it ended. When the last one lands, a stop
+  // that is waiting on the drain can go on to flush and mux.
+  recPend(W) {
+    if (W.pend > 0) W.pend--;
+    if (!W.pend && W.onDrain) W.onDrain();
+  }
+  // the ASYNC TAIL, running as one step of the chain: the map resolved, so this capture's
+  // bytes exist. On the aligned row the mapped range is handed to the VideoFrame
+  // constructor as it is (the constructor copies), on the padded one the rows are
+  // compacted into a tight buffer first. Then unmap, and the buffer is free again.
+  recEncodeMapped(W, s, tCap) {
+    if (W.gone) return;                     // torn down while this sat in the chain
+    try {
+      const ab = s.b.getMappedRange();
+      const row = W.w * 4;
+      let bytes;
+      if (W.pad) {
+        bytes = new Uint8Array(row * W.h);
+        const src = new Uint8Array(ab);
+        for (let y = 0; y < W.h; y++) bytes.set(src.subarray(y * W.bpr, y * W.bpr + row), y * row);
+      } else {
+        bytes = new Uint8Array(ab);
+      }
+      // capture-submit to encode: the "arrives a beat late" number, ?recdebug's `lag`
+      const lag = performance.now() - tCap;
+      if (lag > W.tL) W.tL = lag;
+      if (this.recEncodeFrame(W, { bytes: bytes, format: W.fmt, w: W.w, h: W.h })) W.rafN++;
+    } catch (e) {
+      // a failed capture is a drop, never a throw -- and, like a failed COPY, it also
+      // latches this take back onto the sync canvas path: an engine whose 2x2 probe frame
+      // passed but whose full-size frames throw would otherwise drop every remaining slot
+      // and hand back a 0-chunk take with no file and no explanation (adversarial review
+      // 2026-08-12, MINOR 1)
+      W.drop++; W.bufOn = false;
+    }
+    try { s.b.unmap(); } catch (e) {}
+    s.busy = false;
+  }
+  // the pool's ONE teardown, called from every route a recording ends by. `gone` first:
+  // the buffers are about to stop existing, so a map still in flight (and the rejection
+  // destroy() hands it) must find a recording that wants nothing more from it.
+  recPoolFree(W) {
+    W.gone = true;
+    for (const e of (W.pool || [])) { try { e.b.destroy(); } catch (err) {} }
+    W.pool = null;
+  }
+  // wait for the captures still in flight before the file is written (RECASYNC_PLAN 5).
+  // The timeout is the guard against a map that never resolves: half a second, then mux
+  // what landed. It cannot strand the chain -- an encode step is synchronous work -- so
+  // awaiting the chain afterwards only orders the last step ahead of the flush.
+  recDrainWC(W) {
+    return new Promise(res => {
+      if (!W.pend) { res(); return; }
+      // a timed-out capture is a DROP, and says so (plan 5; adversarial review 2026-08-12,
+      // MINOR 2): the teardown that follows sets `gone` before destroying the buffers, so
+      // the rejection handlers stay silent -- count the stragglers here instead. W.drop is
+      // diagnostic (?recdebug); the file itself keys on the chunks that landed.
+      const t = setTimeout(() => { W.onDrain = null; W.drop += W.pend; res(); }, REC_DRAIN_MS);
+      W.onDrain = () => { clearTimeout(t); W.onDrain = null; res(); };
+    }).then(() => W.chain).catch(() => {});
   }
   // leg 1's PRIMARY feeder (RECRAF_PLAN, 2026-08-12), called from loop() in the SAME
   // synchronous task as this card's render(). The old feeder was the interval below, which
@@ -3481,6 +3689,11 @@ class DisplayCard {
     // table. At nominal cadence the `else` keeps `due` drift-free.
     if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
     else W.due += T;
+    // the fast path since RECASYNC (2026-08-12): submit a GPU copy and return. The frame
+    // itself is built from those bytes in the chain when the map resolves, and the rafN
+    // tally is incremented THERE -- it counts frames this feeder put in the FILE, and on
+    // this path that is not knowable yet.
+    if (W.bufOn) return this.recCaptureBuf(W);
     if (this.recEncodeFrame(W)) W.rafN++;
   }
   // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped
@@ -3496,6 +3709,12 @@ class DisplayCard {
   // tick cadence is the 30 fps the timestamps promise, exactly as it always was. The queue
   // check sits ahead of the render as well as inside the helper, so a tick that is only
   // going to drop the frame does not pay for a render first.
+  //
+  // The watchdog keeps the SYNCHRONOUS canvas capture unconditionally, buffer path or not
+  // (RECASYNC_PLAN, 2026-08-12): it renders off-screen anyway, so a stalled main thread
+  // there costs nothing anyone can see, and keeping the async pool out of the
+  // background-throttled world means never having to reason about maps that a hidden page
+  // is starving of callbacks.
   recTick(W) {
     if (this.wc !== W || W.done) return;
     if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
@@ -3524,6 +3743,7 @@ class DisplayCard {
     this.recIdle();
     const fin = () => {
       try { W.enc.close(); } catch (e) {}
+      this.recPoolFree(W);      // the staging buffers go here, on every route (RECASYNC 5)
       const mp4 = mp4Mux({ width: W.w, height: W.h, fps: REC_FPS, avcC: W.avcC, chunks: W.chunks });
       // the length is the samples that ended up IN the file over the fixed 30 fps the
       // sample table declares -- honest under the drop-frame guard, where a slow machine
@@ -3533,8 +3753,16 @@ class DisplayCard {
     };
     // flush() delivers the frames the encoder is still holding, so it has to complete
     // before the mux -- and its rejection is not a reason to lose the file either.
+    const flush = () => { try { W.enc.flush().then(fin, fin); } catch (e) { fin(); } };
+    // ... and since RECASYNC (2026-08-12) captures can be in FLIGHT when the stop lands:
+    // drain them first (W.done above already bars new ones), so the last half-second of a
+    // take is in the file rather than in three staging buffers about to be destroyed. A
+    // broken encoder skips the drain: there is nothing left that could encode, and the
+    // in-flight maps will resolve into a torn-down W and do nothing. A take that never
+    // touched the buffer path keeps EXACTLY the stop it always had.
     if (broken) fin();
-    else { try { W.enc.flush().then(fin, fin); } catch (e) { fin(); } }
+    else if (!W.bufOn && !W.chain) flush();
+    else this.recDrainWC(W).then(flush, flush);
   }
   // no avcC: this engine's WebCodecs leg is unusable, so switch legs mid-press and turn
   // it off for the rest of the session rather than hand back an unplayable file.
@@ -3545,6 +3773,10 @@ class DisplayCard {
     this.wc = null; this.recStop = 0;
     recWCOff = true;
     try { W.enc.close(); } catch (e) {}
+    // this leg ends here rather than in recStopWC, so it frees the staging buffers itself
+    // (RECASYNC_PLAN 5, "all routes"): the file is being thrown away, so there is nothing
+    // to drain -- captures still in flight resolve into a torn-down W and do nothing.
+    this.recPoolFree(W);
     if (recSupported(this.cv) && !this.dead) this.recStartMR();
     else this.recIdle();
   }
@@ -6118,9 +6350,14 @@ async function loop() {
     // visible page (wd must stay 0 there) and whether the loop gap explains a stutter.
     if (REC_DEBUG) for (const d of cards.disp) {
       const W = d.wc;
+      // `lag` (RECASYNC, 2026-08-12) is the buffer path's own number: capture submit to
+      // encode, i.e. how late the GPU's bytes arrive. Tens of ms are FINE -- the frame is
+      // stamped by index, not by arrival -- and it is here only so a phone can say whether
+      // the readback is keeping up at all. It stays 0 on the sync canvas path.
       if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
         "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms" +
-        "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1);
+        "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1) +
+        "  lag " + Math.round(W.tL) + " ms";
     }
 
     // energy trace: one sample per readback, but never a duplicate t while paused.
