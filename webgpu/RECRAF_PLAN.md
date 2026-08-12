@@ -47,7 +47,9 @@ backpressure drop all stay exactly as they are. What changes is who calls the en
 
    On a 120 Hz phone this captures on ~every 4th callback and renders NOTHING extra.
 
-3. **Timer path (kept, demoted).** `W.timer` stays a `setInterval` at `1000/REC_FPS`;
+3. **Timer path (kept, demoted).** [SUPERSEDED in round 2: the timing-heuristic park
+   below double-fed on-device; the watchdog now parks on visibility — see the round-2
+   execution note at the end.] `W.timer` stays a `setInterval` at `1000/REC_FPS`;
    its tick becomes: if `this.wc !== W || W.done` return; if
    `performance.now() - W.lastRaf < REC_RAF_STALE` return — rAF is feeding frames;
    otherwise EXACTLY today's `recTick` body: backpressure check, `this.render()`, shared
@@ -128,3 +130,32 @@ HEAD (2D 120/120, 3D 270/270), bootstub both pages green (old recording legs une
 checkmp4 all-pass (via a TMP-redirected copy — sandbox `/var/tmp` sticky-dir EACCES;
 re-run the real one where `/var/tmp` is writable). On-device iPhone check owed: stutter
 gone while recording, file still plays.
+
+## Round 2 (2026-08-12, same day): visibility park + ?recdebug
+
+On-device result: file plays, recording itself smooth, but the DISPLAY stutter
+persisted and read as WORSE. Diagnosis: the remaining per-frame cost (VideoFrame GPU
+copy + encode) was never this plan's target, and the round-1 timing-heuristic park made
+things actively worse — a visible loop whose post-render readback awaits stretch past
+REC_RAF_STALE got BOTH feeders (rAF captures plus 30 Hz watchdog render+encodes), more
+main-thread work than the pre-plan recorder. Round 2 (Fable direct + separate fresh-
+Fable adversarial review, PASS-W-MINORS, 3 minors fixed):
+
+- Watchdog parks on the condition it exists for: it feeds ONLY when `document.hidden`
+  or the editor view owns the screen. `REC_RAF_STALE` deleted. Double-feed is now
+  structurally excluded (reviewer also confirmed no iOS state is visible with rAF
+  stopped but timers running — hidden or fully-frozen covers them all).
+- `?recdebug` URL flag: one readout line per live recording — `raf`/`wd` feeder
+  tallies (wd must stay 0 on a visible page), drops, longest inter-capture gap — the
+  phone's way of reporting what a stutter is made of. `W.lastRaf`/`maxGap` kept as
+  diagnostics; a fed watchdog tick refreshes `lastRaf` so `gap` keeps meaning "longest
+  stretch nobody fed".
+- Stub: `document.hidden` boots TRUE in stubenv (no rAF loop = honestly hidden), which
+  keeps every pumped recording leg on the timer path; the parked leg flips it false and
+  restores; pump/handoff legs assert the tallies (35/0, 3/5).
+
+Gates re-run green after fixes: WGSL byte-identical vs HEAD (120/120, 270/270),
+bootstub both pages, checkmp4 all-pass (same TMP caveat), checkonepage 74/74.
+NEXT if stutter persists with `wd 0` and modest `gap`: the cost is the VideoFrame
+copy/encode itself → move the encoder to a Worker (transfer the VideoFrame), or drop
+capture to 15 fps on slow devices. On-device owed: ?recdebug numbers from a real take.

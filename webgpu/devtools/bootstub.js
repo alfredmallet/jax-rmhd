@@ -1310,8 +1310,9 @@ setTimeout(async () => {
     // performance.now() CALL, far past one 33 ms slot, so every call is slot-due AND the
     // slots it jumped over must be COUNTED (W.drop) rather than backfilled: the file's
     // sample table is a fixed 1/30 s and a backfilled frame would sit at a time it never
-    // had. That is also why every existing leg above still exercises the timer path: under
-    // this clock `now - lastRaf` is always stale, so the watchdog always takes over.
+    // had. Every existing leg above still exercises the timer path for a different reason
+    // since round 2: the stub's document.hidden boots TRUE (an environment with no rAF
+    // loop is an honest "hidden"), and hidden is now the watchdog's whole park condition.
     const rafCap = k => run(`function(k){ const d = cards.disp[0];
       for (let i = 0; i < k; i++) d.recCapture(); }`, k);
     // stss, read off the finished file: mp4Mux builds it from the chunks' key flags, so it
@@ -1338,11 +1339,14 @@ setTimeout(async () => {
     rafCap(35);
     const rafPump = run(`function(){ const d = cards.disp[0], W = d.wc;
       const r = { n: W.n, frames: W.enc.frames, chunks: W.chunks.length, drop: W.drop, rn: d._rn,
+                  rafN: W.rafN, wdN: W.wdN,
                   sync: W.chunks.map((c, i) => (c.key ? i : -1)).filter(i => i >= 0) };
       delete d.render; delete d._rn;               // back to the prototype's own render
       return r; }`);
     if (rafPump.n !== 35 || rafPump.frames !== 35 || rafPump.chunks !== 35)
       fail("the rAF path did not encode one frame per due slot: " + JSON.stringify(rafPump));
+    if (rafPump.rafN !== 35 || rafPump.wdN !== 0)
+      fail("the ?recdebug feeder tallies are wrong on a pure-rAF take: " + JSON.stringify(rafPump));
     if (rafPump.rn !== 0)
       fail("the rAF path rendered " + rafPump.rn + " extra times -- it must ride loop()'s render");
     if (!(rafPump.drop > 0))
@@ -1356,9 +1360,9 @@ setTimeout(async () => {
       fail("rAF-path timestamps are not a fixed 1/30 s apart: " +
            JSON.stringify(rafFr.slice(0, 3).map(f => f.timestamp)));
     // BETWEEN SLOTS (a 120 Hz phone, where only ~every 4th callback captures): nothing is
-    // encoded and nothing is dropped -- but the heartbeat still moves, because that is what
-    // keeps the watchdog parked. `due = Infinity` is the only "not yet due" a clock that
-    // only counts upward can be given.
+    // encoded and nothing is dropped -- but lastRaf still moves, since round 2 as the gap
+    // DIAGNOSTIC ?recdebug reads (the watchdog itself parks on visibility now). `due =
+    // Infinity` is the only "not yet due" a clock that only counts upward can be given.
     const gap = run(`function(){ const d = cards.disp[0], W = d.wc;
       const b = { n: W.n, drop: W.drop, raf: W.lastRaf };
       W.due = Infinity;
@@ -1390,10 +1394,13 @@ setTimeout(async () => {
     rafCap(3);
     const hand0 = run(`function(){ const W = cards.disp[0].wc; return { n: W.n, chunks: W.chunks.length, due: W.due }; }`);
     env.tick(5);
-    const hand1 = run(`function(){ const W = cards.disp[0].wc; return { n: W.n, chunks: W.chunks.length, due: W.due }; }`);
+    const hand1 = run(`function(){ const W = cards.disp[0].wc;
+      return { n: W.n, chunks: W.chunks.length, due: W.due, rafN: W.rafN, wdN: W.wdN }; }`);
     if (hand0.n !== 3 || hand1.n !== 8 || hand1.chunks !== 8)
-      fail("the watchdog did not take over when recCapture went quiet: " +
+      fail("the watchdog did not take over on the hidden page: " +
            JSON.stringify(hand0) + " -> " + JSON.stringify(hand1));
+    if (hand1.rafN !== 3 || hand1.wdN !== 5)
+      fail("the ?recdebug feeder tallies do not split across the handoff: " + JSON.stringify(hand1));
     // ... and each fed tick re-bases the slot clock, so the frames the watchdog put in
     // the file are not double-booked into W.drop by the first recCapture after rAF
     // resumes (adversarial review 2026-08-12, MINOR 1).
@@ -1403,22 +1410,26 @@ setTimeout(async () => {
     await new Promise(r => setTimeout(r, 5));
     stripPress("&times;");
     console.log(tag + " watchdog handoff: 3 rAF frames, then 5 on the timer, index unbroken");
-    // WATCHDOG PARKED: while the rAF loop IS feeding, the timer must do nothing at all --
-    // otherwise every frame would be rendered and encoded twice, which is the iPhone
-    // stutter this change removes. Under a clock that only moves forward, `lastRaf =
-    // Infinity` is the one deterministic way to make the freshness test pass.
+    // WATCHDOG PARKED: on a VISIBLE page the timer must do nothing at all -- otherwise
+    // every frame would be rendered and encoded twice, which is (part of) the iPhone
+    // stutter this change removes. Round 2 keys the watchdog on document.hidden, not on
+    // a lastRaf freshness heuristic (a loaded phone's loop gaps beat any threshold --
+    // on-device, 2026-08-12), so the parked branch is driven by flipping the stub's
+    // hidden flag, which boots true precisely so every OTHER leg stays on the timer path.
     run(`function(){ cards.disp[0].btnRec.onclick(); }`);
     await new Promise(r => setTimeout(r, 5));
     rafCap(2);
-    const park0 = run(`function(){ const W = cards.disp[0].wc; W.lastRaf = Infinity; return W.n; }`);
+    const park0 = run(`function(){ document.hidden = false; return cards.disp[0].wc.n; }`);
     env.tick(5);
-    const park1 = run(`function(){ const W = cards.disp[0].wc; return { n: W.n, chunks: W.chunks.length }; }`);
-    if (park0 !== 2 || park1.n !== park0 || park1.chunks !== park0)
-      fail("a live rAF loop did not park the watchdog: " + park0 + " -> " + JSON.stringify(park1));
+    const park1 = run(`function(){ const W = cards.disp[0].wc;
+      return { n: W.n, chunks: W.chunks.length, wd: W.wdN, hid: document.hidden }; }`);
+    run(`function(){ document.hidden = true; }`);
+    if (park0 !== 2 || park1.n !== park0 || park1.chunks !== park0 || park1.wd !== 0 || park1.hid)
+      fail("a visible page did not park the watchdog: " + park0 + " -> " + JSON.stringify(park1));
     run(`function(){ cards.disp[0].btnRec.onclick(); }`);
     await new Promise(r => setTimeout(r, 5));
     stripPress("&times;");
-    console.log(tag + " watchdog parked by a live rAF loop: 5 timer ticks encoded nothing");
+    console.log(tag + " watchdog parked on a visible page: 5 timer ticks encoded nothing");
     // NO avcC: an engine whose metadata never carries a decoder description cannot give
     // us a playable mp4, so the app must bail to MediaRecorder on the spot -- one frame
     // in, still recording -- and leave WebCodecs off for the rest of the session.

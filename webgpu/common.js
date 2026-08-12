@@ -2687,18 +2687,11 @@ const REC_FPS = 30;
 const REC_MAX_MS = 30000;                // hard stop, so a forgotten recording stays small
 const REC_BITRATE = 5e6;                 // 5 Mbit/s constant: ~19 MB for a full 30 s take
 const REC_QMAX = 8;                      // encoder backlog (frames) past which we drop
-// How long leg 1 waits without a rAF-side capture before its timer takes the recording
-// over. Since RECRAF_PLAN (2026-08-12) the frame loop itself is the feeder -- it renders
-// every card every frame anyway, so a capture taken in the same task is free -- and the
-// interval below is only the WATCHDOG for when there is no rAF to ride: a background tab,
-// the editor view owning the screen, the stub harness. 3.5 slots (~117 ms): a loop
-// iteration awaits real readbacks after its render, so on a loaded phone two captures
-// can legitimately sit further apart than the 33 ms slot -- 2.5 slots proved tight
-// enough for one visible-tab hiccup to wake the watchdog for exactly the extra
-// render+encode this constant exists to avoid (adversarial review 2026-08-12, MINOR 3).
-// Keep it under 250 ms: the devtools stub clock advances that much per now() call, and
-// the pumped bootstub legs stay on the timer path only while one call reads as stale.
-const REC_RAF_STALE = 3.5 * 1000 / REC_FPS;
+// ?recdebug: while a recording is live, the readout grows one line per recording card --
+// frames fed by the rAF loop vs by the watchdog, drops, and the longest gap between two
+// loop passes. Diagnostic only, for on-device eyes (a phone has no devtools console);
+// harmless to leave in a URL and absent from docs.html on purpose.
+const REC_DEBUG = typeof location !== "undefined" && /[?&]recdebug\b/.test(location.search);
 // H.264 levels as [level, MaxFS (macroblocks per frame), MaxMBPS (macroblocks per
 // second)]. The codec string has to name a level the frame actually fits in or the
 // encoder rejects the config; both 512x512 and the 1024x256 wide box are 1024 MBs, which
@@ -3393,13 +3386,14 @@ class DisplayCard {
   // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
   recStartWC(cfg) {
     this.recClear("video");               // same rule as recStartMR: replace on START
-    // ONE clock sample feeds both cadence fields: `due` is the wall-clock time of the next
-    // capture slot (recCapture), and `lastRaf` starts LIVE so the rAF loop gets its first
-    // REC_RAF_STALE ms to show up before the watchdog decides there is none -- a genuinely
-    // dead rAF hands over after ~83 ms, well inside one slot's worth of loss.
+    // ONE clock sample feeds the cadence fields: `due` is the wall-clock time of the next
+    // capture slot (recCapture). `lastRaf`/`maxGap` are DIAGNOSTIC only since round 2 --
+    // the watchdog parks on visibility, not on a heartbeat -- and `rafN`/`wdN` count which
+    // feeder put each frame in the file (?recdebug shows the tallies and maxGap;
+    // lastRaf just feeds maxGap).
     const t0 = performance.now();
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
-                due: t0 + 1000 / REC_FPS, lastRaf: t0,
+                due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
                 w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
     W.enc = new window.VideoEncoder({
       output: (chunk, meta) => {
@@ -3426,9 +3420,9 @@ class DisplayCard {
     // loop via recCapture, but rAF is throttled to a crawl (or stopped) in a background
     // tab, and the editor view does not render cards at all -- and there a silently
     // stretched recording is exactly what the fixed timestamps must not be paired with.
-    // So the timer stays, at the same 1000/30 ms, and feeds the recording itself whenever
-    // recCapture has been quiet for REC_RAF_STALE. Its extra render() then costs only
-    // where there is no visible display to stutter.
+    // So the timer stays, at the same 1000/30 ms, and feeds the recording itself on a
+    // hidden page or under the editor view (the park condition lives in recTick). Its
+    // extra render() then costs only where there is no visible display to stutter.
     W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
     this.recLive();
     this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
@@ -3443,13 +3437,14 @@ class DisplayCard {
     // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
     // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
     // wall clock, rather than a file whose sample table lies about its own timing.
-    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
     const f = new window.VideoFrame(this.cv, { timestamp: Math.round(W.n * 1e6 / REC_FPS),
                                               duration: Math.round(1e6 / REC_FPS) });
     // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
     // give. It is also every seek point the file has, stss being built from these.
     try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
     W.n++;
+    return true;                            // fed: the callers' rafN/wdN tallies key on this
   }
   // leg 1's PRIMARY feeder (RECRAF_PLAN, 2026-08-12), called from loop() in the SAME
   // synchronous task as this card's render(). The old feeder was the interval below, which
@@ -3461,8 +3456,9 @@ class DisplayCard {
     const W = this.wc;
     if (!W || W.done) return;               // not recording (or a loop iteration after stop)
     const now = performance.now();
-    // the heartbeat, taken on EVERY call whether this one captures or not: this is what
-    // tells the watchdog there is a live rAF loop and it should stand down.
+    // the gap between consecutive loop passes, kept as a DIAGNOSTIC (?recdebug): on a
+    // phone this is the number that says whether the loop itself is the bottleneck.
+    if (now - W.lastRaf > W.maxGap) W.maxGap = now - W.lastRaf;
     W.lastRaf = now;
     const T = 1000 / REC_FPS;
     if (now < W.due) return;                // between slots (a 120 Hz phone): not a drop
@@ -3473,21 +3469,31 @@ class DisplayCard {
     // table. At nominal cadence the `else` keeps `due` drift-free.
     if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
     else W.due += T;
-    this.recEncodeFrame(W);
+    if (this.recEncodeFrame(W)) W.rafN++;
   }
   // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped
-  // with -- backpressure, render, encode, at the interval's own cadence -- but it now runs
-  // only when recCapture has been silent for REC_RAF_STALE, i.e. when nothing is riding
-  // the rAF loop. No slot-due check here: when the watchdog IS the feeder, the tick cadence
-  // is the 30 fps the timestamps promise, exactly as it always was. The queue check sits
-  // ahead of the render as well as inside the helper, so a tick that is only going to drop
-  // the frame does not pay for a render first.
+  // with -- backpressure, render, encode, at the interval's own cadence -- but it runs only
+  // where the rAF feeder is KNOWN-ABSENT: a hidden page (rAF stopped or crawling) or the
+  // editor view (loop() skips the render/capture pair). Round 1 parked it on a TIMING
+  // heuristic instead -- recCapture silent for 3.5 slots -- and Alfred's phone showed why
+  // that was wrong: a visible loop whose post-render readback awaits stretch past the
+  // threshold got BOTH feeders, rAF captures plus 30 Hz watchdog render+encodes, MORE
+  // main-thread work than the pre-RECRAF recorder (on-device, "worse if anything",
+  // 2026-08-12). Visibility is the condition the watchdog exists for, so it is the
+  // condition it runs on. No slot-due check here: when the watchdog IS the feeder, the
+  // tick cadence is the 30 fps the timestamps promise, exactly as it always was. The queue
+  // check sits ahead of the render as well as inside the helper, so a tick that is only
+  // going to drop the frame does not pay for a render first.
   recTick(W) {
     if (this.wc !== W || W.done) return;
-    if (performance.now() - W.lastRaf < REC_RAF_STALE) return;   // rAF is feeding; stand down
+    if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
     if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
     this.render();      // same reason as saveShot: getCurrentTexture is transient
-    this.recEncodeFrame(W);
+    if (this.recEncodeFrame(W)) W.wdN++;
+    // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
+    // "the longest stretch NOBODY fed" -- without this, an editor-view stint would report
+    // its whole dwell time as one loop gap (adversarial review 2026-08-12, r2 MINOR 3)
+    W.lastRaf = performance.now();
     // re-base the slot clock: a frame the watchdog just PUT IN THE FILE must not be
     // counted as a dropped slot by the first recCapture after rAF resumes -- with `due`
     // frozen at handoff, every watchdog-fed slot would be double-booked into W.drop, and
@@ -6094,6 +6100,15 @@ async function loop() {
       "E_u = " + s[2].toExponential(5) + "  E_b = " + s[3].toExponential(5) +
       "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3) +
       (extra ? "\n" + extra : "");
+    // ?recdebug (RECRAF round 2, 2026-08-12): one readout line per live recording -- which
+    // feeder is putting frames in the file and how stretched the loop is. This is how a
+    // phone, which has no devtools console, reports whether the watchdog fired on a
+    // visible page (wd must stay 0 there) and whether the loop gap explains a stutter.
+    if (REC_DEBUG) for (const d of cards.disp) {
+      const W = d.wc;
+      if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
+        "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms";
+    }
 
     // energy trace: one sample per readback, but never a duplicate t while paused.
     // s[8] is the cross helicity H_c, which is what the E+- mode needs.

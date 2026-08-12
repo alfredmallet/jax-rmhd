@@ -300,9 +300,12 @@ kept frame becomes a `VideoFrame` at `round(n·10⁶/30)` µs encoded with
 and `n` is not advanced, so the timestamps stay an exact 1/30 s apart and a slow machine
 records fewer seconds of wall clock rather than a sample table that lies about its timing.
 The `setInterval` at 1000/30 ms is still there but **demoted to a watchdog**
-(RECRAF_PLAN, 2026-08-12): it re-renders and encodes only when `recCapture` has been silent
-for `REC_RAF_STALE` (3.5 slots, ~117 ms — wide enough that the loop's own post-render
-readback awaits cannot trip it on a loaded machine), i.e. exactly where there is no rAF to
+(RECRAF_PLAN, 2026-08-12): it re-renders and encodes only where the rAF feeder is
+**known-absent** — `document.hidden` or the editor view. Round 1 parked it on a timing
+heuristic (no capture for ~117 ms) and an on-device test showed why that fails: a loaded
+phone's loop gaps beat any threshold, waking the watchdog *alongside* a perfectly live
+rAF feeder — both feeders at once, more main-thread work than the old recorder. So the
+watchdog now keys on the condition it exists for, i.e. exactly where there is no rAF to
 ride — a
 background tab, whose rAF is throttled to a stop, the editor view, which renders no cards,
 and the headless stub. It was feeding leg 1 from that timer that made a live recording
@@ -312,6 +315,10 @@ the render costs zero extra renders, and the watchdog's second render now recurs
 there is no visible display to stutter. A watchdog-fed frame re-bases `W.due` too, so the
 slots it put in the file are never double-booked as drops when the rAF loop resumes. On
 stop (button, timer, `destroy()`, encoder error) it flushes and `mp4Mux` writes the file.
+`?recdebug` in the URL adds one readout line per live recording — frames fed by rAF vs
+the watchdog (wd must stay 0 on a visible page), drops, and the longest gap between loop
+passes — which is how a phone, with no devtools console, reports what a stutter is made
+of. Deliberately absent from `docs.html`.
 
 **Why we mux it ourselves.** Chrome's `MediaRecorder` `video/mp4` is a *fragmented* MP4:
 `moov` + `mvex`, one `moof` per fragment, `trun default_sample_flags 0x10000` — "not a

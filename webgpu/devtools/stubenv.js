@@ -483,6 +483,12 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   const search = demo ? "?demo=" + demo : "";
   const sandbox = {
     document: {
+      // The recorder's watchdog feeds only on a page the rAF loop is known-absent from
+      // (document.hidden, or the editor view). This stub has no rAF loop at all, so it
+      // reports HIDDEN -- which keeps every pumped recording leg on the timer path, the
+      // path env.tick() drives. The parked branch is asserted by a bootstub leg flipping
+      // this to false (RECRAF round 2, 2026-08-12).
+      hidden: true,
       getElementById: getEl,
       createElement: t => mkEl("", t.toLowerCase()),
       createTextNode: t => ({ kind: "#text", textContent: t }),
