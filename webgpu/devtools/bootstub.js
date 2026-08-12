@@ -1339,7 +1339,7 @@ setTimeout(async () => {
     rafCap(35);
     const rafPump = run(`function(){ const d = cards.disp[0], W = d.wc;
       const r = { n: W.n, frames: W.enc.frames, chunks: W.chunks.length, drop: W.drop, rn: d._rn,
-                  rafN: W.rafN, wdN: W.wdN,
+                  rafN: W.rafN, wdN: W.wdN, tV: W.tV, tE: W.tE,
                   sync: W.chunks.map((c, i) => (c.key ? i : -1)).filter(i => i >= 0) };
       delete d.render; delete d._rn;               // back to the prototype's own render
       return r; }`);
@@ -1347,6 +1347,11 @@ setTimeout(async () => {
       fail("the rAF path did not encode one frame per due slot: " + JSON.stringify(rafPump));
     if (rafPump.rafN !== 35 || rafPump.wdN !== 0)
       fail("the ?recdebug feeder tallies are wrong on a pure-rAF take: " + JSON.stringify(rafPump));
+    // the split timers: under a clock that advances exactly 250 ms per read, ONE frame
+    // costs exactly 250 in the VideoFrame stretch and 250 in the encode stretch -- any
+    // other value means a clock read was added, dropped, or the maxima are not wired
+    if (rafPump.tV !== 250 || rafPump.tE !== 250)
+      fail("the ?recdebug vf/enc split timers are not wired: " + JSON.stringify(rafPump));
     if (rafPump.rn !== 0)
       fail("the rAF path rendered " + rafPump.rn + " extra times -- it must ride loop()'s render");
     if (!(rafPump.drop > 0))

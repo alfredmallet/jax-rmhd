@@ -3394,6 +3394,7 @@ class DisplayCard {
     const t0 = performance.now();
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
+                tV: 0, tE: 0,               // max ms in VideoFrame / in encode (recdebug)
                 w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
     W.enc = new window.VideoEncoder({
       output: (chunk, meta) => {
@@ -3438,11 +3439,22 @@ class DisplayCard {
     // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
     // wall clock, rather than a file whose sample table lies about its own timing.
     if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
+    // the two halves of the capture cost, timed separately (?recdebug, round 3): `vf` is
+    // the VideoFrame construction -- the canvas copy, the classic iOS expense, and the
+    // half a Worker could NOT take (it needs the canvas) -- `enc` is the encode()
+    // submission, the half a Worker could. Which maximum dominates on a real phone is
+    // what picks the next fix, so the phone must be able to say. Two clock reads per
+    // frame; kept unconditional so the numbers exist the moment anyone asks.
+    const t1 = performance.now();
     const f = new window.VideoFrame(this.cv, { timestamp: Math.round(W.n * 1e6 / REC_FPS),
                                               duration: Math.round(1e6 / REC_FPS) });
+    const t2 = performance.now();
     // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
     // give. It is also every seek point the file has, stss being built from these.
     try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
+    const t3 = performance.now();
+    if (t2 - t1 > W.tV) W.tV = t2 - t1;
+    if (t3 - t2 > W.tE) W.tE = t3 - t2;
     W.n++;
     return true;                            // fed: the callers' rafN/wdN tallies key on this
   }
@@ -6107,7 +6119,8 @@ async function loop() {
     if (REC_DEBUG) for (const d of cards.disp) {
       const W = d.wc;
       if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
-        "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms";
+        "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms" +
+        "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1);
     }
 
     // energy trace: one sample per readback, but never a duplicate t while paused.

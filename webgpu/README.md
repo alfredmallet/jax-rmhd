@@ -316,9 +316,11 @@ there is no visible display to stutter. A watchdog-fed frame re-bases `W.due` to
 slots it put in the file are never double-booked as drops when the rAF loop resumes. On
 stop (button, timer, `destroy()`, encoder error) it flushes and `mp4Mux` writes the file.
 `?recdebug` in the URL adds one readout line per live recording — frames fed by rAF vs
-the watchdog (wd must stay 0 on a visible page), drops, and the longest gap between loop
-passes — which is how a phone, with no devtools console, reports what a stutter is made
-of. Deliberately absent from `docs.html`.
+the watchdog (wd must stay 0 on a visible page), drops, the longest gap between loop
+passes, and the capture cost split into its two halves: max ms in the `VideoFrame`
+construction (`vf`, the canvas copy a Worker could not take off the main thread) vs in
+`encode()` (`enc`, the half it could) — which is how a phone, with no devtools console,
+reports what a stutter is made of. Deliberately absent from `docs.html`.
 
 **Why we mux it ourselves.** Chrome's `MediaRecorder` `video/mp4` is a *fragmented* MP4:
 `moov` + `mvex`, one `moof` per fragment, `trun default_sample_flags 0x10000` — "not a

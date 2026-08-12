@@ -159,3 +159,14 @@ bootstub both pages, checkmp4 all-pass (same TMP caveat), checkonepage 74/74.
 NEXT if stutter persists with `wd 0` and modest `gap`: the cost is the VideoFrame
 copy/encode itself → move the encoder to a Worker (transfer the VideoFrame), or drop
 capture to 15 fps on slow devices. On-device owed: ?recdebug numbers from a real take.
+
+## Round 3 (2026-08-12): split the capture cost
+
+On-device: `wd 0 gap 36 ms` — parking works, the loop never stalled past ~one slot, so
+the stutter is the per-capture cost itself stretching slot-due passes past their vsync
+window. Fable direct (~10 lines, Alfred's pick): `recEncodeFrame` times its two halves,
+`?recdebug` line gains `vf`/`enc` maxima — vf = VideoFrame construction (the canvas
+copy; a Worker cannot take it), enc = encode() submission (a Worker could). Bootstub
+pins the wiring (stub clock ⇒ exactly 250/250). The numbers pick the fix: vf dominant →
+15 fps on phones (or half-res capture); enc dominant → Worker encode. Owed: one more
+?recdebug read from the phone.
