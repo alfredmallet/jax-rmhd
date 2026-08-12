@@ -84,7 +84,20 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   1/30 s apart, every `VideoFrame` closed, the drop-frame guard under a stalled encoder
   and the recovery after it, a downloaded `.mp4` whose bytes really are `ftyp+mdat+moov`
   with no `moof`, the 30 s hard stop fired by hand, destroy-mid-record, and the no-avcC
-  bail to leg 2. Leg 2 (MediaRecorder, which the bail has just switched the page to): the
+  bail to leg 2. Since RECRAF_PLAN (2026-08-12) the frame loop is leg 1's real feeder, so
+  three more legs drive `recCapture()` by hand the way `env.tick()` drives the timer (the
+  stub clock jumps 250 ms per `performance.now()` call, which is why every OLDER leg above
+  still exercises the timer path — `now - lastRaf` is always stale there). (a) rAF capture:
+  35 direct calls encode 35 frames with ZERO renders of the card's own (a counting wrapper
+  over `render()` proves it), forced keyframes at 0 and 30, timestamps an exact 1/30 s
+  apart, every `VideoFrame` closed, the slots the clock jumped over COUNTED into `W.drop`
+  rather than backfilled, a capture with `due` pushed to `Infinity` encoding nothing and
+  dropping nothing while still moving the heartbeat, and the file's own `stss` read back as
+  the 1-based `[1, 31]`. (b) watchdog handoff: 3 rAF frames, then `env.tick(5)` with nobody
+  calling `recCapture` — the timer carries the same frame index on to 8. (c) watchdog
+  parked: with `W.lastRaf = Infinity` (the one deterministic "rAF is live" under a clock
+  that only counts up) five timer ticks encode nothing at all, which is the double render
+  the iPhone stutter came from. Leg 2 (MediaRecorder, which the bail has just switched the page to): the
   vp9 pick and the 30 fps stream, the MP4 negotiation on an engine that offers it, that
   deleting `MediaRecorder` with WebCodecs off removes the rec button and leaves `save`
   alone, and that WebCodecs alone (no `MediaRecorder`: the iOS case this is all for) still

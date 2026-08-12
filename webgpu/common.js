@@ -2687,6 +2687,18 @@ const REC_FPS = 30;
 const REC_MAX_MS = 30000;                // hard stop, so a forgotten recording stays small
 const REC_BITRATE = 5e6;                 // 5 Mbit/s constant: ~19 MB for a full 30 s take
 const REC_QMAX = 8;                      // encoder backlog (frames) past which we drop
+// How long leg 1 waits without a rAF-side capture before its timer takes the recording
+// over. Since RECRAF_PLAN (2026-08-12) the frame loop itself is the feeder -- it renders
+// every card every frame anyway, so a capture taken in the same task is free -- and the
+// interval below is only the WATCHDOG for when there is no rAF to ride: a background tab,
+// the editor view owning the screen, the stub harness. 3.5 slots (~117 ms): a loop
+// iteration awaits real readbacks after its render, so on a loaded phone two captures
+// can legitimately sit further apart than the 33 ms slot -- 2.5 slots proved tight
+// enough for one visible-tab hiccup to wake the watchdog for exactly the extra
+// render+encode this constant exists to avoid (adversarial review 2026-08-12, MINOR 3).
+// Keep it under 250 ms: the devtools stub clock advances that much per now() call, and
+// the pumped bootstub legs stay on the timer path only while one call reads as stale.
+const REC_RAF_STALE = 3.5 * 1000 / REC_FPS;
 // H.264 levels as [level, MaxFS (macroblocks per frame), MaxMBPS (macroblocks per
 // second)]. The codec string has to name a level the frame actually fits in or the
 // encoder rejects the config; both 512x512 and the 1024x256 wide box are 1024 MBs, which
@@ -3381,7 +3393,13 @@ class DisplayCard {
   // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
   recStartWC(cfg) {
     this.recClear("video");               // same rule as recStartMR: replace on START
+    // ONE clock sample feeds both cadence fields: `due` is the wall-clock time of the next
+    // capture slot (recCapture), and `lastRaf` starts LIVE so the rAF loop gets its first
+    // REC_RAF_STALE ms to show up before the watchdog decides there is none -- a genuinely
+    // dead rAF hands over after ~83 ms, well inside one slot's worth of loss.
+    const t0 = performance.now();
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
+                due: t0 + 1000 / REC_FPS, lastRaf: t0,
                 w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
     W.enc = new window.VideoEncoder({
       output: (chunk, meta) => {
@@ -3404,27 +3422,78 @@ class DisplayCard {
     });
     W.enc.configure(cfg);
     this.wc = W;
-    // setInterval, not requestAnimationFrame: rAF is throttled to a crawl (or stopped)
-    // in a background tab, which would silently stretch the recording; the interval is
-    // the cadence the fixed timestamps promise.
+    // the WATCHDOG interval (RECRAF_PLAN, 2026-08-12): frames normally come from the rAF
+    // loop via recCapture, but rAF is throttled to a crawl (or stopped) in a background
+    // tab, and the editor view does not render cards at all -- and there a silently
+    // stretched recording is exactly what the fixed timestamps must not be paired with.
+    // So the timer stays, at the same 1000/30 ms, and feeds the recording itself whenever
+    // recCapture has been quiet for REC_RAF_STALE. Its extra render() then costs only
+    // where there is no visible display to stutter.
     W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
     this.recLive();
     this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
   }
-  recTick(W) {
-    if (this.wc !== W || W.done) return;
+  // The ONE place a recording frame is encoded, whichever feeder brought it (RECRAF_PLAN,
+  // 2026-08-12): the frame index, its nominal 1/30 s timestamps, the forced-keyframe
+  // cadence and the drop-frame guard exist here once, so the two paths cannot drift apart.
+  // It does NOT render -- the rAF path is already inside the render's own task, and the
+  // watchdog renders itself immediately before calling this.
+  recEncodeFrame(W) {
     // backpressure: when the encoder is behind, DROP this frame instead of queueing it.
     // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
     // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
     // wall clock, rather than a file whose sample table lies about its own timing.
     if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
-    this.render();      // same reason as saveShot: getCurrentTexture is transient
     const f = new window.VideoFrame(this.cv, { timestamp: Math.round(W.n * 1e6 / REC_FPS),
                                               duration: Math.round(1e6 / REC_FPS) });
     // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
     // give. It is also every seek point the file has, stss being built from these.
     try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
     W.n++;
+  }
+  // leg 1's PRIMARY feeder (RECRAF_PLAN, 2026-08-12), called from loop() in the SAME
+  // synchronous task as this card's render(). The old feeder was the interval below, which
+  // cost an extra full render() per tick plus the VideoFrame copy and the encode, all on
+  // the main thread and at an arbitrary phase against the rAF loop -- which is what made
+  // an iPhone stutter visibly for the whole take (Alfred, on-device, 2026-08-12). Riding
+  // the render costs zero extra renders and beats against nothing.
+  recCapture() {
+    const W = this.wc;
+    if (!W || W.done) return;               // not recording (or a loop iteration after stop)
+    const now = performance.now();
+    // the heartbeat, taken on EVERY call whether this one captures or not: this is what
+    // tells the watchdog there is a live rAF loop and it should stand down.
+    W.lastRaf = now;
+    const T = 1000 / REC_FPS;
+    if (now < W.due) return;                // between slots (a 120 Hz phone): not a drop
+    // a slot is due. If the loop was so late that a WHOLE further slot went by, those slots
+    // are counted lost and the next one is set from now -- never backfilled, because a
+    // backfilled frame would put a stale image at a timestamp it never had. The honest-
+    // length rule stands: fewer recorded seconds than wall clock, never a lying sample
+    // table. At nominal cadence the `else` keeps `due` drift-free.
+    if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
+    else W.due += T;
+    this.recEncodeFrame(W);
+  }
+  // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped
+  // with -- backpressure, render, encode, at the interval's own cadence -- but it now runs
+  // only when recCapture has been silent for REC_RAF_STALE, i.e. when nothing is riding
+  // the rAF loop. No slot-due check here: when the watchdog IS the feeder, the tick cadence
+  // is the 30 fps the timestamps promise, exactly as it always was. The queue check sits
+  // ahead of the render as well as inside the helper, so a tick that is only going to drop
+  // the frame does not pay for a render first.
+  recTick(W) {
+    if (this.wc !== W || W.done) return;
+    if (performance.now() - W.lastRaf < REC_RAF_STALE) return;   // rAF is feeding; stand down
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
+    this.render();      // same reason as saveShot: getCurrentTexture is transient
+    this.recEncodeFrame(W);
+    // re-base the slot clock: a frame the watchdog just PUT IN THE FILE must not be
+    // counted as a dropped slot by the first recCapture after rAF resumes -- with `due`
+    // frozen at handoff, every watchdog-fed slot would be double-booked into W.drop, and
+    // the returning rAF would double-feed the slot the watchdog had just filled
+    // (adversarial review 2026-08-12, MINOR 1).
+    W.due = performance.now() + 1000 / REC_FPS;
   }
   // the ONE place a WebCodecs recording ends: button, 30 s timer, destroy(), or encoder
   // error (`broken`, where flushing a dead encoder would only throw).
@@ -5987,7 +6056,22 @@ async function loop() {
     }
     // one display chain run per card per rendered frame: same state, own quantity.
     // (the editor view hides them all -- do not render into detached canvases)
-    if (!icDraw.on) for (const d of cards.disp) d.render();
+    // recCapture() is a live WebCodecs recording taking ITS frame off this very render,
+    // and it has to be here, in the same synchronous task, before any await: WebGPU has no
+    // preserveDrawingBuffer, so getCurrentTexture is transient and the canvas holds only
+    // its last PRESENTED image -- a capture deferred even one microtask would wrap an
+    // expired texture (the same reason saveShot re-renders first). Doing it here is also
+    // why leg 1's interval is now only a watchdog: feeding the encoder off a timer meant a
+    // second full render per frame at a phase that beat against this loop, which an iPhone
+    // showed as a stutter for the length of the take (RECRAF_PLAN, 2026-08-12).
+    // The catch keeps a capture fault at the OLD blast radius: under the timer feeder a
+    // VideoFrame/encode throw died inside one interval tick (logged, recording limped on);
+    // uncaught here it would reject loop()'s promise and freeze the whole app -- the one
+    // thing strictly worse than a bad take (adversarial review 2026-08-12, MINOR 2).
+    if (!icDraw.on) for (const d of cards.disp) {
+      d.render();
+      try { d.recCapture(); } catch (e) { console.error(e); }
+    }
     await device.queue.onSubmittedWorkDone();
     const ms = performance.now() - t0;
     if (running) {

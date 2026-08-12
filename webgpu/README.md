@@ -287,11 +287,31 @@ the engine supports.
 Constrained-Baseline-class H.264, `avc: {format:"avc"}` (so the chunks are length-prefixed
 samples and the first chunk's `metadata.decoderConfig.description` is the avcC payload the
 `stsd` box needs), 5 Mbit/s constant, level picked from the frame's macroblock count.
-A `setInterval` at 1000/30 ms — not rAF, which a background tab throttles to a stop —
-re-renders the card, wraps it in a `VideoFrame` at `round(n·10⁶/30)` µs and encodes it
-with `keyFrame: n % 30 === 0`; if `encodeQueueSize` runs past `REC_QMAX` the frame is
-*dropped* and `n` is not advanced, so the timestamps stay an exact 1/30 s apart. On stop
-(button, timer, `destroy()`, encoder error) it flushes and `mp4Mux` writes the file.
+The frames come off **the frame loop itself**: `loop()` calls each display card's
+`recCapture()` in the same synchronous task as that card's `render()`, before any `await`
+— WebGPU has no `preserveDrawingBuffer`, so a capture deferred even one microtask would
+wrap an expired `getCurrentTexture` (the same reason `save` re-renders). A **slot cadence**
+keeps it at 30 fps: `W.due` is the next slot's wall clock, a callback before it captures
+nothing (a 120 Hz phone captures on about every 4th and drops nothing), and a loop so late
+that whole further slots went by counts those into `W.drop` and re-bases `due` on *now* —
+never backfilling, since a backfilled frame would sit at a timestamp it never had. Each
+kept frame becomes a `VideoFrame` at `round(n·10⁶/30)` µs encoded with
+`keyFrame: n % 30 === 0`; if `encodeQueueSize` runs past `REC_QMAX` the frame is *dropped*
+and `n` is not advanced, so the timestamps stay an exact 1/30 s apart and a slow machine
+records fewer seconds of wall clock rather than a sample table that lies about its timing.
+The `setInterval` at 1000/30 ms is still there but **demoted to a watchdog**
+(RECRAF_PLAN, 2026-08-12): it re-renders and encodes only when `recCapture` has been silent
+for `REC_RAF_STALE` (3.5 slots, ~117 ms — wide enough that the loop's own post-render
+readback awaits cannot trip it on a loaded machine), i.e. exactly where there is no rAF to
+ride — a
+background tab, whose rAF is throttled to a stop, the editor view, which renders no cards,
+and the headless stub. It was feeding leg 1 from that timer that made a live recording
+stutter visibly on an iPhone: an *extra* full `render()` per tick plus the frame copy and
+the encode, all on the main thread and at an arbitrary phase against the rAF loop. Riding
+the render costs zero extra renders, and the watchdog's second render now recurs only where
+there is no visible display to stutter. A watchdog-fed frame re-bases `W.due` too, so the
+slots it put in the file are never double-booked as drops when the rAF loop resumes. On
+stop (button, timer, `destroy()`, encoder error) it flushes and `mp4Mux` writes the file.
 
 **Why we mux it ourselves.** Chrome's `MediaRecorder` `video/mp4` is a *fragmented* MP4:
 `moov` + `mvex`, one `moof` per fragment, `trun default_sample_flags 0x10000` — "not a
@@ -317,7 +337,11 @@ leg can run and is simply absent otherwise. Filenames are
 and `setInterval` as a hand-driven pump (`env.tick(n)`) with `env.fireTimeout(ms)` for the
 30 s cap — so `bootstub.js` runs the whole WebCodecs path headlessly (pump, forced
 keyframes, backpressure, flush, an `ftyp+mdat+moov` download with no `moof`, the 30 s cap,
-destroy-mid-record, the no-avcC bail) and then the same MediaRecorder legs as before.
+destroy-mid-record, the no-avcC bail) and then the same MediaRecorder legs as before. Its
+stub `requestAnimationFrame` is a no-op and its `performance.now` jumps 250 ms per *call*,
+so `env.tick(n)` always drives the **watchdog** path; the rAF-side feeder is driven by
+calling `recCapture()` directly, which is how the slot cadence, the skipped-slot counting
+and the handoff in both directions are covered.
 `devtools/checkmp4.js` drives `mp4Mux` with **real** H.264: ffmpeg encodes a test pattern,
 the script cuts it into samples and builds the avcC (the only Annex-B code in the project,
 and it is in the test), and ffprobe/ffmpeg check the result — top-level boxes, sync samples

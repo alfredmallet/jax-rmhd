@@ -1303,6 +1303,122 @@ setTimeout(async () => {
       fail("a press whose probe failed threw the old result away: " + JSON.stringify(stKept));
     stripPress("&times;");
     console.log(tag + " dead probe, no fallback -> nothing starts and the old strip survives");
+    // rAF-SIDE CAPTURE (RECRAF_PLAN, 2026-08-12): the frame loop is leg 1's real feeder --
+    // `recCapture()` straight after the card's render() -- and the interval above is only
+    // the watchdog for when there is no rAF to ride. So this leg drives recCapture by hand,
+    // exactly as env.tick() drives the timer. The stub's clock jumps 250 ms per
+    // performance.now() CALL, far past one 33 ms slot, so every call is slot-due AND the
+    // slots it jumped over must be COUNTED (W.drop) rather than backfilled: the file's
+    // sample table is a fixed 1/30 s and a backfilled frame would sit at a time it never
+    // had. That is also why every existing leg above still exercises the timer path: under
+    // this clock `now - lastRaf` is always stale, so the watchdog always takes over.
+    const rafCap = k => run(`function(k){ const d = cards.disp[0];
+      for (let i = 0; i < k; i++) d.recCapture(); }`, k);
+    // stss, read off the finished file: mp4Mux builds it from the chunks' key flags, so it
+    // is the seek table a player would actually use. `moov` is the last box, so the last
+    // "stss" in the bytes is the real one (the samples are a ramp and the tables around it
+    // hold sizes and offsets in the hundreds -- neither can spell it by accident).
+    const stssOf = u8 => {
+      let at = -1;
+      for (let i = 0; i + 3 < u8.length; i++)
+        if (u8[i] === 0x73 && u8[i + 1] === 0x74 && u8[i + 2] === 0x73 && u8[i + 3] === 0x73) at = i;
+      if (at < 0) return null;
+      const u32 = o => ((u8[o] << 24) | (u8[o + 1] << 16) | (u8[o + 2] << 8) | u8[o + 3]) >>> 0;
+      const n = u32(at + 8), out = [];
+      for (let i = 0; i < n; i++) out.push(u32(at + 12 + 4 * i));
+      return out;
+    };
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    // the whole point of the change: a capture rides the render the loop already did, so
+    // the rAF path must call render() exactly ZERO times of its own
+    run(`function(){ const d = cards.disp[0]; d._rn = 0;
+      d.render = function () { this._rn++; return DisplayCard.prototype.render.call(this); }; }`);
+    const nRafFr = env.caps.frames.length;
+    rafCap(35);
+    const rafPump = run(`function(){ const d = cards.disp[0], W = d.wc;
+      const r = { n: W.n, frames: W.enc.frames, chunks: W.chunks.length, drop: W.drop, rn: d._rn,
+                  sync: W.chunks.map((c, i) => (c.key ? i : -1)).filter(i => i >= 0) };
+      delete d.render; delete d._rn;               // back to the prototype's own render
+      return r; }`);
+    if (rafPump.n !== 35 || rafPump.frames !== 35 || rafPump.chunks !== 35)
+      fail("the rAF path did not encode one frame per due slot: " + JSON.stringify(rafPump));
+    if (rafPump.rn !== 0)
+      fail("the rAF path rendered " + rafPump.rn + " extra times -- it must ride loop()'s render");
+    if (!(rafPump.drop > 0))
+      fail("the slots the clock jumped over were not counted as drops: " + JSON.stringify(rafPump));
+    if (JSON.stringify(rafPump.sync) !== "[0,30]")
+      fail("the forced keyframe cadence is wrong on the rAF path: " + JSON.stringify(rafPump.sync));
+    const rafFr = env.caps.frames.slice(nRafFr);
+    if (rafFr.length !== 35) fail("the rAF path built " + rafFr.length + " VideoFrames, not 35");
+    if (rafFr.some(f => !f.closed)) fail("a VideoFrame from the rAF path was never closed");
+    if (rafFr.map((f, i) => f.timestamp === Math.round(i * 1e6 / 30)).indexOf(false) >= 0)
+      fail("rAF-path timestamps are not a fixed 1/30 s apart: " +
+           JSON.stringify(rafFr.slice(0, 3).map(f => f.timestamp)));
+    // BETWEEN SLOTS (a 120 Hz phone, where only ~every 4th callback captures): nothing is
+    // encoded and nothing is dropped -- but the heartbeat still moves, because that is what
+    // keeps the watchdog parked. `due = Infinity` is the only "not yet due" a clock that
+    // only counts upward can be given.
+    const gap = run(`function(){ const d = cards.disp[0], W = d.wc;
+      const b = { n: W.n, drop: W.drop, raf: W.lastRaf };
+      W.due = Infinity;
+      d.recCapture();
+      const a = { n: W.n, drop: W.drop, raf: W.lastRaf };
+      W.due = W.lastRaf;                           // back on cadence
+      return { b: b, a: a }; }`);
+    if (gap.a.n !== gap.b.n || gap.a.drop !== gap.b.drop)
+      fail("a capture BETWEEN slots was not free: " + JSON.stringify(gap));
+    if (!(gap.a.raf > gap.b.raf))
+      fail("a skipped capture did not mark the rAF loop alive: " + JSON.stringify(gap));
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    if (!stripPress("download")) fail("the rAF-fed recording's strip has no download button");
+    const rafMp4 = mp4File("rAF capture");
+    if (rafMp4) {
+      const ss = stssOf(env.caps.downloads[env.caps.downloads.length - 1].blob.bytes);
+      if (JSON.stringify(ss) !== "[1,31]")             // stss is 1-BASED sample numbers
+        fail("the rAF-fed file's stss is " + JSON.stringify(ss) + ", not the forced keyframes");
+      console.log(tag + " rAF capture: 35 frames, no extra render, " + rafPump.drop +
+                  " skipped slots counted -> " + rafMp4.boxes + ", stss " + JSON.stringify(ss));
+    }
+    stripPress("&times;");
+    // WATCHDOG HANDOFF: when the rAF loop stops calling (a backgrounded tab, the editor
+    // view), the timer must pick the recording up where recCapture left it -- same frame
+    // index, same timestamps, no gap in the file.
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    rafCap(3);
+    const hand0 = run(`function(){ const W = cards.disp[0].wc; return { n: W.n, chunks: W.chunks.length, due: W.due }; }`);
+    env.tick(5);
+    const hand1 = run(`function(){ const W = cards.disp[0].wc; return { n: W.n, chunks: W.chunks.length, due: W.due }; }`);
+    if (hand0.n !== 3 || hand1.n !== 8 || hand1.chunks !== 8)
+      fail("the watchdog did not take over when recCapture went quiet: " +
+           JSON.stringify(hand0) + " -> " + JSON.stringify(hand1));
+    // ... and each fed tick re-bases the slot clock, so the frames the watchdog put in
+    // the file are not double-booked into W.drop by the first recCapture after rAF
+    // resumes (adversarial review 2026-08-12, MINOR 1).
+    if (!(hand1.due > hand0.due))
+      fail("watchdog frames did not re-base W.due: " + hand0.due + " -> " + hand1.due);
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    stripPress("&times;");
+    console.log(tag + " watchdog handoff: 3 rAF frames, then 5 on the timer, index unbroken");
+    // WATCHDOG PARKED: while the rAF loop IS feeding, the timer must do nothing at all --
+    // otherwise every frame would be rendered and encoded twice, which is the iPhone
+    // stutter this change removes. Under a clock that only moves forward, `lastRaf =
+    // Infinity` is the one deterministic way to make the freshness test pass.
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    rafCap(2);
+    const park0 = run(`function(){ const W = cards.disp[0].wc; W.lastRaf = Infinity; return W.n; }`);
+    env.tick(5);
+    const park1 = run(`function(){ const W = cards.disp[0].wc; return { n: W.n, chunks: W.chunks.length }; }`);
+    if (park0 !== 2 || park1.n !== park0 || park1.chunks !== park0)
+      fail("a live rAF loop did not park the watchdog: " + park0 + " -> " + JSON.stringify(park1));
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    stripPress("&times;");
+    console.log(tag + " watchdog parked by a live rAF loop: 5 timer ticks encoded nothing");
     // NO avcC: an engine whose metadata never carries a decoder description cannot give
     // us a playable mp4, so the app must bail to MediaRecorder on the spot -- one frame
     // in, still recording -- and leave WebCodecs off for the rest of the session.
