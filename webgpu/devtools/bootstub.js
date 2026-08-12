@@ -895,19 +895,152 @@ setTimeout(async () => {
     }
     console.log(tag + " colorbar labels: " + JSON.stringify(bar.lab));
 
-    // SAVE: the handler must reach toBlob and hand a real blob to a real <a download>.
+    // The RESULT STRIP (Alfred, 2026-08-11, and the save path 2026-08-12). A finished file
+    // is no longer thrown at the downloader: it waits on the card's FOOTER behind its own
+    // size (and, for a video, its length), with a download button, a share button where the
+    // engine can share files, and a dismiss -- because on a phone a silent download lands in
+    // Files and is then hard to send on. These read that strip off the booted page and press
+    // its buttons. A card carries TWO slots, keyed by kind: a picture and a recording are
+    // two different files, so each replaces only its own.
+    const stripOf = kind => run(`function(k){ const d = cards.disp[0], s = d.resEl[k];
+      const n = d.foot.children.filter(c => (c.className || "").indexOf("recres") >= 0).length;
+      const btn = s ? s.children.filter(c => c.kind === "button") : [];
+      return { on: !!s, n: n, slots: (d.resEl.png ? 1 : 0) + (d.resEl.video ? 1 : 0),
+               cls: s && s.className, foot: !!s && s.parentNode === d.foot,
+               txt: s ? s.children.filter(c => c.kind === "span").map(c => c.innerHTML).join("") : "",
+               btns: btn.map(c => c.innerHTML), tips: btn.map(c => c.title) }; }`,
+      kind || "video");
+    const stripPress = (lab, kind) => run(`function(a){ const s = cards.disp[0].resEl[a[1]];
+      const b = s && s.children.filter(c => c.kind === "button" && c.innerHTML === a[0])[0];
+      if (!b) return false;
+      b.onclick(); return true; }`, [lab, kind || "video"]);
+    // what that line should READ, computed here from the stubbed bytes and the pumped
+    // frame count rather than read back off the page
+    const sizeTxt = b => { const k = Math.round(b / 1e3);
+      return k < 1000 ? k + " kB" : (b / 1e6).toFixed(1) + " MB"; };
+    const lenTxt = s => (s < 10 ? s.toFixed(1) : String(Math.round(s))) + " s";
+
+    // SAVE: the handler must reach toBlob and produce a real PNG -- and since 2026-08-12
+    // that PNG takes the recording's route, onto the footer rather than into the downloads
+    // folder. The press itself must therefore write NOTHING.
     const nDl = env.caps.downloads.length;
     run(`function(){ cards.disp[0].btnSave.onclick(); }`);
     await new Promise(r => setTimeout(r, 5));       // toBlob is async, as in a browser
-    const png = env.caps.downloads[nDl];
-    if (!png) fail("save produced no download");
+    if (env.caps.downloads.length !== nDl)
+      fail("pressing save downloaded the picture by itself -- the strip is the point");
+    const pngBlob = env.caps.blobs[env.caps.blobs.length - 1];
+    const stPng = stripOf("png");
+    if (!stPng.on || !stPng.foot || stPng.n !== 1 || stPng.cls !== "recres")
+      fail("no result strip on the footer after save: " + JSON.stringify(stPng));
+    else {
+      // a picture has no length, so the line is the SIZE alone -- no seconds, and no
+      // separator left hanging where they used to be
+      if (stPng.txt !== sizeTxt(pngBlob.size))
+        fail('the save strip reads "' + stPng.txt + '", not "' + sizeTxt(pngBlob.size) + '"');
+      if (/·|\ss$/.test(stPng.txt)) fail("the save strip quotes a length: " + stPng.txt);
+      if (stPng.btns.join(",") !== "download,share,&times;")
+        fail("the save strip's buttons are " + JSON.stringify(stPng.btns));
+      if (stPng.tips.some(t => !t))
+        fail("a save-strip button has no title tooltip: " + JSON.stringify(stPng.tips));
+      console.log(tag + " save strip: " + stPng.txt + " [" + stPng.btns.join(" ") + "]");
+    }
+    // ... and the download button is where the picture comes out: the same file the direct
+    // download used to produce, name pattern, type and bytes alike
+    if (!stripPress("download", "png")) fail("the save strip has no download button");
+    const png = env.caps.downloads[env.caps.downloads.length - 1];
+    if (!png || env.caps.downloads.length !== nDl + 1) fail("the save strip produced no download");
     else {
       if (!/^taranis-[a-z0-9]+-[a-z_]+-t[-0-9.]+\.png$/.test(png.name))
         fail("save filename is off pattern: " + png.name);
       if (!png.blob || png.blob.type !== "image/png" || !(png.blob.size > 0))
-        fail("save produced no PNG blob: " + JSON.stringify(png.blob));
+        fail("save produced no PNG blob: " + JSON.stringify(png.blob && png.blob.type));
+      const sig = png.blob && png.blob.bytes;
+      if (!sig || sig.length !== png.blob.size || sig[0] !== 0x89 || sig[1] !== 0x50)
+        fail("the downloaded picture is not the PNG the canvas made");
       console.log(tag + " save -> " + png.name + " (" + png.blob.type + ", " + png.blob.size + " B)");
     }
+    // SHARE, with the recording's semantics exactly: offered only where the engine can
+    // share FILES, handed the picture itself, AbortError silent and anything else a
+    // download.
+    const nPgSh = env.caps.shares.length, nPgDl = env.caps.downloads.length;
+    if (!stripPress("share", "png")) fail("no share button on the save strip of a sharing engine");
+    await new Promise(r => setTimeout(r, 5));
+    const shp = env.caps.shares[nPgSh];
+    if (!shp || !shp.files || shp.files.length !== 1)
+      fail("share() was handed " + JSON.stringify(shp && Object.keys(shp)));
+    else if (png && png.blob.bytes) {
+      const f = shp.files[0], ref = png.blob.bytes;
+      if (f.name !== png.name) fail("shared " + f.name + " but downloaded " + png.name);
+      if (f.type !== "image/png") fail("the shared picture's File type is " + f.type);
+      if (!f.bytes || f.bytes.length !== ref.length || f.bytes.some((v, i) => v !== ref[i]))
+        fail("the shared File is not the saved picture's bytes");
+      else console.log(tag + " share -> " + f.name + " (" + f.type + ", " + f.bytes.length +
+                       " B, byte-identical to the download)");
+    }
+    if (env.caps.downloads.length !== nPgDl)
+      fail("a share that SUCCEEDED downloaded the picture as well");
+    env.share.reject = "NotAllowedError";
+    stripPress("share", "png");
+    await new Promise(r => setTimeout(r, 5));
+    if (env.caps.downloads.length !== nPgDl + 1 ||
+        !/\.png$/.test(env.caps.downloads[env.caps.downloads.length - 1].name))
+      fail("a failed share of the picture did not fall back to a download");
+    env.share.reject = "AbortError";
+    const nPgAb = env.caps.downloads.length;
+    stripPress("share", "png");
+    await new Promise(r => setTimeout(r, 5));
+    if (env.caps.downloads.length !== nPgAb)
+      fail("a share the visitor closed downloaded the picture anyway");
+    env.share.reject = "";
+    console.log(tag + " save share rejection: NotAllowedError -> download, AbortError -> nothing");
+    // an engine that cannot share files grows no share button here either -- and a second
+    // save REPLACES the first, one picture and not a pile of them
+    env.share.can = false;
+    run(`function(){ window._pngWas = cards.disp[0].resEl.png; cards.disp[0].btnSave.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const stPng2 = stripOf("png");
+    const pngNew = run(`function(){ const r = cards.disp[0].resEl.png !== window._pngWas;
+      delete window._pngWas; return r; }`);
+    if (!stPng2.on || stPng2.btns.join(",") !== "download,&times;")
+      fail("an engine that cannot share files still grew a share button on the save strip: " +
+           JSON.stringify(stPng2.btns));
+    if (!pngNew || stPng2.n !== 1 || stPng2.slots !== 1)
+      fail("a second save did not replace the first strip: " + JSON.stringify(stPng2));
+    env.share.can = true;
+    stripPress("&times;", "png");
+    const stPng3 = stripOf("png");
+    if (stPng3.on || stPng3.n !== 0) fail("dismiss left the save strip on the footer");
+    console.log(tag + " no file sharing -> download only; a second save replaces the strip");
+    // a card closed BETWEEN the press and the picture: toBlob's callback is deferred, as a
+    // browser's is, so this is a real race and not a contrivance. The strip would have
+    // nowhere to live, so the picture is downloaded on the spot rather than lost -- the
+    // recording's dead-card rule, on the save path.
+    const deadSave = await (async () => {
+      run(`function(){ while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
+                       addDisplayCard(); cardsSync();
+                       const d = cards.disp[cards.disp.length - 1];
+                       d.btnSave.onclick();
+                       cardClose(d); cardsSync(); }`);
+      const n = env.caps.downloads.length;
+      await new Promise(r => setTimeout(r, 5));
+      return env.caps.downloads.length > n ? env.caps.downloads[env.caps.downloads.length - 1] : null;
+    })();
+    if (!deadSave || !/\.png$/.test(deadSave.name) || !(deadSave.blob && deadSave.blob.size > 0))
+      fail("a card closed between the save press and the picture lost the file: " +
+           JSON.stringify(deadSave && deadSave.name));
+    else console.log(tag + " card closed mid-save -> picture still written");
+    // the CAPTURE GROUP: save and rec are children of one node, so a wrapping footer can
+    // never put them on two different lines (Alfred, 2026-08-12)
+    const capg = run(`function(){ const d = cards.disp[0];
+      const g = d.foot.children.filter(c => (c.className || "").indexOf("capgrp") >= 0);
+      return { n: g.length, one: !!g[0] && d.btnSave.parentNode === g[0] && d.btnRec.parentNode === g[0],
+               kids: g[0] ? g[0].children.map(c => c.innerHTML) : [],
+               loose: d.foot.children.indexOf(d.btnSave) }; }`);
+    if (capg.n !== 1 || !capg.one || capg.loose >= 0)
+      fail("save and rec are not one footer group: " + JSON.stringify(capg));
+    if (capg.kids.join(",") !== "save,rec")
+      fail("the capture group holds " + JSON.stringify(capg.kids));
+    console.log(tag + " capture group: [" + capg.kids.join(" ") + "] as one footer item");
     // RECORD, leg 1 (WebCodecs -> mp4Mux): the preferred path, and the whole reason the
     // muxer exists -- MediaRecorder's fragmented mp4 is what iOS refused to play. The
     // stub encoder hands back deterministic chunks with an avcC-shaped description, and
@@ -942,26 +1075,6 @@ setTimeout(async () => {
       if (hasMoof(b)) fail(what + ": the file contains a moof -- it is FRAGMENTED");
       return { name: dl.name, size: b.length, boxes: bx.join("+") };
     };
-    // The RESULT STRIP (Alfred, 2026-08-11). A finished recording is no longer thrown at
-    // the downloader: it waits on the card's FOOTER behind its own size and length, with a
-    // download button, a share button where the engine can share files, and a dismiss --
-    // because on a phone a silent download lands in Files and is then hard to send on.
-    // These read that strip off the booted page and press its buttons.
-    const stripOf = () => run(`function(){ const d = cards.disp[0], s = d.resEl;
-      const n = d.foot.children.filter(c => (c.className || "").indexOf("recres") >= 0).length;
-      const btn = s ? s.children.filter(c => c.kind === "button") : [];
-      return { on: !!s, n: n, cls: s && s.className, foot: !!s && s.parentNode === d.foot,
-               txt: s ? s.children.filter(c => c.kind === "span").map(c => c.innerHTML).join("") : "",
-               btns: btn.map(c => c.innerHTML), tips: btn.map(c => c.title) }; }`);
-    const stripPress = lab => run(`function(lab){ const s = cards.disp[0].resEl;
-      const b = s && s.children.filter(c => c.kind === "button" && c.innerHTML === lab)[0];
-      if (!b) return false;
-      b.onclick(); return true; }`, lab);
-    // what that line should READ, computed here from the stubbed bytes and the pumped
-    // frame count rather than read back off the page
-    const sizeTxt = b => { const k = Math.round(b / 1e3);
-      return k < 1000 ? k + " kB" : (b / 1e6).toFixed(1) + " MB"; };
-    const lenTxt = s => (s < 10 ? s.toFixed(1) : String(Math.round(s))) + " s";
     // one take: press, pump n frames, press again -- leg 1's toggle with its async probe
     const wcTake = async n => {
       run(`function(){ cards.disp[0].btnRec.onclick(); }`);
@@ -1099,7 +1212,7 @@ setTimeout(async () => {
     if (!stripPress("&times;")) fail("the strip has no dismiss button");
     const st2 = stripOf();
     if (st2.on || st2.n !== 0) fail("dismiss left the strip on the footer: " + JSON.stringify(st2));
-    run(`function(){ const d = cards.disp[0]; d.recClear(); d.recClear(); }`);
+    run(`function(){ const d = cards.disp[0]; d.recClear("video"); d.recClear("video"); }`);
     if (stripOf().on) fail("a second dismiss brought the strip back");
     console.log(tag + " strip dismissed, footer clean, a second dismiss inert");
     // an engine WITHOUT file sharing: the same strip, download only. Turning canShare off
@@ -1254,6 +1367,62 @@ setTimeout(async () => {
     if (!mp4 || !/\.mp4$/.test(mp4.name) || !(mp4.blob && mp4.blob.type.indexOf("mp4") >= 0 && mp4.blob.size > 0))
       fail("mp4 record download wrong: " + JSON.stringify(mp4 && mp4.name));
     else console.log(tag + " record (mp4 engine) -> " + mp4.name + " (" + mp4.blob.type + ")");
+    // TWO SLOTS (Alfred, 2026-08-12): a picture and a recording are two different files, so
+    // a save replaces only the last save and a take only the last take. One slot would mean
+    // a 30 s take dying because the visitor saved a PNG a second later. Driven on leg 2,
+    // whose whole take is two presses and a clock.
+    run(`function(){ const d = cards.disp[0]; d.recClear("png"); d.recClear("video"); }`);
+    run(`function(){ cards.disp[0].btnSave.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const indPng = stripOf("png");
+    if (!indPng.on || indPng.n !== 1) fail("no saved picture to defend: " + JSON.stringify(indPng));
+    // a whole take over the top of it: the START is where a take clears the last take, and
+    // it must not take the picture with it
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    const midTake = stripOf("png");
+    if (!midTake.on || midTake.txt !== indPng.txt)
+      fail("starting a recording threw the saved picture away: " + JSON.stringify(midTake));
+    env.advance(3000);
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const indVid = stripOf("video"), indPng2 = stripOf("png");
+    if (!indVid.on || indVid.txt.indexOf(" · 3.0 s") < 0)
+      fail("the take beside a picture produced no strip of its own: " + JSON.stringify(indVid));
+    if (!indPng2.on || indPng2.txt !== indPng.txt || indVid.n !== 2 || indVid.slots !== 2)
+      fail("a picture and a recording do not sit on the footer together: " +
+           JSON.stringify([indPng2, indVid.n, indVid.slots]));
+    // ... and the other way: a save while a recording waits replaces the PICTURE only
+    run(`function(){ window._vidWas = cards.disp[0].resEl.video; cards.disp[0].btnSave.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const afterSave = stripOf("video");
+    const vidSame = run(`function(){ const r = cards.disp[0].resEl.video === window._vidWas;
+      delete window._vidWas; return r; }`);
+    if (!vidSame || !afterSave.on || afterSave.txt !== indVid.txt || afterSave.n !== 2)
+      fail("saving a picture disturbed the waiting recording: " + JSON.stringify(afterSave));
+    // ... and a second take replaces the VIDEO only, still two strips and not three
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    env.advance(5000);
+    run(`function(){ cards.disp[0].btnRec.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    const twoTakes = stripOf("video"), stillPng = stripOf("png");
+    if (!twoTakes.on || twoTakes.txt.indexOf(" · 5.0 s") < 0 || twoTakes.n !== 2 || twoTakes.slots !== 2)
+      fail("the second take did not replace the first beside the picture: " + JSON.stringify(twoTakes));
+    if (!stillPng.on || stillPng.txt !== indPng.txt)
+      fail("the second take took the picture with it: " + JSON.stringify(stillPng));
+    // dismiss, both ways: each × drops its own file and leaves the other standing
+    stripPress("&times;", "png");
+    const keptVid = stripOf("video");
+    if (!keptVid.on || keptVid.n !== 1 || keptVid.slots !== 1 || stripOf("png").on)
+      fail("dismissing the picture disturbed the recording: " + JSON.stringify(keptVid));
+    run(`function(){ cards.disp[0].btnSave.onclick(); }`);
+    await new Promise(r => setTimeout(r, 5));
+    stripPress("&times;", "video");
+    const keptPng = stripOf("png");
+    if (!keptPng.on || keptPng.n !== 1 || keptPng.slots !== 1 || stripOf("video").on)
+      fail("dismissing the recording disturbed the picture: " + JSON.stringify(keptPng));
+    stripPress("&times;", "png");
+    if (stripOf("png").n !== 0) fail("a strip survived both dismissals");
+    console.log(tag + " two slots: save and take replace only their own, dismiss only their own");
     // DESTROY mid-recording on THIS leg too: the dead branch is recResult's, but the stop
     // that reaches it is MediaRecorder's own onstop -- a different route than leg 1's
     // flush, so it gets its own assertion (adversarial review 2026-08-12, MINOR 3)
@@ -1280,15 +1449,22 @@ setTimeout(async () => {
       while (cards.disp.length >= CARD_MAX_DISP) cardClose(cards.disp[cards.disp.length - 1]);
       const d = addDisplayCard(); cardsSync();
       const hid = d.btnRec.style.display, sav = d.btnSave.style.display;
+      const g = d.btnSave.parentNode;
+      const grp = { cls: g && g.className, rec: !!g && d.btnRec.parentNode === g,
+                    foot: !!g && g.parentNode === d.foot };
       cardClose(d); cardsSync();
       window.MediaRecorder = M;
-      return { off: off, hid: hid, sav: sav, back: recSupported(cards.disp[0].cv) };
+      return { off: off, hid: hid, sav: sav, grp: grp, back: recSupported(cards.disp[0].cv) };
     }`);
     if (noRec.off !== false || noRec.back !== true)
       fail("MediaRecorder feature detection: " + JSON.stringify(noRec));
     if (noRec.hid !== "none") fail("neither recording leg, but the rec button is shown: " + noRec.hid);
     if (noRec.sav === "none") fail("no MediaRecorder took the SAVE button away too");
-    console.log(tag + " no MediaRecorder, no WebCodecs -> rec button absent, save intact");
+    // ... and the group is still there around the one button that is left: a hidden `rec`
+    // is out of the flex flow, gap and all, so there is no stray space to degrade into
+    if (noRec.grp.cls !== "capgrp" || !noRec.grp.rec || !noRec.grp.foot)
+      fail("the capture group did not survive a hidden rec button: " + JSON.stringify(noRec.grp));
+    console.log(tag + " no MediaRecorder, no WebCodecs -> rec button absent, save intact in its group");
     // ... whereas MediaRecorder absent but WebCodecs present (iOS Safari 16.4+, which is
     // the case this whole feature is for) must still offer the button
     const wcOnly = run(`function(){

@@ -118,7 +118,15 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
 .viewfoot .capbtn { flex: 0 0 auto; padding: 1px 6px; font-size: 11px; line-height: 1.4;
                     color: #9aa5b4; margin-bottom: 1px; }
 .viewfoot .capbtn.reclive { color: #ff8b8b; border-color: #6b2a2a; }
-/* a finished recording waits here (recResult): size + length, then download / share.
+/* save + rec are ONE flex item of the footer: the row wraps, and a wrap that dropped `rec`
+   onto the next line without `save` would read as two unrelated controls on a phone. So
+   the pair never wraps inside itself and never shrinks -- the caption and the colorbar do
+   the wrapping around it. A hidden `rec` (no recording leg here) is out of the flex flow
+   entirely, gap and all, so the group is then just the save button. */
+.capgrp { display: flex; flex-wrap: nowrap; flex: 0 0 auto; gap: 6px; align-items: flex-end; }
+/* a finished picture or recording waits here (recResult): size (and a video's length),
+   then download / share. There can be two of these -- one per kind, a save and a take
+   being two different files -- and each is a row of its own, so they stack:
    `flex: 1 0 100%` takes a whole new line of the footer, under the buttons that made it,
    so it never squeezes the caption or the colorbar and there is nothing to squeeze it
    either; it wraps on its own at a narrow card, whence the flex-wrap. */

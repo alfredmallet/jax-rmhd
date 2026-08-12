@@ -74,6 +74,15 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     }
     caps.blobs[caps.blobs.length - 1] = this;
   }
+  // a deterministic "PNG": the real signature, so a consumer can say the bytes that came
+  // out are the picture, then a ramp -- content nothing reads, length the size the strip
+  // quotes back
+  const pngBytes = n => {
+    const b = new Uint8Array(Math.max(8, n | 0));
+    b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    for (let i = 8; i < b.length; i++) b[i] = (i * 7 + 13) & 255;
+    return b;
+  };
   // ---- File + Web Share (the result strip, 2026-08-11) ------------------------
   // A File is a Blob with a name, and it is the object the share sheet is handed -- so it
   // keeps the bytes too (above), and a consumer can assert that what was SHARED is the
@@ -269,8 +278,16 @@ module.exports = function makeEnv(dir, page, demo, opts) {
       setAttribute(a, v) { this.attrs[a] = v === undefined ? "" : String(v); },
       addEventListener() {}, setPointerCapture() {},
       // the capture path (item 13): a canvas is a PNG source and a video source, and the
-      // <a download> the blob is handed to is an ordinary element too
-      toBlob(cb, type) { setTimeout(() => cb(mkBlob(type || "image/png", 4 * (this.width | 0) * (this.height | 0))), 0); },
+      // <a download> the blob is handed to is an ordinary element too. The picture keeps
+      // real BYTES (2026-08-12): since the save path ends on the result strip too, the PNG
+      // is rewrapped as a File for the share sheet, and "what was shared is what was
+      // written" is only a checkable statement when there is something to compare. The
+      // callback is deferred, as a browser's is -- which is what lets a consumer close the
+      // card between the press and the picture and drive the dead-card branch honestly.
+      toBlob(cb, type) {
+        const b = pngBytes(4 * (this.width | 0) * (this.height | 0));
+        setTimeout(() => cb(new BlobStub([b], { type: type || "image/png" })), 0);
+      },
       captureStream(fps) { return { __stream: 1, fps: fps }; },
       click() {
         if (this.download === undefined) return;

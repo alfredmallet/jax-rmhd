@@ -28,7 +28,12 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   share files must simply grow no button) and `reject` (a named error, `AbortError` being
   the visitor closing the sheet) — and `Date`, because the MediaRecorder leg times itself
   by wall clock: `env.advance(ms)` moves the clock, so a "12 s" recording costs no wall
-  clock either.
+  clock either. Since the save path joined that strip (2026-08-12) `canvas.toBlob` hands
+  back real BYTES as well — a PNG signature and a deterministic ramp, the size the strip
+  quotes — because the picture is rewrapped as a File for the share sheet too, and "what was
+  shared is what was written" is only a checkable statement when there is something to
+  compare; its callback stays DEFERRED, as a browser's is, which is what lets a consumer
+  close the card between the press and the picture and drive the dead-card branch honestly.
   A fourth argument carries the boot knobs: `{noGpu: true}` removes `navigator.gpu`, so
   `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
@@ -94,6 +99,21 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   does not, dismiss removing the strip with a second dismiss inert, and a new take
   replacing the old strip rather than stacking a second one. Destroy-mid-record is the one
   path that still downloads directly, and is asserted to.
+  The SAVE path joined that strip in round 2 (2026-08-12) and is asserted the same way, with
+  the differences that matter: the press downloads NOTHING, the line quotes the stubbed
+  picture's SIZE and nothing else (a PNG has no length, so no seconds and no separator left
+  hanging), the download button yields the same name / type / bytes the old direct download
+  was checked on — the signature included, now that the stub writes one — the share button
+  follows `env.share.can` and is handed a File of type `image/png` carrying the picture's own
+  bytes, `NotAllowedError` falls back to a download and `AbortError` does not, and a second
+  save replaces the first. The card is closed BETWEEN the press and `toBlob`'s deferred
+  callback for the dead-card branch, which downloads on the spot. Then the two SLOTS, driven
+  on leg 2: a picture survives a whole take including the take's own replace-on-start, a
+  recording survives a save, each kind replaces only its own strip (node identity, not just
+  the count), and each dismiss leaves the other standing. The capture GROUP is read off the
+  footer too — `save` and `rec` children of one `.capgrp` and neither a loose child of the
+  footer — and again on the card an engine with no recording leg builds, where the group must
+  still be there around the one button that is left.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and
@@ -387,10 +407,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   HTML *bodies* too: markup twins are what H.0 was about.
 - `layout.js [dir]` — control-row wrap audit at 360/768/1200 px, off the BUILT element
   tree of a booted page (controls + every card header, and since items 12/13 the display
-  card's `.viewfoot` too — the colorbar block is a fixed-width flex item and the save /
-  rec buttons sit beside it). The recording result strip is audited as a row of its own:
-  it only exists after a take, so the script hands a card a finished file through
-  `recResult` and measures the widest version of it (download + share + dismiss).
+  card's `.viewfoot` too — the colorbar block is a fixed-width flex item, and since
+  2026-08-12 `save` and `rec` are ONE item, the `.capgrp` pair being measured as the sum of
+  its visible buttons and its own gap: they must never wrap apart, so the pair is what has to
+  fit, and the CSS is checked to say `nowrap` / `flex: 0 0 auto` for that measurement to be
+  honest. The result strips are audited as rows of their own: they only exist after a save or
+  a take, so the script hands a card a finished file of BOTH kinds through `recResult` (two
+  files, two slots, two rows) and measures the widest version of each (download + share +
+  dismiss).
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`).
 - `cmapcheck.js` — colormap table vs emitted WGSL vs matplotlib reference.

@@ -2763,14 +2763,15 @@ function dlBlob(blob, name) {
   a.click();
   setTimeout(() => window.URL.revokeObjectURL(u), 10000);
 }
-// ---- what happens to a FINISHED recording (Alfred, 2026-08-11) -------------
-// Neither leg hands its file straight to dlBlob any more. On a phone the download is
-// silent: the file lands somewhere in Files and is then hard to find and harder to send
-// on, which is the opposite of what a 12 s clip of a simulation is for. So the file waits
-// on the card's footer behind a little line of text -- "click start, wait, click stop,
-// then a little text appears saying file size, video length, and a download/share button"
-// -- and the visitor says where it goes. See DisplayCard.recResult, the ONE place both
-// legs converge on.
+// ---- what happens to a FINISHED file (Alfred, 2026-08-11 / 2026-08-12) ------
+// Nothing here hands its file straight to dlBlob any more -- neither recording leg, and
+// since the second round the PNG save either. On a phone the download is silent: the file
+// lands somewhere in Files and is then hard to find and harder to send on, which is the
+// opposite of what a picture or a 12 s clip of a simulation is for. So the file waits on
+// the card's footer behind a little line of text -- "click start, wait, click stop, then a
+// little text appears saying file size, video length, and a download/share button" -- and
+// the visitor says where it goes. See DisplayCard.recResult, the ONE place all three
+// paths converge on, and its two slots.
 //
 // Sizes in SI units (kB = 1000 B), which is what a phone's file listing quotes back, and
 // only one decimal on the MB -- the number is here to say "small enough to send" or "too
@@ -2998,10 +2999,16 @@ class DisplayCard {
     const tk = _mk("div", "cbartk", this.bar);
     this.barT = [_mk("span", null, tk), _mk("span", null, tk), _mk("span", null, tk)];
     this.bar.title = "colour range of the displayed quantity";
-    this.btnSave = _mk("button", "capbtn", foot);
+    // the two capture buttons travel as ONE flex item: on a narrow phone the footer wraps,
+    // and a wrap that put `save` on one line and `rec` on the next would read as two
+    // unrelated controls. The group shrinks for nobody; the caption and the colorbar wrap
+    // around it as before. With no recording leg the hidden `rec` takes neither room nor
+    // gap, so the group is just `save` (Alfred, 2026-08-12).
+    const capg = _mk("div", "capgrp", foot);
+    this.btnSave = _mk("button", "capbtn", capg);
     this.btnSave.innerHTML = "save";
     this.btnSave.title = "save this view (field + overlay + colorbar) as a PNG";
-    this.btnRec = _mk("button", "capbtn", foot);
+    this.btnRec = _mk("button", "capbtn", capg);
     this.btnRec.innerHTML = "rec";
     this.btnRec.title = "record the field canvas to an MP4 file (stops itself after 30 s)";
     if (!recAnySupported(this.cv)) this.btnRec.style.display = "none";
@@ -3026,7 +3033,7 @@ class DisplayCard {
     this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
     this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
     this.recBusy = false;                 // a config probe is in flight
-    this.resEl = null;                    // the finished recording's strip, while it waits
+    this.resEl = { png: null, video: null };   // the waiting files' strips, one slot each
     this.dead = false;                    // set by destroy(), so a late probe cannot start
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
@@ -3223,7 +3230,11 @@ class DisplayCard {
     c.drawImage(this.cv, 0, 0, w, h);                  // the field
     c.drawImage(this.cvVec, 0, 0, w, h);               // arrows / field lines / box frame
     if (this.barOn()) this.barStamp(c, w, h);
-    cv.toBlob(b => dlBlob(b, shotName(this.barMode, "png")), "image/png");
+    // ... and the picture goes where a recording goes: onto the card, in its own slot, with
+    // no length to quote (recResult). Nothing is downloaded until the visitor says so --
+    // on a phone the silent download of a save is as hard to find as the silent download
+    // of a take was.
+    cv.toBlob(b => this.recResult("png", b, shotName(this.barMode, "png")), "image/png");
   }
   // the colorbar, scaled onto the saved image's bottom right over a translucent plate
   barStamp(c, w, h) {
@@ -3270,23 +3281,31 @@ class DisplayCard {
   recLive() { this.btnRec.innerHTML = "stop"; this.btnRec.classList.add("reclive"); }
   recIdle() { this.btnRec.innerHTML = "rec"; this.btnRec.classList.remove("reclive"); }
 
-  // The ONE place a finished file is handed over, whichever leg wrote it -- the same
+  // The ONE place a finished file is handed over, whichever path made it -- the same
   // discipline the two stop paths already keep (see the note by recToggle). `seconds` is
-  // each leg's own honest length: leg 1 counts the frames it actually MUXED (dropped ones
-  // never made it into the file), leg 2 has no frame count of its own and quotes wall
-  // clock. Nothing is downloaded here: the strip below is the whole point of the change.
-  recResult(blob, name, seconds) {
-    if (!blob || !blob.size) return;            // nothing was recorded: say nothing
+  // each recording leg's own honest length: leg 1 counts the frames it actually MUXED
+  // (dropped ones never made it into the file), leg 2 has no frame count of its own and
+  // quotes wall clock; a PNG has no length at all and is quoted by size alone. Nothing is
+  // downloaded here: the strip below is the whole point of the change.
+  //
+  // `kind` ("png" / "video") is the SLOT the strip lives in, and there are deliberately
+  // two: a picture and a recording are two different files, so a save must replace only
+  // the last save and a take only the last take. One slot would mean a 30 s take dying
+  // because the visitor pressed save a second later -- the same file-losing surprise the
+  // strip exists to remove (Alfred, 2026-08-12).
+  recResult(kind, blob, name, seconds) {
+    if (!blob || !blob.size) return;            // nothing was captured: say nothing
     // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
-    // async flush lands here, and a strip on a removed footer would be a file the visitor
-    // can never reach -- so closing a card mid-recording keeps its old behaviour and
-    // downloads on the spot. A surprise file is better than a lost one.
+    // async flush lands here -- and toBlob's callback is just as async, so a card can be
+    // closed between the save press and the picture -- and a strip on a removed footer
+    // would be a file the visitor can never reach. So a closed card keeps the old
+    // behaviour and downloads on the spot: a surprise file is better than a lost one.
     if (this.dead || !this.foot) { dlBlob(blob, name); return; }
-    this.recClear();
+    this.recClear(kind);
     const s = _mk("div", "recres", this.foot);
-    this.resEl = s;
-    _mk("span", "recinfo", s).innerHTML =
-      recSizeText(blob.size) + " · " + recLenText(seconds);
+    this.resEl[kind] = s;
+    _mk("span", "recinfo", s).innerHTML = recSizeText(blob.size) +
+      (seconds === undefined ? "" : " · " + recLenText(seconds));
     const dl = _mk("button", "capbtn", s);
     dl.innerHTML = "download";
     dl.title = "download " + name;
@@ -3315,14 +3334,16 @@ class DisplayCard {
     }
     const x = _mk("button", "capbtn recx", s);
     x.innerHTML = "&times;";
-    x.title = "dismiss this recording";
-    x.onclick = () => this.recClear();
+    x.title = "dismiss this " + (kind === "png" ? "picture" : "recording");
+    x.onclick = () => this.recClear(kind);
   }
-  // drop the strip -- and with the node go the handlers, and with the handlers the only
-  // references this card kept to the blob and the File, so the bytes can be collected
-  recClear() {
-    const s = this.resEl;
-    this.resEl = null;
+  // drop ONE kind's strip -- and with the node go the handlers, and with the handlers the
+  // only references this card kept to the blob and the File, so the bytes can be
+  // collected. The other slot is untouched: dismissing a picture must not take a
+  // recording with it.
+  recClear(kind) {
+    const s = this.resEl[kind];
+    this.resEl[kind] = null;
     if (s && s.parentNode) s.parentNode.removeChild(s);
   }
 
@@ -3334,7 +3355,7 @@ class DisplayCard {
     // recToggle: a press whose probe then fails to start anything (a WebCodecs-only
     // engine that dislikes this canvas size) must not have thrown away the one file the
     // visitor still had (adversarial review 2026-08-12, MINOR 1).
-    this.recClear();
+    this.recClear("video");
     const mime = recMime(), chunks = [];
     const r = new window.MediaRecorder(this.cv.captureStream(REC_FPS),
                                        mime ? { mimeType: mime } : undefined);
@@ -3348,7 +3369,7 @@ class DisplayCard {
       clearTimeout(this.recStop);
       this.rec = null; this.recStop = 0;
       this.recIdle();
-      this.recResult(new window.Blob(chunks, { type: mime || "video/mp4" }), name,
+      this.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
                      (Date.now() - t0) / 1000);
     };
     this.rec = r;
@@ -3359,7 +3380,7 @@ class DisplayCard {
 
   // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
   recStartWC(cfg) {
-    this.recClear();                      // same rule as recStartMR: replace on START
+    this.recClear("video");               // same rule as recStartMR: replace on START
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4") };
     W.enc = new window.VideoEncoder({
@@ -3420,7 +3441,7 @@ class DisplayCard {
       // the length is the samples that ended up IN the file over the fixed 30 fps the
       // sample table declares -- honest under the drop-frame guard, where a slow machine
       // records fewer seconds of wall clock than the clip lasts
-      if (mp4) this.recResult(new window.Blob([mp4], { type: "video/mp4" }), W.name,
+      if (mp4) this.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
                               W.chunks.length / REC_FPS);
     };
     // flush() delivers the frames the encoder is still holding, so it has to complete
