@@ -12,6 +12,7 @@
 // Usage: node checkonepage.js <dir>
 "use strict";
 const fs = require("fs"), path = require("path");
+const { execFileSync } = require("child_process");
 const dir = process.argv[2] || "..";
 let n = 0, bad = 0;
 const ok = (cond, msg) => { n++; if (!cond) { bad++; console.log("FAIL  " + msg); } };
@@ -171,6 +172,37 @@ ok(/<a href="rmhd2d\.html">/.test(ix), "index.html: plain link for no-JS, no-ref
 ok(ix.indexOf('href="style.css"') >= 0 && ix.indexOf('<span class="buildid">dev</span>') >= 0,
    "index.html: still carries what pages.yml seds");
 ok(!/<script src=|id="topbar"|id="display"/.test(ix), "index.html: nothing but the redirect");
+
+// ---- 8. every local asset the site references is present AND TRACKED BY GIT ----------
+// pages.yml deploys `cp -r webgpu/.` out of a fresh CLONE, so a file that exists in the
+// working tree but is not committed is a 404 on the deployed site and a working file://
+// page here -- exactly how the favicons shipped broken on 2026-08-13 (.gitignore's
+// blanket `*.png` swallowed them, with only poster.png excepted). Existence alone would
+// have passed. Hence both legs, and hence the JS scan too: poster.png is referenced from
+// common.js, not from any markup, so a markup-only sweep would miss the one image the
+// no-WebGPU path depends on.
+const ASSET = "png|jpe?g|gif|svg|ico|css|js|json|webmanifest|mp4|webm";
+const refs = new Map();                          // ref -> the file that names it
+for (const f of fs.readdirSync(dir).filter(f => /\.(html|js)$/.test(f))) {
+  const src = fs.readFileSync(path.join(dir, f), "utf8");
+  // markup attributes and JS string literals both reduce to "a quoted local path"
+  for (const m of src.matchAll(new RegExp(`["'\`]([\\w./-]+\\.(?:${ASSET}))(?:[?#][^"'\`]*)?["'\`]`, "g"))) {
+    const r = m[1];
+    if (r.startsWith("http") || r.startsWith("//") || r.startsWith("../")) continue;
+    if (!refs.has(r)) refs.set(r, f);
+  }
+}
+ok(refs.size > 0, "assets: the sweep found references at all");
+let tracked = null;                              // null = no git here, skip the git leg
+try {
+  execFileSync("git", ["rev-parse", "--git-dir"], { cwd: dir, stdio: "ignore" });
+  tracked = new Set(execFileSync("git", ["ls-files"], { cwd: dir, encoding: "utf8" })
+                    .split("\n").filter(Boolean));
+} catch { console.log("NOTE  assets: no git here, checking existence only"); }
+for (const [r, from] of [...refs].sort()) {
+  ok(fs.existsSync(path.join(dir, r)), `assets: ${r} exists (referenced by ${from})`);
+  if (tracked) ok(tracked.has(r), `assets: ${r} is committed, so it deploys (referenced by ${from})`);
+}
 
 console.log((bad ? "FAIL " : "PASS ") + (n - bad) + "/" + n + " checkonepage");
 process.exit(bad ? 1 : 0);

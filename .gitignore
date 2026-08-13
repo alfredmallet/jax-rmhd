@@ -12,8 +12,11 @@ tests/data
 
 #Random stray png
 *.png
-# ...but the no-WebGPU fallback poster is a deliverable (ONEPAGE_PLAN B.5)
-!webgpu/poster.png
+# ...but webgpu/ IS the deployed site, so a png committed there is a deliverable, not
+# stray output: the no-WebGPU fallback poster (ONEPAGE_PLAN B.5) and the favicons. The
+# poster-only exception let the icons deploy as 404s -- the HTML referenced files git
+# had silently dropped, so the tab icon worked over file:// and nowhere else.
+!webgpu/*.png
 # devtools npm deps (acorn, wgsl_reflect) live beside the gate scripts
 node_modules/
 

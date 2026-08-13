@@ -274,6 +274,13 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   clock at all.
   Finally index.html's redirect, read as markup (there is no script to boot): meta refresh,
   canonical, `location.replace`, the no-JS link, and the two strings `pages.yml` seds.
+  Phase 8 (2026-08-13) sweeps every quoted local asset path out of `*.html` AND `*.js` —
+  poster.png is named only by `common.js`, so markup alone is not the whole site — and
+  asserts each one both EXISTS and is TRACKED BY GIT. The second leg is the point:
+  `pages.yml` deploys `cp -r webgpu/.` from a fresh clone, so an uncommitted file is a
+  404 on the deployed site while `file://` still works locally. That is exactly how the
+  favicons shipped broken — `.gitignore`'s blanket `*.png` swallowed them, poster.png
+  being the only exception — and an existence-only check would have passed.
 - `checkiso.js [dir]` — the ISO_PLAN gates. Phases A (box-unit aspect), B (the volume
   raymarch) and C (the collision preset) plus the two
   disciplines the whole plan runs under: every emitted kernel of both pages parses
