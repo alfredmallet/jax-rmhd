@@ -7,13 +7,7 @@ const [dir, page, demo] = process.argv.slice(2);
 const env = require("./stubenv")(dir, page, demo);
 const { run, getEl, fails, fail } = env;
 
-// A frame's worth of CARD work, by hand (requestAnimationFrame is a no-op). It is not the
-// frame loop and does not claim to be: it steps, renders every card UNGATED, and draws
-// every chart from its own readback, which is what makes the card / chart wiring below
-// checkable one option at a time. The loop's own body is `loopPass(dtPass)` in common.js
-// and is driven as such by devtools/checkidle.js -- gate, pacing, in-flight bound and all.
-// Keep the two apart on purpose: a test that drove the real pass here would stop
-// exercising the paths this file exists for the moment the gate closed.
+// one frame of the loop's per-frame work, by hand (requestAnimationFrame is a no-op)
 const frame = () => run(`async function(){
   if (!solver) return;
   solver.step(1);
@@ -1595,8 +1589,7 @@ setTimeout(async () => {
       fail("the pool did not come back after its maps resolved: " + JSON.stringify(back));
     await recPress();
     stripPress("&times;");
-    console.log(tag + " pool exhaustion: " + POOL + " in flight, slot " + (POOL + 1) +
-                " dropped, pool reused");
+    console.log(tag + " pool exhaustion: " + POOL + " in flight, the 4th slot dropped, pool reused");
     // (f) PADDED ROWS, and a canvas RESIZED under a live take. copyTextureToBuffer wants a
     // 256-aligned bytesPerRow: every preset width is already aligned, but the box is
     // user-sizable, so a width whose row is not is a real case -- the mapped rows are

@@ -1,6 +1,71 @@
 # LOOPLAT_PLAN — take the sync round trips out of the frame loop
 
-Status: **written 2026-08-12; §1–§3 EXECUTED the same day, §4 deliberately not taken.**
+> # STATUS: TRIED OVER FOUR ROUNDS AND REVERTED (2026-08-12)
+>
+> Implemented, adversarially reviewed, measured on three devices, and backed out at Alfred's
+> call — the code in `common.js`, `devtools/checkidle.js` and `devtools/bootstub.js` is
+> byte-identical to `989ec07` again, checkidle back to its 54 legs, WGSL byte-identical
+> throughout. **Nothing below this banner describes the shipped app.** It is kept because
+> the four rounds produced one measurement that is worth more than the change was, and that
+> measurement closes other items in the audit too. Read the post-mortem immediately below
+> before re-opening any of this.
+>
+> ## Post-mortem: what was actually learned
+>
+> **1. The loop was never the cost. `tB 1.7 ms` of a `pass 44.3 ms`.** With the latency
+> removed and the pass instrumented, the whole synchronous pass — every display chain, the
+> capture submit, and the encode of 21 solver steps — is 1.7 ms. `tR 0.4`, `tS 1.6`. The loop
+> is **idle 96% of every pass**, waiting for rAF, which waits for the GPU to drain enough to
+> present. The app is GPU-bound at roughly 2 ms of GPU per step, and no arrangement of
+> JavaScript control flow moves that.
+>
+> **2. So three audit items are answered, and two of them are dead.**
+> - **§4.3 (this plan) is dead.** It removed ~46 ms of real latency per pass and the pass
+>   period genuinely fell (68 → 25–35 ms). It did not deliver throughput, because throughput
+>   was never latency-limited.
+> - **§4.2's display-render cap (the "§4" of this plan) is dead.** `tR 0.4 ms` is what it
+>   would have been capping. The dirty-render *gate* that already shipped is about idle
+>   power and stands; capping the *rate* of something that is 1% of a pass cannot move a
+>   pass.
+> - **Item 6, the FFT twiddle table, is the one that is now MORE interesting, not less.**
+>   The postscript closed it on the grounds that it optimises ~0.3 ms of a 68 ms pass. That
+>   arithmetic assumed the pass was latency. It is not: the pass is ~2 ms/step of GPU work,
+>   the FFT is essentially all of a step, and the twiddles are plausibly 20–40% of the FFT.
+>   Same for the dispatch count inside the step (ranked 2 in the postscript). **Those are
+>   where the remaining throughput is.**
+>
+> **3. The adaptive `stepsPerFrame` controller is a trap, and three designs failed in three
+> different ways.** All of them try to steer one number by watching a period they cannot
+> measure independently of it:
+> - *Absolute band* `[18, 34]` / `[18, 30]` recording: on a machine whose minimum achievable
+>   pass is 31.7 ms, no period is ever under 18 (never raises) and every period is over 30
+>   (always cuts). **Latches at `sf = 1`, 30 steps/s.** Measured, on the laptop.
+> - *Floor-relative band* `[max(18, 1.25·floor), max(30, floor)]`: `lo` collapses onto `hi`
+>   the moment `floor` > ~24 ms. **Zero-width dead band, so it cannot hold and flaps** —
+>   `steps/s` swinging 500 ↔ 30 for the length of a take. Measured, on all three devices.
+> - *Bucket-relative band* `dt/floor ∈ [1.25, 1.6]`: reproduces neither reading in
+>   simulation and settles 8% lower where it can be modelled. Thrown away before shipping.
+>
+> The common root is that on a GPU-bound device the pass period is an **output** of the
+> controller (it scales with `stepsPerFrame`), so `pace.floor` is not a property of the
+> hardware and any band anchored on it reads its own tail. Anyone reopening this should
+> consider whether the loop needs an adaptive controller at all, rather than which band
+> shape to try fourth.
+>
+> **4. Process notes.** The plan's own baseline numbers were wrong and that cost two rounds:
+> `steps/s` was `n / ms` with `ms` timed to the drain, so it measured busy time and
+> over-reported ~3×, and the `stepsPerFrame ≈ 2.7` derived from it was really 1. The
+> adversarial review caught this and it was written down and then not applied when the first
+> results came in. **Instrument the thing before optimising it**: `tB` / `tR` / `tS` took
+> fifteen lines and would have stopped this plan being written.
+>
+> What did work, and is worth remembering if the recorder is ever touched again: with the
+> per-pass drain gone, a capture's `copyTextureToBuffer` queued behind the step batch and its
+> map came back 65 ms later, saturating a 3-buffer staging pool and dropping slots. Rendering
+> and capturing ahead of the steps, plus a 6-buffer pool, took `lag` 65 → 7 ms and pool drops
+> to zero. That coupling is real and will come back if the drain is ever removed again.
+
+Original status: **written 2026-08-12; §1–§3 EXECUTED the same day, §4 deliberately not taken.**
 This is audit item §4.3 (`AUDIT_2026-08-12.md`), promoted to the top of the list by an
 on-device measurement. Items 1–5 of that audit are done; items 6 and 7 are
 `VOLTEX_PLAN.md`'s problem and are **not** what the phone is complaining about.
@@ -176,6 +241,92 @@ the capture rate. Whether that trade is the right one on a slow phone is a judgm
 a measurement, and it is open. `gap 627 ms` there is a separate one-off stall worth a look;
 `gap` is a max over the whole take and includes the take's own startup, so `pass` is now the
 steady-state number to read and `gap` the outlier detector.
+
+## Round 4 (2026-08-12): `tB 1.7` of a `pass 44.3`, and the flapping was a closed dead band
+
+```
+loop: pass 44.3  fl 31.7  sf 21  ifl 2
+busy: tB 1.7  tR 0.4  tS 1.6 ms
+```
+
+**The loop is idle for 96% of every pass.** All display chains plus the capture submit cost
+0.4 ms of main thread; encoding 21 steps costs 1.6 ms; the whole synchronous pass is 1.7 ms
+of 44.3. Nothing in this file's remit is spending that time — the pass period is set by how
+fast rAF comes back, and rAF comes back when the GPU has drained enough to present. **The app
+is GPU-bound, and the loop's own cost is noise.** Two consequences, and they close two
+questions that have been open since the audit:
+
+- **§4 (cap display renders at ~30/s) is dead.** `tR 0.4 ms` is what it would be cutting.
+  Whatever the display costs, it is not costing it on the CPU, and capping the *rate* of a
+  thing that is 1% of the pass cannot move the pass. Audit §4.2's premise (a paused page
+  burning rAF on full raymarches) was about idle power and was already fixed by the render
+  gate; it is not a throughput lever here.
+- **The remaining `[slot]` drops are not lateness in any sense this loop can fix.** A pass is
+  late for its slot because the GPU queue in front of it is deep, and the queue is deep
+  because `stepsPerFrame` put it there. That is the controller's trade, not a defect.
+
+**And the flapping was mine.** `lo = min(1.25 * floor, hi)` collapses onto `hi` the moment
+`floor` exceeds `PASS_HI_REC / 1.25` ≈ 24 ms — raise edge and cut edge on the same number,
+zero hysteresis, so the controller *cannot* hold and swings at whatever amplitude the
+proportional cut gives it. `fl 31.7` is squarely in that range, as were all three devices in
+round 3. That floor-relative band came in as the fix for an adversarial review's theoretical
+"absolute edges latch `sf` at 1 on a slow device"; it was the wrong fix, and it was wrong
+twice: the collapse above, and — now that `tB` says the loop is GPU-bound — the fact that
+`pace.floor` is an *output* of this controller (the period scales with `stepsPerFrame`), so a
+band anchored on it is reading its own tail. On a vsync-bound device the floor would be the
+panel's interval and the idea would have been sound, which is what made it plausible.
+
+Reverted to the round-2 absolute constants, which were *measured* stable on the same laptop
+at `sf 13`, `pass 24.7`, drop 9%. `pace.floor` stays in the `?recdebug` line as a diagnostic
+— it is how the degenerate band was spotted — and drives nothing. The new gate states the
+property as behaviour rather than as an inequality between two constants: fifty passes at a
+period anywhere inside the band must not move `stepsPerFrame`, at any `pace.floor`. Restoring
+the round-3 band fails it at exactly the slow entries.
+
+## Round 3 (2026-08-12): the pool half is fixed, and the loop is no longer the question
+
+Reading after the pool + ordering fix. Laptop, recording: `pass 33.3  sf 1  ifl 1`,
+`drop 10 [slot 10]`, `lag 7 ms`, `raf 453`. iPhone 11 and Alfred's phone: the same shape,
+every drop `[slot]`.
+
+- **`lag` 65 → 7 ms and pool drops → 0.** Submitting the capture copy ahead of the step
+  batch, plus `REC_POOL` 6, did exactly what the arithmetic said. That half is closed.
+- **Every remaining drop is `slot`** — the loop arriving after a slot was due — and `pass` is
+  33.3 ms, which is *two vsyncs* on a 60 Hz panel, with `sf 1`. So the bare pass (one step,
+  one display chain, the throttled readbacks, the capture submit) has overrun a single
+  vsync, and the take ceiling is then correct to refuse a second step.
+- Alfred also reports `steps/s` flapping 500 ↔ 30 during a take.
+
+**A controller rewrite was written for that flapping and thrown away.** The theory was that a
+band in milliseconds can contain no period the panel can deliver (16.7 below it, 33.3 above
+it, nothing in between), so it must sawtooth; the fix was to express the band in buckets of
+`dt / floor` with a dead band containing 1.5, the EMA of an alternating pass. Simulated
+against a cost model of both readings, it **reproduces round 2 (`sf` 12–13, pass ~25 ms) and
+does not reproduce round 3 at all**, and it settles 8% lower in the regime it can model. To
+get `sf 1` out of *either* controller you need the bare pass to exceed one vsync — and then
+both latch identically, because what binds is not the band's shape but `dt > max(PASS_HI_REC,
+floor)`, which is the take ceiling doing its job.
+
+So the controller is not the open question and no third design of it is going in. **The open
+question is what the bare pass spends 33 ms on**, which two rounds have now been spent
+guessing at. `?recdebug` grew a second line for exactly that:
+
+```
+busy: tB 4.2  tR 3.1  tS 0.6 ms
+```
+
+`tB` is the pass's whole synchronous cost before its first await, `tR` the display chains
+plus the capture submit, `tS` the step encode; all maxima over the session. The reading is
+`tB` against `pass`:
+
+- **`tB` small (single-digit ms of a 33 ms pass)** — the loop is *idle*, waiting on vsync or
+  on the compositor, and cutting display work will not help. The cost is on the GPU or in
+  presentation, and the next move is neither this plan nor §4.
+- **`tB` most of the pass** — then `tR` says whether the display chain is the thing to cut,
+  which is what audit §4.1 / §4.2 have been waiting on since they were written.
+
+Until that number exists, both remaining options — hold the pass at a slot and accept ~29
+steps/s, or let it grow and accept the drops — are being chosen blind.
 
 **Still owed: the on-device reading.** Success is judged on the phone and nothing in the
 sandbox can judge it — and defect 3 above means the *shape* of the win now depends on a

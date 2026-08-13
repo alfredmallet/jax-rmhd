@@ -571,121 +571,6 @@ let solver = null, running = false, stepsPerFrame = 1, spsSmooth = 0;
 // filenames stamp it (item 13), so it is kept once here rather than parsed back out
 let simT = 0;
 
-// ---------------------------------------------------------------------------
-// the frame loop's pacing (LOOPLAT_PLAN, 2026-08-12)
-// ---------------------------------------------------------------------------
-// Until this change the adaptive step-count controller was driven by `ms`, timed from the
-// top of the pass to `device.queue.onSubmittedWorkDone()`. That number is a true GPU time
-// and it was chosen for exactly that reason -- but the drain that produced it also made
-// the loop SERIAL with the GPU's completion messages, which a browser delivers on
-// task-queue granularity (~one frame on Safari/iOS). On Alfred's iPhone 11 that put the
-// pass at 68 ms of which ~46 ms was message latency the controller could not see, at
-// ~2 ms of real work: the GPU sat idle across it because nothing was submitted until the
-// previous batch's message arrived, and since RECRAF the loop is the recorder's feeder, so
-// a 15 Hz loop starved a 30 fps encoder of half its slots by construction.
-//
-// So the controller is driven by the **rAF-to-rAF pass period** instead. It needs no GPU
-// sync at all, it is the quantity the recorder actually consumes (capture rate = pass
-// rate), and it measures the WHOLE pass -- steps, display chains, readbacks and latency
-// alike -- rather than the prefix that ends at the drain.
-//
-// The band is hysteretic, on a SMOOTHED period: rAF quantizes the period to multiples of
-// the vsync interval (16.7 / 33.3 / 50 ms on a 60 Hz panel), so a controller comparing the
-// raw sample against one threshold would sit on the quantization edge and hunt by +-1 step
-// forever. The EMA is the damper the plan asks for (the same idiom as `spsSmooth`).
-//
-// ... and both edges are relative to `pace.floor`, the cheapest pass period this device has
-// recently managed, with the constants below only as FLOORS on those edges. Absolute
-// thresholds alone are a trap, and the adversarial review of this change found the trap
-// occupied: raising only while the period is under 18 ms asks the pass to fit inside one
-// 60 Hz vsync, so on any device whose bare pass -- display chain and throttled readbacks,
-// before a single step -- already overruns a vsync, the raise branch is unreachable and
-// `stepsPerFrame` is pinned at whatever boot left it (1) forever. That is not a corner
-// case: the phone this change was written for is estimated at a ~20 ms bare pass. Relative
-// edges ask the question that actually matters -- "is this pass still as cheap as this
-// device gets, or has it slipped a whole vsync?" -- on any panel and at any display cost.
-const PASS_LO = 18;        // ms: no raise edge below this even on a very fast panel
-const PASS_HI = 34;        // ms: no ceiling above this, i.e. the display stays over ~30 fps
-// While a take is live the pass period IS the capture rate and a slot is 1000/REC_FPS =
-// 33.3 ms, so the ceiling is tighter than the display's: a pass period above this drops
-// recorder slots BY CONSTRUCTION, whatever the encoder does. Preferring pass rate over
-// steps-per-pass during a take is the whole point of the exercise -- and where the device's
-// own floor is already at or above a slot, this ceiling sits AT the floor, which holds the
-// pass at the fastest rate the device has and spends nothing chasing one it cannot reach.
-const PASS_HI_REC = 30;
-// One pass period is clamped to this before it is believed. It is NOT a discard: a visible
-// pass really can take half a second (a heavy card opened on a slow phone), and discarding
-// that sample was a latch -- the controller went blind exactly when it needed to cut, so
-// `stepsPerFrame` stayed pinned high and kept the pass slow, with no exit (adversarial
-// review, BLOCKING). A background tab is dealt with by CAUSE instead, below.
-const PASS_MAX = 500;
-const pace = { at: 0, dt: 0, floor: 0 };
-// A hidden tab's rAF is throttled to ~1 Hz or stopped outright, so the interval spanning
-// the stint is not a measurement of anything -- and it is indistinguishable BY LENGTH from
-// a genuinely slow visible pass, which is exactly the one the controller must react to. So
-// the tab says so itself: forgetting the previous timestamp makes the next pass "no
-// measurement" and the one after it re-seed. Same discriminator the recorder's watchdog
-// uses (recTick), for the same reason.
-if (typeof document !== "undefined" && document.addEventListener)
-  document.addEventListener("visibilitychange", () => { pace.at = 0; pace.dt = 0; });
-// one rAF-to-rAF interval in; the smoothed pass period out, or 0 for "no measurement yet"
-// (the first pass of a session, and the first pass back from a hidden tab).
-function paceFeed(now) {
-  const prev = pace.at;
-  pace.at = now;
-  if (!prev) { pace.dt = 0; return 0; }
-  const raw = Math.min(now - prev, PASS_MAX);
-  if (!(raw > 0)) return pace.dt;         // two samples inside one clamped millisecond
-  pace.dt = pace.dt ? 0.8 * pace.dt + 0.2 * raw : raw;
-  // The device's own period floor: instant DOWN (a cheaper pass is a fact the moment it
-  // happens) and slow up (a run of dear passes might be the step count's fault, and
-  // letting the floor chase them would move the goalposts with it). One expression: below
-  // the floor the min picks `raw`, above it the 1% crawl.
-  pace.floor = pace.floor ? Math.min(raw, pace.floor + 0.01 * (raw - pace.floor)) : raw;
-  return pace.dt;
-}
-// is anybody taking frames off a display card right now? (either recording leg)
-function recTaking() { return cards.disp.some(d => d.wc || d.rec); }
-// The controller itself, kept PURE of the clock so devtools/checkidle.js can drive it on
-// injected pass periods instead of on real time. Same 1..64 clamp as the `ms` form it
-// replaces; a pass with no measurement holds rather than guessing.
-//
-// The DECREASE is proportional, which the `ms` form's plain -1 did not need to be and this
-// one does. `ms` was measured to the drain, so a step count that had just been raised too
-// far was billed for it in the SAME pass; a pass period is one pass late and smoothed on
-// top, so the rise overshoots by a few steps by construction, and -- worse -- the recovery
-// from a bad overshoot would be one decrement per pass while each pass is now the length
-// the overshoot made it. Cutting towards `hi/dt` clears a 2x overshoot in one pass and
-// still steps by exactly 1 near the band edge (the Math.min), so the settled behaviour is
-// the same +-1 hunt and only the runaway is treated. This is the damping the plan asks
-// for; the EMA in paceFeed is the other half.
-//
-// `lo` is clamped to `hi` rather than the other way round: where a take's ceiling has come
-// down onto the floor there is no room to raise into, and the pass must not be made dearer
-// than the slot it is feeding.
-function paceControl(dt, taking) {
-  if (!dt) return stepsPerFrame;
-  const fl = pace.floor || dt;
-  const hi = taking ? Math.max(PASS_HI_REC, fl) : Math.max(PASS_HI, 1.75 * fl);
-  const lo = Math.min(Math.max(PASS_LO, 1.25 * fl), hi);
-  if (dt < lo && stepsPerFrame < 64) stepsPerFrame++;
-  else if (dt > hi && stepsPerFrame > 1)
-    stepsPerFrame = Math.max(1, Math.min(stepsPerFrame - 1,
-                                         Math.round(stepsPerFrame * hi / dt)));
-  return stepsPerFrame;
-}
-// Backpressure, NOT a barrier (LOOPLAT_PLAN §3). With nothing awaited per pass the CPU can
-// queue step batches faster than the GPU retires them, which converts the latency this
-// change removes into a growing submission backlog -- the same problem wearing a different
-// hat. So the drain survives as a BOUND: at most INFLIGHT_MAX step batches may be
-// outstanding, and a pass that finds the bound saturated steps nothing (it still renders,
-// and still feeds the recorder). Display work is deliberately NOT counted: it is one
-// bounded chain per card per pass, already paced by rAF, and counting it would let a
-// recording's forced renders starve the solver.
-const INFLIGHT_MAX = 3;
-let inflight = 0;
-function inflightDone() { if (inflight > 0) inflight--; }
-
 // a display card's canvas -> a configured WebGPU context (cards are created and
 // destroyed at runtime, so this is not part of initGPU)
 function gpuCanvasCtx(cv) {
@@ -2900,28 +2785,8 @@ const REC_QMAX = 8;                      // encoder backlog (frames) past which 
 // nothing ever waits on the main thread. The drain timeout is the other half of that rule:
 // a map that never resolves (a lost device, say) must not hold the finished file hostage,
 // so whatever landed within half a second is what gets muxed and the rest are drops.
-// Raised from 3 to 6 by the LOOPLAT on-device reading (2026-08-12). Three was sized
-// against the loop AS IT THEN WAS, where an unconditional `onSubmittedWorkDone` per pass
-// meant the queue was empty when a capture copy was submitted and the map came back
-// promptly. With the drain gone the copy is queued BEHIND up to INFLIGHT_MAX step batches
-// of `stepsPerFrame` steps each -- on Alfred's laptop and phone, `ifl 2` x `sf` 11-13 =
-// ~25 steps of GPU work ahead of it -- and `lag` (capture submit to encode) came back at
-// 52-65 ms against a 33.3 ms slot. Two captures are then permanently in flight and jitter
-// takes it to three, at which point every further slot is dropped for want of a buffer.
-// The pool is what absorbs readback latency, so it is sized in SLOTS of it: six buffers is
-// 200 ms, comfortably past the measured lag, at ~1 MB each for a 512x512 take.
-const REC_POOL = 6;
+const REC_POOL = 3;
 const REC_DRAIN_MS = 500;
-// ?recdebug: WHY a slot was lost. `W.drop` is one number with six ways to make it, which
-// is one way too few to act on -- the reading above had drops rising on three devices with
-// no way to tell a late loop pass from a saturated staging pool from encoder backpressure,
-// and those have three different fixes. Same counter, split by cause, printed only under
-// ?recdebug so the file's honest-length rule keeps reading the single number it always did.
-function recDrop(W, why, k) {
-  k = k || 1;
-  W.drop += k;
-  if (W.why) W.why[why] = (W.why[why] || 0) + k;
-}
 // ?recdebug: while a recording is live, the readout grows one line per recording card --
 // frames fed by the rAF loop vs by the watchdog, drops, and the longest gap between two
 // loop passes. Diagnostic only, for on-device eyes (a phone has no devtools console);
@@ -3179,7 +3044,7 @@ class Recorder {
     // feeder put each frame in the file (?recdebug shows the tallies and maxGap;
     // lastRaf just feeds maxGap).
     const t0 = performance.now();
-    const W = { chunks: [], avcC: null, n: 0, drop: 0, why: {}, timer: 0, bailed: false, done: false,
+    const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
                 tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
                 w: this.card.cv.width, h: this.card.cv.height, name: shotName(this.card.barMode, "mp4"),
@@ -3243,7 +3108,7 @@ class Recorder {
     // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
     // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
     // wall clock, rather than a file whose sample table lies about its own timing.
-    if (W.enc.encodeQueueSize > REC_QMAX) { recDrop(W, "enc"); return false; }
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
     // the two halves of the capture cost, timed separately (?recdebug, round 3): `vf` is
     // what a capture costs the MAIN THREAD and `enc` is what the encode costs. On the sync
     // path that split is VideoFrame-from-canvas (the classic iOS expense, and the half a
@@ -3287,13 +3152,13 @@ class Recorder {
     // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
     // a validation error rather than a frame. Drop the slot instead -- the honest-length
     // rule again -- and let the take end at the size it started.
-    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { recDrop(W, "size"); return; }
-    if (!W.pool && !this.recPoolMake(W)) { recDrop(W, "pool"); return; }  // this slot was due too
+    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { W.drop++; return; }
+    if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
     let s = null;
     for (const e of W.pool) if (!e.busy) { s = e; break; }
     // all three buffers are still waiting on their maps: the readback is genuinely behind,
     // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
-    if (!s) { recDrop(W, "pool"); return; }
+    if (!s) { W.drop++; return; }
     try {
       const ce = device.createCommandEncoder();
       ce.copyTextureToBuffer({ texture: this.card.ctx.getCurrentTexture() },
@@ -3303,7 +3168,7 @@ class Recorder {
     } catch (e) {
       // an engine that accepted the configure but not the copy: fall back to the sync
       // canvas path for the rest of this take rather than lose every remaining frame
-      W.bufOn = false; recDrop(W, "copy");
+      W.bufOn = false; W.drop++;
       return;
     }
     s.busy = true; W.pend++;
@@ -3318,7 +3183,7 @@ class Recorder {
     // failed capture leaves fewer frames and NO hole in the sample table.
     s.b.mapAsync(GPUMapMode.READ).then(
       () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
-      () => { s.busy = false; if (!W.gone) recDrop(W, "map"); this.recPend(W); });
+      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
   }
   // three staging buffers, made on the first capture of a take (a take that never captures
   // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
@@ -3374,7 +3239,7 @@ class Recorder {
       // passed but whose full-size frames throw would otherwise drop every remaining slot
       // and hand back a 0-chunk take with no file and no explanation (adversarial review
       // 2026-08-12, MINOR 1)
-      recDrop(W, "enc"); W.bufOn = false;
+      W.drop++; W.bufOn = false;
     }
     try { s.b.unmap(); } catch (e) {}
     s.busy = false;
@@ -3398,7 +3263,7 @@ class Recorder {
       // MINOR 2): the teardown that follows sets `gone` before destroying the buffers, so
       // the rejection handlers stay silent -- count the stragglers here instead. W.drop is
       // diagnostic (?recdebug); the file itself keys on the chunks that landed.
-      const t = setTimeout(() => { W.onDrain = null; recDrop(W, "drain", W.pend); res(); }, REC_DRAIN_MS);
+      const t = setTimeout(() => { W.onDrain = null; W.drop += W.pend; res(); }, REC_DRAIN_MS);
       W.onDrain = () => { clearTimeout(t); W.onDrain = null; res(); };
     }).then(() => W.chain).catch(() => {});
   }
@@ -3423,7 +3288,7 @@ class Recorder {
     // backfilled frame would put a stale image at a timestamp it never had. The honest-
     // length rule stands: fewer recorded seconds than wall clock, never a lying sample
     // table. At nominal cadence the `else` keeps `due` drift-free.
-    if (now - W.due > T) { recDrop(W, "slot", Math.floor((now - W.due) / T)); W.due = now + T; }
+    if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
     else W.due += T;
     // the fast path since RECASYNC (2026-08-12): submit a GPU copy and return. The frame
     // itself is built from those bytes in the chain when the map resolves, and the rafN
@@ -3454,7 +3319,7 @@ class Recorder {
   recTick(W) {
     if (this.wc !== W || W.done) return;
     if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
-    if (W.enc.encodeQueueSize > REC_QMAX) { recDrop(W, "enc"); return; }
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
     this.card.render();      // same reason as saveShot: getCurrentTexture is transient
     if (this.recEncodeFrame(W)) W.wdN++;
     // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
@@ -4467,10 +4332,6 @@ function primaryCard() { return cards.disp.length ? cards.disp[0] : null; }
 function chartsReset() {
   histReset(); islandReset(); modeReset();
   cardsThrottleReset();
-  // ... and the held stats, which are the one readback the loop no longer awaits: without
-  // this the readout, the energy trace and `simT` (which stamps capture filenames) would
-  // spend a pass describing the state that was just thrown away (LOOPLAT_PLAN, risks).
-  statsReset();
   // ... and it is also where the state JUMPED without a step being taken, which is the
   // one thing the render gate's step counter cannot see (an IC upload resets nsteps to
   // 0, so the count alone can repeat a value the caches were already holding).
@@ -6625,44 +6486,7 @@ let frameHook = null, readoutExtra = null, specExtra = null;
 // the run flag, so exactly one more readback still lands AFTER the final step -- the
 // charts show the state you paused on, not the one 300 ms before it.
 const cardsThrottle = { spec: 0, cut: 0, specAt: null, cutAt: null };
-// The stats readback is FIRE-AND-FORGET since LOOPLAT (2026-08-12): the pass kicks off the
-// read and renders the readout from whatever has landed, one pass late. `at` is the state
-// mark the held value was READ at -- so it still answers "has this state already been
-// served?" for the render gate, and it still stops a paused page paying a map round trip
-// per frame for the same twelve numbers. Three more fields carry the asynchrony:
-//   `busy` / `busyId` -- one read in flight at a time. The flag has an OWNER, which is not
-//     a nicety: `statsReset` clears it while a read is still out, so the read it retired
-//     would otherwise land later and clear the flag its SUCCESSOR is holding, and from that
-//     moment on the loop kicks a fresh read every pass with two or three always in flight
-//     -- three times the map round trips this change exists to remove, and the held value
-//     lagging by the whole readback latency instead of by one pass, which `simT` and the
-//     energy trace both ride on (adversarial review, MAJOR).
-//   `seq` / `got` -- a monotonic id issued at kick-off and recorded on install, so a LATE
-//     arrival cannot overwrite a NEWER one, and so a reset can retire everything in flight.
-const statsCache = { s: null, at: null, seq: 0, got: 0, busy: false, busyId: 0 };
-// The state jumped, so the numbers in hand describe a state that no longer exists: an IC
-// upload, a preset, a rebuild. Every OTHER consumer re-derives from stateMark() and needs
-// nothing here, but this one HOLDS a value across passes, so it has to be told. Clearing
-// `busy` lets the new state's read start immediately rather than queue behind a read of a
-// solver that may already be in the graveyard.
-//
-// Dropping the held value is NOT enough on its own, and the difference is the whole reason
-// the ids exist: a read kicked off before the jump is still out, and `sv === solver` does
-// not retire it, because an IC upload and a preset switch keep the SAME solver object --
-// they move the state inside it. Landing unchallenged, that read would put the discarded
-// state's energies back in the readout and its `t` back in `simT`, one pass after the
-// reset that was supposed to forget it. Advancing `got` to the last id ISSUED retires
-// every read now outstanding, whoever owns it. (Found by the checkidle leg below, which
-// is what that leg is for.)
-function statsReset() {
-  statsCache.s = null; statsCache.at = null;
-  statsCache.busy = false; statsCache.busyId = 0;
-  statsCache.got = statsCache.seq;
-  // `simT` rides the held value and is what stamps save / record filenames. Its every
-  // caller is applyIC, which has just set an initial condition, so the honest number for
-  // the pass or two before the first read lands is the one the new state actually has.
-  simT = 0;
-}
+const statsCache = { s: null, at: null };
 // "fill these cards NOW": zero the clocks so the window is already over, and forget which
 // state they were last served for so the gate cannot answer "nothing new" to a card that
 // has never been fed. Both halves are needed -- a newly added or retyped chart on a
@@ -6714,249 +6538,171 @@ function renderCards(paused) {
   }
   return n;
 }
-// ONE pass of the frame loop, split out of loop() for the same reason renderCards was (the
-// audit of 2026-08-12): the stub's requestAnimationFrame is a no-op, so this is the only
-// way devtools/checkidle.js can drive the pass itself rather than re-implement it and then
-// test its own copy. `dtPass` is the smoothed rAF-to-rAF period from paceFeed, or 0 for
-// "no measurement" -- the gate hands it injected numbers, loop() hands it the clock.
-//
-// It returns nothing and, since LOOPLAT, it AWAITS no unconditional GPU round trip: the
-// steps, the display chains and the recorder's frame are all ahead of the first await, so
-// the pass completes at the rate rAF calls it whatever the GPU is doing.
-async function loopPass(dtPass) {
-  while (graveyard.length) graveyard.pop().destroy();
-  if (!solver) return;
-  // One display chain run per card, gated -- and it must happen HERE, in this
-  // synchronous task, before any await: a live WebCodecs recording takes its frame off
-  // this very render, WebGPU has no preserveDrawingBuffer, so getCurrentTexture is
-  // transient and the canvas holds only its last PRESENTED image; a capture deferred
-  // even one microtask would wrap an expired texture (the same reason saveShot
-  // re-renders first). It is also why leg 1's interval is now only a watchdog: feeding
-  // the encoder off a timer meant a second full render per frame at a phase that beat
-  // against this loop, which an iPhone showed as a stutter for the length of the take
-  // (RECRAF_PLAN, 2026-08-12). Everything else about it is in renderCards.
-  //
-  // It runs BEFORE the step batch, which is the LOOPLAT on-device fix (2026-08-12). Queue
-  // order is submission order, so with the steps first a capture's copyTextureToBuffer was
-  // queued behind this pass's `stepsPerFrame` steps AND up to INFLIGHT_MAX-1 earlier
-  // batches -- ~25-39 steps of GPU work on Alfred's devices -- and its map came back 52-65
-  // ms later against a 33.3 ms slot, which saturated the staging pool and dropped slots for
-  // want of a buffer. Rendering first puts the copy at the HEAD of the pass's submissions.
-  // The cost is that the picture (and the recorded frame) is the state as of the previous
-  // pass's steps: one pass of lag on a display refreshing 40x a second, which is the same
-  // trade the readout and the charts already make, and the recorder stamps by index rather
-  // than by content so the file is unaffected.
-  renderCards(!running);
-  let n = 0;
-  // The bound, not a barrier: a saturated queue skips the STEPS and nothing else, so the
-  // display still refreshes and -- the reason this matters -- the recorder still gets its
-  // frame off this pass. See INFLIGHT_MAX.
-  if (running && inflight < INFLIGHT_MAX) {
-    // dt must be recomputed every step while the run spins up from a quiescent /
-    // low-amplitude state: a frozen dt block there collapses and NaNs.
-    const ce = solver.nsteps < 200 ? 1 : parseInt(el("rCflEvery").value, 10);
-    n = stepsPerFrame;
-    for (let i = 0; i < n; i++) solver.step(ce);
-    // nothing to invalidate by hand: nsteps moved, so stateMark() did, and every card
-    // and every gated readback below asks that question for itself
-    inflight++;
-    device.queue.onSubmittedWorkDone().then(inflightDone, inflightDone);
-  }
-  // NO drain here since LOOPLAT (2026-08-12). `await device.queue.onSubmittedWorkDone()`
-  // stood on this line to make the number below a true GPU time; what it actually did on
-  // a phone was hold the next pass hostage to a completion message, and the controller it
-  // fed measured only the prefix of the pass that ended at it. The pass period computed
-  // at the top costs no sync, covers the WHOLE pass, and is what the recorder consumes.
-  //
-  // `n ? dtPass : 0` and not `dtPass`: a pass the in-flight bound made skip its steps is
-  // SHORT precisely because it dropped the work, and feeding that period to the controller
-  // would read the backpressure as headroom and raise -- 1 -> 64 over eighty skipped
-  // passes, so that the first batch submitted when the queue frees is the largest one
-  // possible, which is the opposite of what the bound is for (adversarial review, MAJOR).
-  // A pass that did no work is not a measurement of how much work fits, which is the rule
-  // paceFeed already applies to a pass with no interval. `spsSmooth` is fed the skip
-  // honestly, though: no steps happened, and the readout should say so.
-  if (running) {
-    paceControl(n ? dtPass : 0, recTaking());
-    if (dtPass) {
-      const sps = n / (dtPass / 1000);
-      spsSmooth = spsSmooth ? 0.9 * spsSmooth + 0.1 * sps : sps;
-    }
-  }
-  // The scalars buffer cannot move without a step or a state jump, so a paused page
-  // reuses the last read rather than paying a map round trip per frame for the same
-  // twelve numbers. The readout text below is rebuilt either way -- the "paused" word
-  // and the hooks' extra lines change without the numbers doing.
-  //
-  // The read is KICKED OFF here and consumed whenever it lands, one pass later (the
-  // pattern the arrows, the colorbar and the cut line below already use). Awaiting it
-  // inline cost a second completion-message round trip per pass on top of the drain,
-  // for 48 bytes. The two guards are the ones that idiom always needs: `sv === solver`
-  // retires a read whose solver was rebuilt under it, and the id retires a read that a
-  // newer one has already overtaken.
-  const mark = stateMark();
-  if (statsCache.at !== mark && !statsCache.busy) {
-    const sv = solver, at = mark, id = ++statsCache.seq;
-    statsCache.busy = true; statsCache.busyId = id;
-    // the flag is released by ITS OWN read and by no other: a read that a reset already
-    // retired must not free the slot its successor is holding
-    const free = () => { if (statsCache.busyId === id) statsCache.busy = false; };
-    sv.readStats().then(v => {
-      free();
-      if (sv !== solver || id <= statsCache.got) return;
-      statsCache.got = id; statsCache.s = v; statsCache.at = at;
-    }, e => { free(); console.error(e); });
-  }
-  const s = statsCache.s;
-  // No numbers yet: the first pass or two of a session, and the pass after a rebuild.
-  // Everything from here down reads them. The pass still COMPLETED -- the steps, the
-  // display chains and the recorder's frame are all above this line, which is the
-  // property that makes the loop the recorder's feeder rather than its bottleneck.
-  if (!s) return;
-  if (frameHook) await frameHook(solver);
-  if (!solver) return;                      // retired while we were awaiting
-  if (isFinite(s[1])) simT = s[1];          // what the capture filenames stamp
-  const extra = readoutExtra ? readoutExtra() : "";
-  // the sticky bar carries the one line that must always be visible; the rest
-  // goes under the displays. Both come from this one stats readback.
-  el("steps").textContent =
-    "t " + s[1].toFixed(3) + "  step " + solver.nsteps +
-    "  dt " + s[0].toExponential(2) + "  " + (running ? spsSmooth.toFixed(0) + " steps/s" : "paused");
-  el("readout").textContent =
-    "E_u = " + s[2].toExponential(5) + "  E_b = " + s[3].toExponential(5) +
-    "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3) +
-    (extra ? "\n" + extra : "");
-  // ?recdebug, one line for the LOOP itself (LOOPLAT, 2026-08-12): the numbers that say
-  // whether this change did what it claims on a given device. `pass` is the smoothed
-  // rAF-to-rAF period the controller is now steering (it should sit at the panel's vsync
-  // interval, not at 68 ms), `sf` is where the controller settled, and `ifl` says whether
-  // the in-flight bound is biting. Unlike the per-recording lines below, this one is
-  // printed whether or not a take is live -- the loop is worth watching on its own.
-  if (REC_DEBUG) el("readout").textContent +=
-    "\nloop: pass " + pace.dt.toFixed(1) + " ms  sf " + stepsPerFrame + "  ifl " + inflight;
-  // ?recdebug (RECRAF round 2, 2026-08-12): one readout line per live recording -- which
-  // feeder is putting frames in the file and how stretched the loop is. This is how a
-  // phone, which has no devtools console, reports whether the watchdog fired on a
-  // visible page (wd must stay 0 there) and whether the loop gap explains a stutter.
-  if (REC_DEBUG) for (const d of cards.disp) {
-    const W = d.wc;
-    // `lag` (RECASYNC, 2026-08-12) is the buffer path's own number: capture submit to
-    // encode, i.e. how late the GPU's bytes arrive. Tens of ms are FINE -- the frame is
-    // stamped by index, not by arrival -- and it is here only so a phone can say whether
-    // the readback is keeping up at all. It stays 0 on the sync canvas path.
-    // `drop` is split by CAUSE since the LOOPLAT on-device reading: the bare total had
-    // drops rising on three devices at once with no way to say whether the loop was late
-    // (slot), the staging pool was saturated (pool), or the encoder was behind (enc) --
-    // three different fixes. Only nonzero causes print, so a clean take stays quiet.
-    const why = W && W.why ? Object.keys(W.why).filter(k => W.why[k])
-                                   .map(k => k + " " + W.why[k]).join(" ") : "";
-    if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
-      "  drop " + W.drop + (why ? " [" + why + "]" : "") +
-      "  gap " + Math.round(W.maxGap) + " ms" +
-      "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1) +
-      "  lag " + Math.round(W.tL) + " ms";
-  }
-
-  // energy trace: one sample per readback, but never a duplicate t while paused.
-  // s[8] is the cross helicity H_c, which is what the E+- mode needs.
-  if (isFinite(s[1]) && isFinite(s[2]) && isFinite(s[3]) &&
-      (!hist.t.length || s[1] > hist.t[hist.t.length - 1])) {
-    histPush(s[1], s[2], s[3], isFinite(s[8]) ? s[8] : 0);
-    for (const c of _chartsOf("energy")) c.draw(null);
-  }
-  // arrow overlay, per display card: the gather already ran inside that card's
-  // render() pass, so this is only a copy + map round trip. ~10 Hz per card, one
-  // frame of lag, and it never runs per step. A cube card gathers the plane its TOP
-  // face shows and draws through that face's projection (REFINE_PLAN I2.3).
-  // (snapshot: a close button can splice cards.disp while we are awaiting. A card that
-  // is not showing arrows is simply skipped -- overlay() gates on showArrows(), so the
-  // stale gather cannot reappear, and apply() has already redrawn the canvas.)
-  // ... and, on the same snapshot and the same guard, the colorbar's tick labels
-  // (FEEDBACK_2026-08-10 item 12): 4 bytes of the per-chain `maxVal` buffer, i.e. the
-  // autoscale the colorize kernel of the frame just drawn actually divided by. Its own
-  // (slower) throttle, and skipped for the fixed +-1 modes, which need no number at all.
-  // Both read what a render LEFT in that card's buffers, so both are also gated on the
-  // card's frame counter: once the gate above stops drawing, there is nothing new to
-  // fetch and these go quiet with it -- but each still gets ONE read after the last
-  // frame drawn, which is what keeps the paused arrows and the paused colorbar showing
-  // the state on screen rather than the one before it.
-  for (const d of cards.disp.slice()) {
-    const tnow = performance.now();
-    if (d.showArrows() && d.arrowSeq !== d.renderSeq && tnow - d.arrowAt > 100) {
-      d.arrowAt = tnow; d.arrowSeq = d.renderSeq;
-      const sv = solver;
-      const av = await sv.readArrows(d.ci);
-      if (sv === solver && cards.disp.indexOf(d) >= 0) d.setArrows(av, sv.nax, sv.nay);
-    }
-    if (d.barNeedsMax() && d.barSeq !== d.renderSeq &&
-        performance.now() - d.barAt > CBAR_PERIOD) {
-      d.barAt = performance.now(); d.barSeq = d.renderSeq;
-      const sv = solver;
-      const mv = await dispMaxRead(sv, d.ci);
-      if (sv === solver && cards.disp.indexOf(d) >= 0) d.setBarRange(mv[0]);
-    }
-  }
-
-  // cut trace: same throttle / guard idiom as the arrows. SELF-CONTAINED since
-  // Phase H -- it runs its own line prep and depends on no display card, only on
-  // its own z plane (2D: always 0), so one readback serves every card on that plane.
-  const cutCards = _chartsBySrc("cut");
-  if (cutCards.length && cardsThrottle.cutAt !== mark &&
-      performance.now() - cardsThrottle.cut > 100) {
-    cardsThrottle.cut = performance.now(); cardsThrottle.cutAt = mark;
-    const sv = solver, planes = new Map();
-    for (const c of cutCards) planes.set(cards.cfg.zsliceOf(c), null);
-    for (const iz of Array.from(planes.keys())) {
-      const vals = await sv.readCutLine(iz);
-      if (sv !== solver) break;                 // retired while we were awaiting
-      planes.set(iz, { vals, Ly: sv.p.Ly });
-    }
-    if (sv === solver) {
-      // the island trace rides this readback (REFINE_PLAN J.4): psi on the resonant
-      // line is one spectral integration of the b_x line already in hand.
-      const d0 = planes.get(0);
-      if (d0 && cutCards.some(c => c.type() === "island")) {
-        islandPush(s[1], d0.vals, sv.p.ny, sv.p.Ly);
-      }
-      // ... and so does the k_y mode trace: one DFT coefficient of the u_x / b_x rows
-      // of the very same line.
-      if (d0 && cutCards.some(c => c.type() === "mode")) {
-        modePush(s[1], d0.vals, sv.p.ny);
-      }
-      for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
-    }
-  }
-
-  // spectra: a full extra pass over the fields + a map round trip -> throttle hard
-  const specCards = _chartsBySrc("spectrum");
-  const now = performance.now();
-  if (specCards.length && cardsThrottle.specAt !== mark && now - cardsThrottle.spec > 300) {
-    cardsThrottle.spec = now; cardsThrottle.specAt = mark;
-    const sv = solver;
-    const sp = await sv.readSpectrum();
-    if (sv === solver) {
-      // `kunit` rides along so a pinned ghost can be re-registered on physical k when
-      // the box changes (PINCURVE): the snapshot keeps the value it was taken under.
-      const d = Object.assign({ perp: sp.perp, nb: sv.nb, fshell: sv.p.fshell,
-                                par: sp.par, parKfac: sp.parKfac, kunit: sv.g.kunit },
-                              specExtra ? specExtra() : null);
-      autoDissCache.sv = sv; autoDissCache.at = now; autoDissCache.perp = sp.perp;
-      for (const c of specCards) c.draw(d);
-    }
-  }
-  // auto-diss (item 6): the same perpendicular bins, at its own 2 Hz cadence. It rides
-  // the cards' cached readback whenever a fresh one exists and takes its own only
-  // when none does -- the controller must work with the chart closed.
-  await autoDissHook(solver);
-}
-// The rAF driver. Everything it does that the pass does not is here: wait for the frame,
-// and turn the wall clock into the one number the pass is paced by.
 async function loop() {
   for (;;) {
     await new Promise(r => requestAnimationFrame(r));
-    // sampled BEFORE anything else, so it is a true rAF-to-rAF interval and not "time since
-    // the last pass that had something to do" (LOOPLAT_PLAN §2)
-    await loopPass(paceFeed(performance.now()));
+    while (graveyard.length) graveyard.pop().destroy();
+    if (!solver) continue;
+    const t0 = performance.now();
+    let n = 0;
+    if (running) {
+      // dt must be recomputed every step while the run spins up from a quiescent /
+      // low-amplitude state: a frozen dt block there collapses and NaNs.
+      const ce = solver.nsteps < 200 ? 1 : parseInt(el("rCflEvery").value, 10);
+      n = stepsPerFrame;
+      for (let i = 0; i < n; i++) solver.step(ce);
+      // nothing to invalidate by hand: nsteps moved, so stateMark() did, and every card
+      // and every gated readback below asks that question for itself
+    }
+    // One display chain run per card, gated -- and it must happen HERE, in this
+    // synchronous task, before any await: a live WebCodecs recording takes its frame off
+    // this very render, WebGPU has no preserveDrawingBuffer, so getCurrentTexture is
+    // transient and the canvas holds only its last PRESENTED image; a capture deferred
+    // even one microtask would wrap an expired texture (the same reason saveShot
+    // re-renders first). It is also why leg 1's interval is now only a watchdog: feeding
+    // the encoder off a timer meant a second full render per frame at a phase that beat
+    // against this loop, which an iPhone showed as a stutter for the length of the take
+    // (RECRAF_PLAN, 2026-08-12). Everything else about it is in renderCards.
+    renderCards(!running);
+    await device.queue.onSubmittedWorkDone();
+    const ms = performance.now() - t0;
+    if (running) {
+      if (ms < 11 && stepsPerFrame < 64) stepsPerFrame++;
+      else if (ms > 22 && stepsPerFrame > 1) stepsPerFrame--;
+      const sps = n / (Math.max(ms, 0.05) / 1000);
+      spsSmooth = spsSmooth ? 0.9 * spsSmooth + 0.1 * sps : sps;
+    }
+    // the scalars buffer cannot move without a step or a state jump, so a paused page
+    // reuses the last read rather than paying a map round trip per frame for the same
+    // twelve numbers. The readout text below is rebuilt either way -- the "paused" word
+    // and the hooks' extra lines change without the numbers doing.
+    const mark = stateMark();
+    if (!statsCache.s || statsCache.at !== mark) {
+      statsCache.s = await solver.readStats();
+      statsCache.at = mark;
+      if (!solver) continue;                  // retired while we were awaiting
+    }
+    const s = statsCache.s;
+    if (frameHook) await frameHook(solver);
+    if (!solver) continue;                    // retired while we were awaiting
+    if (isFinite(s[1])) simT = s[1];          // what the capture filenames stamp
+    const extra = readoutExtra ? readoutExtra() : "";
+    // the sticky bar carries the one line that must always be visible; the rest
+    // goes under the displays. Both come from this one stats readback.
+    el("steps").textContent =
+      "t " + s[1].toFixed(3) + "  step " + solver.nsteps +
+      "  dt " + s[0].toExponential(2) + "  " + (running ? spsSmooth.toFixed(0) + " steps/s" : "paused");
+    el("readout").textContent =
+      "E_u = " + s[2].toExponential(5) + "  E_b = " + s[3].toExponential(5) +
+      "\ns+   = " + s[4].toExponential(3) + "   s- = " + s[5].toExponential(3) +
+      (extra ? "\n" + extra : "");
+    // ?recdebug (RECRAF round 2, 2026-08-12): one readout line per live recording -- which
+    // feeder is putting frames in the file and how stretched the loop is. This is how a
+    // phone, which has no devtools console, reports whether the watchdog fired on a
+    // visible page (wd must stay 0 there) and whether the loop gap explains a stutter.
+    if (REC_DEBUG) for (const d of cards.disp) {
+      const W = d.wc;
+      // `lag` (RECASYNC, 2026-08-12) is the buffer path's own number: capture submit to
+      // encode, i.e. how late the GPU's bytes arrive. Tens of ms are FINE -- the frame is
+      // stamped by index, not by arrival -- and it is here only so a phone can say whether
+      // the readback is keeping up at all. It stays 0 on the sync canvas path.
+      if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
+        "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms" +
+        "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1) +
+        "  lag " + Math.round(W.tL) + " ms";
+    }
+
+    // energy trace: one sample per readback, but never a duplicate t while paused.
+    // s[8] is the cross helicity H_c, which is what the E+- mode needs.
+    if (isFinite(s[1]) && isFinite(s[2]) && isFinite(s[3]) &&
+        (!hist.t.length || s[1] > hist.t[hist.t.length - 1])) {
+      histPush(s[1], s[2], s[3], isFinite(s[8]) ? s[8] : 0);
+      for (const c of _chartsOf("energy")) c.draw(null);
+    }
+    // arrow overlay, per display card: the gather already ran inside that card's
+    // render() pass, so this is only a copy + map round trip. ~10 Hz per card, one
+    // frame of lag, and it never runs per step. A cube card gathers the plane its TOP
+    // face shows and draws through that face's projection (REFINE_PLAN I2.3).
+    // (snapshot: a close button can splice cards.disp while we are awaiting. A card that
+    // is not showing arrows is simply skipped -- overlay() gates on showArrows(), so the
+    // stale gather cannot reappear, and apply() has already redrawn the canvas.)
+    // ... and, on the same snapshot and the same guard, the colorbar's tick labels
+    // (FEEDBACK_2026-08-10 item 12): 4 bytes of the per-chain `maxVal` buffer, i.e. the
+    // autoscale the colorize kernel of the frame just drawn actually divided by. Its own
+    // (slower) throttle, and skipped for the fixed +-1 modes, which need no number at all.
+    // Both read what a render LEFT in that card's buffers, so both are also gated on the
+    // card's frame counter: once the gate above stops drawing, there is nothing new to
+    // fetch and these go quiet with it -- but each still gets ONE read after the last
+    // frame drawn, which is what keeps the paused arrows and the paused colorbar showing
+    // the state on screen rather than the one before it.
+    for (const d of cards.disp.slice()) {
+      const tnow = performance.now();
+      if (d.showArrows() && d.arrowSeq !== d.renderSeq && tnow - d.arrowAt > 100) {
+        d.arrowAt = tnow; d.arrowSeq = d.renderSeq;
+        const sv = solver;
+        const av = await sv.readArrows(d.ci);
+        if (sv === solver && cards.disp.indexOf(d) >= 0) d.setArrows(av, sv.nax, sv.nay);
+      }
+      if (d.barNeedsMax() && d.barSeq !== d.renderSeq &&
+          performance.now() - d.barAt > CBAR_PERIOD) {
+        d.barAt = performance.now(); d.barSeq = d.renderSeq;
+        const sv = solver;
+        const mv = await dispMaxRead(sv, d.ci);
+        if (sv === solver && cards.disp.indexOf(d) >= 0) d.setBarRange(mv[0]);
+      }
+    }
+
+    // cut trace: same throttle / guard idiom as the arrows. SELF-CONTAINED since
+    // Phase H -- it runs its own line prep and depends on no display card, only on
+    // its own z plane (2D: always 0), so one readback serves every card on that plane.
+    const cutCards = _chartsBySrc("cut");
+    if (cutCards.length && cardsThrottle.cutAt !== mark &&
+        performance.now() - cardsThrottle.cut > 100) {
+      cardsThrottle.cut = performance.now(); cardsThrottle.cutAt = mark;
+      const sv = solver, planes = new Map();
+      for (const c of cutCards) planes.set(cards.cfg.zsliceOf(c), null);
+      for (const iz of Array.from(planes.keys())) {
+        const vals = await sv.readCutLine(iz);
+        if (sv !== solver) break;                 // retired while we were awaiting
+        planes.set(iz, { vals, Ly: sv.p.Ly });
+      }
+      if (sv === solver) {
+        // the island trace rides this readback (REFINE_PLAN J.4): psi on the resonant
+        // line is one spectral integration of the b_x line already in hand.
+        const d0 = planes.get(0);
+        if (d0 && cutCards.some(c => c.type() === "island")) {
+          islandPush(s[1], d0.vals, sv.p.ny, sv.p.Ly);
+        }
+        // ... and so does the k_y mode trace: one DFT coefficient of the u_x / b_x rows
+        // of the very same line.
+        if (d0 && cutCards.some(c => c.type() === "mode")) {
+          modePush(s[1], d0.vals, sv.p.ny);
+        }
+        for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
+      }
+    }
+
+    // spectra: a full extra pass over the fields + a map round trip -> throttle hard
+    const specCards = _chartsBySrc("spectrum");
+    const now = performance.now();
+    if (specCards.length && cardsThrottle.specAt !== mark && now - cardsThrottle.spec > 300) {
+      cardsThrottle.spec = now; cardsThrottle.specAt = mark;
+      const sv = solver;
+      const sp = await sv.readSpectrum();
+      if (sv === solver) {
+        // `kunit` rides along so a pinned ghost can be re-registered on physical k when
+        // the box changes (PINCURVE): the snapshot keeps the value it was taken under.
+        const d = Object.assign({ perp: sp.perp, nb: sv.nb, fshell: sv.p.fshell,
+                                  par: sp.par, parKfac: sp.parKfac, kunit: sv.g.kunit },
+                                specExtra ? specExtra() : null);
+        autoDissCache.sv = sv; autoDissCache.at = now; autoDissCache.perp = sp.perp;
+        for (const c of specCards) c.draw(d);
+      }
+    }
+    // auto-diss (item 6): the same perpendicular bins, at its own 2 Hz cadence. It rides
+    // the cards' cached readback whenever a fresh one exists and takes its own only
+    // when none does -- the controller must work with the chart closed.
+    await autoDissHook(solver);
   }
 }
 
