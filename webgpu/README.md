@@ -158,6 +158,93 @@ programmatically; do not try to hand-edit a 180 kB line).
   is a spacing that would never arrive, frozen wherever the gate stopped the frames. And
   leaving the IC editor marks every card, because save and cancel change no state at all
   and the cards have been detached for the length of the edit.
+
+  **The pass does not wait for the GPU** (LOOPLAT, 2026-08-12). `loop()` is now only the
+  rAF driver; `loopPass(dtPass)` is the pass, split out for the same reason `renderCards`
+  was — so `checkidle` can drive the real thing rather than a copy of it. What came out of
+  it is the pair of sync points that used to stand on every pass: an unconditional
+  `await device.queue.onSubmittedWorkDone()` and an awaited `readStats`. Neither was
+  waiting for the GPU to *compute* — the work is single-digit ms and finishes early — they
+  were waiting for a completion **message** to be delivered back into JavaScript, which a
+  browser services at task-queue granularity, on Safari/iOS roughly one frame per await.
+  On an iPhone 11 (2D 256² forced, recording, `?recdebug`) that made the pass 68 ms of
+  which ~46 ms was latency, at ~2 ms of real work, with the GPU idle across it because the
+  next batch was not submitted until the previous batch's message arrived. Since RECRAF the
+  loop is the recorder's feeder — one capture per pass, never backfilled — so a 15 Hz loop
+  starved a 30 fps encoder of half its slots by construction, and `drop` was a loop
+  measurement wearing a recorder's name.
+
+  So: `readStats` is fire-and-forget and the readout renders from the value that landed,
+  one pass late (the idiom the arrows, the colorbar and the cut line already used), and the
+  step-count controller is driven by the **rAF-to-rAF pass period** instead of by `ms`.
+  That number needs no sync, covers the whole pass rather than the prefix ending at the
+  drain, and is the quantity the recorder consumes — capture rate *is* pass rate. It is
+  smoothed (rAF quantizes the period to vsync multiples, so a raw comparison hunts on the
+  quantization edge) and banded — but the band is expressed **relative to `pace.floor`, the
+  cheapest pass period this device has recently managed**, with `PASS_LO` / `PASS_HI` only
+  as floors on those edges. Absolute thresholds alone are a trap and the adversarial review
+  found it occupied: raising only below 18 ms asks the pass to fit inside one 60 Hz vsync,
+  so on any device whose *bare* pass — display chain and throttled readbacks, before a
+  single step — already overruns a vsync, the raise branch is unreachable and
+  `stepsPerFrame` is pinned at 1 for the session. That is not a corner case; the phone this
+  change was written for is estimated at a ~20 ms bare pass. `pace.floor` tracks down
+  instantly and up at 1% per pass, so a cheaper configuration is believed at once and a
+  dearer one cannot move the goalposts out from under a step count that caused it. While a
+  take is live the ceiling is `max(PASS_HI_REC, floor)` — inside one 33.3 ms capture slot
+  where the device can deliver one, and *at* the floor where it cannot, which holds the pass
+  at the fastest rate that device has rather than spending every step chasing one it will
+  never reach. The decrease is
+  *proportional* (`round(sf·hi/dt)`, at least −1): `ms` billed an over-raised step count in
+  the same pass, a pass period is one pass late and smoothed on top, so the rise overshoots
+  by construction and a plain −1 would crawl back one decrement per pass while each pass is
+  the length the overshoot made it.
+
+  Two more things the controller has to get right, both of them ways of measuring something
+  that is not what it looks like. A period over `PASS_MAX` is **clamped, never discarded**:
+  a visible pass really can take half a second when a heavy card opens on a slow phone, and
+  throwing that sample away was a latch with no exit — the controller went blind exactly
+  when it needed to cut, `stepsPerFrame` stayed pinned high, and that kept the pass slow. A
+  hidden tab, whose rAF interval is indistinguishable *by length* from that pass, is dealt
+  with by cause instead: `visibilitychange` forgets the previous timestamp, so the next pass
+  is "no measurement" and the one after re-seeds. And a pass the in-flight bound made skip
+  is fed to the controller as **no measurement at all** — it is short precisely because it
+  dropped the work, so believing it reads the backpressure as headroom and drives
+  `stepsPerFrame` 1 → 64 over eighty skipped passes, making the first batch submitted when
+  the queue frees the largest one possible.
+
+  The drain survives as **backpressure** rather than as a barrier: at most `INFLIGHT_MAX`
+  step batches outstanding, and a pass that finds the bound saturated steps nothing — it
+  still renders and still captures. Without it, nothing awaited per pass means the CPU can
+  queue faster than the GPU retires, which is the same latency wearing a different hat.
+  Display work is deliberately not counted against the bound; it is one chain per card per
+  pass and already paced by rAF.
+
+  Two guards carry the asynchrony, and the second is not optional: `sv === solver` retires
+  a read whose solver was rebuilt under it, and a monotonic id retires a read that a newer
+  one overtook **or that a state jump discarded**. The id half is what the adversarial
+  reading of this change found — an IC upload and a preset switch keep the *same* solver
+  object, so a read still in flight over the thrown-away state sails past `sv === solver`
+  and lands one pass later, putting the forgotten energies back in the readout and its `t`
+  back in `simT`, which stamps capture filenames. `statsReset` (called from `chartsReset`,
+  beside `cardsThrottleReset`) drops the held value, advances `got` to the last id issued,
+  and zeroes `simT` — every caller is `applyIC`, so zero is the number the new state has.
+  One frame of lag is fine; a value from a state that no longer exists is not.
+
+  The `busy` flag that keeps it to one read in flight has an **owner** for the same reason:
+  `statsReset` clears it while a read is still out, so without `busyId` that retired read
+  lands later and frees the slot its *successor* is holding — and from that moment the loop
+  kicks a fresh read every pass with two or three always in flight. Three times the map
+  round trips this change exists to remove, and the held value lagging by the whole readback
+  latency rather than by one pass, which `simT`, the readout and the energy trace all ride
+  on. `checkidle` asserts it as reads-per-pass over a run, not as the flag.
+
+  Not taken: capping display renders at ~30/s. The plan left it conditional on a
+  measurement, and the sandbox has no GPU to make one. The argument for it is that a pass
+  rate going from ~15/s to 60/s runs the display chain 4× as often; the argument against
+  taking it blind is that the controller now measures the pass period *including* display
+  cost, so display work cannot run away — it converts into a lower `stepsPerFrame` instead
+  of into a stalled loop. The on-device discriminator is one reading: `steps/s` with three
+  display cards open versus one.
 - `physics.js` — the shared RMHD kernels and the whole slice display chain, as
   templates over one constants object per app (`{pre, hasZ, wgReal, nDisp, arrow, ns,
   envFn}`), plus the shared `struct Mode` and `CMAP_WGSL` (four colormaps, one

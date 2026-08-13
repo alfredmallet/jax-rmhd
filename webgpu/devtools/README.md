@@ -254,7 +254,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `r_frame_rate 30/1`, size and codec preserved, and `ffmpeg -v error -f null -` decoding
   with zero stderr. Three cases — a square 512×512 take, the non-square 1024×256 wide box,
   and a one-frame file — plus the refusals (no samples / no avcC) and the codec-string
-  level table. This is the gate that says the recording will play on a phone.
+  level table. This is the gate that says the recording will play on a phone. Its scratch
+  directory is `TMPDIR` (default `/var/tmp`): the filenames are fixed, so a shared
+  `/var/tmp` still holding another user's run fails every leg with EACCES before a single
+  assertion is made.
 - `checkonepage.js [dir]` — the ONEPAGE_PLAN gates, on both booted pages. Phase A: the
   control panel hidden at boot, the params toggle's `localStorage` memory across two boots
   in one process (stubenv's store is per-PROCESS on purpose, so that IS a return visit),
@@ -432,6 +435,45 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   the last frame drawn (and none after that however wide the throttle is), the spectrum
   marker suppressing and `cardsThrottleReset` re-permitting, and `recCapture` being called
   on every card every frame whether or not that card drew.
+  Section 7 (LOOPLAT_PLAN, same day) is THE PASS, driven the same way: `loopPass(dtPass)`
+  is the app's own frame-loop body, split out of `loop()` so the checker can call it and be
+  handed injected pass periods instead of racing the machine it runs on. A paused pass
+  drains the queue not at all and a running one exactly once (the in-flight bound's
+  backpressure, not a per-pass barrier — a reinstated drain fails the first half). A
+  `readStats` that NEVER resolves must still let the pass return, still feed the recorder
+  off it, and render no numbers it does not have — raced against a timer, because restoring
+  the `await` makes the leg hang rather than fail. Then the two discard rules, both driven
+  with hand-resolved reads: the NEWER of two outstanding reads resolved FIRST must not be
+  rolled back by the older one landing behind it, a read whose solver was retired under it
+  is dropped, and — the defect this section found — a read still in flight across a
+  `statsReset` is dropped too, which `sv === solver` cannot do because an IC upload and a
+  preset switch keep the same solver object. The energy trace is checked to take one sample
+  per distinct `t` and no duplicates, and — the statement that makes it a test of the lag
+  rather than of the push guard — exactly `reads - 1` samples, which reads `N == N` the
+  moment the `await` is restored. The controller is driven as pure arithmetic on injected
+  periods, with `pace.floor` PINNED by the leg (both band edges are relative to it, so a leg
+  that let it float would assert against whatever ran before): rise, fall, hold inside the
+  band, hold on a pass with no measurement, both ends of the 1..64 clamp, the proportional
+  cut out of a bad overshoot (32 steps at the phone's own 68 ms → 16, not 31), and a take
+  tightening the ceiling to inside one capture slot — with `PASS_HI_REC < 1000/REC_FPS`
+  asserted as a fact about the constants, and "a take is live" read off the CARDS through
+  `recTaking()` on both recording legs rather than off a flag the checker sets. Then the
+  same sweep on a SLOW device (`pace.floor` = 33.3 ms, a bare pass that overruns a vsync):
+  it must still raise, which an absolute raise edge cannot — that latch pinned
+  `stepsPerFrame` at 1 for the session and the leg reads `[1,1,1]` if the relative term is
+  removed — must still cut on a slipped vsync, and with a take must close the band ON the
+  floor rather than under a ceiling the device cannot reach. `paceFeed` is checked to yield
+  nothing on the first pass of a session, to seed the average and the floor, to MEASURE a
+  long visible pass (clamped, not discarded — discarding it was a latch with no exit) while
+  discarding a hidden stint by cause, and to track the floor down instantly and up slowly.
+  The in-flight bound: saturated, a pass steps nothing and still captures; under it, a pass
+  steps and captures; the bound is released when the submission retires; and 40 saturated
+  passes must NOT drive `stepsPerFrame` up, since a pass that skipped its work is short
+  because of the skip — with the same period on a stepping pass asserted to raise, so the
+  leg cannot pass with the controller simply switched off. Last, the `busy` flag's owner,
+  asserted as reads-per-pass over a run rather than as the flag: a read a `statsReset`
+  retired must not free the slot its successor holds, or the loop kicks a fresh read every
+  pass with two or three always in flight.
 - `checkgc.js` — the ANALYTICS_PLAN gates: the GoatCounter beacon and the contact line.
   Three parts. TEXT over the five HTML files pins the **set of counted pages**, which is
   the load-bearing decision of the feature: the four content pages carry exactly one

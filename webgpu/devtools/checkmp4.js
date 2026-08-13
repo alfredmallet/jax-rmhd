@@ -17,7 +17,10 @@
 const fs = require("fs"), vm = require("vm"), path = require("path");
 const { execFileSync } = require("child_process");
 const dir = process.argv[2] || path.join(__dirname, "..");
-const TMP = "/var/tmp";
+// scratch for the ffmpeg streams and the muxed files. TMPDIR wins: the names below are
+// fixed, so a shared /var/tmp left holding another user's run of this script fails every
+// leg with EACCES before a single assertion is made.
+const TMP = process.env.TMPDIR || "/var/tmp";
 const FPS = 30;
 let bad = 0;
 const ok = (name, pass, note) => {
