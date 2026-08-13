@@ -4616,7 +4616,7 @@ const RAIL_PANES = [
 ];
 // the built panes, kept so the no-GPU path can open them without a DOM query
 // ---------------------------------------------------------------------------
-// the contact line (ANALYTICS_PLAN.md phase 2)
+// the contact line (plans-webgpu/ANALYTICS_PLAN.md phase 2)
 // ---------------------------------------------------------------------------
 // Analytics on these pages is pageview counts and nothing else -- no events, no adapter
 // strings, no "did they press Run". This link is the deliberate substitute: the same

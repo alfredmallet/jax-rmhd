@@ -1,6 +1,6 @@
 # Forcing spin-up kick — diagnosis and fix plan
 
-Bug report: webgpu/FEEDBACK_2026-08-08.md P0 item 1 (3D forced app: large initial energy
+Bug report: plans-webgpu/FEEDBACK_2026-08-08.md P0 item 1 (3D forced app: large initial energy
 jump from a quiescent start, independent of eps). The webgpu clamp is a port of the main
 solver's `safe_scale`, and the bug **reproduces in the jax code** — this plan fixes it in
 taranis first (the app inherits the decision, Phase 3). Status 2026-08-08 (end of day):

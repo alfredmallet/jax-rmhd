@@ -6,7 +6,11 @@
 # and artifact upload fine, content unchanged in size -- GitHub-side flakiness,
 # but one we're exposed to only because the artifact is huge). This workflow
 # uploads webgpu/ alone (~1.5 MB), so deploys take seconds and the rest of the
-# repo is no longer served publicly.
+# repo is no longer served publicly. The staging step then prunes the dev-only
+# files inside webgpu/ (devtools/ and its node_modules, __pycache__, the
+# generators and their refvector JSONs, README/SPEC); the plan documents that
+# used to sit alongside them are in plans-webgpu/ at the repo root, deliberately
+# outside the copied directory.
 #
 # The artifact stages webgpu/ under a webgpu/ subdirectory, so the site lives
 # at alfredmallet.github.io/taranis/webgpu/..., and a root index.html redirects
@@ -55,6 +59,23 @@ jobs:
         run: |
           mkdir -p _site/webgpu
           cp -r webgpu/. _site/webgpu/
+          # Drop the dev-only files the wholesale copy picks up. Copy-then-remove
+          # rather than an allowlist ON PURPOSE: a new site file added to webgpu/
+          # must publish by default, because the failure mode of an allowlist is a
+          # 404 on the deployed page while file:// still works locally (devtools/
+          # README, "uncommitted file" note). devtools/ is the bulk of it -- 4.1 MB
+          # of node_modules against a ~1.5 MB site. The plan documents used to be
+          # here too and are now in plans-webgpu/, one level up, out of reach of
+          # this copy entirely.
+          rm -rf _site/webgpu/devtools _site/webgpu/__pycache__
+          rm -f  _site/webgpu/*.py _site/webgpu/refvectors.json \
+                 _site/webgpu/refvectors3d.json \
+                 _site/webgpu/README.md _site/webgpu/SPEC.md _site/webgpu/SPEC3D.md
+          # Fail loudly if the pruning ever eats the site itself.
+          for f in index.html rmhd2d.html rmhd3d.html docs.html reading.html \
+                   common.js physics.js style.css; do
+            test -s "_site/webgpu/$f" || { echo "MISSING from staged site: $f"; exit 1; }
+          done
           # Cache-bust the intra-site js/css references with the deploying commit, so a
           # browser holding a cached common.js can never pair it with newer HTML (the
           # "Can't find variable: controlsBuild" class of breakage, seen 2026-08-06).

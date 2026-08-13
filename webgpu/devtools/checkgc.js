@@ -1,4 +1,4 @@
-// checkgc.js -- gate for ANALYTICS_PLAN.md (GoatCounter beacon + the contact line).
+// checkgc.js -- gate for plans-webgpu/ANALYTICS_PLAN.md (GoatCounter beacon + the contact line).
 // Usage: node checkgc.js
 //
 // Two halves. The first is text-level over the five HTML files and needs no DOM: it
@@ -70,10 +70,13 @@ for (const f of ["rmhd2d.html", "rmhd3d.html"]) {
 }
 
 // The address must be absent from EVERY file the deploy publishes -- not just the HTML
-// and common.js. pages.yml stages the site with `cp -r webgpu/. _site/webgpu/`, which
-// copies this directory wholesale: .md plans, devtools/, all of it. A plan file spelling
-// the address out in full would defeat the entire runtime-assembly exercise while every
-// narrower check stayed green. (It did, once. That is why this walks the tree.)
+// and common.js. pages.yml stages the site with `cp -r webgpu/. _site/webgpu/` and then
+// prunes the dev-only files, so what ships is a SUBSET of this directory; the walk stays
+// deliberately wider than that subset, because the pruning list is a thing that can be
+// edited and the cost of over-checking is zero. The reason it walks at all: a doc
+// spelling the address out in full would defeat the entire runtime-assembly exercise
+// while every narrower check stayed green. (It did, once, from a plan file. Those plans
+// now live in plans-webgpu/, one level up, unpublished and outside this walk.)
 const SKIP_DIRS = new Set(["node_modules", "__pycache__"]);
 function walk(rel) {
   const abs = path.join(DIR, rel);
@@ -84,8 +87,8 @@ function walk(rel) {
     if (/\.(png|jpg|jpeg|gif|webm|mp4|woff2?|ico)$/i.test(name)) continue;
     let body;
     try { body = fs.readFileSync(path.join(DIR, r), "utf8"); } catch (e) { continue; }
-    ok(body.indexOf(ADDR) < 0, r + ": the address appears CONTIGUOUSLY in a file the "
-       + "deploy publishes (pages.yml copies all of webgpu/) -- de-literal it");
+    ok(body.indexOf(ADDR) < 0, r + ": the address appears CONTIGUOUSLY in a file under "
+       + "webgpu/ (pages.yml publishes most of this tree) -- de-literal it");
   }
 }
 walk("");

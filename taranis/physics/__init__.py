@@ -57,7 +57,7 @@ def construct_rhs(recipe):
         )
         use_halo = recipe.halo_start_func is not None and _halo_start_enabled(params)
         halo = recipe.halo_start_func(state,kgrid,params) if use_halo else None
-        grads=recipe.grad_func(state,kgrid,params)
+        grads = recipe.grad_func(state,kgrid,params)
         fields_rhs = None
         for term in recipe.term_funcs:
             if fields_rhs is None:

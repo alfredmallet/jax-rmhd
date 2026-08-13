@@ -449,10 +449,13 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   NONE, because it is a pure redirect whose own canonical points at `rmhd2d.html`, so a
   beacon there would file every arrival at the bare `/webgpu/` URL under rmhd2d's path and
   inflate the one number the feature exists to produce. Then the ADDRESS: it must not
-  appear contiguously in any file the deploy publishes — the walk covers all of `webgpu/`,
-  `.md` plans and `devtools/` included, because `pages.yml` stages the directory
-  wholesale, and a plan file spelling it out in full once defeated the entire
-  runtime-assembly exercise while every narrower check stayed green. Then both apps
+  appear contiguously in any file under `webgpu/` — the walk covers `devtools/` and the
+  SPEC/README too, which is deliberately WIDER than what ships: `pages.yml` stages the
+  directory wholesale and then prunes the dev-only files, and the pruning list is a thing
+  that can be edited, so the walk does not depend on it. The reason it walks at all is
+  that a plan file spelling the address out in full once defeated the entire
+  runtime-assembly exercise while every narrower check stayed green. (Those plans now live
+  in `plans-webgpu/` at the repo root, out of the copy's reach entirely.) Then both apps
   BOOTED, each with and without WebGPU (`{noGpu: true}` — the fallback visitor is the one
   most likely to want the link): `#contact` holds exactly two anchors, the mailto carries
   the assembled address, the issues link has `target=_blank rel=noopener`, and the click
