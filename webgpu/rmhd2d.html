@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>plasma turbulence in your browser &mdash; 2D RMHD</title>
 <link rel="stylesheet" href="style.css">
+<!-- Favicon: a downsampled crop of a real run (T sheet at z+, blob at z-, evolved a
+     little), not a drawn logo -- the tab icon is the same current field the page puts on
+     the canvas. Two PNG sizes rather than one scaled: at 16 px a filament is ONE pixel
+     wide, so the 16 is sharpened separately and the browser is told which is which
+     instead of being left to box-filter the 32 into mush. apple-touch-icon is 180 px
+     full-bleed; iOS applies its own rounded mask. -->
+<link rel="icon" href="favicon-32.png" sizes="32x32">
+<link rel="icon" href="favicon-16.png" sizes="16x16">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <!-- Pageview counts and nothing else (ANALYTICS_PLAN.md): GoatCounter sets no cookies,
      stores no personal data and records no custom events, so there is nothing here to
      consent to and no banner. The canonical is what makes the numbers readable: this
