@@ -50,7 +50,6 @@ function showStatus(msg, kind, linkUrl) {
 window.addEventListener("error", e => showStatus("Error: " + e.message, "err"));
 window.addEventListener("unhandledrejection", e =>
   showStatus("Error: " + (e.reason && e.reason.message || e.reason), "err"));
-function clearStatus() { statusEl.className = ""; statusEl.textContent = ""; }
 
 // mulberry32 + Box-Muller (polar). jax's threefry is deliberately not reproduced:
 // the OU stream is validated statistically, never against recorded values.
@@ -229,6 +228,54 @@ ${store}
 }`;
 }
 
+// The real <-> complex ROW transforms along y. Both pages emitted these as byte-identical
+// twins differing in one argument, so they are written once here (render audit,
+// 2026-08-12): the forward packs a real line into the rfft half-spectrum, the inverse
+// rebuilds the full line from that half by conjugate symmetry and carries the 1/NY
+// normalization. The pair IS the rfft2 layout convention that everything else in both
+// apps assumes, which is the argument for it having one home rather than two.
+// `lpb` (lines per batch) is the 3D page's dispatch split around
+// maxComputeWorkgroupsPerDimension; the 2D page passes nothing and gets wgid.x alone.
+// The x (and 3D z) transforms are deliberately NOT folded in with these: they are the
+// same SHAPE but the 2D page transforms out of place through its ping-pong pair while the
+// 3D page has no second buffer that size and goes in place, and the two strided kernels
+// name their index variables differently. Parameterizing all of that costs more lines than
+// the three call sites spend, and every one of those kernels is pinned byte-for-byte.
+function fftRowPair(ny, nky, lpb) {
+  const WGF = fftWG(ny);
+  const dims = `const NY_: u32 = ${ny}u;
+const NKY_: u32 = ${nky}u;`;
+  return {
+    r2c: fftKernel({
+      N: ny, dir: -1, lpb,
+      decl: `@group(0) @binding(0) var<storage, read> rin: array<f32>;
+@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;
+${dims}`,
+      load: `  let ib: u32 = line * NY_;
+  for (var idx: u32 = tid; idx < NY_; idx = idx + ${WGF}u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }`,
+      store: `  let ob: u32 = line * NKY_;
+  for (var idx: u32 = tid; idx < NKY_; idx = idx + ${WGF}u) { cout[ob + idx] = buf[src + idx]; }`
+    }),
+    // inverse rows: complex half-spectrum -> real (exactly real: .x only)
+    c2r: fftKernel({
+      N: ny, dir: +1, lpb,
+      decl: `@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> rout: array<f32>;
+${dims}
+const SCL: f32 = ${(1 / ny).toExponential(12)};`,
+      load: `  let ib: u32 = line * NKY_;
+  for (var idx: u32 = tid; idx < NY_; idx = idx + ${WGF}u) {
+    var v: vec2<f32>;
+    if (idx < NKY_) { v = cin[ib + idx]; }
+    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }
+    buf[idx] = v;
+  }`,
+      store: `  let ob: u32 = line * NY_;
+  for (var idx: u32 = tid; idx < NY_; idx = idx + ${WGF}u) { rout[ob + idx] = buf[src + idx].x * SCL; }`
+    })
+  };
+}
+
 // tree reduction tail for a 256-thread workgroup accumulating `acc` into sh[]
 // (T is the element type, op a binary function name: max / add4 / ...)
 function reduceTail(T, op) {
@@ -381,15 +428,41 @@ const LSRK33 = {
 const SQ = (typeof GPUBufferUsage !== "undefined")
   ? (GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST) : 0;
 
+// Staging buffers for the map-read round trips, POOLED by byte length (render audit,
+// 2026-08-12). This used to create and destroy one per call, which is a driver allocation
+// on every frame the page runs -- the stats read alone -- plus the arrows, the colorbar,
+// the cut line and the spectra at their own rates. The set of sizes is small and fixed
+// (one per readback, per grid), so the pool cannot grow without bound, and a buffer is
+// popped from the free list BEFORE the first await, so two overlapping reads of the same
+// size cannot be handed the same one. Staging buffers belong to the device, not to a
+// solver: a rebuild retires the solver's buffers and leaves these alone, which is the
+// point -- the sizes are the same across rebuilds at one resolution.
+// The pool deliberately has no eviction. A resolution switch strands the old sizes'
+// buffers, but there are single digits of them, they are kilobytes each (the biggest is
+// the field-line sample block), and the alternative -- a lifetime rule tied to the solver
+// -- would reintroduce exactly the per-rebuild bookkeeping this removes.
+const _stagePool = new Map();
 async function readBuf(device, buf, byteLen) {
-  const st = device.createBuffer({ size: byteLen, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  let free = _stagePool.get(byteLen);
+  if (!free) { free = []; _stagePool.set(byteLen, free); }
+  const st = free.pop() ||
+    device.createBuffer({ size: byteLen, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
   const e = device.createCommandEncoder();
   e.copyBufferToBuffer(buf, 0, st, 0, byteLen);
   device.queue.submit([e.finish()]);
-  await st.mapAsync(GPUMapMode.READ);
-  const out = new Float32Array(st.getMappedRange().slice(0));
-  st.unmap(); st.destroy();
-  return out;
+  try {
+    await st.mapAsync(GPUMapMode.READ);
+    const out = new Float32Array(st.getMappedRange().slice(0));
+    st.unmap();
+    free.push(st);                      // returned only on the path that really unmapped it
+    return out;
+  } catch (err) {
+    // a rejected map leaves the buffer in an unknown map state: drop it rather than hand
+    // it to the next caller (a device-lost page has bigger problems, but a poisoned pool
+    // would turn one failure into every later readback's)
+    try { st.destroy(); } catch (e2) {}
+    throw err;
+  }
 }
 
 // The cut chart's line readback (REFINE_PLAN H.3). Identical in both apps -- each
@@ -440,6 +513,21 @@ function setContLevels(device, D, nlev, plain) {
       device.queue.writeBuffer(D.buf.contB[i], 0, zero);
       D.contFor[i] = D.cont[i];
     }
+  }
+}
+// Snap every ACTIVE set's adapting range to whatever the coming frame measures, instead
+// of relaxing towards it. The relaxation exists to damp flicker on a MOVING field; on a
+// still one it is only a spacing that never arrives -- and a still field is exactly what
+// the render gate stops drawing, so without this a pause would freeze the contours
+// wherever the relaxation had got to. A zero range is the same "no history" the
+// potential-change reset writes, so the kernel needs no new state and no new branch:
+// contLevel already takes the measured max outright when it reads one. Called on every
+// frame drawn while PAUSED, which on a static field is idempotent.
+const _contZero = new Float32Array([0]);
+function contSettle(device, D) {
+  if (!D || !D.buf || !D.buf.contB) return;
+  for (let i = 0; i < CONT_SETS; i++) {
+    if (D.cont[i]) device.queue.writeBuffer(D.buf.contB[i], 0, _contZero);
   }
 }
 // ... and the tail of one set's per-frame prep, once the app's own inverse transform has
@@ -1975,15 +2063,9 @@ function gen2dBarTicks(o) {
 // two measured anisotropy-card curves that used to ride along with them were dropped --
 // "don't think they are helpful" -- and with them the measured-vs-prediction distinction
 // this card's legend and manual entry used to have to make).
-// The ridge, per band: the k∥ of the largest cell in the row (0 for an empty row). It is
-// not what the reference lines anchor on (gen2dTop is -- see below); it stays because
-// the ridge is the card's own summary of a column and is what check2dspec's recovery leg
-// measures the known law against.
-function gen2dRidge(pts) {
-  let k = 0, v = 0;
-  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] > v) { v = pts[i + 1]; k = pts[i]; }
-  return k;
-}
+// (The per-band argmax RIDGE used to live here. Nothing drawn ever called it -- the
+// reference lines anchor on gen2dTop, below -- so its only consumer was check2dspec's
+// recovery leg, which now owns it as `ridgeOf`: render audit, 2026-08-12.)
 // The upper BOUNDARY of the excited region in one column: the largest k∥ whose cell is
 // still meaningfully above the panel's floor (0 for a column with nothing in it). This, not
 // the argmax ridge, is what a critical-balance slope is a statement about -- the cascade
@@ -2873,6 +2955,470 @@ function shotName(mode, ext) {
 
 // ---------------------------------------------------------------------------
 // the MP4 muxer (leg 1 of the recorder)
+// ===========================================================================
+// Recorder -- the capture legs of a display card (render audit, 2026-08-12)
+// ===========================================================================
+// This was ~400 lines and fifteen methods inside DisplayCard, more than half of a class
+// whose job is to show a field. Nothing about it changed in the move: the same two legs
+// (WebCodecs -> mp4Mux, MediaRecorder), the same rAF feeder and visibility-parked
+// watchdog (RECRAF_PLAN), the same async GPU-readback capture and its buffer pool
+// (RECASYNC_PLAN), the same hard stop, the same bail. What the split buys is that the
+// boundary is now written down: the RECORDER owns the encoder, the pool, the timers and
+// the two live handles (`wc`, `rec`), and the CARD owns everything a visitor sees -- the
+// canvas it captures, the button it relabels through recLive/recIdle, and the result
+// strip it hands the finished file to through recResult, which is card UI because the
+// SAVE path shares it.
+//
+// The card keeps `wc` / `rec` / `recBusy` / `recStop` as getters onto this object, so the
+// frame loop's REC_DEBUG readout, destroy() and every devtools leg that reads a card's
+// live recording state carry on reading exactly what they read before.
+class Recorder {
+  constructor(card) {
+    this.card = card;
+    this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
+    this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
+    this.recBusy = false;                 // a config probe is in flight
+  }
+  // toggle: start recording the field canvas, or stop the live recording -- on whichever
+  // leg the engine supports (WebCodecs preferred; see the note by REC_FPS). The 30 s
+  // timer is a hard stop, not a pause -- an unattended recording must not grow without
+  // bound -- and each leg has exactly ONE place that writes the file, so the timer, the
+  // button press and destroy() all land in the same path.
+  recToggle() {
+    if (this.wc || this.rec) { this.recEnd(); return; }
+    if (this.recBusy) return;                   // a probe is already in flight
+    if (recWCSupported(this.card.cv)) {
+      this.recBusy = true;
+      recWCProbe(this.card.cv).then(cfg => {
+        this.recBusy = false;
+        if (this.card.dead || this.wc || this.rec) return;
+        if (cfg && recWCSupported(this.card.cv)) this.recStartWC(cfg);
+        else if (recSupported(this.card.cv)) this.recStartMR();
+      });
+      return;
+    }
+    if (recSupported(this.card.cv)) this.recStartMR();
+  }
+  recEnd() {
+    if (this.wc) this.recStopWC(false);
+    else if (this.rec) this.rec.stop();
+  }
+
+  // ---- leg 2: MediaRecorder (the fallback; recResult is where it ends) ------
+  recStartMR() {
+    // a new take replaces the last one's result: two strips on one footer would be two
+    // files with the same name a press apart, and the visitor pressing start again has
+    // said which one they care about. Cleared HERE, in each leg's start, and not in
+    // recToggle: a press whose probe then fails to start anything (a WebCodecs-only
+    // engine that dislikes this canvas size) must not have thrown away the one file the
+    // visitor still had (adversarial review 2026-08-12, MINOR 1).
+    this.card.recClear("video");
+    const mime = recMime(), chunks = [];
+    const r = new window.MediaRecorder(this.card.cv.captureStream(REC_FPS),
+                                       mime ? { mimeType: mime } : undefined);
+    const name = shotName(this.card.barMode, recExt(mime));
+    // this leg hands back an opaque container built by the engine, so the frames in it are
+    // not ours to count: wall clock from start() to onstop is the only length it can
+    // honestly quote (leg 1, which writes the file itself, counts samples instead)
+    const t0 = Date.now();
+    r.ondataavailable = e => { if (e && e.data && e.data.size) chunks.push(e.data); };
+    r.onstop = () => {
+      clearTimeout(this.recStop);
+      this.rec = null; this.recStop = 0;
+      this.card.recIdle();
+      this.card.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
+                     (Date.now() - t0) / 1000);
+    };
+    this.rec = r;
+    r.start();
+    this.card.recLive();
+    this.recStop = setTimeout(() => { if (this.rec === r) r.stop(); }, REC_MAX_MS);
+  }
+
+  // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
+  recStartWC(cfg) {
+    this.card.recClear("video");               // same rule as recStartMR: replace on START
+    // ONE clock sample feeds the cadence fields: `due` is the wall-clock time of the next
+    // capture slot (recCapture). `lastRaf`/`maxGap` are DIAGNOSTIC only since round 2 --
+    // the watchdog parks on visibility, not on a heartbeat -- and `rafN`/`wdN` count which
+    // feeder put each frame in the file (?recdebug shows the tallies and maxGap;
+    // lastRaf just feeds maxGap).
+    const t0 = performance.now();
+    const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
+                due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
+                tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
+                w: this.card.cv.width, h: this.card.cv.height, name: shotName(this.card.barMode, "mp4"),
+                // ---- RECASYNC_PLAN (2026-08-12): the GPU-readback capture path --------
+                // `bufOn` is decided ONCE per take from the settled probe latch, so a
+                // recording never changes paths under its own feet; `fmt` is the
+                // VideoFrame format the canvas's bytes really are. `pool` (lazy, three
+                // staging buffers, owned by this W) and `pend` are the captures in
+                // flight; `chain` is the ordered encode chain -- null until the buffer
+                // path first uses it, which is also what keeps the sync path's stop
+                // exactly as it was. `gone` is set when the pool is destroyed: a map
+                // resolving after that must find it and do nothing.
+                bufOn: !recBufOff && !!this.card.ctx && !!device, fmt: REC_BUF_FMT[canvasFormat],
+                pool: null, bpr: 0, pad: false, pend: 0, onDrain: null, gone: false,
+                chain: null, tL: 0,         // max capture->encode lag in ms (recdebug)
+              };
+    W.enc = new window.VideoEncoder({
+      output: (chunk, meta) => {
+        const d = meta && meta.decoderConfig && meta.decoderConfig.description;
+        if (d && !W.avcC) W.avcC = mp4Bytes(d);
+        // avcC is the ONLY place a progressive file keeps the SPS/PPS -- there is no
+        // in-band parameter set to fall back on -- so a first chunk without one means we
+        // can never write a playable mp4. Bail to leg 2 NOW, one frame in, rather than
+        // at flush time holding 30 s of unusable samples.
+        if (!W.avcC) { this.recBailWC(W); return; }
+        if (W.bailed) return;
+        const b = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(b);
+        W.chunks.push({ data: b, key: chunk.type === "key" });
+      },
+      // encoder dead: write what we have. Guarded on ownership -- a stale encoder's
+      // error callback can land AFTER this recording stopped and the NEXT one began,
+      // and must not terminate the newcomer (adversarial review 2026-08-10, MINOR 1).
+      error: () => { if (this.wc === W) this.recStopWC(true); }
+    });
+    W.enc.configure(cfg);
+    this.wc = W;
+    // the WATCHDOG interval (RECRAF_PLAN, 2026-08-12): frames normally come from the rAF
+    // loop via recCapture, but rAF is throttled to a crawl (or stopped) in a background
+    // tab, and the editor view does not render cards at all -- and there a silently
+    // stretched recording is exactly what the fixed timestamps must not be paired with.
+    // So the timer stays, at the same 1000/30 ms, and feeds the recording itself on a
+    // hidden page or under the editor view (the park condition lives in recTick). Its
+    // extra render() then costs only where there is no visible display to stutter.
+    W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
+    this.card.recLive();
+    this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
+  }
+  // The ONE place a recording frame is encoded, whichever feeder brought it (RECRAF_PLAN,
+  // 2026-08-12): the frame index, its nominal 1/30 s timestamps, the forced-keyframe
+  // cadence and the drop-frame guard exist here once, so the two paths cannot drift apart.
+  // It does NOT render -- the rAF path is already inside the render's own task, and the
+  // watchdog renders itself immediately before calling this.
+  // `src` is the SOURCE of this frame's pixels, and there are two kinds (RECASYNC_PLAN,
+  // 2026-08-12): absent means this card's canvas (the sync path -- the watchdog, and any
+  // engine that cannot take bytes), and a `{bytes, format, w, h}` record means the mapped
+  // GPU copy of it. Everything else -- index, timestamp, keyframe cadence, backpressure --
+  // is identical by construction, which is the point of there being one function.
+  recEncodeFrame(W, src) {
+    // backpressure: when the encoder is behind, DROP this frame instead of queueing it.
+    // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
+    // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
+    // wall clock, rather than a file whose sample table lies about its own timing.
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
+    // the two halves of the capture cost, timed separately (?recdebug, round 3): `vf` is
+    // what a capture costs the MAIN THREAD and `enc` is what the encode costs. On the sync
+    // path that split is VideoFrame-from-canvas (the classic iOS expense, and the half a
+    // Worker could NOT take) vs encode(); on the buffer path the main-thread half is the
+    // copy+submit timed in recCaptureBuf, and BOTH halves here -- building the frame from
+    // bytes and submitting it -- ride `enc`, because they happen a beat later in the chain
+    // and no longer stretch a display frame. Two clock reads per frame either way; kept
+    // unconditional so the numbers exist the moment anyone asks.
+    const t1 = performance.now();
+    const init = { timestamp: Math.round(W.n * 1e6 / REC_FPS),
+                   duration: Math.round(1e6 / REC_FPS) };
+    let f;
+    if (src && src.bytes) {
+      init.format = src.format; init.codedWidth = src.w; init.codedHeight = src.h;
+      f = new window.VideoFrame(src.bytes, init);
+    } else {
+      f = new window.VideoFrame(this.card.cv, init);
+    }
+    const t2 = performance.now();
+    // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
+    // give. It is also every seek point the file has, stss being built from these.
+    try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
+    const t3 = performance.now();
+    if (src && src.bytes) { if (t3 - t1 > W.tE) W.tE = t3 - t1; }
+    else {
+      if (t2 - t1 > W.tV) W.tV = t2 - t1;
+      if (t3 - t2 > W.tE) W.tE = t3 - t2;
+    }
+    W.n++;
+    return true;                            // fed: the callers' rafN/wdN tallies key on this
+  }
+  // ---- the buffer capture path (RECASYNC_PLAN, 2026-08-12) --------------------
+  // The hot half: copy this card's canvas texture into a free staging buffer and submit,
+  // all synchronously in the render's own task (getCurrentTexture is transient), then let
+  // go. Microseconds of command encoding instead of the 15-17 ms a VideoFrame-from-canvas
+  // cost the phone -- the readback itself happens on the GPU's clock and lands in
+  // recEncodeMapped a beat later, which is fine: the timestamps are ours, not the map's.
+  recCaptureBuf(W) {
+    const t1 = performance.now();
+    // the canvas can be resized under a live take (a preset or a grid change rebuilds the
+    // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
+    // a validation error rather than a frame. Drop the slot instead -- the honest-length
+    // rule again -- and let the take end at the size it started.
+    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { W.drop++; return; }
+    if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
+    let s = null;
+    for (const e of W.pool) if (!e.busy) { s = e; break; }
+    // all three buffers are still waiting on their maps: the readback is genuinely behind,
+    // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
+    if (!s) { W.drop++; return; }
+    try {
+      const ce = device.createCommandEncoder();
+      ce.copyTextureToBuffer({ texture: this.card.ctx.getCurrentTexture() },
+                             { buffer: s.b, bytesPerRow: W.bpr, rowsPerImage: W.h },
+                             { width: W.w, height: W.h, depthOrArrayLayers: 1 });
+      device.queue.submit([ce.finish()]);
+    } catch (e) {
+      // an engine that accepted the configure but not the copy: fall back to the sync
+      // canvas path for the rest of this take rather than lose every remaining frame
+      W.bufOn = false; W.drop++;
+      return;
+    }
+    s.busy = true; W.pend++;
+    const t2 = performance.now();
+    if (t2 - t1 > W.tV) W.tV = t2 - t1;
+    if (!W.chain) W.chain = Promise.resolve();
+    // THE ORDERED ENCODE CHAIN. mapAsync resolution order across distinct buffers is not
+    // something to rely on, VideoEncoder requires monotonic timestamps, and mp4Mux writes
+    // a UNIFORM stts (checkmp4 asserts equal deltas) -- so index, timestamp and keyframe
+    // are all assigned at ENCODE time, inside one promise chain whose steps cannot
+    // interleave. Whichever capture's bytes arrive first is simply frame n: a dropped or
+    // failed capture leaves fewer frames and NO hole in the sample table.
+    s.b.mapAsync(GPUMapMode.READ).then(
+      () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
+      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
+  }
+  // three staging buffers, made on the first capture of a take (a take that never captures
+  // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
+  // multiple of 256: at every preset size the row is already aligned, but the box is
+  // user-sizable, so the padded case is real and recEncodeMapped compacts it.
+  recPoolMake(W) {
+    const pool = [];
+    try {
+      W.bpr = Math.ceil(W.w * 4 / 256) * 256;
+      W.pad = W.bpr !== W.w * 4;
+      for (let i = 0; i < REC_POOL; i++)
+        pool.push({ b: device.createBuffer({ size: W.bpr * W.h,
+                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), busy: false });
+      W.pool = pool;
+      return true;
+    } catch (e) {
+      // no memory: sync path -- and the buffers a mid-loop throw DID create go back
+      // (adversarial review 2026-08-12, MINOR 3)
+      for (const p of pool) { try { p.b.destroy(); } catch (err) {} }
+      W.bufOn = false; W.pool = null; return false;
+    }
+  }
+  // one capture accounted for, whichever way it ended. When the last one lands, a stop
+  // that is waiting on the drain can go on to flush and mux.
+  recPend(W) {
+    if (W.pend > 0) W.pend--;
+    if (!W.pend && W.onDrain) W.onDrain();
+  }
+  // the ASYNC TAIL, running as one step of the chain: the map resolved, so this capture's
+  // bytes exist. On the aligned row the mapped range is handed to the VideoFrame
+  // constructor as it is (the constructor copies), on the padded one the rows are
+  // compacted into a tight buffer first. Then unmap, and the buffer is free again.
+  recEncodeMapped(W, s, tCap) {
+    if (W.gone) return;                     // torn down while this sat in the chain
+    try {
+      const ab = s.b.getMappedRange();
+      const row = W.w * 4;
+      let bytes;
+      if (W.pad) {
+        bytes = new Uint8Array(row * W.h);
+        const src = new Uint8Array(ab);
+        for (let y = 0; y < W.h; y++) bytes.set(src.subarray(y * W.bpr, y * W.bpr + row), y * row);
+      } else {
+        bytes = new Uint8Array(ab);
+      }
+      // capture-submit to encode: the "arrives a beat late" number, ?recdebug's `lag`
+      const lag = performance.now() - tCap;
+      if (lag > W.tL) W.tL = lag;
+      if (this.recEncodeFrame(W, { bytes: bytes, format: W.fmt, w: W.w, h: W.h })) W.rafN++;
+    } catch (e) {
+      // a failed capture is a drop, never a throw -- and, like a failed COPY, it also
+      // latches this take back onto the sync canvas path: an engine whose 2x2 probe frame
+      // passed but whose full-size frames throw would otherwise drop every remaining slot
+      // and hand back a 0-chunk take with no file and no explanation (adversarial review
+      // 2026-08-12, MINOR 1)
+      W.drop++; W.bufOn = false;
+    }
+    try { s.b.unmap(); } catch (e) {}
+    s.busy = false;
+  }
+  // the pool's ONE teardown, called from every route a recording ends by. `gone` first:
+  // the buffers are about to stop existing, so a map still in flight (and the rejection
+  // destroy() hands it) must find a recording that wants nothing more from it.
+  recPoolFree(W) {
+    W.gone = true;
+    for (const e of (W.pool || [])) { try { e.b.destroy(); } catch (err) {} }
+    W.pool = null;
+  }
+  // wait for the captures still in flight before the file is written (RECASYNC_PLAN 5).
+  // The timeout is the guard against a map that never resolves: half a second, then mux
+  // what landed. It cannot strand the chain -- an encode step is synchronous work -- so
+  // awaiting the chain afterwards only orders the last step ahead of the flush.
+  recDrainWC(W) {
+    return new Promise(res => {
+      if (!W.pend) { res(); return; }
+      // a timed-out capture is a DROP, and says so (plan 5; adversarial review 2026-08-12,
+      // MINOR 2): the teardown that follows sets `gone` before destroying the buffers, so
+      // the rejection handlers stay silent -- count the stragglers here instead. W.drop is
+      // diagnostic (?recdebug); the file itself keys on the chunks that landed.
+      const t = setTimeout(() => { W.onDrain = null; W.drop += W.pend; res(); }, REC_DRAIN_MS);
+      W.onDrain = () => { clearTimeout(t); W.onDrain = null; res(); };
+    }).then(() => W.chain).catch(() => {});
+  }
+  // leg 1's PRIMARY feeder (RECRAF_PLAN, 2026-08-12), called from loop() in the SAME
+  // synchronous task as this card's render(). The old feeder was the interval below, which
+  // cost an extra full render() per tick plus the VideoFrame copy and the encode, all on
+  // the main thread and at an arbitrary phase against the rAF loop -- which is what made
+  // an iPhone stutter visibly for the whole take (Alfred, on-device, 2026-08-12). Riding
+  // the render costs zero extra renders and beats against nothing.
+  recCapture() {
+    const W = this.wc;
+    if (!W || W.done) return;               // not recording (or a loop iteration after stop)
+    const now = performance.now();
+    // the gap between consecutive loop passes, kept as a DIAGNOSTIC (?recdebug): on a
+    // phone this is the number that says whether the loop itself is the bottleneck.
+    if (now - W.lastRaf > W.maxGap) W.maxGap = now - W.lastRaf;
+    W.lastRaf = now;
+    const T = 1000 / REC_FPS;
+    if (now < W.due) return;                // between slots (a 120 Hz phone): not a drop
+    // a slot is due. If the loop was so late that a WHOLE further slot went by, those slots
+    // are counted lost and the next one is set from now -- never backfilled, because a
+    // backfilled frame would put a stale image at a timestamp it never had. The honest-
+    // length rule stands: fewer recorded seconds than wall clock, never a lying sample
+    // table. At nominal cadence the `else` keeps `due` drift-free.
+    if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
+    else W.due += T;
+    // the fast path since RECASYNC (2026-08-12): submit a GPU copy and return. The frame
+    // itself is built from those bytes in the chain when the map resolves, and the rafN
+    // tally is incremented THERE -- it counts frames this feeder put in the FILE, and on
+    // this path that is not knowable yet.
+    if (W.bufOn) return this.recCaptureBuf(W);
+    if (this.recEncodeFrame(W)) W.rafN++;
+  }
+  // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped
+  // with -- backpressure, render, encode, at the interval's own cadence -- but it runs only
+  // where the rAF feeder is KNOWN-ABSENT: a hidden page (rAF stopped or crawling) or the
+  // editor view (loop() skips the render/capture pair). Round 1 parked it on a TIMING
+  // heuristic instead -- recCapture silent for 3.5 slots -- and Alfred's phone showed why
+  // that was wrong: a visible loop whose post-render readback awaits stretch past the
+  // threshold got BOTH feeders, rAF captures plus 30 Hz watchdog render+encodes, MORE
+  // main-thread work than the pre-RECRAF recorder (on-device, "worse if anything",
+  // 2026-08-12). Visibility is the condition the watchdog exists for, so it is the
+  // condition it runs on. No slot-due check here: when the watchdog IS the feeder, the
+  // tick cadence is the 30 fps the timestamps promise, exactly as it always was. The queue
+  // check sits ahead of the render as well as inside the helper, so a tick that is only
+  // going to drop the frame does not pay for a render first.
+  //
+  // The watchdog keeps the SYNCHRONOUS canvas capture unconditionally, buffer path or not
+  // (RECASYNC_PLAN, 2026-08-12): it renders off-screen anyway, so a stalled main thread
+  // there costs nothing anyone can see, and keeping the async pool out of the
+  // background-throttled world means never having to reason about maps that a hidden page
+  // is starving of callbacks.
+  recTick(W) {
+    if (this.wc !== W || W.done) return;
+    if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
+    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
+    this.card.render();      // same reason as saveShot: getCurrentTexture is transient
+    if (this.recEncodeFrame(W)) W.wdN++;
+    // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
+    // "the longest stretch NOBODY fed" -- without this, an editor-view stint would report
+    // its whole dwell time as one loop gap (adversarial review 2026-08-12, r2 MINOR 3)
+    W.lastRaf = performance.now();
+    // re-base the slot clock: a frame the watchdog just PUT IN THE FILE must not be
+    // counted as a dropped slot by the first recCapture after rAF resumes -- with `due`
+    // frozen at handoff, every watchdog-fed slot would be double-booked into W.drop, and
+    // the returning rAF would double-feed the slot the watchdog had just filled
+    // (adversarial review 2026-08-12, MINOR 1).
+    W.due = performance.now() + 1000 / REC_FPS;
+  }
+  // the ONE place a WebCodecs recording ends: button, 30 s timer, destroy(), or encoder
+  // error (`broken`, where flushing a dead encoder would only throw).
+  recStopWC(broken) {
+    const W = this.wc;
+    if (!W || W.done) return;
+    W.done = true;
+    clearInterval(W.timer); clearTimeout(this.recStop);
+    this.wc = null; this.recStop = 0;
+    this.card.recIdle();
+    const fin = () => {
+      try { W.enc.close(); } catch (e) {}
+      this.recPoolFree(W);      // the staging buffers go here, on every route (RECASYNC 5)
+      const mp4 = mp4Mux({ width: W.w, height: W.h, fps: REC_FPS, avcC: W.avcC, chunks: W.chunks });
+      // the length is the samples that ended up IN the file over the fixed 30 fps the
+      // sample table declares -- honest under the drop-frame guard, where a slow machine
+      // records fewer seconds of wall clock than the clip lasts
+      if (mp4) this.card.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
+                              W.chunks.length / REC_FPS);
+    };
+    // flush() delivers the frames the encoder is still holding, so it has to complete
+    // before the mux -- and its rejection is not a reason to lose the file either.
+    const flush = () => { try { W.enc.flush().then(fin, fin); } catch (e) { fin(); } };
+    // ... and since RECASYNC (2026-08-12) captures can be in FLIGHT when the stop lands:
+    // drain them first (W.done above already bars new ones), so the last half-second of a
+    // take is in the file rather than in three staging buffers about to be destroyed. A
+    // broken encoder skips the drain: there is nothing left that could encode, and the
+    // in-flight maps will resolve into a torn-down W and do nothing. A take that never
+    // touched the buffer path keeps EXACTLY the stop it always had.
+    if (broken) fin();
+    else if (!W.bufOn && !W.chain) flush();
+    else this.recDrainWC(W).then(flush, flush);
+  }
+  // no avcC: this engine's WebCodecs leg is unusable, so switch legs mid-press and turn
+  // it off for the rest of the session rather than hand back an unplayable file.
+  // The card is closing mid-recording: write what we have. The stream (or the canvas the
+  // encoder is reading) dies with the card, and losing the file silently would be worse
+  // than a short one. The card sets its `dead` flag BEFORE calling this, which is what
+  // sends the finished file straight to a download instead of to a strip on a footer that
+  // is about to be removed (recResult's dead-card branch).
+  destroy() {
+    if (this.wc) this.recStopWC(false);
+    if (this.rec) { clearTimeout(this.recStop); try { this.rec.stop(); } catch (e) {} }
+  }
+  recBailWC(W) {
+    if (W.bailed || this.wc !== W) return;
+    W.bailed = true; W.done = true;
+    clearInterval(W.timer); clearTimeout(this.recStop);
+    this.wc = null; this.recStop = 0;
+    recWCOff = true;
+    try { W.enc.close(); } catch (e) {}
+    // this leg ends here rather than in recStopWC, so it frees the staging buffers itself
+    // (RECASYNC_PLAN 5, "all routes"): the file is being thrown away, so there is nothing
+    // to drain -- captures still in flight resolve into a torn-down W and do nothing.
+    this.recPoolFree(W);
+    if (recSupported(this.card.cv) && !this.card.dead) this.recStartMR();
+    else this.card.recIdle();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// display cards: the quantity list, physics.js modes 0..9 plus the two Elsasser
+// vorticities. BOTH pages carried this table verbatim (render audit, 2026-08-12) -- the
+// modes are physics.js's and neither page adds or drops one, so it is written once here
+// and handed to cardsInit as `fields`. It is orthogonal to the 3D page's VIEWS: a cube,
+// a volume and the field lines are choices in the card's z-source select (REFINE_PLAN
+// I2.1, ISO_PLAN B), and every quantity below renders in all of them, so there are no
+// cube or volume entries in it.
+// ---------------------------------------------------------------------------
+const DISP_FIELDS = [
+  { v: 4, t: "velocity |u|", d: "u = z&#770;&times;&nabla;&phi;" },
+  { v: 5, t: "magnetic |b|", d: "b = z&#770;&times;&nabla;&psi;" },
+  { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
+  { v: 0, t: "vorticity", d: "&omega; = &nabla;&sup2;&phi; = z&#770;&middot;&nabla;&times;u" },
+  { v: 1, t: "current", d: "j = &nabla;&sup2;&psi; = z&#770;&middot;&nabla;&times;b" },
+  { v: 10, t: "Elsasser &omega;&#8314;",
+    d: "&omega;&#8314; = &nabla;&sup2;&zeta;&#8314; = &omega; + j, &zeta;&#8314; = &phi; + &psi;" },
+  { v: 11, t: "Elsasser &omega;&#8315;",
+    d: "&omega;&#8315; = &nabla;&sup2;&zeta;&#8315; = &omega; &minus; j, &zeta;&#8315; = &phi; &minus; &psi;" },
+  { v: 6, t: "Elsasser |z&#8314;|", d: "z&#8314; = u + b" },
+  { v: 7, t: "Elsasser |z&#8315;|", d: "z&#8315; = u &minus; b" },
+  { v: 8, t: "cross helicity &sigma;_c",
+    d: "&sigma;_c = 2u&middot;b / (|u|&sup2;+|b|&sup2;)" },
+  { v: 9, t: "residual energy &sigma;_r",
+    d: "&sigma;_r = (|u|&sup2;&minus;|b|&sup2;) / (|u|&sup2;+|b|&sup2;)" }
+];
+
 // ---------------------------------------------------------------------------
 // An MP4 is a tree of boxes, each [uint32 size][4-char type][payload]. Everything here
 // is written by hand because the whole point of the exercise is to control what the
@@ -3086,11 +3632,20 @@ class DisplayCard {
     // autoscale read back for it, and that readback's throttle clock
     this.barCx = chartCtx(this.barCv, CBAR_W, CBAR_H);
     this.barMode = -1; this.barMax = NaN; this.barAt = 0; this.barCmap = -1;
-    this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
-    this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
-    this.recBusy = false;                 // a config probe is in flight
+    this.recorder = new Recorder(this);   // the two capture legs, and their live handles
     this.resEl = { png: null, video: null };   // the waiting files' strips, one slot each
     this.dead = false;                    // set by destroy(), so a late probe cannot start
+    // Render gate: a display chain is re-run only when its picture can have changed --
+    // the solver stepped, this card's own controls moved, it was resized, or a capture is
+    // taking its frames off this very render. Without it a PAUSED page re-runs every
+    // chain at rAF rate forever: in 3D that is a full volume inverse transform per card
+    // per frame (two more per active contour set), and in the volume view the whole
+    // raymarch. `renderSeq` counts the frames actually drawn, so the readbacks that read
+    // what a render LEFT behind (arrows, the colorbar's autoscale) can tell "nothing new
+    // to fetch" from "throttled" and go quiet with it.
+    this.dirty = true;
+    this.seenMark = false;                // never equal to a stateMark(): draws once
+    this.renderSeq = 0; this.arrowSeq = -1; this.barSeq = -1;
 
     const apply = () => { this.apply(); if (cards.cfg.onLayout) cards.cfg.onLayout(); };
     this.selField.onchange = apply;
@@ -3162,6 +3717,7 @@ class DisplayCard {
     const w = (g && g.w) || VEC_SIZE, h = (g && g.h) || VEC_SIZE;
     if (w === this.gw && h === this.gh) return;
     this.gw = w; this.gh = h;
+    this.dirty = true;                    // a resized canvas has nothing drawn in it yet
     this.wrap.style.aspectRatio = (w === h) ? "" : (w + " / " + h);   // "" = the CSS 1/1
     this.cv.width = w; this.cv.height = h;
     this.vcx = vecCtx(this.cvVec, w, h);
@@ -3237,6 +3793,7 @@ class DisplayCard {
       + (cfg.caption ? cfg.caption(this) : "");
     this.barSync();                       // ... and so may have retired / relabelled the bar
     this.overlay();                       // the quantity / view may have retired an overlay
+    this.dirty = true;                    // every control this reads can change the picture
   }
   // ---- colorbar (item 12) --------------------------------------------------
   // shown for anything that renders a field; the lines view renders none (its GPU canvas
@@ -3309,30 +3866,18 @@ class DisplayCard {
     c.textAlign = "right";  c.fillText(t[2], x + bw, ty);
     c.textAlign = "left";
   }
-  // toggle: start recording the field canvas, or stop the live recording -- on whichever
-  // leg the engine supports (WebCodecs preferred; see the note by REC_FPS). The 30 s
-  // timer is a hard stop, not a pause -- an unattended recording must not grow without
-  // bound -- and each leg has exactly ONE place that writes the file, so the timer, the
-  // button press and destroy() all land in the same path.
-  recToggle() {
-    if (this.wc || this.rec) { this.recEnd(); return; }
-    if (this.recBusy) return;                   // a probe is already in flight
-    if (recWCSupported(this.cv)) {
-      this.recBusy = true;
-      recWCProbe(this.cv).then(cfg => {
-        this.recBusy = false;
-        if (this.dead || this.wc || this.rec) return;
-        if (cfg && recWCSupported(this.cv)) this.recStartWC(cfg);
-        else if (recSupported(this.cv)) this.recStartMR();
-      });
-      return;
-    }
-    if (recSupported(this.cv)) this.recStartMR();
-  }
-  recEnd() {
-    if (this.wc) this.recStopWC(false);
-    else if (this.rec) this.rec.stop();
-  }
+  // The recorder's live state, read straight off the card as it always was: the frame
+  // loop's REC_DEBUG line, needsRender(), destroy() and the devtools legs all ask the card
+  // "are you recording?", and moving the machinery is not a reason to make them ask
+  // something else. Read-only on purpose -- only the Recorder writes them.
+  get wc() { return this.recorder.wc; }
+  get rec() { return this.recorder.rec; }
+  get recBusy() { return this.recorder.recBusy; }
+  get recStop() { return this.recorder.recStop; }
+  // ... and the two entry points its owner drives: the button and the frame loop's
+  // per-frame feed. (destroy() hands over wholesale, below.)
+  recToggle() { this.recorder.recToggle(); }
+  recCapture() { this.recorder.recCapture(); }
   // button state in one place, so both legs and every stop route agree on it
   recLive() { this.btnRec.innerHTML = "stop"; this.btnRec.classList.add("reclive"); }
   recIdle() { this.btnRec.innerHTML = "rec"; this.btnRec.classList.remove("reclive"); }
@@ -3403,383 +3948,6 @@ class DisplayCard {
     if (s && s.parentNode) s.parentNode.removeChild(s);
   }
 
-  // ---- leg 2: MediaRecorder (the fallback; recResult is where it ends) ------
-  recStartMR() {
-    // a new take replaces the last one's result: two strips on one footer would be two
-    // files with the same name a press apart, and the visitor pressing start again has
-    // said which one they care about. Cleared HERE, in each leg's start, and not in
-    // recToggle: a press whose probe then fails to start anything (a WebCodecs-only
-    // engine that dislikes this canvas size) must not have thrown away the one file the
-    // visitor still had (adversarial review 2026-08-12, MINOR 1).
-    this.recClear("video");
-    const mime = recMime(), chunks = [];
-    const r = new window.MediaRecorder(this.cv.captureStream(REC_FPS),
-                                       mime ? { mimeType: mime } : undefined);
-    const name = shotName(this.barMode, recExt(mime));
-    // this leg hands back an opaque container built by the engine, so the frames in it are
-    // not ours to count: wall clock from start() to onstop is the only length it can
-    // honestly quote (leg 1, which writes the file itself, counts samples instead)
-    const t0 = Date.now();
-    r.ondataavailable = e => { if (e && e.data && e.data.size) chunks.push(e.data); };
-    r.onstop = () => {
-      clearTimeout(this.recStop);
-      this.rec = null; this.recStop = 0;
-      this.recIdle();
-      this.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
-                     (Date.now() - t0) / 1000);
-    };
-    this.rec = r;
-    r.start();
-    this.recLive();
-    this.recStop = setTimeout(() => { if (this.rec === r) r.stop(); }, REC_MAX_MS);
-  }
-
-  // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
-  recStartWC(cfg) {
-    this.recClear("video");               // same rule as recStartMR: replace on START
-    // ONE clock sample feeds the cadence fields: `due` is the wall-clock time of the next
-    // capture slot (recCapture). `lastRaf`/`maxGap` are DIAGNOSTIC only since round 2 --
-    // the watchdog parks on visibility, not on a heartbeat -- and `rafN`/`wdN` count which
-    // feeder put each frame in the file (?recdebug shows the tallies and maxGap;
-    // lastRaf just feeds maxGap).
-    const t0 = performance.now();
-    const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
-                due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
-                tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
-                w: this.cv.width, h: this.cv.height, name: shotName(this.barMode, "mp4"),
-                // ---- RECASYNC_PLAN (2026-08-12): the GPU-readback capture path --------
-                // `bufOn` is decided ONCE per take from the settled probe latch, so a
-                // recording never changes paths under its own feet; `fmt` is the
-                // VideoFrame format the canvas's bytes really are. `pool` (lazy, three
-                // staging buffers, owned by this W) and `pend` are the captures in
-                // flight; `chain` is the ordered encode chain -- null until the buffer
-                // path first uses it, which is also what keeps the sync path's stop
-                // exactly as it was. `gone` is set when the pool is destroyed: a map
-                // resolving after that must find it and do nothing.
-                bufOn: !recBufOff && !!this.ctx && !!device, fmt: REC_BUF_FMT[canvasFormat],
-                pool: null, bpr: 0, pad: false, pend: 0, onDrain: null, gone: false,
-                chain: null, tL: 0,         // max capture->encode lag in ms (recdebug)
-              };
-    W.enc = new window.VideoEncoder({
-      output: (chunk, meta) => {
-        const d = meta && meta.decoderConfig && meta.decoderConfig.description;
-        if (d && !W.avcC) W.avcC = mp4Bytes(d);
-        // avcC is the ONLY place a progressive file keeps the SPS/PPS -- there is no
-        // in-band parameter set to fall back on -- so a first chunk without one means we
-        // can never write a playable mp4. Bail to leg 2 NOW, one frame in, rather than
-        // at flush time holding 30 s of unusable samples.
-        if (!W.avcC) { this.recBailWC(W); return; }
-        if (W.bailed) return;
-        const b = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(b);
-        W.chunks.push({ data: b, key: chunk.type === "key" });
-      },
-      // encoder dead: write what we have. Guarded on ownership -- a stale encoder's
-      // error callback can land AFTER this recording stopped and the NEXT one began,
-      // and must not terminate the newcomer (adversarial review 2026-08-10, MINOR 1).
-      error: () => { if (this.wc === W) this.recStopWC(true); }
-    });
-    W.enc.configure(cfg);
-    this.wc = W;
-    // the WATCHDOG interval (RECRAF_PLAN, 2026-08-12): frames normally come from the rAF
-    // loop via recCapture, but rAF is throttled to a crawl (or stopped) in a background
-    // tab, and the editor view does not render cards at all -- and there a silently
-    // stretched recording is exactly what the fixed timestamps must not be paired with.
-    // So the timer stays, at the same 1000/30 ms, and feeds the recording itself on a
-    // hidden page or under the editor view (the park condition lives in recTick). Its
-    // extra render() then costs only where there is no visible display to stutter.
-    W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
-    this.recLive();
-    this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
-  }
-  // The ONE place a recording frame is encoded, whichever feeder brought it (RECRAF_PLAN,
-  // 2026-08-12): the frame index, its nominal 1/30 s timestamps, the forced-keyframe
-  // cadence and the drop-frame guard exist here once, so the two paths cannot drift apart.
-  // It does NOT render -- the rAF path is already inside the render's own task, and the
-  // watchdog renders itself immediately before calling this.
-  // `src` is the SOURCE of this frame's pixels, and there are two kinds (RECASYNC_PLAN,
-  // 2026-08-12): absent means this card's canvas (the sync path -- the watchdog, and any
-  // engine that cannot take bytes), and a `{bytes, format, w, h}` record means the mapped
-  // GPU copy of it. Everything else -- index, timestamp, keyframe cadence, backpressure --
-  // is identical by construction, which is the point of there being one function.
-  recEncodeFrame(W, src) {
-    // backpressure: when the encoder is behind, DROP this frame instead of queueing it.
-    // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
-    // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
-    // wall clock, rather than a file whose sample table lies about its own timing.
-    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
-    // the two halves of the capture cost, timed separately (?recdebug, round 3): `vf` is
-    // what a capture costs the MAIN THREAD and `enc` is what the encode costs. On the sync
-    // path that split is VideoFrame-from-canvas (the classic iOS expense, and the half a
-    // Worker could NOT take) vs encode(); on the buffer path the main-thread half is the
-    // copy+submit timed in recCaptureBuf, and BOTH halves here -- building the frame from
-    // bytes and submitting it -- ride `enc`, because they happen a beat later in the chain
-    // and no longer stretch a display frame. Two clock reads per frame either way; kept
-    // unconditional so the numbers exist the moment anyone asks.
-    const t1 = performance.now();
-    const init = { timestamp: Math.round(W.n * 1e6 / REC_FPS),
-                   duration: Math.round(1e6 / REC_FPS) };
-    let f;
-    if (src && src.bytes) {
-      init.format = src.format; init.codedWidth = src.w; init.codedHeight = src.h;
-      f = new window.VideoFrame(src.bytes, init);
-    } else {
-      f = new window.VideoFrame(this.cv, init);
-    }
-    const t2 = performance.now();
-    // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
-    // give. It is also every seek point the file has, stss being built from these.
-    try { W.enc.encode(f, { keyFrame: (W.n % REC_FPS) === 0 }); } finally { f.close(); }
-    const t3 = performance.now();
-    if (src && src.bytes) { if (t3 - t1 > W.tE) W.tE = t3 - t1; }
-    else {
-      if (t2 - t1 > W.tV) W.tV = t2 - t1;
-      if (t3 - t2 > W.tE) W.tE = t3 - t2;
-    }
-    W.n++;
-    return true;                            // fed: the callers' rafN/wdN tallies key on this
-  }
-  // ---- the buffer capture path (RECASYNC_PLAN, 2026-08-12) --------------------
-  // The hot half: copy this card's canvas texture into a free staging buffer and submit,
-  // all synchronously in the render's own task (getCurrentTexture is transient), then let
-  // go. Microseconds of command encoding instead of the 15-17 ms a VideoFrame-from-canvas
-  // cost the phone -- the readback itself happens on the GPU's clock and lands in
-  // recEncodeMapped a beat later, which is fine: the timestamps are ours, not the map's.
-  recCaptureBuf(W) {
-    const t1 = performance.now();
-    // the canvas can be resized under a live take (a preset or a grid change rebuilds the
-    // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
-    // a validation error rather than a frame. Drop the slot instead -- the honest-length
-    // rule again -- and let the take end at the size it started.
-    if (this.cv.width !== W.w || this.cv.height !== W.h) { W.drop++; return; }
-    if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
-    let s = null;
-    for (const e of W.pool) if (!e.busy) { s = e; break; }
-    // all three buffers are still waiting on their maps: the readback is genuinely behind,
-    // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
-    if (!s) { W.drop++; return; }
-    try {
-      const ce = device.createCommandEncoder();
-      ce.copyTextureToBuffer({ texture: this.ctx.getCurrentTexture() },
-                             { buffer: s.b, bytesPerRow: W.bpr, rowsPerImage: W.h },
-                             { width: W.w, height: W.h, depthOrArrayLayers: 1 });
-      device.queue.submit([ce.finish()]);
-    } catch (e) {
-      // an engine that accepted the configure but not the copy: fall back to the sync
-      // canvas path for the rest of this take rather than lose every remaining frame
-      W.bufOn = false; W.drop++;
-      return;
-    }
-    s.busy = true; W.pend++;
-    const t2 = performance.now();
-    if (t2 - t1 > W.tV) W.tV = t2 - t1;
-    if (!W.chain) W.chain = Promise.resolve();
-    // THE ORDERED ENCODE CHAIN. mapAsync resolution order across distinct buffers is not
-    // something to rely on, VideoEncoder requires monotonic timestamps, and mp4Mux writes
-    // a UNIFORM stts (checkmp4 asserts equal deltas) -- so index, timestamp and keyframe
-    // are all assigned at ENCODE time, inside one promise chain whose steps cannot
-    // interleave. Whichever capture's bytes arrive first is simply frame n: a dropped or
-    // failed capture leaves fewer frames and NO hole in the sample table.
-    s.b.mapAsync(GPUMapMode.READ).then(
-      () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
-      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
-  }
-  // three staging buffers, made on the first capture of a take (a take that never captures
-  // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
-  // multiple of 256: at every preset size the row is already aligned, but the box is
-  // user-sizable, so the padded case is real and recEncodeMapped compacts it.
-  recPoolMake(W) {
-    const pool = [];
-    try {
-      W.bpr = Math.ceil(W.w * 4 / 256) * 256;
-      W.pad = W.bpr !== W.w * 4;
-      for (let i = 0; i < REC_POOL; i++)
-        pool.push({ b: device.createBuffer({ size: W.bpr * W.h,
-                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), busy: false });
-      W.pool = pool;
-      return true;
-    } catch (e) {
-      // no memory: sync path -- and the buffers a mid-loop throw DID create go back
-      // (adversarial review 2026-08-12, MINOR 3)
-      for (const p of pool) { try { p.b.destroy(); } catch (err) {} }
-      W.bufOn = false; W.pool = null; return false;
-    }
-  }
-  // one capture accounted for, whichever way it ended. When the last one lands, a stop
-  // that is waiting on the drain can go on to flush and mux.
-  recPend(W) {
-    if (W.pend > 0) W.pend--;
-    if (!W.pend && W.onDrain) W.onDrain();
-  }
-  // the ASYNC TAIL, running as one step of the chain: the map resolved, so this capture's
-  // bytes exist. On the aligned row the mapped range is handed to the VideoFrame
-  // constructor as it is (the constructor copies), on the padded one the rows are
-  // compacted into a tight buffer first. Then unmap, and the buffer is free again.
-  recEncodeMapped(W, s, tCap) {
-    if (W.gone) return;                     // torn down while this sat in the chain
-    try {
-      const ab = s.b.getMappedRange();
-      const row = W.w * 4;
-      let bytes;
-      if (W.pad) {
-        bytes = new Uint8Array(row * W.h);
-        const src = new Uint8Array(ab);
-        for (let y = 0; y < W.h; y++) bytes.set(src.subarray(y * W.bpr, y * W.bpr + row), y * row);
-      } else {
-        bytes = new Uint8Array(ab);
-      }
-      // capture-submit to encode: the "arrives a beat late" number, ?recdebug's `lag`
-      const lag = performance.now() - tCap;
-      if (lag > W.tL) W.tL = lag;
-      if (this.recEncodeFrame(W, { bytes: bytes, format: W.fmt, w: W.w, h: W.h })) W.rafN++;
-    } catch (e) {
-      // a failed capture is a drop, never a throw -- and, like a failed COPY, it also
-      // latches this take back onto the sync canvas path: an engine whose 2x2 probe frame
-      // passed but whose full-size frames throw would otherwise drop every remaining slot
-      // and hand back a 0-chunk take with no file and no explanation (adversarial review
-      // 2026-08-12, MINOR 1)
-      W.drop++; W.bufOn = false;
-    }
-    try { s.b.unmap(); } catch (e) {}
-    s.busy = false;
-  }
-  // the pool's ONE teardown, called from every route a recording ends by. `gone` first:
-  // the buffers are about to stop existing, so a map still in flight (and the rejection
-  // destroy() hands it) must find a recording that wants nothing more from it.
-  recPoolFree(W) {
-    W.gone = true;
-    for (const e of (W.pool || [])) { try { e.b.destroy(); } catch (err) {} }
-    W.pool = null;
-  }
-  // wait for the captures still in flight before the file is written (RECASYNC_PLAN 5).
-  // The timeout is the guard against a map that never resolves: half a second, then mux
-  // what landed. It cannot strand the chain -- an encode step is synchronous work -- so
-  // awaiting the chain afterwards only orders the last step ahead of the flush.
-  recDrainWC(W) {
-    return new Promise(res => {
-      if (!W.pend) { res(); return; }
-      // a timed-out capture is a DROP, and says so (plan 5; adversarial review 2026-08-12,
-      // MINOR 2): the teardown that follows sets `gone` before destroying the buffers, so
-      // the rejection handlers stay silent -- count the stragglers here instead. W.drop is
-      // diagnostic (?recdebug); the file itself keys on the chunks that landed.
-      const t = setTimeout(() => { W.onDrain = null; W.drop += W.pend; res(); }, REC_DRAIN_MS);
-      W.onDrain = () => { clearTimeout(t); W.onDrain = null; res(); };
-    }).then(() => W.chain).catch(() => {});
-  }
-  // leg 1's PRIMARY feeder (RECRAF_PLAN, 2026-08-12), called from loop() in the SAME
-  // synchronous task as this card's render(). The old feeder was the interval below, which
-  // cost an extra full render() per tick plus the VideoFrame copy and the encode, all on
-  // the main thread and at an arbitrary phase against the rAF loop -- which is what made
-  // an iPhone stutter visibly for the whole take (Alfred, on-device, 2026-08-12). Riding
-  // the render costs zero extra renders and beats against nothing.
-  recCapture() {
-    const W = this.wc;
-    if (!W || W.done) return;               // not recording (or a loop iteration after stop)
-    const now = performance.now();
-    // the gap between consecutive loop passes, kept as a DIAGNOSTIC (?recdebug): on a
-    // phone this is the number that says whether the loop itself is the bottleneck.
-    if (now - W.lastRaf > W.maxGap) W.maxGap = now - W.lastRaf;
-    W.lastRaf = now;
-    const T = 1000 / REC_FPS;
-    if (now < W.due) return;                // between slots (a 120 Hz phone): not a drop
-    // a slot is due. If the loop was so late that a WHOLE further slot went by, those slots
-    // are counted lost and the next one is set from now -- never backfilled, because a
-    // backfilled frame would put a stale image at a timestamp it never had. The honest-
-    // length rule stands: fewer recorded seconds than wall clock, never a lying sample
-    // table. At nominal cadence the `else` keeps `due` drift-free.
-    if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
-    else W.due += T;
-    // the fast path since RECASYNC (2026-08-12): submit a GPU copy and return. The frame
-    // itself is built from those bytes in the chain when the map resolves, and the rafN
-    // tally is incremented THERE -- it counts frames this feeder put in the FILE, and on
-    // this path that is not knowable yet.
-    if (W.bufOn) return this.recCaptureBuf(W);
-    if (this.recEncodeFrame(W)) W.rafN++;
-  }
-  // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped
-  // with -- backpressure, render, encode, at the interval's own cadence -- but it runs only
-  // where the rAF feeder is KNOWN-ABSENT: a hidden page (rAF stopped or crawling) or the
-  // editor view (loop() skips the render/capture pair). Round 1 parked it on a TIMING
-  // heuristic instead -- recCapture silent for 3.5 slots -- and Alfred's phone showed why
-  // that was wrong: a visible loop whose post-render readback awaits stretch past the
-  // threshold got BOTH feeders, rAF captures plus 30 Hz watchdog render+encodes, MORE
-  // main-thread work than the pre-RECRAF recorder (on-device, "worse if anything",
-  // 2026-08-12). Visibility is the condition the watchdog exists for, so it is the
-  // condition it runs on. No slot-due check here: when the watchdog IS the feeder, the
-  // tick cadence is the 30 fps the timestamps promise, exactly as it always was. The queue
-  // check sits ahead of the render as well as inside the helper, so a tick that is only
-  // going to drop the frame does not pay for a render first.
-  //
-  // The watchdog keeps the SYNCHRONOUS canvas capture unconditionally, buffer path or not
-  // (RECASYNC_PLAN, 2026-08-12): it renders off-screen anyway, so a stalled main thread
-  // there costs nothing anyone can see, and keeping the async pool out of the
-  // background-throttled world means never having to reason about maps that a hidden page
-  // is starving of callbacks.
-  recTick(W) {
-    if (this.wc !== W || W.done) return;
-    if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
-    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
-    this.render();      // same reason as saveShot: getCurrentTexture is transient
-    if (this.recEncodeFrame(W)) W.wdN++;
-    // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
-    // "the longest stretch NOBODY fed" -- without this, an editor-view stint would report
-    // its whole dwell time as one loop gap (adversarial review 2026-08-12, r2 MINOR 3)
-    W.lastRaf = performance.now();
-    // re-base the slot clock: a frame the watchdog just PUT IN THE FILE must not be
-    // counted as a dropped slot by the first recCapture after rAF resumes -- with `due`
-    // frozen at handoff, every watchdog-fed slot would be double-booked into W.drop, and
-    // the returning rAF would double-feed the slot the watchdog had just filled
-    // (adversarial review 2026-08-12, MINOR 1).
-    W.due = performance.now() + 1000 / REC_FPS;
-  }
-  // the ONE place a WebCodecs recording ends: button, 30 s timer, destroy(), or encoder
-  // error (`broken`, where flushing a dead encoder would only throw).
-  recStopWC(broken) {
-    const W = this.wc;
-    if (!W || W.done) return;
-    W.done = true;
-    clearInterval(W.timer); clearTimeout(this.recStop);
-    this.wc = null; this.recStop = 0;
-    this.recIdle();
-    const fin = () => {
-      try { W.enc.close(); } catch (e) {}
-      this.recPoolFree(W);      // the staging buffers go here, on every route (RECASYNC 5)
-      const mp4 = mp4Mux({ width: W.w, height: W.h, fps: REC_FPS, avcC: W.avcC, chunks: W.chunks });
-      // the length is the samples that ended up IN the file over the fixed 30 fps the
-      // sample table declares -- honest under the drop-frame guard, where a slow machine
-      // records fewer seconds of wall clock than the clip lasts
-      if (mp4) this.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
-                              W.chunks.length / REC_FPS);
-    };
-    // flush() delivers the frames the encoder is still holding, so it has to complete
-    // before the mux -- and its rejection is not a reason to lose the file either.
-    const flush = () => { try { W.enc.flush().then(fin, fin); } catch (e) { fin(); } };
-    // ... and since RECASYNC (2026-08-12) captures can be in FLIGHT when the stop lands:
-    // drain them first (W.done above already bars new ones), so the last half-second of a
-    // take is in the file rather than in three staging buffers about to be destroyed. A
-    // broken encoder skips the drain: there is nothing left that could encode, and the
-    // in-flight maps will resolve into a torn-down W and do nothing. A take that never
-    // touched the buffer path keeps EXACTLY the stop it always had.
-    if (broken) fin();
-    else if (!W.bufOn && !W.chain) flush();
-    else this.recDrainWC(W).then(flush, flush);
-  }
-  // no avcC: this engine's WebCodecs leg is unusable, so switch legs mid-press and turn
-  // it off for the rest of the session rather than hand back an unplayable file.
-  recBailWC(W) {
-    if (W.bailed || this.wc !== W) return;
-    W.bailed = true; W.done = true;
-    clearInterval(W.timer); clearTimeout(this.recStop);
-    this.wc = null; this.recStop = 0;
-    recWCOff = true;
-    try { W.enc.close(); } catch (e) {}
-    // this leg ends here rather than in recStopWC, so it frees the staging buffers itself
-    // (RECASYNC_PLAN 5, "all routes"): the file is being thrown away, so there is nothing
-    // to drain -- captures still in flight resolve into a torn-down W and do nothing.
-    this.recPoolFree(W);
-    if (recSupported(this.cv) && !this.dead) this.recStartMR();
-    else this.recIdle();
-  }
   showArrows() {
     return !!(this.cbArrow.checked && !this.linesView() && !this.volView() &&
               solver && dispIsVector(solver.modeOf(this.ci)));
@@ -3795,7 +3963,26 @@ class DisplayCard {
     return { ox: 0, oy: 0, ax: this.gw, ay: 0, bx: 0, by: this.gh,
              d: { ox: 0, oy: 0, ax: s, ay: 0, bx: 0, by: s } };
   }
-  render() { if (this.ctx && solver) solver.render(this.ctx, this.ci); }
+  render() {
+    if (!this.ctx || !solver) return;
+    solver.render(this.ctx, this.ci);
+    this.renderSeq++;
+  }
+  // Does this card's chain have to run this frame? Two independent reasons, plus a
+  // veto-free third:
+  //   - the STATE moved. Asked as "is the mark I last drew still the current one", not as
+  //     a flag somebody has to remember to set: a step, an IC upload, a preset and a
+  //     rebuild all move stateMark() by construction, so no caller has to know about this
+  //     gate at all. (It shipped as a flag the frame loop set after stepping, which worked
+  //     but meant the only test of it was the test setting the flag itself -- adversarial
+  //     review, 2026-08-12.)
+  //   - this CARD moved: `dirty`, set by apply() and _resize(), i.e. by every control that
+  //     feeds setDisplayMode, none of which touches the state.
+  //   - a live take, which reads the texture THIS render produced (RECRAF); a skipped
+  //     frame would hand the encoder an expired one.
+  needsRender() {
+    return this.dirty || this.seenMark !== stateMark() || !!this.wc || !!this.rec;
+  }
   // The overlay canvas carries the arrow field AND (3D, lines view) the box frame and the
   // projected field lines, whose readbacks land at different rates -- so ONE method owns
   // the canvas: clear once, each source drawn from its last cached data. Called by both
@@ -3823,13 +4010,9 @@ class DisplayCard {
     if (this.volLinesOn() && X && this.lines) drawFieldLines(c, this.lines, X(), VOL_LINE_ALPHA);
     if (this.arr && this.showArrows()) drawArrows(c, this.arr.a, this.arr.nax, this.arr.nay, this.arrowFrame());
   }
-  // closing a card mid-recording writes what it has: the stream (or the canvas the
-  // encoder is reading) dies with the card, and losing the file silently would be worse
-  // than a short one
   destroy() {
-    this.dead = true;
-    if (this.wc) this.recStopWC(false);
-    if (this.rec) { clearTimeout(this.recStop); try { this.rec.stop(); } catch (e) {} }
+    this.dead = true;                     // set BEFORE the stop: recResult reads it
+    this.recorder.destroy();              // a live take writes what it has -- see Recorder
     if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
   }
 }
@@ -3854,7 +4037,7 @@ class ChartCard {
     // a retyped card must not wait out the old type's throttle window before it fills
     this.selType.onchange = () => {
       this.build(); this.draw(null);
-      cardsThrottle.spec = 0; cardsThrottle.cut = 0;
+      cardsThrottleReset();
     };
     this.btnClose.onclick = () => cardClose(this);
   }
@@ -3892,7 +4075,7 @@ class ChartCard {
     // retyping the card is what drops its spectrum state (PINCURVE): the pins belonged
     // to a chart this card no longer is, and the cache belonged to that chart's data.
     this.pins = []; this.lastData = null;
-    const redraw = d => { this._optSync(); this.draw(d || null); cardsThrottle.spec = 0; cardsThrottle.cut = 0; };
+    const redraw = d => { this._optSync(); this.draw(d || null); cardsThrottleReset(); };
     // an option is a <select> over `o`, (k: "num") a small number box, or (k: "btn") a
     // small header BUTTON -- all three end up in optEls with the same __optId, so
     // optVals() and the type's draw() see one shape. A button carries no value: it calls
@@ -4108,7 +4291,7 @@ function cardsSync() {
   for (const d of cards.disp) d.btnClose.disabled = cards.disp.length <= CARD_MIN_DISP;
   for (const d of cards.disp) d.apply();
   for (const c of cards.chart) { c.apply(); if (c.type() === "cut") c.draw(null); }
-  cardsThrottle.spec = 0; cardsThrottle.cut = 0;
+  cardsThrottleReset();
   if (cards.cfg && cards.cfg.onLayout) cards.cfg.onLayout();
 }
 // replace the whole layout (used by the presets and by boot)
@@ -4148,7 +4331,11 @@ function primaryCard() { return cards.disp.length ? cards.disp[0] : null; }
 // for every other card: the fit boxes and the pin buttons re-evaluate to what they were.
 function chartsReset() {
   histReset(); islandReset(); modeReset();
-  cardsThrottle.spec = 0; cardsThrottle.cut = 0;
+  cardsThrottleReset();
+  // ... and it is also where the state JUMPED without a step being taken, which is the
+  // one thing the render gate's step counter cannot see (an IC upload resets nsteps to
+  // 0, so the count alone can repeat a value the caches were already holding).
+  stateBumped();
   for (const c of cards.chart) { c._optSync(); c.draw(null); }
 }
 
@@ -6133,6 +6320,12 @@ function icEditEnter() {
   icDrawPreview();
 }
 // mode: "save" | "run" | "cancel"
+// The display view comes back: every card has been detached for the length of the edit
+// and nothing about the STATE need have changed (save and cancel both leave it alone), so
+// the render gate would otherwise let them come back to whatever the compositor still had
+// -- if anything (adversarial review, 2026-08-12: whether a WebGPU canvas keeps its last
+// presented image across display:none is an engine's business, not something to rely on).
+// One frame is a cheap way not to have that argument.
 function icEditLeave(mode) {
   if (!icDraw.on) return;
   if (mode === "cancel" && icDraw.snap) {
@@ -6142,6 +6335,7 @@ function icEditLeave(mode) {
   icDraw.snap = null;
   icDraw.on = false; icDraw.down = false; icDraw.last = null;
   icEditShow(false);
+  for (const d of cards.disp) d.dirty = true;      // see the note above
   el("btnRun").disabled = false; el("btnEdit").disabled = false;
   if (mode === "run") {
     applyIC();
@@ -6285,11 +6479,65 @@ function trackArgmax(e, off, nz, cur) {
 //   specExtra()         extra fields merged into the spectrum cards' data object (the 3D
 //                       field-line E(k_par), which its own hook refreshes at its own rate)
 let frameHook = null, readoutExtra = null, specExtra = null;
-const cardsThrottle = { spec: 0, cut: 0 };
+// Throttle clocks, and beside each the STATE it was last served for: the throttle says
+// "not yet", the marker says "nothing new". A paused page fails the second test, so the
+// spectrum's full extra field pass and the cut line's prep stop being taken 3-10 times a
+// second over a picture that cannot move. The marker is (solver, nsteps, stateSeq), not
+// the run flag, so exactly one more readback still lands AFTER the final step -- the
+// charts show the state you paused on, not the one 300 ms before it.
+const cardsThrottle = { spec: 0, cut: 0, specAt: null, cutAt: null };
+const statsCache = { s: null, at: null };
+// "fill these cards NOW": zero the clocks so the window is already over, and forget which
+// state they were last served for so the gate cannot answer "nothing new" to a card that
+// has never been fed. Both halves are needed -- a newly added or retyped chart on a
+// PAUSED page is exactly the case where the state has not moved and the card still wants
+// data.
+function cardsThrottleReset() {
+  cardsThrottle.spec = 0; cardsThrottle.cut = 0;
+  cardsThrottle.specAt = null; cardsThrottle.cutAt = null;
+}
+let stateSeq = 0;
+// `rebuild` ends in applyIC -> chartsReset -> stateBumped, so a new solver always moves
+// stateSeq: the pair identifies the state without needing a handle on the solver itself.
+const stateMark = () => (solver ? solver.nsteps + "/" + stateSeq : null);
+// The state jumped without a step: an IC upload, a preset, a rebuild. Moving the counter
+// is the whole job -- every consumer (the cards' needsRender, the throttled readbacks,
+// the 3D hooks) is keyed on stateMark() and re-opens on its own.
+function stateBumped() { stateSeq++; }
 const _chartsOf = t => cards.chart.filter(c => c.type() === t);
 // cards fed by one readback SOURCE: a type's `src` (island rides the cut line) or, by
 // default, its own name. One readback serves every card that consumes it.
 const _chartsBySrc = s => cards.chart.filter(c => (CHART_TYPES[c.type()].src || c.type()) === s);
+// One frame's worth of display work, gated: a chain runs only when its picture can have
+// changed (DisplayCard.needsRender). Returns how many cards actually drew, which is what
+// makes "a paused page draws nothing" a measurable statement rather than an intention --
+// the stub's requestAnimationFrame is a no-op, so devtools/checkidle.js drives THIS
+// instead of re-implementing the gate and then testing its own copy.
+//
+// `paused` settles each active contour set's adapting range instead of relaxing it, so
+// the last frame drawn is the one a still field deserves (see contSettle). recCapture()
+// is outside the gate on purpose: it early-outs when no take is live, and when one IS
+// live needsRender() is true anyway, so it never sees a frame this did not just draw.
+// The catch keeps a capture fault at the OLD blast radius: under the timer feeder a
+// VideoFrame/encode throw died inside one interval tick (logged, recording limped on);
+// uncaught in the frame loop it would reject loop()'s promise and freeze the whole app --
+// the one thing strictly worse than a bad take (adversarial review 2026-08-12, MINOR 2).
+// (The editor view hides every card: do not render into detached canvases.)
+function renderCards(paused) {
+  if (icDraw.on || !solver) return 0;
+  let n = 0;
+  for (const d of cards.disp) {
+    if (d.needsRender()) {
+      if (paused) contSettle(solver.device, solver.chain(d.ci));
+      d.render();
+      d.dirty = false;
+      d.seenMark = stateMark();
+      n++;
+    }
+    try { d.recCapture(); } catch (e) { console.error(e); }
+  }
+  return n;
+}
 async function loop() {
   for (;;) {
     await new Promise(r => requestAnimationFrame(r));
@@ -6303,25 +6551,19 @@ async function loop() {
       const ce = solver.nsteps < 200 ? 1 : parseInt(el("rCflEvery").value, 10);
       n = stepsPerFrame;
       for (let i = 0; i < n; i++) solver.step(ce);
+      // nothing to invalidate by hand: nsteps moved, so stateMark() did, and every card
+      // and every gated readback below asks that question for itself
     }
-    // one display chain run per card per rendered frame: same state, own quantity.
-    // (the editor view hides them all -- do not render into detached canvases)
-    // recCapture() is a live WebCodecs recording taking ITS frame off this very render,
-    // and it has to be here, in the same synchronous task, before any await: WebGPU has no
-    // preserveDrawingBuffer, so getCurrentTexture is transient and the canvas holds only
-    // its last PRESENTED image -- a capture deferred even one microtask would wrap an
-    // expired texture (the same reason saveShot re-renders first). Doing it here is also
-    // why leg 1's interval is now only a watchdog: feeding the encoder off a timer meant a
-    // second full render per frame at a phase that beat against this loop, which an iPhone
-    // showed as a stutter for the length of the take (RECRAF_PLAN, 2026-08-12).
-    // The catch keeps a capture fault at the OLD blast radius: under the timer feeder a
-    // VideoFrame/encode throw died inside one interval tick (logged, recording limped on);
-    // uncaught here it would reject loop()'s promise and freeze the whole app -- the one
-    // thing strictly worse than a bad take (adversarial review 2026-08-12, MINOR 2).
-    if (!icDraw.on) for (const d of cards.disp) {
-      d.render();
-      try { d.recCapture(); } catch (e) { console.error(e); }
-    }
+    // One display chain run per card, gated -- and it must happen HERE, in this
+    // synchronous task, before any await: a live WebCodecs recording takes its frame off
+    // this very render, WebGPU has no preserveDrawingBuffer, so getCurrentTexture is
+    // transient and the canvas holds only its last PRESENTED image; a capture deferred
+    // even one microtask would wrap an expired texture (the same reason saveShot
+    // re-renders first). It is also why leg 1's interval is now only a watchdog: feeding
+    // the encoder off a timer meant a second full render per frame at a phase that beat
+    // against this loop, which an iPhone showed as a stutter for the length of the take
+    // (RECRAF_PLAN, 2026-08-12). Everything else about it is in renderCards.
+    renderCards(!running);
     await device.queue.onSubmittedWorkDone();
     const ms = performance.now() - t0;
     if (running) {
@@ -6330,7 +6572,17 @@ async function loop() {
       const sps = n / (Math.max(ms, 0.05) / 1000);
       spsSmooth = spsSmooth ? 0.9 * spsSmooth + 0.1 * sps : sps;
     }
-    const s = await solver.readStats();
+    // the scalars buffer cannot move without a step or a state jump, so a paused page
+    // reuses the last read rather than paying a map round trip per frame for the same
+    // twelve numbers. The readout text below is rebuilt either way -- the "paused" word
+    // and the hooks' extra lines change without the numbers doing.
+    const mark = stateMark();
+    if (!statsCache.s || statsCache.at !== mark) {
+      statsCache.s = await solver.readStats();
+      statsCache.at = mark;
+      if (!solver) continue;                  // retired while we were awaiting
+    }
+    const s = statsCache.s;
     if (frameHook) await frameHook(solver);
     if (!solver) continue;                    // retired while we were awaiting
     if (isFinite(s[1])) simT = s[1];          // what the capture filenames stamp
@@ -6378,16 +6630,22 @@ async function loop() {
     // (FEEDBACK_2026-08-10 item 12): 4 bytes of the per-chain `maxVal` buffer, i.e. the
     // autoscale the colorize kernel of the frame just drawn actually divided by. Its own
     // (slower) throttle, and skipped for the fixed +-1 modes, which need no number at all.
+    // Both read what a render LEFT in that card's buffers, so both are also gated on the
+    // card's frame counter: once the gate above stops drawing, there is nothing new to
+    // fetch and these go quiet with it -- but each still gets ONE read after the last
+    // frame drawn, which is what keeps the paused arrows and the paused colorbar showing
+    // the state on screen rather than the one before it.
     for (const d of cards.disp.slice()) {
       const tnow = performance.now();
-      if (d.showArrows() && tnow - d.arrowAt > 100) {
-        d.arrowAt = tnow;
+      if (d.showArrows() && d.arrowSeq !== d.renderSeq && tnow - d.arrowAt > 100) {
+        d.arrowAt = tnow; d.arrowSeq = d.renderSeq;
         const sv = solver;
         const av = await sv.readArrows(d.ci);
         if (sv === solver && cards.disp.indexOf(d) >= 0) d.setArrows(av, sv.nax, sv.nay);
       }
-      if (d.barNeedsMax() && performance.now() - d.barAt > CBAR_PERIOD) {
-        d.barAt = performance.now();
+      if (d.barNeedsMax() && d.barSeq !== d.renderSeq &&
+          performance.now() - d.barAt > CBAR_PERIOD) {
+        d.barAt = performance.now(); d.barSeq = d.renderSeq;
         const sv = solver;
         const mv = await dispMaxRead(sv, d.ci);
         if (sv === solver && cards.disp.indexOf(d) >= 0) d.setBarRange(mv[0]);
@@ -6398,8 +6656,9 @@ async function loop() {
     // Phase H -- it runs its own line prep and depends on no display card, only on
     // its own z plane (2D: always 0), so one readback serves every card on that plane.
     const cutCards = _chartsBySrc("cut");
-    if (cutCards.length && performance.now() - cardsThrottle.cut > 100) {
-      cardsThrottle.cut = performance.now();
+    if (cutCards.length && cardsThrottle.cutAt !== mark &&
+        performance.now() - cardsThrottle.cut > 100) {
+      cardsThrottle.cut = performance.now(); cardsThrottle.cutAt = mark;
       const sv = solver, planes = new Map();
       for (const c of cutCards) planes.set(cards.cfg.zsliceOf(c), null);
       for (const iz of Array.from(planes.keys())) {
@@ -6426,8 +6685,8 @@ async function loop() {
     // spectra: a full extra pass over the fields + a map round trip -> throttle hard
     const specCards = _chartsBySrc("spectrum");
     const now = performance.now();
-    if (specCards.length && now - cardsThrottle.spec > 300) {
-      cardsThrottle.spec = now;
+    if (specCards.length && cardsThrottle.specAt !== mark && now - cardsThrottle.spec > 300) {
+      cardsThrottle.spec = now; cardsThrottle.specAt = mark;
       const sv = solver;
       const sp = await sv.readSpectrum();
       if (sv === solver) {

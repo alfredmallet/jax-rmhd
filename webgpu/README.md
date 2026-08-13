@@ -93,10 +93,17 @@ programmatically; do not try to hand-edit a 180 kB line).
   vectors, its dimension-specific WGSL and `Solver`, and its UI layout and defaults, on
   top of `<script src="common.js">` and `<script src="physics.js">` (in that order).
 - `common.js` — the shared pieces that carry no equation: RNG, reference-vector
-  flatteners, the FFT kernel template, the generic reductions (CFL, energy tail,
-  max-reduce), device bring-up, the **colormap table** (`CMAP_COEF` / `cmapRGB`, the one
-  source both the WGSL and the editor preview read), the chart + overlay drawing (energy
-  trace, spectra, cut trace, arrows), the **card system** (`DisplayCard`, `ChartCard`,
+  flatteners, the FFT kernel template and the **rfft row pair** (`fftRowPair`: the y
+  forward/inverse kernels, which both pages emitted as byte-identical twins), the generic
+  reductions (CFL, energy tail,
+  max-reduce), device bring-up and the **pooled readback** (`readBuf`, whose staging
+  buffers are keyed by byte length and reused rather than allocated per call), the
+  **colormap table** (`CMAP_COEF` / `cmapRGB`, the one
+  source both the WGSL and the editor preview read), the **display quantity table**
+  (`DISP_FIELDS`, physics.js's modes with their definitions — one table, both pages), the
+  chart + overlay drawing (energy
+  trace, spectra, cut trace, arrows), the **card system** (`DisplayCard`, `Recorder`,
+  `ChartCard`,
   `cardsInit`/`cardsLayout`/`cardsSync`), the **control-panel builder**
   (`controlsBuild(spec)` and the row/group fragments the two pages share — the sticky
   top bar, the cfl row, the hyper/diss row, the whole forcing group, the IC group and
@@ -114,6 +121,43 @@ programmatically; do not try to hand-edit a 180 kB line).
   per-app hook object through `icDrawWire`), the z-plane trackers (`trackCentroid`,
   `trackArgmax`), the self-test table and the frame loop (with two per-app hooks,
   `frameHook` and `readoutExtra`).
+
+  **The render gate** (2026-08-12). A display chain runs only when its picture can have
+  changed: `renderCards(paused)` draws a card when `DisplayCard.needsRender()` says so.
+  That asks three things — has the STATE moved (`seenMark !== stateMark()`, so a step, an
+  IC upload, a preset and a rebuild all invalidate by construction and no caller has to
+  know this gate exists), has this CARD moved (`dirty`, set by `apply()` and `_resize()`,
+  i.e. by the controls that change no state), and is a take reading frames off it. Before this, a PAUSED page re-ran every chain at rAF
+  rate forever — in 3D a full volume inverse transform per card per frame, two more per
+  active contour set, and in the volume view the whole 512²×256 raymarch — over a state
+  that could not move. The readbacks that read what a render left behind (arrows, the
+  colorbar autoscale) are gated on the card's own frame counter; the ones that read the
+  SOLVER (stats, the cut line, the spectra, and 3D's plane tracker and field-line march)
+  are gated on `stateMark()`, the pair `(nsteps, stateSeq)`. `stateSeq` is what catches a
+  state that jumped without a step — an IC upload resets `nsteps` to 0 — and is bumped by
+  `chartsReset`, which both apps already call on exactly those paths. Each gate still lets
+  ONE readback through after the last step, so a paused page shows the state you paused
+  on, not the one 300 ms before it, and `cardsThrottleReset` clears the markers so a chart
+  card added to a still page is filled rather than told "nothing new".
+
+  The rule the 3D hooks got wrong first time, and the one to keep in mind when adding a
+  fourth consumer of anything gated here: **a marker may only ever suppress a REPEAT.**
+  `fieldLineHook` shipped gating on "the state has not moved AND something is cached",
+  which is true as soon as ANY of its three consumers has been served — so a second one
+  appearing over a still state (and both pages boot paused, so that is the ordinary case)
+  was locked out for good, leaving the k∥ curve empty and a second lines card blank. It
+  now asks `flStale()`: is anybody asking who has nothing? `planeTrackHook` asks its
+  drift test the same way, before the early-out rather than after it.
+
+  Three more things the gate has to get right, all pinned by `devtools/checkidle.js`: a
+  live recording forces a draw (the encoder reads the texture that render produced, and a
+  skipped frame would hand it an expired one — RECRAF), and a paused frame *settles* each
+  active contour set's adapting range instead of relaxing it (`contSettle` writes the zero
+  range that `contLevel` reads as "no history", so the last frame drawn takes the measured
+  max outright). The relaxation exists to damp flicker on a moving field; on a still one it
+  is a spacing that would never arrive, frozen wherever the gate stopped the frames. And
+  leaving the IC editor marks every card, because save and cancel change no state at all
+  and the cards have been detached for the length of the edit.
 - `physics.js` — the shared RMHD kernels and the whole slice display chain, as
   templates over one constants object per app (`{pre, hasZ, wgReal, nDisp, arrow, ns,
   envFn}`), plus the shared `struct Mode` and `CMAP_WGSL` (four colormaps, one

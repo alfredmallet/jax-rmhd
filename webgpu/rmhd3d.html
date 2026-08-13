@@ -263,36 +263,11 @@ fn envelope(A: vec2<f32>, B: vec2<f32>, plane: u32) -> vec2<f32> {
   // carried entirely on the inverse (1/ny on rowsC2R, 1/nx on colsInv, 1/nz on zInv).
 
   // ---- forward rows: real (batch,NZ,NX,NY) -> complex (batch,NZ,NX,NKY) ---
-  S.rowsR2C = fftKernel({
-    N: ny, dir: -1, lpb: nz * nx,
-    decl: `@group(0) @binding(0) var<storage, read> rin: array<f32>;
-@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;
-const NY_: u32 = ${ny}u;
-const NKY_: u32 = ${nky}u;`,
-    load: `  let ib: u32 = line * NY_;
-  for (var idx: u32 = tid; idx < NY_; idx = idx + ${WGF}u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }`,
-    store: `  let ob: u32 = line * NKY_;
-  for (var idx: u32 = tid; idx < NKY_; idx = idx + ${WGF}u) { cout[ob + idx] = buf[src + idx]; }`
-  });
-
-  // ---- inverse rows: complex half-spectrum -> real (exactly real: .x only) -
-  S.rowsC2R = fftKernel({
-    N: ny, dir: +1, lpb: nz * nx,
-    decl: `@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> rout: array<f32>;
-const NY_: u32 = ${ny}u;
-const NKY_: u32 = ${nky}u;
-const SCL: f32 = ${(1 / ny).toExponential(12)};`,
-    load: `  let ib: u32 = line * NKY_;
-  for (var idx: u32 = tid; idx < NY_; idx = idx + ${WGF}u) {
-    var v: vec2<f32>;
-    if (idx < NKY_) { v = cin[ib + idx]; }
-    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }
-    buf[idx] = v;
-  }`,
-    store: `  let ob: u32 = line * NY_;
-  for (var idx: u32 = tid; idx < NY_; idx = idx + ${WGF}u) { rout[ob + idx] = buf[src + idx].x * SCL; }`
-  });
+  // the rfft row pair (common.js: both pages emit the same two kernels; `lpb` is this
+  // page's dispatch split -- nz*nx lines blows past maxComputeWorkgroupsPerDimension)
+  const rows = fftRowPair(ny, nky, nz * nx);
+  S.rowsR2C = rows.r2c;
+  S.rowsC2R = rows.c2r;
 
   // ---- complex FFT along x (axis 1 of a (NZ,NX,NKY) slab), stride NKY -----
   // in place: `line` runs over batch*NZ*NKY, and b = line/NKY = (field*NZ + iz).
@@ -2343,7 +2318,7 @@ function wireDrawEditor() {
 // A raw per-readback argmax is what made the collision displays jitter (REFINE_PLAN
 // G.8 / note [7]). The tracked indices are cached here so cardsSync -- which any slider
 // can trigger -- keeps using them instead of fighting the tracker.
-let planeE = null, planeAt = 0;
+let planeE = null, planeAt = 0, planeMark = null;
 const trackIdx = [0, 0];                    // tracked plane of E+ , of E-
 const trackPos = [-1, -1];                  // ... and its continuous coordinate (centroid)
 // the plane one card is on: its tracker, or its slider -- or, in the lines view, the top
@@ -2375,9 +2350,19 @@ function trackingOn() {
 }
 async function planeTrackHook(sv) {
   if (!trackingOn()) { planeE = null; return; }
+  // ... and the peak cannot move while the state does not: the same (steps, stateSeq)
+  // marker the frame loop gates its own readbacks on, so a paused page stops paying for
+  // an inverse z-transform + reduction ten times a second (render audit, 2026-08-12).
+  const mk = stateMark();
+  // ... and the same rule for this one: a card whose chain slice has drifted from what
+  // `sliceOfCard` says is the repair this hook has always done (it used to be tested only
+  // AFTER the readback, which the marker gate would have disarmed on a quiet page --
+  // adversarial review, 2026-08-12)
+  const drift = () => cards.disp.some(c => sv.zsliceOf(c.ci) !== sliceOfCard(c));
+  if (planeMark === mk && planeE && !drift()) return;
   const now = performance.now();
   if (now - planeAt < 100) return;
-  planeAt = now;
+  planeAt = now; planeMark = mk;
   const e = await sv.readPlaneEnergy();
   if (sv !== solver) return;                // retired mid-readback
   planeE = e;
@@ -2393,8 +2378,7 @@ async function planeTrackHook(sv) {
       trackPos[f] = idx[f];
     }
   }
-  const stale = cards.disp.some(c => sv.zsliceOf(c.ci) !== sliceOfCard(c));
-  if (idx[0] !== trackIdx[0] || idx[1] !== trackIdx[1] || stale) {
+  if (idx[0] !== trackIdx[0] || idx[1] !== trackIdx[1] || drift()) {
     trackIdx[0] = idx[0]; trackIdx[1] = idx[1];
     cardsSync();
   }
@@ -2408,7 +2392,7 @@ async function planeTrackHook(sv) {
 // card in the LINES VIEW, and an open "k∥ (field line)" spectrum card, which traces on its
 // own with no lines card anywhere. The along-line SAMPLES are a second readback of four
 // times the size and only the chart reads them, so they come back only when it is open.
-let flData = null, flPar = null, flAt = 0;
+let flData = null, flPar = null, flAt = 0, flMark = null;
 // ... and since ISO_PLAN B a VOLUME card with its overlay checkbox ticked is a third
 // consumer of the polylines (not of the along-line samples): same march, same 2 Hz.
 const flLinesOn = () => cards.disp.some(d => d.linesView() || d.volLinesOn());
@@ -2423,15 +2407,33 @@ const flChartOn = () => cards.chart.some(c => {
   if (t === "spectrum") return c.optVals().sd === "fl";
   return t === "aniso" && (c.optVals().ad || "both") !== "z";
 });
+// "somebody is asking and has nothing to draw": the chart leg is open but carries no
+// spectrum, or some card wants polylines and has none. Written as a question about the
+// consumers so that adding a fourth one cannot forget to reset a marker.
+const flStale = () => (flChartOn() && !flPar) ||
+  cards.disp.some(d => (d.linesView() || d.volLinesOn()) && !d.lines);
 async function fieldLineHook(sv) {
   const chart = flChartOn();
   if (!chart && !flLinesOn()) {
     if (flData) { flData = null; flPar = null; for (const d of cards.disp) d.setLines(null); }
     return;
   }
+  // Same marker gate as the plane tracker: the march is a full gradient pass plus 64
+  // integrations, and on a still field it would retrace the same lines every 500 ms.
+  // But the marker may only ever suppress a REPEAT, and whether this would be a repeat is
+  // a question about the CONSUMERS, not about one cached blob: there are three of them
+  // (a lines-view card, a volume card with the overlay ticked, and the k∥ chart leg) and
+  // they come and go independently. A consumer that appears while the state is still --
+  // and both pages boot PAUSED, so that is the ordinary case -- finds `flMark === mk` and
+  // would be locked out for good. So the gate asks the only question that matters: is
+  // anybody asking who has nothing? (adversarial review, 2026-08-12: this shipped as
+  // `&& flData`, which is true as soon as ANY consumer has been served, and silently left
+  // a second lines card blank and the k∥ curve permanently empty.)
+  const mk = stateMark();
+  if (flMark === mk && !flStale()) return;
   const now = performance.now();
   if (now - flAt < FL_PERIOD) return;
-  flAt = now;
+  flAt = now; flMark = mk;
   const L = await sv.readFieldLines(chart);
   if (sv !== solver) return;                // retired mid-readback
   flData = { pos: L.pos, nl: FL_SIDE * FL_SIDE, nz: sv.g.nz };
@@ -2459,16 +2461,14 @@ async function fieldLineHook(sv) {
 //   what that curve means and carries the same units.
 // One submit and one readback per band with a yield between them (~1 s in all at 256²×64):
 // the browser stays responsive, and a rebuild mid-sweep is caught by the `sv !== solver`
-// test the field-line hook already uses. One iteration more than there are bands: the
-// UNBANDED row (`parFL`) the overlay's k∥B curve was drawn from — see below.
+// test the field-line hook already uses. Exactly as many iterations as there are bands.
 //
-// ORPHANED AS OF Alfred's second feedback round (2026-08-11): the two measured anisotropy
-// curves were dropped from the card, and `parFL` had no other consumer — it is now computed,
-// shipped on the snapshot and read by nobody but check2dspec. It is left in place ON PURPOSE
-// for now: removing it changes the sweep (one fewer readGenBand pass, one fewer progress
-// step, a different `total`) and the checks that pin those, which is a separate change from
-// a display-side feedback round. Flagged for a later cleanup; until then it costs one extra
-// band iteration of an already ~1 s one-shot press.
+// (Until 2026-08-12 there was one more: an UNBANDED row, `parFL`, feeding the k∥B curve of
+// the two measured anisotropy overlays. Alfred dropped those curves in his second feedback
+// round on 2026-08-11, which left the pass computed, shipped on the snapshot and read by
+// nobody; the render audit removed it. It cost a whole band iteration — a gradient pass plus
+// 256 line integrations — of a ~1 s press. The LIVE spectrum chart's own k∥B curve is a
+// different thing and is untouched: it comes off fieldLineHook's march, through `specExtra`.)
 //
 // The COORDINATE companion (Phase B) comes off the same press and out of the same object:
 // `crows`, band for band with `rows`, the same [E_u | E_b | H_c] over the same |k∥| bins,
@@ -2477,10 +2477,9 @@ async function fieldLineHook(sv) {
 // is why it is not a second button. A card select toggles which of the two is DRAWN; the
 // contrast between them is the Cho–Vishniac lesson and the reason both are here.
 //
-// `opts`: { onProgress(done, total) } — called once with (0, total) before the first band
-// and after every band (including the extra unbanded one below), for the button's progress
-// text; `total` counts that extra pass too, so "done/total" is honest about how much of the
-// sweep is left. Returns null if there is no solver, if the solver was retired mid-sweep, or
+// `opts`: { onProgress(done, total) } — called once with (0, total) before the first band and
+// after every band, for the button's progress text, so "done/total" is honest about how much of
+// the sweep is left. Returns null if there is no solver, if the solver was retired mid-sweep, or
 // if the state has no resolved k⊥ range to band at all (gen2dBands empty — the card then
 // says so rather than drawing one meaningless row; no progress call is made in that case).
 async function gen2dSpec(opts) {
@@ -2496,27 +2495,14 @@ async function gen2dSpec(opts) {
   if (sv !== solver) return null;
   const bands = gen2dBands(sv.nb, sv.p.fshell, sp.perp);
   if (!bands.length) return null;
-  // one extra pass beyond the bands themselves -- the unbanded parFL march below -- so the
-  // total the button counts against is every readGenBand call the sweep actually makes.
-  const total = bands.length + 1;
+  // the total the button counts against is every readGenBand call the sweep actually makes
+  const total = bands.length;
   prog(0, total);
   // the coordinate panel first: one pass over k-space, no transform, so it costs a fraction
   // of one band's row and the frozen state it bins is unambiguously the same one the rows
   // are about to be taken from
   const crows = await sv.readGen2D(bands);
   if (sv !== solver) return null;
-  // ... and ONE unbanded row, which is not a row of the plot at all: it is the WHOLE
-  // field's parallel spectrum along the field lines, `parFL`, the leg the anisotropy
-  // overlay needed to draw its k∥B curve over this snapshot instead of over the live
-  // state. `par` above is that curve's z leg and comes free with readSpectrum; the
-  // field-line leg has no such readback here, so the sweep takes it — one extra band
-  // iteration, the same march on the same seeds with both band ends off.
-  // NOTE (2026-08-11): that overlay is gone and this row now has NO consumer — see the
-  // header comment above. Kept for now rather than removed with a display-side change.
-  const smpAll = await sv.readGenBand({ lo: 0, hi: 0 });
-  if (sv !== solver) return null;
-  const parFL = flSpectrum(smpAll, GEN_SIDE * GEN_SIDE, sv.g.nz);
-  prog(1, total);
   const rows = [];
   for (let j = 0; j < bands.length; j++) {
     const smp = await sv.readGenBand(bands[j]);
@@ -2524,12 +2510,12 @@ async function gen2dSpec(opts) {
     // [E_u | E_b | H_c] over |k∥| bins 1..nzb, the lanes every spectrum here carries, so
     // E± = E_u + E_b ± H_c (SPEC_SETS) needs no second path
     rows.push(flSpectrum(smp, GEN_SIDE * GEN_SIDE, sv.g.nz));
-    prog(j + 2, total);
+    prog(j + 1, total);
     await new Promise(r => setTimeout(r, 0));       // air between submissions
   }
   return { t: st[1], bands, rows, crows, nb: sv.nb, nzb: sv.nzb, parKfac: sv.parKfac,
            fshell: sv.p.fshell.slice(), nl: GEN_SIDE * GEN_SIDE, perp: sp.perp,
-           par: sp.par, parFL };
+           par: sp.par };
 }
 
 // extra readout lines: where the trackers are (continuous, so a smooth centroid reads
@@ -2540,29 +2526,6 @@ function planeReadout() {
   const one = f => trackIdx[f] + " (z = " + (trackPos[f] * Lz / nz).toFixed(2) + ")";
   return el("selTrack").value + "  z+ : iz " + one(0) + "   z- : iz " + one(1);
 }
-
-// ---------------------------------------------------------------------------
-// display cards: this app's quantity list (physics.js modes 0..9). The cube faces are
-// a VIEW in the card's z-source select (REFINE_PLAN I2.1), orthogonal to this list --
-// every quantity here renders as a cube -- so there are no cube entries in it.
-// ---------------------------------------------------------------------------
-const DISP_FIELDS = [
-  { v: 4, t: "velocity |u|", d: "u = z&#770;&times;&nabla;&phi;" },
-  { v: 5, t: "magnetic |b|", d: "b = z&#770;&times;&nabla;&psi;" },
-  { v: 2, t: "&phi;" }, { v: 3, t: "&psi;" },
-  { v: 0, t: "vorticity", d: "&omega; = &nabla;&sup2;&phi; = z&#770;&middot;&nabla;&times;u" },
-  { v: 1, t: "current", d: "j = &nabla;&sup2;&psi; = z&#770;&middot;&nabla;&times;b" },
-  { v: 10, t: "Elsasser &omega;&#8314;",
-    d: "&omega;&#8314; = &nabla;&sup2;&zeta;&#8314; = &omega; + j, &zeta;&#8314; = &phi; + &psi;" },
-  { v: 11, t: "Elsasser &omega;&#8315;",
-    d: "&omega;&#8315; = &nabla;&sup2;&zeta;&#8315; = &omega; &minus; j, &zeta;&#8315; = &phi; &minus; &psi;" },
-  { v: 6, t: "Elsasser |z&#8314;|", d: "z&#8314; = u + b" },
-  { v: 7, t: "Elsasser |z&#8315;|", d: "z&#8315; = u &minus; b" },
-  { v: 8, t: "cross helicity &sigma;_c",
-    d: "&sigma;_c = 2u&middot;b / (|u|&sup2;+|b|&sup2;)" },
-  { v: 9, t: "residual energy &sigma;_r",
-    d: "&sigma;_r = (|u|&sup2;&minus;|b|&sup2;) / (|u|&sup2;+|b|&sup2;)" }
-];
 
 // ---------------------------------------------------------------------------
 // presets: configurations of the controls above (never new physics), also
@@ -2922,14 +2885,14 @@ async function boot() {
         : (solver && solver.cubeOf(c.ci) ? "  (cube faces, top iz " : "  (iz "))
         + sliceOfCard(c) + ")"),
     onLayout: () => {
-      planeAt = 0;                                    // re-track on the next frame
+      planeAt = 0; planeMark = null;                  // re-track on the next frame
       syncLabels();
     }
   });
   // wire first: bootApply's syncIC asks the editor config which rows a preset owns
   wireCommonControls({ presets: PRESETS, sliders: ["rZDiss"], rebuildOn: ["selLz"] });
   el("btnAutoZDiss").onclick = autoZDiss;
-  el("selTrack").onchange = () => { planeAt = 0; };    // re-track on the next frame
+  el("selTrack").onchange = () => { planeAt = 0; planeMark = null; };  // re-track next frame
   // the box shape moved: re-upload the drawn corners, and re-apply the cards, which is
   // what rewrites each chain's ray uniform (setDisplayMode owns volRay)
   el("cbAspect").onchange = () => { if (solver) solver.uploadBox(); cardsSync(); };

@@ -707,10 +707,18 @@ async function legShells(state) {
     }
     ok(page + ": prepDisp's omega+- branches are the vorticity branch on phi +- psi",
        n > 0 && bad.length === 0, bad.join(", ") || n + " emissions");
-    const t = fs.readFileSync(path.join(dir, page), "utf8");
-    ok("  ... and both carry a field-table entry with its definition",
+  }
+  // ... and the table those branches are selected from carries both entries WITH their
+  // definitions. It lives in common.js since the render audit (2026-08-12) -- both pages
+  // held it verbatim -- so this is asserted once, on the one copy, rather than per page.
+  {
+    const t = fs.readFileSync(path.join(dir, "common.js"), "utf8");
+    ok("the shared field table carries an omega+- entry with its definition",
        /\{ v: 10, t: "Elsasser &omega;&#8314;",\s*\n\s*d: "&omega;&#8314; = &nabla;&sup2;&zeta;&#8314; = &omega; \+ j/.test(t) &&
        /\{ v: 11, t: "Elsasser &omega;&#8315;",\s*\n\s*d: "&omega;&#8315; = &nabla;&sup2;&zeta;&#8315; = &omega; &minus; j/.test(t));
+    ok("  ... and neither page carries a second copy of it",
+       ["rmhd2d.html", "rmhd3d.html"].every(pg =>
+         !/const DISP_FIELDS = \[/.test(fs.readFileSync(path.join(dir, pg), "utf8"))));
   }
   const M = await wgslMod();
   const src = (state.cur["rmhd3d.html"] || {})[VOLK];

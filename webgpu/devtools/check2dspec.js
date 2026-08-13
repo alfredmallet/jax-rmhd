@@ -970,11 +970,13 @@ const SYNTH = `function(rows){
   // about the (continuous) law, so the ROW comes out of the app's own Hann periodogram
   if (!rows) return { A: A, B: B, flat: flat, nzb: nzb, nb: nb, pk: pk, nz: nz,
                       kc: bands.map(b => b.kc) };
+  // every call the sweep issues is counted here: since the render audit removed the extra
+  // unbanded pass, "one per band and no more" is a claim worth pinning at the source
+  globalThis.GBCALL = { n: 0, unbanded: 0 };
   sv.readGenBand = async band => {
     const nl = GEN_SIDE * GEN_SIDE, out = new Float32Array(nl * nz * 4);
-    // a call with BOTH ends off is not a row of the plot: it is the sweep's extra unbanded
-    // pass, the whole field, whose |kz| content is every band's packet at once (that is
-    // what gen2dSpec ships as parFL for the overlay's field-line leg)
+    globalThis.GBCALL.n++;
+    if (!(band.lo || band.hi)) globalThis.GBCALL.unbanded++;
     const cs = (band.lo || band.hi) ? [kOf(band.kc)] : bands.map(b => kOf(b.kc));
     for (let j = 0; j < nz; j++) {
       let v = 0;
@@ -1012,12 +1014,26 @@ async function pressGenerate(env) {
     await new Promise(r => setTimeout(r, 0));
   return env.run("function(){ return gen2d.busy; }") === false;
 }
-const PANEL = `function(gp, gq){
+// The ridge of one band's row: the k_par of its largest cell (0 for an empty row). This
+// used to live in common.js, where nothing drawn ever called it -- the reference slopes
+// anchor on gen2dTop, not on the argmax -- so it was app code with only this file for a
+// consumer (render audit, 2026-08-12). It is the checker's MEASURING INSTRUMENT for the
+// planted k_par(k_perp) law, and what the recovery leg puts under test is the sweep that
+// produced the row, so owning it here weakens nothing.
+const ridgeOf = pts => {
+  let k = 0, v = 0;
+  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] > v) { v = pts[i + 1]; k = pts[i]; }
+  return k;
+};
+const ridgesOf = P => (P ? Object.assign(P, { ridge: P.rows.map(ridgeOf) }) : P);
+const PANEL_ = `function(gp, gq){
   const G = gen2dPanel({ gp: gp, gq: gq, gov: "off" });
   if (!G) return null;
   return { n: G.rows.length, hi: G.hi, floor: G.floor, nzb: G.nzb,
-           ridge: G.rows.map(r => gen2dRidge(r)), kc: G.d.bands.map(b => b.kc),
+           rows: G.rows.map(r => Array.prototype.slice.call(r)),
+           kc: G.d.bands.map(b => b.kc),
            t: G.d.t, pk: G.d.parKfac, npts: G.rows.map(r => r.length / 2) }; }`;
+const runPanel = (env, ...a) => ridgesOf(env.run(PANEL_, ...a));
 
 async function legRidge(state) {
   // ---- the band set itself: the anisotropy card's window, in octaves -------
@@ -1067,7 +1083,7 @@ async function legRidge(state) {
   const law = kc => S.A * Math.pow(kc, 2 / 3) + S.B;          // in |k_par| bins
   const P = {};
   for (const [gp, cap, nm] of [["fl", Infinity, "field line"], ["z", S.flat, "coordinate"]]) {
-    const p = P[gp] = env.run(PANEL, gp, "tot");
+    const p = P[gp] = runPanel(env, gp, "tot");
     if (!p) { ok("the " + nm + " panel has rows", false); continue; }
     let worstBin = 0, checked = 0, off = 0;
     for (let j = 0; j < p.n; j++) {
@@ -1095,23 +1111,26 @@ async function legRidge(state) {
                    + (P.z.ridge[P.z.n - 1] / P.z.pk).toFixed(1) : "no panel");
   // the lane select is the shared E+- algebra: the coordinate rows carry E_u : E_b : H_c
   // = 0.6 : 0.4 : 0.1, so tot = 1.0, zp = 1.1, zm = 0.9 of the same peak
-  // The sweep's extra UNBANDED row. It existed for ONE consumer -- the k∥B leg of the
-  // measured overlay curves -- and Alfred dropped those in his second round, so as of
-  // 2026-08-11 `parFL` is computed, shipped and read by nobody but this assertion. It is
-  // deliberately left in place (removing it changes the sweep, its progress `total` and the
-  // legs that pin those, which is not a display-side change) and flagged for a later
-  // cleanup, so what this row now pins is the STATUS QUO: the pass still runs and still
-  // produces a well-formed row, and the day it is removed this line is the reminder that
-  // the sweep's shape changed on purpose.
+  // The sweep's extra UNBANDED row is GONE (render audit, 2026-08-12). It existed for ONE
+  // consumer -- the k∥B leg of the measured overlay curves -- and Alfred dropped those in
+  // his second round, which left it computed, shipped and read by nobody but the assertion
+  // that used to stand here. What is pinned now is the shape the sweep was cut back to:
+  // the snapshot carries NO parFL, and the press makes exactly one readGenBand call per
+  // band, with the progress total to match. Both halves matter -- dropping the field but
+  // leaving the pass would save nothing, and dropping the pass but leaving `total` would
+  // make the button's own count wrong.
   const OV = env.run(`function(){
-    const d = gen2d.data;
-    let s = 0; for (let i = 0; i < (d.parFL || []).length; i++) s += d.parFL[i];
-    return { has: !!d.parFL, n: d.parFL ? d.parFL.length : 0, sum: s, nzb: d.nzb }; }`);
-  ok("the sweep still takes its extra UNBANDED field-line pass (now consumer-less: see note)",
-     OV.has && OV.n === 3 * OV.nzb && OV.sum > 0,
-     OV.n + " floats, sum " + OV.sum.toPrecision(4) + " -- orphaned by the second feedback "
-     + "round, kept for a later cleanup");
-  const L = ["tot", "zp", "zm"].map(q => env.run(PANEL, "z", q));
+    const d = gen2d.data, C = globalThis.GBCALL || {};
+    return { has: d.parFL !== undefined, nb: d.bands.length, rows: d.rows.length,
+             calls: C.n, unbanded: C.unbanded, done: gen2d.done, total: gen2d.total }; }`);
+  ok("the sweep takes ONE readGenBand per band and ships no unbanded row",
+     !OV.has && OV.rows === OV.nb && OV.calls === OV.nb && OV.unbanded === 0,
+     OV.nb + " bands, " + OV.rows + " rows, " + OV.calls + " calls ("
+     + OV.unbanded + " unbanded), parFL " + (OV.has ? "STILL PRESENT" : "gone"));
+  ok("  ... and the button's progress total is that band count, so done/total ends at 1",
+     OV.total === OV.nb && OV.done === OV.nb,
+     "finished at " + OV.done + "/" + OV.total);
+  const L = ["tot", "zp", "zm"].map(q => runPanel(env, "z", q));
   ok("the lane select is ANISO_LANES' own E+- = E_u + E_b +- H_c",
      L.every(p => p && p.n === P.z.n) && rel(L[1].hi, 1.1 * L[0].hi) < 1e-5 &&
      rel(L[2].hi, 0.9 * L[0].hi) < 1e-5,
@@ -1226,18 +1245,18 @@ async function legChoreography(state) {
      a.bars.length === 3 && a.bars.every(s => s && s.length) && a.bars[0] !== a.bars[2],
      a.bars.join(" .. "));
   // ---- resume: the plot does not move --------------------------------------
-  const before = env.run(PANEL, "fl", "tot");
+  const before = runPanel(env, "fl", "tot");
   env.run("function(){ setRunning(true); }");
   ok("Run resumes the sim and does NOT clear or move the plot",
      env.run("function(){ return running; }") === true &&
-     JSON.stringify(env.run(PANEL, "fl", "tot")) === JSON.stringify(before));
+     JSON.stringify(runPanel(env, "fl", "tot")) === JSON.stringify(before));
   // ---- an IC reset and a full rebuild --------------------------------------
   env.run("function(){ chartsReset(); }");
   ok("an IC reset (chartsReset) leaves it standing -- it is a record of a moment",
-     JSON.stringify(env.run(PANEL, "fl", "tot")) === JSON.stringify(before));
+     JSON.stringify(runPanel(env, "fl", "tot")) === JSON.stringify(before));
   env.run("function(){ rebuild(); }");
   ok("a solver REBUILD leaves it standing too (the snapshot carries its own grid)",
-     JSON.stringify(env.run(PANEL, "fl", "tot")) === JSON.stringify(before),
+     JSON.stringify(runPanel(env, "fl", "tot")) === JSON.stringify(before),
      "nb / nzb / bands / parKfac all ride in the data");
   ok("  ... and the button comes back live on the new solver",
      env.run("function(){ const c = cards.chart.filter(x => x.type() === 'gen2d')[0];"
@@ -1389,7 +1408,6 @@ const FRAME = `function(){
            kc: G.d.bands.map(b => b.kc), floor: G.floor, hi: G.hi,
            rows: G.rows.map(r => Array.prototype.slice.call(r)),
            top: G.rows.map(r => gen2dTop(r, G.floor)),
-           ridge: G.rows.map(r => gen2dRidge(r)),
            margin: GEN2D_TOPMARGIN,
            slopes: GEN2D_SLOPES.map(s => [s[0], s[1], s[2], s[3].slice()]),
            anchor: GEN2D_SLOPES.map(s => gen2dAnchor(G, s[0])),
@@ -1408,7 +1426,7 @@ async function legPlot(state) {
   const P = env.run(GEO);
   const x0 = P.l, x1 = P.W - P.r, y0 = P.t, y1 = P.H - P.b;
   env.run(SETOPT, { gp: "fl", gq: "tot", gc: "log", gov: "off" });
-  const F = env.run(FRAME);
+  const F = ridgesOf(env.run(FRAME));
   if (!F) { ok("the panel has rows to plot", false); return; }
   // the app's own affine log -> pixel maps, mirrored (the only arithmetic this leg owns)
   const MX = L => x0 + (L - F.xlo) / (F.xhi - F.xlo) * (x1 - x0);

@@ -386,9 +386,13 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   sweep, the real periodogram, and `gen2dRidge` landing within ONE k&#8741; bin of the law on both
   panels — with the coordinate one FLATTENING where the field-line one keeps climbing, which
   is the Cho&ndash;Vishniac contrast the card exists for; the same leg checks that the sweep
-  still takes its extra UNBANDED pass (`parFL`) &mdash; which fed the measured overlay curves
-  and, since Alfred's second feedback round dropped those, has no consumer left and is kept
-  only pending a cleanup of the sweep. The choreography leg is Alfred's model as
+  makes exactly ONE `readGenBand` call per band and ships no unbanded row: the extra
+  `parFL` pass, orphaned when Alfred's second feedback round dropped the measured overlay
+  curves, was removed by the render audit (2026-08-12), and the leg pins both halves of
+  that &mdash; the field is gone AND the pass is gone AND the button's progress `total` is
+  the band count, since dropping the field alone would have saved nothing. The argmax
+  ridge the recovery leg measures with (`ridgeOf`) is this file's own now; it had no
+  runtime consumer in the app. The choreography leg is Alfred's model as
   a sequence: press while running &rarr; paused, with the plot and its `generated @ t` legend;
   Run &rarr; unmoved; IC reset and full solver rebuild &rarr; still standing; second press &rarr;
   replaced; a press on a DEAD field &rarr; NOT replaced (an all-zero sweep is the null path,
@@ -405,6 +409,29 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   legend while every cell still sits exactly where the frame's map puts it; and the two
   measured anisotropy curves are gone, strokes, labels and call site alike. CI reports,
   never gates.
+- `checkidle.js [dir]` — the RENDER GATE (audit of 2026-08-12), on both booted pages. It
+  drives `renderCards(paused)`, the app's own per-frame display step (split out of `loop()`
+  so it can be called at all — the stub's `requestAnimationFrame` is a no-op), and counts
+  the chains actually encoded by wrapping `Solver.render`, so what is measured is work
+  done and not the gate agreeing with itself. Every leg that asserts a SKIP is paired with
+  one that asserts a DRAW, because a gate that only ever answers "no" would pass the first
+  half and ship a frozen app: the first frame after boot draws every card and the next two
+  draw nothing; a card's own control, a step, `chartsReset`, `cardsSync` and a newly ADDED
+  card each re-open it; the IC editor's view draws none; a live take on either leg forces a
+  draw over an unchanged state (the encoder reads that render's texture); a paused frame
+  writes the zero contour range for every ACTIVE set and a running frame for none (settle
+  versus relax); and `stateMark()` moves on a step, moves again on a state jump that takes
+  no step (an IC upload resets `nsteps` to 0, so the count alone would repeat), and is
+  forgotten by `cardsThrottleReset` — which is what feeds a chart card added while paused.
+  Since the adversarial review it also drives the 3D hooks, which is where the one real
+  defect of that round lived: a lines-view card, then a k∥ chart, then a SECOND lines card,
+  each arriving over a state that never moves, must each be fed — and once all three are,
+  three more hook calls must march nothing. Reverting `flStale()` to the shipped
+  `&& flData` fails the middle two legs, which is the check this leg exists to be.
+  Also driven: leaving the IC editor by save / cancel / run, exactly one arrow gather after
+  the last frame drawn (and none after that however wide the throttle is), the spectrum
+  marker suppressing and `cardsThrottleReset` re-permitting, and `recCapture` being called
+  on every card every frame whether or not that card drew.
 - `checkgc.js` — the ANALYTICS_PLAN gates: the GoatCounter beacon and the contact line.
   Three parts. TEXT over the five HTML files pins the **set of counted pages**, which is
   the load-bearing decision of the feature: the four content pages carry exactly one
