@@ -115,16 +115,17 @@ controlsBuild({
     // a glyph. 3D only -- it is a collision setup.
     ctrlGrpIC({ letters: "letter packets A / B", amp: -0.7,
                 presets: [[IC_SINE, "sinusoidal z&plusmn; packets (exact interaction)"]],
-                extra: [
+                // sigma_z sits directly under sigma_perp (2026-08-13 feedback item 3):
+                // one blob shape, two axes, so the two knobs read as a pair
+                post: [
       { id: "rowSigZ", hide: true, items: [
         { k: "lab", t: "&sigma;<sub>z</sub>" },
         { k: "rng", id: "rSigZ", ti: "packet length along z (letters) / blob length (custom)" },
         { k: "val", id: "vSigZ" },
         { k: "hint", id: "sigzcap", hide: true,
           t: "at the cap &mdash; increase L<sub>z</sub> for longer packets" }
-      ] },
-      { k: "hintdiv", id: "icinfo" }
-    ] }),
+      ] }
+    ], tail: [{ k: "hintdiv", id: "icinfo" }] }),
     ctrlGrpDisp([
       // the box's drawn shape, page-wide (feedback round 2, item 1): on = the true edge
       // lengths (Lx, Ly, Lz), off = the unit cube every view was drawn as before ISO_PLAN A

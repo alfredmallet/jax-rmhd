@@ -159,6 +159,22 @@ canvas.chart { display: block; width: 100%; height: auto; background: #0f1115;
 .row label { width: auto; color: #9aa5b4; flex: none; }
 .row input[type=range] { flex: 1 1 110px; min-width: 90px; max-width: 160px; }
 .row .val { width: 64px; text-align: right; font-variant-numeric: tabular-nums; color: #cfd8e3; }
+/* a label and the control it names, as ONE flex item of the row (_ctrlRow): the row can
+   still wrap anywhere it likes, but never BETWEEN a slider and its name. Same bargain as
+   .cardhead label.rngl above, applied to the control panel; the group is what wraps, the
+   slider is the flexible thing inside it. The internal gap is tighter than the row's, so
+   a group reads as one control rather than three neighbours. */
+.row .ctlg, #topbar .ctlg { display: inline-flex; align-items: center; gap: 6px;
+                            flex: 0 1 auto; min-width: 0; }
+.row .ctlg > label { flex: none; }
+/* the slider is the only part allowed to give ground, and only down to a thumb-sized
+   minimum -- past that the whole group wraps instead of the label shearing off. The
+   BASIS is the old max-width, not the old basis: a slider used to be a flex item of the
+   row and grew into it, and it is now inside a shrink-to-fit box, so 110 here would have
+   quietly narrowed every slider on the page to its minimum. At 160 the desktop widths
+   are what they were, and the shrink to 80 is what buys the phone its single line. */
+.row .ctlg > input[type=range] { flex: 1 1 160px; min-width: 80px; max-width: 160px; }
+.row .ctlg > .val { flex: none; }
 select, input[type=number], button { background: #1d2129; color: #d8dee6;
     border: 1px solid #333a45; border-radius: 4px; padding: 4px 8px; font: inherit;
     max-width: 100%; }

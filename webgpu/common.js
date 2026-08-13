@@ -605,10 +605,15 @@ async function initGPU(opts) {
 // show, never gates a feature, so a wrong guess costs one slightly-off sentence.
 // (Support facts as of 2026-08: gpuweb Implementation-Status wiki. Chrome/Linux is
 // default-on only for Intel Gen12+ (144+) and NVIDIA >=535.183.01 under Wayland
-// (147+); Firefox/Linux is Nightly-only, expected stable during 2026.)
+// (147+); Firefox/Linux is Nightly-only, expected stable during 2026; Firefox/Mac is
+// Apple Silicon only (145 on macOS 26+, 147 on all versions), Intel Macs Nightly-only.)
+// NB Firefox reports "Intel Mac OS X 10.15" on Apple Silicon too, so the Mac branch
+// CANNOT sniff the chip -- it asks the reader to look, and must stay that way.
 function gpuFailEnv() {
   const ua = navigator.userAgent || "";
-  return { linux: /Linux/.test(ua) && !/Android/.test(ua), firefox: /Firefox\//.test(ua) };
+  return { linux: /Linux/.test(ua) && !/Android/.test(ua),
+           mac:   /Macintosh|Mac OS X/.test(ua),
+           firefox: /Firefox\//.test(ua) };
 }
 async function initGPUTry(opts) {
   if (!navigator.gpu) {
@@ -617,8 +622,13 @@ async function initGPUTry(opts) {
       + (env.firefox && env.linux
         ? "Firefox does not ship WebGPU on Linux yet (expected during 2026); on this machine "
           + "a current Chrome may work. "
-        : "Browsers that have it: Chrome/Edge 113+, Firefox 141+ on Windows or 147+ on macOS, "
-          + "and Safari 26+. ")
+        : env.firefox && env.mac
+          ? "Firefox ships WebGPU on Apple Silicon Macs only (145 on macOS 26+, 147 on all "
+            + "macOS versions); on Intel Macs it is still Nightly-only. If the Apple menu > "
+            + "About This Mac shows a Processor rather than a Chip, this machine is Intel: "
+            + "use Chrome/Edge 113+ or Safari 26+. Otherwise update Firefox. "
+          : "Browsers that have it: Chrome/Edge 113+, Firefox 141+ on Windows or 147+ on "
+            + "Apple Silicon Macs, and Safari 26+. ")
       + "See the ", "err", WEBGPU_STATUS_URL);
     return false;
   }
@@ -4398,9 +4408,42 @@ function _ctrlItem(row, it) {
   if (it.hide) e.style.display = "none";
   return e;
 }
+// A NAME AND THE THING IT NAMES ARE ONE FLEX ITEM (2026-08-13 feedback item 4).
+// .row wraps freely, which on a phone can leave "diss" at the end of one line and its
+// slider at the start of the next -- two orphans that read as unrelated controls. The
+// cure is the one .cardhead already uses for its header sliders (label.rngl): put the
+// pair in an inline-flex box, so the ROW's flex item is the group and a wrap can only
+// ever happen between groups.
+//
+// The grouping is derived, not declared, so no row spec had to be rewritten and a new
+// row gets it for free: a `lab` opens a group, which then absorbs the controls that
+// follow it while they are things a label can name -- sliders, number boxes, a bare
+// checkbox, and the readout span that belongs to the slider. Anything else (a button, a
+// `cbl` with its own built-in label, a hint, the next `lab`) closes it. That is what
+// keeps "band n" holding BOTH of its handles and their single readout.
+//
+// A <select> is DELIBERATELY not groupable. It was, and devtools/layout.js caught what
+// that costs: an option list is arbitrarily long text, so "preset" + #selIC became a 361px
+// item that cannot wrap internally, against 316px of usable width at 360px -- the 3D
+// page's "sinusoidal z+- packets (exact interaction)". A select is a bordered box that
+// already reads as one control next to its name, and the complaint this fixes was about
+// sliders, whose name is the only thing telling two identical grey tracks apart.
+const _CTRL_GROUPABLE = { rng: 1, num: 1, cb: 1, val: 1 };
+function _ctrlRow(row, items) {
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    // how many of the items after this label it can take with it
+    let n = 0;
+    if (it.k === "lab") while (_CTRL_GROUPABLE[(items[i + 1 + n] || {}).k]) n++;
+    if (n === 0) { _ctrlItem(row, it); continue; }
+    const g = _mk("span", "ctlg", row);
+    for (let j = 0; j <= n; j++) _ctrlItem(g, items[i + j]);
+    i += n;
+  }
+}
 function controlsBuild(spec) {
   const bar = el("topbar");
-  for (const it of (spec.topbar || CTRL_TOPBAR)) _ctrlItem(bar, it);
+  _ctrlRow(bar, spec.topbar || CTRL_TOPBAR);
   const host = el("controls");
   for (const g of spec.groups) {
     const d = _mk("details", null, host);
@@ -4409,11 +4452,10 @@ function controlsBuild(spec) {
     _mk("summary", null, d).innerHTML = g.summary;
     for (const r of g.rows) {
       if (r.k === "hintdiv") { const h = _mk("div", "hint", d); h.id = r.id; continue; }
-      const items = Array.isArray(r) ? r : r.items;
       const row = _mk("div", "row", d);
       if (r.id) row.id = r.id;
       if (r.hide) row.style.display = "none";
-      for (const it of items) _ctrlItem(row, it);
+      _ctrlRow(row, Array.isArray(r) ? r : r.items);
     }
   }
 }
@@ -4476,22 +4518,23 @@ const CTRL_GRP_FORCE = {
        ti: "forcing shell: upper edge (exclusive)" }, { k: "val", id: "vFshell" }]
   ]
 };
-// the IC group: the two amplitude rows and the paint row are shared; `letters` is
-// the wording of the letters preset and `extra` the 3D-only sigma_z row + chi line
+// the IC group: the paint row and the two amplitude rows are shared. Three slots for the
+// per-page rows, because ORDER now carries meaning (2026-08-13 feedback items 2 + 3):
+//   pre    before the paint row -- 2D's equilibrium knobs, which belong to presets that
+//          never show the paint row at all
+//   post   between the paint row and the amplitudes -- 3D's sigma_z, which sits with
+//          sigma_perp because the two are the same knob on two axes
+//   tail   last -- the derived readout line (3D's chi / packet hint)
+// The amplitudes come AFTER the paint selector because the selector is what DECIDES what
+// they mean: icAmpBasis reads #selPaint, and ampBasisSync relabels the two sliders from
+// it, so cause now reads above effect instead of below it.
 const ctrlGrpIC = o => ({
   id: "grpIC", summary: "initial condition", rows: [
     [{ k: "lab", t: "preset" },
      { k: "sel", id: "selIC", o: [["modes", "large-scale modes"], ["letters", o.letters],
                                   ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]]
-                                 .concat(o.presets || []) }],
-    // the two amplitude labels and titles are REWRITTEN by ampBasisSync (item 15): while a
-    // drawing is being painted in phi/psi they are the (phi, psi) knobs, not the zeta+- ones
-    [{ k: "lab", id: "labAmpP", t: "&zeta;&#8314; amp" },
-     { k: "rng", id: "rAmpP", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpP" },
-     { k: "cbl", id: "cbAmpLock", t: "lock", v: true, ti: "move the two potential amplitudes together" }],
-    [{ k: "lab", id: "labAmpM", t: "&zeta;&#8315; amp" },
-     { k: "rng", id: "rAmpM", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpM" }]
-  ].concat(o.extra || [], [
+                                 .concat(o.presets || []) }]
+  ].concat(o.pre || [], [
     { id: "rowDraw", hide: true, items: [
       { k: "btn", id: "btnEdit", t: "edit IC", ti: "pause the run and open the IC editor" },
       { k: "lab", t: "paint" },
@@ -4507,7 +4550,21 @@ const ctrlGrpIC = o => ({
       { k: "lab", t: "negative" },
       { k: "cb", id: "cbNeg", ti: "deposit with a minus sign (or drag with the right button)" }
     ] }
-  ])
+  ], o.post || [], [
+    // the two amplitude labels and titles are REWRITTEN by ampBasisSync (item 15): while a
+    // drawing is being painted in phi/psi they are the (phi, psi) knobs, not the zeta+- ones.
+    // Both rows are HIDDEN, not disabled, for the presets that set their amplitudes some
+    // other way (2026-08-13 feedback item 5) -- see icSyncRows.
+    { id: "rowAmpP", items: [
+      { k: "lab", id: "labAmpP", t: "&zeta;&#8314; amp" },
+      { k: "rng", id: "rAmpP", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpP" },
+      { k: "cbl", id: "cbAmpLock", t: "lock", v: true, ti: "move the two potential amplitudes together" }
+    ] },
+    { id: "rowAmpM", items: [
+      { k: "lab", id: "labAmpM", t: "&zeta;&#8315; amp" },
+      { k: "rng", id: "rAmpM", min: -2, max: 1, step: 0.05, v: o.amp }, { k: "val", id: "vAmpM" }
+    ] }
+  ], o.tail || [])
 });
 // displays & charts: the two add buttons, plus whatever page-wide extras follow
 const ctrlGrpDisp = extra => ({
@@ -6405,7 +6462,15 @@ function icSyncRows() {
   // amp sliders normalize and the sigma_z row shapes. isC = the drawing, which is those
   // things AND owns the paint row.
   const p = el("selIC").value, isP = icIsPacketIC(p), isC = p === "custom";
-  for (const id of ["rAmpP", "rAmpM", "cbAmpLock"]) el(id).disabled = !isP && !isC;
+  // The amplitude rows are HIDDEN, not greyed, for every preset that does not normalize a
+  // stored potential (2026-08-13 feedback item 5). That is the equilibria -- whose
+  // amplitudes are the PHYSICAL knobs one row up (U0 / b0 / psi0), with max|b| spelled out
+  // in #vEqInfo beside them -- and equally `modes` and `quiescent`, which have no amplitude
+  // knob at all. One predicate, so the panel never has two ways of saying "not here"; the
+  // cost is that the rows are absent on a default boot (selIC = modes) and appear when the
+  // user picks letters / sinusoids / the drawing, which is when they first mean anything.
+  // Presets still WRITE rAmpP / rAmpM by id -- a hidden input takes a value normally.
+  for (const id of ["rowAmpP", "rowAmpM"]) el(id).style.display = (isP || isC) ? "" : "none";
   el("rowDraw").style.display = isC ? "" : "none";
   for (const id of ((icDraw.cfg && icDraw.cfg.icRows) || [])) {
     el(id).style.display = (isP || isC) ? "" : "none";

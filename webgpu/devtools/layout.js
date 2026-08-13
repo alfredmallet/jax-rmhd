@@ -11,6 +11,10 @@ const fs = require("fs"), path = require("path");
 const DIR = process.argv[2] || path.join(__dirname, "..");
 const css = fs.readFileSync(path.join(DIR, "style.css"), "utf8");
 const CHAR = 7.0, PAD_SELECT = 26, PAD_BUTTON = 20, GAP = 8, CAP_GAP = 6;
+// a .ctlg group's internal gap, and the width a slider inside one is allowed to shrink to
+// (style.css's min-width, asserted below). A group is measured at its FLOOR, not its
+// basis: unlike .capgrp it may shrink, and what has to fit the viewport is the floor.
+const CTLG_GAP = 6, CTLG_RANGE_MIN = 80;
 const VIEWPORTS = [360, 768, 1200];
 const BODY_PAD = { 360: 2 * 10 + 2 * 12, 768: 2 * 14 + 2 * 12, 1200: 2 * 14 + 2 * 12 };  // body + #controls
 let bad = 0;
@@ -27,6 +31,27 @@ const nowrap = /\.capgrp\s*\{[^}]*flex-wrap:\s*nowrap/.test(css) &&
                /\.capgrp\s*\{[^}]*flex:\s*0 0 auto/.test(css);
 if (!nowrap) { bad++; console.log("FAIL  css: .capgrp must be flex-wrap: nowrap and flex: 0 0 auto"); }
 else console.log("PASS  the capture group (save + rec) neither wraps nor shrinks");
+// ... and the OTHER indivisible item, added 2026-08-13: a label and the control it names
+// (_ctrlRow's span.ctlg). Same bargain as .capgrp -- it is measured below as one item,
+// which is only honest while the CSS gives it no flex-wrap. Its floor depends on the
+// slider min-width, so that number is read from the CSS rather than assumed here: if
+// someone lowers it the audit gets tighter with it, and if they remove it the audit says
+// so instead of measuring a group that can no longer shrink that far.
+const ctlgMin = /\.row\s+\.ctlg\s*>\s*input\[type=range\]\s*\{[^}]*min-width:\s*(\d+)px/.exec(css);
+if (!ctlgMin) {
+  bad++;
+  console.log("FAIL  css: .row .ctlg > input[type=range] must carry a min-width (the group's floor)");
+} else if (/\.row\s+\.ctlg[^{]*\{[^}]*flex-wrap/.test(css)) {
+  bad++;
+  console.log("FAIL  css: .ctlg must not wrap -- it is the unit a row wraps AROUND");
+} else if (+ctlgMin[1] !== CTLG_RANGE_MIN) {
+  bad++;
+  console.log("FAIL  css: .ctlg slider min-width is " + ctlgMin[1] + "px, this audit measures "
+              + CTLG_RANGE_MIN + "px -- update CTLG_RANGE_MIN");
+} else {
+  console.log("PASS  a label and its control are one non-wrapping item, floor "
+              + CTLG_RANGE_MIN + "px per slider");
+}
 // text width of an HTML fragment, entities counted as one char
 const tw = h => CHAR * String(h == null ? "" : h).replace(/<[^>]+>/g, "").replace(/&[#\w]+;/g, "x").trim().length;
 
@@ -64,6 +89,22 @@ function itemWidth(e) {
       if (it) { w += (n ? CAP_GAP : 0) + it[1]; n++; }
     }
     return n ? ["save+rec", w] : null;
+  }
+  // a label and the control(s) it names are ONE flex item of the row (_ctrlRow's span.ctlg,
+  // 2026-08-13), so the GROUP is what has to fit -- measured at its FLOOR, since it is
+  // allowed to shrink where .capgrp is not: every child at its own width except a slider,
+  // which is counted at the CSS min-width, plus the group's internal gaps. Recursing
+  // through itemWidth is what keeps this honest when a new kind joins _CTRL_GROUPABLE.
+  if (cls.indexOf("ctlg") >= 0) {
+    let w = 0, n = 0, names = [];
+    for (const c of e.children) {
+      if (c.style && c.style.display === "none") continue;
+      const it = itemWidth(c);
+      if (!it) continue;
+      w += (n ? CTLG_GAP : 0) + (it[0] === "range" ? CTLG_RANGE_MIN : it[1]);
+      n++; names.push(it[0]);
+    }
+    return n ? [names.join("+"), w] : null;
   }
   // the colorbar block is a fixed-width flex item (strip + tick row), so it must fit
   if (cls.indexOf("cbar") >= 0) return ["colorbar", 134];

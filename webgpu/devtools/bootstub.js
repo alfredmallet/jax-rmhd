@@ -631,6 +631,34 @@ setTimeout(async () => {
     if (!(ampCheck[1] > 0) || ampCheck[0] > 1e-6 * ampCheck[1])
       fail("amplitude is not an exact rescale: " + JSON.stringify(ampCheck));
 
+    // --- ... and the rows carrying them are SHOWN exactly for the presets that have an
+    // amplitude to set (2026-08-13 feedback item 5). Both sides of the predicate, because
+    // the negative side is the whole change: it is what makes the equilibria stop
+    // offering a knob they ignore, and it is reachable on a default boot (selIC = modes).
+    // Every preset THIS page offers is swept, so the 2D equilibria are covered where they
+    // exist without the 3D page needing to know about them.
+    {
+      const ampRows = run(`function(){
+        const s = document.getElementById("selIC"), was = s.value, out = [];
+        for (const o of s.options) {
+          s.value = o.value; s.onchange();
+          out.push([o.value, document.getElementById("rowAmpP").style.display,
+                             document.getElementById("rowAmpM").style.display]);
+        }
+        s.value = was; s.onchange();
+        return out;
+      }`);
+      // the potential-based presets: letters, the drawing, and (3D) the sinusoids
+      const wants = v => v === "letters" || v === "custom" || v === "sine";
+      const wrong = ampRows.filter(r => (r[1] === "none") === wants(r[0]) || r[1] !== r[2]);
+      if (ampRows.length < 4) fail("the IC preset sweep saw only " + ampRows.length + " presets");
+      if (wrong.length)
+        fail("the amp rows are shown for the wrong IC presets: " + JSON.stringify(wrong));
+      else
+        console.log(tag + " amp rows shown/hidden correctly across all " + ampRows.length +
+                    " IC presets (hidden on the default-boot `modes`)");
+    }
+
     // --- the sinusoidal z+- packet IC (FEEDBACK item 9, 3D only) ---------------
     // it must build, carry the packet envelopes, keep the chi/packet readout line and
     // leave the paint row hidden (it is not the drawing preset)
@@ -656,13 +684,15 @@ setTimeout(async () => {
         return { kp: kp, km: km, zp: Math.round(pg.zPlus / q.Lz * q.nz), zm: Math.round(pg.zMinus / q.Lz * q.nz),
                  draw: document.getElementById("rowDraw").style.display,
                  sigz: document.getElementById("rowSigZ").style.display,
-                 amp: document.getElementById("rAmpP").disabled,
+                 amp: document.getElementById("rowAmpP").style.display,
                  info: document.getElementById("icinfo").innerHTML.length,
                  nz: q.nz };
       }`);
       if (Math.abs(sine.kp - sine.zp) > 1 || Math.abs(sine.km - sine.zm) > 1)
         fail("sinusoid packets are not on their envelope planes: " + JSON.stringify(sine));
-      if (sine.draw !== "none" || sine.sigz !== "" || sine.amp)
+      // the sinusoids ARE a packet preset, so the amp rows are shown (item 5: shown/hidden
+      // is now the signal, where it used to be enabled/disabled)
+      if (sine.draw !== "none" || sine.sigz !== "" || sine.amp !== "")
         fail("sinusoid IC left the wrong IC rows visible: " + JSON.stringify(sine));
       if (!(sine.info > 0)) fail("sinusoid IC lost the chi / packet readout line");
       console.log(tag + " sinusoid z+- IC: packets at iz " + sine.kp + " / " + sine.km +

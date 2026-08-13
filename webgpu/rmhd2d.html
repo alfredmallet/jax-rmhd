@@ -130,7 +130,7 @@ controlsBuild({
     ] },
     { id: "grpDiss", summary: "dissipation", rows: [ctrlDissRow(-13, { pm: true })] },
     CTRL_GRP_FORCE,
-    ctrlGrpIC({ letters: "letters A / B", amp: 0, extra: CTRL_ROWS_EQ,
+    ctrlGrpIC({ letters: "letters A / B", amp: 0, pre: CTRL_ROWS_EQ,
                 presets: [["kh", "Kelvin–Helmholtz shear layers"],
                           ["tearing", "tearing mode (magnetic islands)"]] }),
     ctrlGrpDisp()

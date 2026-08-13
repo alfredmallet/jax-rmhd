@@ -71,14 +71,10 @@ from .shared_physics import bracket, gradk
 
 
 def _check_supported(params):
-    # GDI is instability-driven (no forcing term/mechanism); dims==3 needs a real kz axis
-    # for the parallel-diffusion closure, i.e. params.z_spectral (P4b) -- the 2D floor
-    # alone (gpar_fac) is not a 3D model.
     if params.spatial_dimensions == 3 and not params.z_spectral:
         raise NotImplementedError("GDI dims==3 requires z_spectral=True: the parallel "
-                                  "closure gamma_par=D_par*kz^2 needs a real kz axis "
-                                  "(kgrid.kz), which only exists in that mode -- the 2D "
-                                  "closure floor (gpar_fac) alone is not a 3D model")
+                                  "closure gamma_par=D_par*kz^2 needs a kz axis "
+                                  "(kgrid.kz), which only exists in that mode.")
     if params.forcing:
         raise ValueError("GDI is instability-driven (linear growth from Ln/v0): "
                          "forcing=True is not supported")
