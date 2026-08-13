@@ -212,6 +212,19 @@ programmatically; do not try to hand-edit a 180 kB line).
   `stepsPerFrame` 1 → 64 over eighty skipped passes, making the first batch submitted when
   the queue frees the largest one possible.
 
+  **Order within the pass matters, and the on-device reading is what taught it.** Queue
+  order is submission order, so with the steps first a take's `copyTextureToBuffer` was
+  queued behind this pass's `stepsPerFrame` steps *and* every earlier batch still in flight
+  — ~25–39 steps on real hardware — and its map came back 52–65 ms later against a 33.3 ms
+  slot. Two captures permanently in flight, three on jitter, and the slot dropped for want of
+  a staging buffer. The latency had not been removed, it had been moved onto the recorder.
+  So `renderCards` (and with it `recCapture`) runs **before** the step batch — the copy goes
+  in at the head of the pass — and `REC_POOL` is sized in slots of readback latency rather
+  than against a drain that no longer exists. The cost is that the picture is the state as of
+  the previous pass's steps, one pass of lag on a display refreshing 40× a second. `drop` is
+  split by cause under `?recdebug`, because one counter with six ways to reach it cannot tell
+  a late pass from a saturated pool from encoder backpressure, and those have different fixes.
+
   The drain survives as **backpressure** rather than as a barrier: at most `INFLIGHT_MAX`
   step batches outstanding, and a pass that finds the bound saturated steps nothing — it
   still renders and still captures. Without it, nothing awaited per pass means the CPU can

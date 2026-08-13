@@ -106,6 +106,77 @@ uncounted batch; the staging pool gives each concurrent read its own buffer; and
 graveyard cannot race a pending copy, since `readBuf` submits synchronously before the
 first `await`.
 
+## The on-device reading (Alfred, 2026-08-12, three devices, 2D forced, recording)
+
+| | before (iPhone 11) | laptop | Alfred's phone | wife's iPhone 11 |
+|---|---|---|---|---|
+| `pass` (smoothed) | 68 ms | 24.7 | 21.4 | **34.9** |
+| passes/s | 14.7 | 40.5 | 46.7 | **28.7** |
+| `sf` | **1** | 13 | 11 | **1** |
+| steps/s, TRUE | **~15** | ~525 | ~515 | **~29** |
+| `drop` share of slots | ~50% | 9% | 8% | **25%** |
+| `lag` | — | 65 ms | 52 ms | 37 ms |
+| `ifl` | — | 2 | 2 | 1 |
+
+**Read the bold column pair and nothing else.** It is the only controlled comparison in the
+table: iPhone 11 before, iPhone 11 after. The laptop and Alfred's phone have no
+before-reading, so no multiple can be claimed for them, and comparing their absolute numbers
+against an iPhone 11 baseline — which is what a first pass over this table invites — is
+meaningless.
+
+**Two corrections to the numbers this plan was written on**, both of which shrink the result:
+
+- **`sf` was 1 before, not 2.7.** The "≈ 2.7" at the top of this file was back-derived from
+  `steps/s = sf × passes/s`, i.e. on the assumption that the readout's `steps/s` was true
+  throughput. It was not: the old `spsSmooth` was `n / ms`, and `ms` was timed to the drain,
+  which the controller held at ≤ 22 ms — about a third of a 68 ms pass. 40 steps/s displayed
+  with `ms ≈ 25 ms` means `sf = 1`, already clamped, which is also why the controller could
+  not lower it further. The adversarial reviewer flagged this and it was recorded above; it
+  was then not applied to the first reading of these results, which is the error.
+- **So the readout's `steps/s` changed meaning across this change** — `n / pass` now, true
+  throughput, where it was `n / busy time` before. The displayed number is roughly 3x
+  smaller for the same real work. Anyone comparing a remembered 40 against a fresh 29 will
+  conclude it got worse; it did not.
+
+**Like-for-like, then: ~15 → ~29 steps/s and drops halved. About 2x, not the 3–12x this plan
+predicted.** The pass-period win is real and large (68 → 35 ms, passes 14.7 → 28.7/s), and
+all of the throughput gain comes from it. None comes from `sf`, which is still 1 — because
+the premise that removing the latency would leave room for more steps is false on this
+device. At `sf = 1` the pass is already 34.9 ms: one step plus one display chain plus the
+throttled readbacks. **The remaining bottleneck is the display chain, not the loop**, and the
+next move is measuring the bare pass rather than more loop surgery.
+
+`drop` also did not reach zero, and the reason has moved: it is no longer the loop either.
+
+**The new bottleneck is the capture staging pool, and this change caused it.** `REC_POOL`
+was 3, sized against the loop as it then was — an unconditional drain per pass meant the
+queue was empty when a capture's `copyTextureToBuffer` was submitted, so its map came back
+promptly. With the drain gone, that copy was queued behind this pass's `stepsPerFrame` steps
+*and* up to `INFLIGHT_MAX - 1` earlier batches: `ifl 2` x `sf` 11-13 is ~25-39 steps of GPU
+work ahead of it, and at ~2.5 ms/step that is 60-70 ms — which is exactly the measured
+`lag`. Against a 33.3 ms slot that is two captures permanently in flight, three on jitter,
+and the next slot dropped for want of a buffer. Latency was not removed, it was moved.
+
+Fixed two ways, both landed: `renderCards` (and with it `recCapture`) now runs **before** the
+step batch, so the copy is at the head of the pass's submissions rather than behind them;
+and `REC_POOL` is 6, sizing the pool in slots of readback latency (200 ms) rather than
+against a drain that no longer exists. `drop` is also **split by cause** under `?recdebug`
+now — `[slot N pool N enc N ...]` — because one counter with six ways to reach it had drops
+rising on three devices at once with no way to tell a late pass from a saturated pool from
+encoder backpressure, and those have three different fixes.
+
+**The wife's iPhone 11 is a different problem and is not fixed.** `sf 1` at `pass 34.9 ms`
+means one step plus one display chain plus the readbacks already overruns a capture slot:
+the device is display-bound, not step-bound, and the take ceiling correctly refuses to add
+steps it cannot afford. That is the case this plan's own hand-off note predicted ("if `sf`
+sits at 1 with `pass` ≈ 33 ms, the bare pass is the bottleneck and §4 is the next move, not
+more steps"). It costs throughput against the old behaviour — 40 steps/s became ~29 — because
+the old controller banked steps into a 68 ms pass and this one holds the pass down to protect
+the capture rate. Whether that trade is the right one on a slow phone is a judgment call, not
+a measurement, and it is open. `gap 627 ms` there is a separate one-off stall worth a look;
+`gap` is a max over the whole take and includes the take's own startup, so `pass` is now the
+steady-state number to read and `gap` the outlier detector.
+
 **Still owed: the on-device reading.** Success is judged on the phone and nothing in the
 sandbox can judge it — and defect 3 above means the *shape* of the win now depends on a
 number nobody has measured, the bare pass period at `stepsPerFrame = 1`. `?recdebug` prints
@@ -127,6 +198,12 @@ move, not more steps); `drop` should be ≈ 0; `ifl` should mostly be 0–1.
 
 Predicted from the drop rate before it was read: 67 ms. So the loop pass is ~50–70 ms and
 `stepsPerFrame` ≈ 40 × 0.068 ≈ **2.7** (it will be oscillating between 2 and 3).
+
+> **WRONG, corrected after the change landed — see "The on-device reading" below.** That
+> derivation assumes `steps/s` is throughput. It was `n / ms`, and `ms` stopped at the drain,
+> so it measured busy time and over-reported by ~3x. `stepsPerFrame` was **1**, clamped, and
+> true throughput was ~15 steps/s. Every estimate below that leans on 2.7 — including the
+> 3–12x outcome table — is inflated by the same factor.
 
 ## What is actually wrong
 

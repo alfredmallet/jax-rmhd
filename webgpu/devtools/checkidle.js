@@ -597,6 +597,28 @@ async function run(page) {
   ok("  ... while the same period on a pass that DID step raises as it should",
      starve.rose === 2, "-> " + starve.rose);
 
+  // ---- 7f2. the capture is submitted AHEAD of the step batch ---------------
+  // Queue order is submission order. With the steps first, a take's copyTextureToBuffer sat
+  // behind this pass's `stepsPerFrame` steps plus every earlier batch still in flight --
+  // ~25-39 steps on Alfred's devices -- and its map came back 52-65 ms later against a
+  // 33.3 ms slot, saturating the staging pool and dropping slots for want of a buffer
+  // (on-device reading, 2026-08-12). Render-and-capture first puts the copy at the head of
+  // the pass. Swap the two blocks back in loopPass and this leg reads "step,...,capture".
+  const order = await env.run(`async function(){
+    const d = cards.disp[0], oc = d.recCapture.bind(d), os = solver.step.bind(solver);
+    const seq = [];
+    d.recCapture = () => { seq.push("capture"); return oc(); };
+    solver.step = ce => { seq.push("step"); return os(ce); };
+    const wasRunning = running, sf = stepsPerFrame;
+    running = true; stepsPerFrame = 3; inflight = 0;
+    await loopPass(20);
+    d.recCapture = oc; solver.step = os;
+    running = wasRunning; stepsPerFrame = sf; inflight = 0;
+    return seq; }`);
+  ok("the recorder's frame is taken BEFORE the pass's steps are submitted",
+     order[0] === "capture" && order.slice(1).every(x => x === "step") &&
+     order.length === 4, order.join(","));
+
   // ---- 7g. the pass period is a measurement, or it is nothing --------------
   // paceFeed is the only clock the controller has. A first pass has no interval, and a tab
   // returning from the background has one that means nothing at all -- feeding either to
@@ -642,6 +664,50 @@ async function run(page) {
   ok("the floor drops to a cheaper pass at once and creeps up to a dearer one",
      feed.down === 12 && feed.up > 10 && feed.up < 11,
      "40 -> " + feed.down + " instantly; 10 -> " + feed.up.toFixed(2) + " on a 40 ms pass");
+
+  // ---- 7g2. a dropped slot says WHY -----------------------------------------
+  // One `drop` counter with six ways to reach it is one way too few to act on: the
+  // on-device reading had it rising on three devices at once and no way to tell a late loop
+  // pass from a saturated staging pool from encoder backpressure, which have three
+  // different fixes. Driven on the real recCapture, one cause at a time.
+  const why = env.run(`function(){
+    const d = cards.disp[0], r = d.recorder;
+    const mk = back => ({ done: false, drop: 0, why: {}, bufOn: false, n: 0,
+                          due: performance.now() - back,
+                          lastRaf: performance.now(), maxGap: 0, rafN: 0, wdN: 0,
+                          enc: { encodeQueueSize: 0 } });
+    // (a) the loop was LATE: five whole slots went by between passes. The encode itself is
+    // stubbed out -- what is under test is the accounting ahead of it, and a real encode
+    // needs a live VideoEncoder this page has no reason to build.
+    const slot = mk(5 * (1000 / REC_FPS));
+    const oe = r.recEncodeFrame.bind(r);
+    r.recEncodeFrame = () => false;
+    r.wc = slot; r.recCapture(); r.wc = null;
+    r.recEncodeFrame = oe;
+    // (b) the ENCODER is behind. Driven at recEncodeFrame, not through recCapture: the
+    // slot clock is wall time and cannot be held still, so routing through the cadence
+    // would bill this drop to whatever the clock had done meanwhile. The backpressure
+    // check is that function's first line, so this never reaches the encoder either.
+    const enc = mk(0);
+    enc.enc.encodeQueueSize = REC_QMAX + 1;
+    r.wc = enc; r.recEncodeFrame(enc); r.wc = null;
+    return { slot: slot.why, slotN: slot.drop, enc: enc.why, encN: enc.drop,
+             pool: REC_POOL, slotMs: 1000 / REC_FPS }; }`);
+  // the COUNT is wall-clock dependent (the leg cannot hold the slot clock still), so what
+  // is asserted is the attribution: every drop this path made is billed to `slot` and to
+  // nothing else.
+  ok("a slot lost to a late loop pass is counted as 'slot'",
+     why.slotN > 0 && why.slot.slot === why.slotN && !why.slot.enc,
+     why.slotN + " slots, all billed as " + JSON.stringify(why.slot));
+  ok("  ... and one lost to encoder backpressure as 'enc', not as the same number",
+     why.encN > 0 && why.enc.enc === why.encN && !why.enc.slot,
+     JSON.stringify(why.enc));
+  // ... and the pool is sized in SLOTS of readback latency, which is the quantity that
+  // exhausts it. Three buffers was 100 ms against a MEASURED 52-65 ms lag plus jitter.
+  ok("the capture pool covers well over the measured readback lag",
+     why.pool * why.slotMs >= 150,
+     why.pool + " buffers x " + why.slotMs.toFixed(1) + " ms = " +
+     (why.pool * why.slotMs).toFixed(0) + " ms of latency absorbed");
 
   // ---- 7h. a state jump drops the held numbers ----------------------------
   // The one consumer that HOLDS a value across passes rather than re-deriving it from

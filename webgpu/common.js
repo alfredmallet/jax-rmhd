@@ -2900,8 +2900,28 @@ const REC_QMAX = 8;                      // encoder backlog (frames) past which 
 // nothing ever waits on the main thread. The drain timeout is the other half of that rule:
 // a map that never resolves (a lost device, say) must not hold the finished file hostage,
 // so whatever landed within half a second is what gets muxed and the rest are drops.
-const REC_POOL = 3;
+// Raised from 3 to 6 by the LOOPLAT on-device reading (2026-08-12). Three was sized
+// against the loop AS IT THEN WAS, where an unconditional `onSubmittedWorkDone` per pass
+// meant the queue was empty when a capture copy was submitted and the map came back
+// promptly. With the drain gone the copy is queued BEHIND up to INFLIGHT_MAX step batches
+// of `stepsPerFrame` steps each -- on Alfred's laptop and phone, `ifl 2` x `sf` 11-13 =
+// ~25 steps of GPU work ahead of it -- and `lag` (capture submit to encode) came back at
+// 52-65 ms against a 33.3 ms slot. Two captures are then permanently in flight and jitter
+// takes it to three, at which point every further slot is dropped for want of a buffer.
+// The pool is what absorbs readback latency, so it is sized in SLOTS of it: six buffers is
+// 200 ms, comfortably past the measured lag, at ~1 MB each for a 512x512 take.
+const REC_POOL = 6;
 const REC_DRAIN_MS = 500;
+// ?recdebug: WHY a slot was lost. `W.drop` is one number with six ways to make it, which
+// is one way too few to act on -- the reading above had drops rising on three devices with
+// no way to tell a late loop pass from a saturated staging pool from encoder backpressure,
+// and those have three different fixes. Same counter, split by cause, printed only under
+// ?recdebug so the file's honest-length rule keeps reading the single number it always did.
+function recDrop(W, why, k) {
+  k = k || 1;
+  W.drop += k;
+  if (W.why) W.why[why] = (W.why[why] || 0) + k;
+}
 // ?recdebug: while a recording is live, the readout grows one line per recording card --
 // frames fed by the rAF loop vs by the watchdog, drops, and the longest gap between two
 // loop passes. Diagnostic only, for on-device eyes (a phone has no devtools console);
@@ -3159,7 +3179,7 @@ class Recorder {
     // feeder put each frame in the file (?recdebug shows the tallies and maxGap;
     // lastRaf just feeds maxGap).
     const t0 = performance.now();
-    const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
+    const W = { chunks: [], avcC: null, n: 0, drop: 0, why: {}, timer: 0, bailed: false, done: false,
                 due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
                 tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
                 w: this.card.cv.width, h: this.card.cv.height, name: shotName(this.card.barMode, "mp4"),
@@ -3223,7 +3243,7 @@ class Recorder {
     // The frame index is not advanced, so the timestamps stay exactly 1/30 s apart and
     // the forced-keyframe cadence stays exact -- a slow machine records fewer seconds of
     // wall clock, rather than a file whose sample table lies about its own timing.
-    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return false; }
+    if (W.enc.encodeQueueSize > REC_QMAX) { recDrop(W, "enc"); return false; }
     // the two halves of the capture cost, timed separately (?recdebug, round 3): `vf` is
     // what a capture costs the MAIN THREAD and `enc` is what the encode costs. On the sync
     // path that split is VideoFrame-from-canvas (the classic iOS expense, and the half a
@@ -3267,13 +3287,13 @@ class Recorder {
     // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
     // a validation error rather than a frame. Drop the slot instead -- the honest-length
     // rule again -- and let the take end at the size it started.
-    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { W.drop++; return; }
-    if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
+    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { recDrop(W, "size"); return; }
+    if (!W.pool && !this.recPoolMake(W)) { recDrop(W, "pool"); return; }  // this slot was due too
     let s = null;
     for (const e of W.pool) if (!e.busy) { s = e; break; }
     // all three buffers are still waiting on their maps: the readback is genuinely behind,
     // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
-    if (!s) { W.drop++; return; }
+    if (!s) { recDrop(W, "pool"); return; }
     try {
       const ce = device.createCommandEncoder();
       ce.copyTextureToBuffer({ texture: this.card.ctx.getCurrentTexture() },
@@ -3283,7 +3303,7 @@ class Recorder {
     } catch (e) {
       // an engine that accepted the configure but not the copy: fall back to the sync
       // canvas path for the rest of this take rather than lose every remaining frame
-      W.bufOn = false; W.drop++;
+      W.bufOn = false; recDrop(W, "copy");
       return;
     }
     s.busy = true; W.pend++;
@@ -3298,7 +3318,7 @@ class Recorder {
     // failed capture leaves fewer frames and NO hole in the sample table.
     s.b.mapAsync(GPUMapMode.READ).then(
       () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
-      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
+      () => { s.busy = false; if (!W.gone) recDrop(W, "map"); this.recPend(W); });
   }
   // three staging buffers, made on the first capture of a take (a take that never captures
   // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
@@ -3354,7 +3374,7 @@ class Recorder {
       // passed but whose full-size frames throw would otherwise drop every remaining slot
       // and hand back a 0-chunk take with no file and no explanation (adversarial review
       // 2026-08-12, MINOR 1)
-      W.drop++; W.bufOn = false;
+      recDrop(W, "enc"); W.bufOn = false;
     }
     try { s.b.unmap(); } catch (e) {}
     s.busy = false;
@@ -3378,7 +3398,7 @@ class Recorder {
       // MINOR 2): the teardown that follows sets `gone` before destroying the buffers, so
       // the rejection handlers stay silent -- count the stragglers here instead. W.drop is
       // diagnostic (?recdebug); the file itself keys on the chunks that landed.
-      const t = setTimeout(() => { W.onDrain = null; W.drop += W.pend; res(); }, REC_DRAIN_MS);
+      const t = setTimeout(() => { W.onDrain = null; recDrop(W, "drain", W.pend); res(); }, REC_DRAIN_MS);
       W.onDrain = () => { clearTimeout(t); W.onDrain = null; res(); };
     }).then(() => W.chain).catch(() => {});
   }
@@ -3403,7 +3423,7 @@ class Recorder {
     // backfilled frame would put a stale image at a timestamp it never had. The honest-
     // length rule stands: fewer recorded seconds than wall clock, never a lying sample
     // table. At nominal cadence the `else` keeps `due` drift-free.
-    if (now - W.due > T) { W.drop += Math.floor((now - W.due) / T); W.due = now + T; }
+    if (now - W.due > T) { recDrop(W, "slot", Math.floor((now - W.due) / T)); W.due = now + T; }
     else W.due += T;
     // the fast path since RECASYNC (2026-08-12): submit a GPU copy and return. The frame
     // itself is built from those bytes in the chain when the map resolves, and the rafN
@@ -3434,7 +3454,7 @@ class Recorder {
   recTick(W) {
     if (this.wc !== W || W.done) return;
     if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
-    if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
+    if (W.enc.encodeQueueSize > REC_QMAX) { recDrop(W, "enc"); return; }
     this.card.render();      // same reason as saveShot: getCurrentTexture is transient
     if (this.recEncodeFrame(W)) W.wdN++;
     // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
@@ -6706,6 +6726,27 @@ function renderCards(paused) {
 async function loopPass(dtPass) {
   while (graveyard.length) graveyard.pop().destroy();
   if (!solver) return;
+  // One display chain run per card, gated -- and it must happen HERE, in this
+  // synchronous task, before any await: a live WebCodecs recording takes its frame off
+  // this very render, WebGPU has no preserveDrawingBuffer, so getCurrentTexture is
+  // transient and the canvas holds only its last PRESENTED image; a capture deferred
+  // even one microtask would wrap an expired texture (the same reason saveShot
+  // re-renders first). It is also why leg 1's interval is now only a watchdog: feeding
+  // the encoder off a timer meant a second full render per frame at a phase that beat
+  // against this loop, which an iPhone showed as a stutter for the length of the take
+  // (RECRAF_PLAN, 2026-08-12). Everything else about it is in renderCards.
+  //
+  // It runs BEFORE the step batch, which is the LOOPLAT on-device fix (2026-08-12). Queue
+  // order is submission order, so with the steps first a capture's copyTextureToBuffer was
+  // queued behind this pass's `stepsPerFrame` steps AND up to INFLIGHT_MAX-1 earlier
+  // batches -- ~25-39 steps of GPU work on Alfred's devices -- and its map came back 52-65
+  // ms later against a 33.3 ms slot, which saturated the staging pool and dropped slots for
+  // want of a buffer. Rendering first puts the copy at the HEAD of the pass's submissions.
+  // The cost is that the picture (and the recorded frame) is the state as of the previous
+  // pass's steps: one pass of lag on a display refreshing 40x a second, which is the same
+  // trade the readout and the charts already make, and the recorder stamps by index rather
+  // than by content so the file is unaffected.
+  renderCards(!running);
   let n = 0;
   // The bound, not a barrier: a saturated queue skips the STEPS and nothing else, so the
   // display still refreshes and -- the reason this matters -- the recorder still gets its
@@ -6721,16 +6762,6 @@ async function loopPass(dtPass) {
     inflight++;
     device.queue.onSubmittedWorkDone().then(inflightDone, inflightDone);
   }
-  // One display chain run per card, gated -- and it must happen HERE, in this
-  // synchronous task, before any await: a live WebCodecs recording takes its frame off
-  // this very render, WebGPU has no preserveDrawingBuffer, so getCurrentTexture is
-  // transient and the canvas holds only its last PRESENTED image; a capture deferred
-  // even one microtask would wrap an expired texture (the same reason saveShot
-  // re-renders first). It is also why leg 1's interval is now only a watchdog: feeding
-  // the encoder off a timer meant a second full render per frame at a phase that beat
-  // against this loop, which an iPhone showed as a stutter for the length of the take
-  // (RECRAF_PLAN, 2026-08-12). Everything else about it is in renderCards.
-  renderCards(!running);
   // NO drain here since LOOPLAT (2026-08-12). `await device.queue.onSubmittedWorkDone()`
   // stood on this line to make the number below a true GPU time; what it actually did on
   // a phone was hold the next pass hostage to a completion message, and the controller it
@@ -6813,8 +6844,15 @@ async function loopPass(dtPass) {
     // encode, i.e. how late the GPU's bytes arrive. Tens of ms are FINE -- the frame is
     // stamped by index, not by arrival -- and it is here only so a phone can say whether
     // the readback is keeping up at all. It stays 0 on the sync canvas path.
+    // `drop` is split by CAUSE since the LOOPLAT on-device reading: the bare total had
+    // drops rising on three devices at once with no way to say whether the loop was late
+    // (slot), the staging pool was saturated (pool), or the encoder was behind (enc) --
+    // three different fixes. Only nonzero causes print, so a clean take stays quiet.
+    const why = W && W.why ? Object.keys(W.why).filter(k => W.why[k])
+                                   .map(k => k + " " + W.why[k]).join(" ") : "";
     if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
-      "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms" +
+      "  drop " + W.drop + (why ? " [" + why + "]" : "") +
+      "  gap " + Math.round(W.maxGap) + " ms" +
       "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1) +
       "  lag " + Math.round(W.tL) + " ms";
   }

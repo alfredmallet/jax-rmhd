@@ -1595,7 +1595,8 @@ setTimeout(async () => {
       fail("the pool did not come back after its maps resolved: " + JSON.stringify(back));
     await recPress();
     stripPress("&times;");
-    console.log(tag + " pool exhaustion: " + POOL + " in flight, the 4th slot dropped, pool reused");
+    console.log(tag + " pool exhaustion: " + POOL + " in flight, slot " + (POOL + 1) +
+                " dropped, pool reused");
     // (f) PADDED ROWS, and a canvas RESIZED under a live take. copyTextureToBuffer wants a
     // 256-aligned bytesPerRow: every preset width is already aligned, but the box is
     // user-sizable, so a width whose row is not is a real case -- the mapped rows are
