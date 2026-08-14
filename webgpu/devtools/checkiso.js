@@ -60,7 +60,12 @@ const TOUCHED = { "rmhd2d.html": ["colorize", "prepDisp"],
 // templates without the band and stay byte-identical above, which is exactly what the
 // "physics WGSL byte-identical" row is asserting one line up. (That plan's own gates live
 // in check2dspec.js; this one only refuses to be surprised.)
-const ADDED = { "rmhd2d.html": [],
+// `eigfGather` is NOT this plan's either: it is EIGF_PLAN's tearing-eigenfunction card, the
+// strided k_y-column gather the 2D page emits for it, and it is listed for the same reason
+// -- the list is EXACT, so an addition that is not named here fails the leg. It adds and
+// moves nothing: every 2D kernel above it stays byte-identical, which the "physics WGSL
+// byte-identical" row one line up is what asserts. (Its own gate is checkeigf.js.)
+const ADDED = { "rmhd2d.html": ["eigfGather"],
                 "rmhd3d.html": ["maxFinalVol", "maxPartialVol", "prepGradsBand", "renderVol",
                                 "specParBand", "vecMagVol"] };
 // the three added NON-shader kernels, as (instance, template source, substitution): the

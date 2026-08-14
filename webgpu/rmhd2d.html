@@ -288,7 +288,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // ---- maintain the equilibrium flux (REFINE_PLAN J2.3) -------------------
   // psi_eq,k, extracted ONCE per Reset from the k_y = 0 column of the uploaded IC --
-  // which IS the equilibrium, every equilibrium seed here having zero mean along y --
+  // which IS the equilibrium, every equilibrium seed here being y-INDEPENDENT and so
+  // living entirely in that column --
   // and read by nlAssemble as the static source -lin_L*psi_eq,k. Taking it from the
   // solver's own fields means it is the dealiased, fp32 equilibrium the run actually
   // holds, not a CPU re-derivation of it. Emitted only when the preset asks.

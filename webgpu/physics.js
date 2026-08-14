@@ -790,14 +790,24 @@ ${body}
 // owns for this readback alone. j0 rides a uniform so the card's k_y selector costs a
 // 16-byte write rather than a pipeline.
 //
+// THE UNIFORM IS PADDED WITH THREE SCALARS, not a vec3<u32>: vec3 has align 16, so that
+// struct's WGSL SizeOf rounds up to 32 and the page's 16-byte eigfU would be rejected out
+// of createBindGroup -- at boot, on every real device, card open or not, since the group
+// is built in the Solver constructor and the pipelines use layout: "auto" with a whole-
+// buffer binding. Scalar pads are the house pattern (rmhd3d.html's struct FL) and
+// checkeigf reflects this struct and asserts its size against the buffer the page asks
+// for. (adversarial review, 2026-08-14.)
+//
 // "minus the equilibrium" is free and exact here rather than something this kernel does:
-// every equilibrium seed in this app has zero mean along y (which is exactly what srcInit
-// relies on when it reads psi_eq,k out of the k_y = 0 column), so a column at j0 > 0
-// carries no equilibrium content at all -- and it is the LIVE column, so once the run is
-// nonlinear it is the perturbation about the state's own mean profile.
+// every equilibrium seed in this app is y-INDEPENDENT, so it lives entirely in the k_y = 0
+// column (which is exactly what srcInit relies on when it reads psi_eq,k out of that
+// column), so a column at j0 > 0 carries no equilibrium content at all -- and it is the
+// LIVE column, so once the run is nonlinear it is the perturbation about the state's own
+// mean profile.
 function eigfGatherWGSL(C) {
   return C.pre + `
-struct EigSel { j0: u32, epad: vec3<u32> };
+// scalar pads, NOT vec3<u32> (align 16 -> SizeOf 32): see the note above
+struct EigSel { j0: u32, pad0: u32, pad1: u32, pad2: u32 };
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<uniform> sel: EigSel;
 @group(0) @binding(2) var<storage, read_write> col: array<vec2<f32>>;

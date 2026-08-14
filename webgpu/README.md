@@ -216,7 +216,7 @@ is the default and is what the chart drew before they existed):
 | anisotropy (3D) | y axis | `k∥/k⊥` · `χ = k⊥δb/k∥` (see below; the rest of its options — `aq`, `ad`, the fit trio — are ANISO_PLAN's) |
 | island width (2D) | — | log W(t) with a fitted γ = 2·d(ln W)/dt; needs the tearing IC (see below) |
 | k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
-| eigenfunction ψ̂(x) (2D) | k_y bin | `1`…`6`, the box fundamental first; picks which column is read back |
+| eigenfunction ψ̂(x) (2D) | k_y bin | `1`…`9`, the box fundamental first; picks which column is read back |
 | eigenfunction ψ̂(x) (2D) | fields | `ψ + φ` · `ψ only` · `φ only` |
 
 **The spectrum fit line** (FEEDBACK item 8) is a straight E = A k<sup>p</sup> from just
@@ -793,7 +793,8 @@ instability, and hyper is a legitimate way to sharpen its secondary structure.
 checkbox (on by default) that adds the static source **S = −η∇²ψ_eq** to the ψ equation,
 cancelling the equilibrium's own resistive decay so that the demo shows the instability
 and not the layer spreading. ψ_eq,k is extracted once per Reset from the k_y = 0 column of
-the uploaded IC — which *is* the equilibrium, every seed here having zero mean along y —
+the uploaded IC — which *is* the equilibrium, every seed here being y-independent and so
+living entirely in that column —
 by the tiny `srcInit` kernel, and `nlAssemble` then adds −lin_L·ψ_eq,k: the SAME diagonal
 the stage applies, so the source follows the η slider with no bookkeeping of its own and
 uses η (ψ's coefficient), never ν. Like Pm it is emitted at WGSL-generation time and only

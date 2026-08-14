@@ -20,7 +20,10 @@
 //   5  state invariance: a draw leaves (phik, psik) bitwise unchanged -- asserted three
 //      ways, because no sandbox makes them all at once (the executed kernel's input array
 //      word for word, the emitted WGSL's access qualifiers, and the booted page's encode
-//      path traced buffer by buffer).
+//      path traced buffer by buffer) -- and, riding the same bind-group trace, the LAYOUT
+//      contract that trace assumes: the declared uniform struct's SizeOf against the size
+//      the page allocates for it. That last one is a device-only failure class (nothing in
+//      node allocates) and it is here because review 2026-08-14 found one.
 //   6  the card: its CHART_TYPES entry and place in the list, its options and defaults,
 //      its hint, the readback pool it joins, and the presets it opens on.
 //
@@ -116,6 +119,18 @@ const sech2 = t => Math.pow(2 / (Math.exp(t) + Math.exp(-t)), 2);
 const EQ_A = 0.15;
 const gEven = x => sech2((x - 0.5 * G.Lx) / (EQ_A * G.Lx));
 const hOdd = x => Math.tanh((x - 0.5 * G.Lx) / (EQ_A * G.Lx)) * gEven(x);
+// ... and an OFF-CENTRE pair, which is what actually pins the DIRECTION of the inverse
+// along kx. Both profiles above are symmetric about x = Lx/2 and the plotted quantity is a
+// MODULUS, so |psihat(Lx - x)| = |psihat(x)| identically: a reversed inverse (fftPow2 at
+// sign -1, i.e. ix -> nx - ix) reproduces them to the same 1e-9, and the mirror would be
+// measuring the normalization alone (adversarial review, 2026-08-14). These two sit at
+// 0.31 Lx and 0.68 Lx instead, so a reversal misses by O(1) of the profile. The analytic
+// answer is g/2 and h/2 whatever g and h are -- that is a property of the transform, not
+// of the shape, which is exactly why the shape can be moved.
+const GX0 = 0.31, HX0 = 0.68;
+const gOff = x => sech2((x - GX0 * G.Lx) / (EQ_A * G.Lx));
+const hOff = x => Math.tanh((x - HX0 * G.Lx) / (1.7 * EQ_A * G.Lx)) *
+                  sech2((x - HX0 * G.Lx) / (EQ_A * G.Lx));
 // forward rfft2 of a real field, by DEFINITION and in fp64:
 //   F[ix, j] = sum_p sum_q f[p, q] exp(-2 pi i (ix p / nx + j q / ny))
 // which is the layout SPEC.md 1 fixes and the layout the app's own rowsR2C + colsFwd
@@ -292,40 +307,44 @@ console.log("3. the fp64 mirror: gather + inverse along kx + modulus, against an
 // one y. Then psi = sum_j c_j(x) e^{i k_y y} has c_j0 = (g/2) e^{i p0}, so
 //   |psihat(x)| = g(x)/2   and   |phihat(x)| = h(x)/2
 // EXACTLY, at every x, for every phase p0 -- which is what the card claims to draw.
-{
-  const j0 = 2, p0 = 0.7, ky = j0 * 2 * Math.PI / G.Ly;
-  const psi = sample((x, y) => gEven(x) * Math.cos(ky * y + p0));
-  const phi = sample((x, y) => hOdd(x) * Math.sin(ky * y + p0));
-  const fields = stateOf(phi, psi);
+//
+// The pair is the OFF-CENTRE one, so this leg pins the transform's DIRECTION as well as
+// its normalization: a modulus of a profile symmetric about Lx/2 is invariant under the
+// reversal a wrong-signed inverse produces (see gOff / hOff above).
+const J0 = 2, P0 = 0.7;
+// the state, and the card's own path over it, for an arbitrary (g, h)
+function mirrorOf(g, h) {
+  const ky = J0 * 2 * Math.PI / G.Ly;
+  const fields = stateOf(sample((x, y) => h(x) * Math.sin(ky * y + P0)),
+                         sample((x, y) => g(x) * Math.cos(ky * y + P0)));
   const prof = j0 => {
     const col = M ? runGather(M, gatherSrc, fields, j0, G.nx) : cpuColumn(fields, j0);
     return env2d.run("function(v, nx, ny){ return eigfProfile(v, nx, ny); }",
                      Array.from(col), G.nx, G.ny);
   };
-  const P = prof(j0);
+  return { fields, prof, P: prof(J0), scale: 0.5 * maxAbs(sample(g)) };
+}
+{
+  const { fields, prof, P, scale } = mirrorOf(gOff, hOff);
   let ep = 0, es = 0;
-  const scale = 0.5 * maxAbs(sample(x => gEven(x)));
   for (let p = 0; p < G.nx; p++) {
     const x = p * G.Lx / G.nx;
-    es = Math.max(es, Math.abs(P.psi[p] - 0.5 * Math.abs(gEven(x))));
-    ep = Math.max(ep, Math.abs(P.phi[p] - 0.5 * Math.abs(hOdd(x))));
+    es = Math.max(es, Math.abs(P.psi[p] - 0.5 * Math.abs(gOff(x))));
+    ep = Math.max(ep, Math.abs(P.phi[p] - 0.5 * Math.abs(hOff(x))));
   }
-  ok("|psihat(x)| is the analytic g(x)/2 at every x", es / scale < 1e-5,
+  ok("|psihat(x)| is the analytic g(x)/2 at every x (g OFF-CENTRE)", es / scale < 1e-5,
      "max |delta| / max = " + (es / scale).toExponential(2) + " (tol 1e-5)");
-  ok("|phihat(x)| is the analytic h(x)/2 at every x", ep / scale < 1e-5,
+  ok("|phihat(x)| is the analytic h(x)/2 at every x (h OFF-CENTRE)", ep / scale < 1e-5,
      "max |delta| / max = " + (ep / scale).toExponential(2) + " (tol 1e-5)");
-  // the SHAPES the card exists to show, read off the mirror itself rather than asserted
-  // in prose: psihat peaks on the resonant surface, phihat vanishes there and has a lobe
-  // either side of it
-  const mid = G.nx / 2;
+  // ... and the direction, said in one number rather than left implicit in the tolerance:
+  // the peak is where g put it and NOT at its mirror image, which is where a reversed
+  // inverse would have moved it
   let pk = 0;
   for (let p = 0; p < G.nx; p++) if (P.psi[p] > P.psi[pk]) pk = p;
-  const loLobe = Math.max(...Array.from(P.phi.slice(0, mid)));
-  const hiLobe = Math.max(...Array.from(P.phi.slice(mid)));
-  ok("  ... so psihat peaks ON x = Lx/2 and phihat is zero there, with a lobe either side",
-     pk === mid && P.phi[mid] < 1e-6 * hiLobe && loLobe > 0.1 * P.psi[pk] && hiLobe > 0.1 * P.psi[pk],
-     "peak at ix " + pk + " of " + G.nx + ", |phihat(x0)| = " + P.phi[mid].toExponential(2) +
-     " vs lobes " + loLobe.toExponential(2) + " / " + hiLobe.toExponential(2));
+  const want = Math.round(GX0 * G.nx), mir = (G.nx - want) % G.nx;
+  ok("  ... so the inverse runs the RIGHT WAY: the peak is at g's own x, not its mirror",
+     Math.abs(pk - want) <= 1 && Math.abs(pk - mir) > 2,
+     "peak at ix " + pk + ", g at " + want + ", the reversal would put it at " + mir);
   // every OTHER k_y column of this two-mode field is empty -- the card is a single
   // coefficient, not a sum over anything
   let other = 0;
@@ -335,7 +354,7 @@ console.log("3. the fp64 mirror: gather + inverse along kx + modulus, against an
   // eigfProfile ALONE against a direct fp64 inverse DFT of the same column, so the CPU
   // half is gated even where the interpreter is not installed. Same arithmetic as the
   // card's, written from the definition rather than through fftPow2.
-  const col = cpuColumn(fields, j0);
+  const col = cpuColumn(fields, J0);
   const ref = { phi: new Float64Array(G.nx), psi: new Float64Array(G.nx) };
   for (let f = 0; f < 2; f++) {
     const dst = f === 0 ? ref.phi : ref.psi, o = 2 * f * G.nx;
@@ -354,6 +373,23 @@ console.log("3. the fp64 mirror: gather + inverse along kx + modulus, against an
                                                   Math.abs(P.phi[p] - ref.phi[p]));
   ok("eigfProfile is the direct fp64 inverse DFT along kx, 1/(nx*ny) and all",
      ed / scale < 1e-6, "max |delta| / max = " + (ed / scale).toExponential(2));
+}
+// The two SHAPE claims the card exists for, on the CENTRED pair -- the tearing profile
+// itself -- read off the same mirror rather than asserted in prose: psihat peaks on the
+// resonant surface, phihat vanishes there and has a lobe either side. (This pair says
+// nothing about direction, by construction; the block above is what does.)
+{
+  const P = mirrorOf(gEven, hOdd).P;
+  const mid = G.nx / 2;
+  let pk = 0;
+  for (let p = 0; p < G.nx; p++) if (P.psi[p] > P.psi[pk]) pk = p;
+  const loLobe = Math.max(...Array.from(P.phi.slice(0, mid)));
+  const hiLobe = Math.max(...Array.from(P.phi.slice(mid)));
+  ok("on the centred tearing pair, psihat peaks ON x = Lx/2 and phihat is zero there, "
+     + "with a lobe either side",
+     pk === mid && P.phi[mid] < 1e-6 * hiLobe && loLobe > 0.1 * P.psi[pk] && hiLobe > 0.1 * P.psi[pk],
+     "peak at ix " + pk + " of " + G.nx + ", |phihat(x0)| = " + P.phi[mid].toExponential(2) +
+     " (ABSOLUTE) vs lobes " + loLobe.toExponential(2) + " / " + hiLobe.toExponential(2));
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +484,32 @@ console.log("5. state invariance: a draw leaves (phik, psik) bitwise unchanged")
      bgres.filter(s => s.indexOf("eigf") >= 0).join(" | ") || "none");
   ok("  ... with `fields` appearing in no OTHER eigf group",
      bgres.filter(s => s.indexOf("eigf") >= 0).length === 1);
+  // ... and the SIZES in that group agree with the WGSL. This is a whole device-only
+  // failure class that no leg above can see, because nothing in node allocates: a uniform
+  // bound whole under `layout: "auto"` is validated against the SizeOf of the declared
+  // struct, so a struct that rounds UP past the buffer is a GPUValidationError out of
+  // createBindGroup at boot -- in the Solver constructor, card open or not. A vec3<u32>
+  // pad has align 16 and would put this struct at 32 against a 16-byte buffer, which is
+  // exactly what adversarial review found on 2026-08-14; hence three scalar pads (the
+  // `struct FL` pattern) and hence this leg, reflected off the EMITTED source and compared
+  // with the size the page really asks the device for.
+  if (M) {
+    const R = new M.WgslReflect(gatherSrc);
+    const uni = R.uniforms.filter(v => v.group === 0);
+    const alloc = env2d.run("function(){ return solver.buf.eigfU.size; }");
+    const declared = uni.length === 1 ? uni[0].size : -1;
+    ok("the uniform struct's SizeOf is EXACTLY the eigfU buffer the page allocates",
+       uni.length === 1 && uni[0].binding === 1 && declared === alloc && declared === 16,
+       uni.map(v => v.name + " @" + v.binding + " = " + v.size + " B").join(",") +
+       " vs eigfU " + alloc + " B");
+    // the other two bindings are runtime-sized arrays, which carry no size contract at
+    // all -- so that one number is the whole of this class for this kernel
+    ok("  ... and the group's other two bindings are runtime-sized arrays, size-free",
+       R.storage.filter(v => v.group === 0).length === 2 &&
+       R.storage.filter(v => v.group === 0)
+        .every(v => v.type && v.type.name === "array" && !v.size),
+       R.storage.filter(v => v.group === 0).map(v => v.name + ":" + (v.type && v.type.name)).join(","));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -472,8 +534,12 @@ console.log("6. the card: its entry, options, hint, readback pool and presets");
   ok("  ... defaulting (first option of each) to bin 1 and both fields",
      os_[0].o[0][0] === "1" && os_[1].o[0][0] === "both",
      os_[0].o[0][0] + " / " + os_[1].o[0][0]);
-  ok("  ... and the bin list runs to " + C.kmax + ", which covers island chain's k_y = 6 seed",
-     os_[0].o.length === C.kmax && os_[0].o[C.kmax - 1][0] === String(C.kmax) && C.kmax >= 6,
+  // island chain's seed is BROADBAND (icTearN, ~24 modes at its slider values), so the
+  // list is not sized against the seed at all: it is sized against the growth-rate ladder,
+  // whose peak is n = 6, and it has to run PAST the winner for the roll-over to be visible
+  // (review 2026-08-14; the ladder itself is in EIGF_KMAX's comment)
+  ok("  ... and the bin list runs to " + C.kmax + ", i.e. past island chain's n = 6 winner",
+     os_[0].o.length === C.kmax && os_[0].o[C.kmax - 1][0] === String(C.kmax) && C.kmax >= 8,
      os_[0].o.map(o => o[0]).join(","));
   // the hint: what it must say, and the one thing it must NOT claim
   ok("  ... the hint names both moduli, the resonant surface and the linear y axis",
@@ -553,6 +619,40 @@ console.log("6. the card: its entry, options, hint, readback pool and presets");
   ok("drawEigf survives every (data x options) degenerate with nothing non-finite drawn",
      !degen.bad && degen.waits === 20 && degen.drew === 5 && degen.none === undefined,
      degen.bad || (degen.waits + " placeholder, " + degen.drew + " drawn"));
+  // ... and the one shape the sweep above cannot make: ONE field non-finite beside a
+  // finite other. The autoscale then comes off the finite field, so the card DRAWS -- and
+  // the non-finite field's samples have to be skipped rather than handed to lineTo, which
+  // a canvas accepts and silently discards. Found by adversarial review, 2026-08-14.
+  const nanLeg = env2d.run(`function(){
+    const rec = [];
+    const c = { fillStyle: "", strokeStyle: "", lineWidth: 1, font: "10px x", textAlign: "left",
+                textBaseline: "alphabetic" };
+    for (const m of ["clearRect", "strokeRect", "beginPath", "moveTo", "lineTo", "stroke",
+                     "fill", "clip", "save", "restore", "setLineDash", "rect", "fillRect"]) {
+      c[m] = function () { for (const v of arguments) if (typeof v === "number" && !isFinite(v)) rec.push("NONFINITE"); };
+    }
+    c.measureText = t => ({ width: 6.2 * t.length });
+    c.fillText = t => rec.push("T:" + t);
+    // the phi half of the gather NaN, the psi half finite: eigfProfile transforms the two
+    // columns separately, so exactly one of the two curves comes back non-finite at every x
+    const v = new Float32Array(4 * 64);
+    for (let i = 0; i < 2 * 64; i++) v[i] = NaN;
+    for (let i = 2 * 64; i < v.length; i++) v[i] = (i % 13) - 6;
+    const d = { vals: v, nx: 64, ny: 32, Lx: 12.5 };
+    const out = [];
+    for (const efld of ["both", "psi", "phi"]) {
+      rec.length = 0;
+      drawEigf(c, d, { eky: "1", efld: efld });
+      out.push({ efld: efld, non: rec.some(s => s === "NONFINITE"),
+                 wait: rec.some(s => /waiting|no amplitude/.test(s)) });
+    }
+    return out;
+  }`);
+  const nanBy = k => nanLeg.filter(r => r.efld === k)[0];
+  ok("a NaN phi beside a finite psi draws psi, with nothing non-finite reaching the canvas",
+     nanLeg.every(r => !r.non) && nanBy("both").wait === false &&
+     nanBy("psi").wait === false && nanBy("phi").wait === true,
+     nanLeg.map(r => r.efld + ":" + (r.non ? "NONFINITE" : r.wait ? "placeholder" : "drawn")).join(" "));
   // the presets: the card is the tearing preset's third chart, and available-not-default
   // everywhere else (the plan's Defaults section)
   const P = env2d.run(`function(){

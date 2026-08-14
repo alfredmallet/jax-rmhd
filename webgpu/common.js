@@ -2561,8 +2561,9 @@ function drawCut(c, d, o) {
 // rather than one realisation of it.
 //
 // WHY NO EXPLICIT SUBTRACTION of the equilibrium: it IS the k_y = 0 column (every
-// equilibrium seed here has zero mean along y -- the same fact srcInit relies on), so any
-// k_y > 0 column has already had it removed, exactly and for free. The column is LIVE, so
+// equilibrium seed here is y-INDEPENDENT, so it lives entirely in that column -- the same
+// fact srcInit relies on), so any k_y > 0 column has already had it removed, exactly and
+// for free. The column is LIVE, so
 // once the run is nonlinear "the equilibrium" it is measured against is the state's own
 // mean profile at time t -- flattened current, Reynolds-driven mean flow and all -- which
 // is the honest thing to subtract then, and is why the card's hint does not promise a
@@ -2593,16 +2594,24 @@ const EIGF_FIELDS = {
   phi: [["|φ̂|", COL.ek, p => p.phi]]
 };
 // the k_y bins the selector offers. 1 is the box fundamental -- the seeded mode on the
-// single-mode presets -- and the list runs far enough for `island chain`, whose seed is
-// broadband to k_y = 6 and whose whole point is watching a mode that is NOT the
-// fundamental win.
-const EIGF_KMAX = 6;
+// single-mode presets -- and the list runs far enough for `island chain`, whose whole
+// point is watching a mode that is NOT the fundamental win. That preset's seed is NOT
+// "up to 6": icTearN covers the whole unstable band and comes out at 24 modes at its
+// slider values, flat, with random phases. What 9 is chosen against is the GROWTH-RATE
+// ladder, which is where the eye has to go -- devtools/eqlinear.py at the chain's own
+// numbers (a = 0.4712, psi0 = 0.60, eta = 10^-2.5) gives
+//   gamma(n=1..8) = 0.108, 0.188, 0.245, 0.284, 0.306, 0.311, 0.303, 0.284
+// so the winner is n = 6, n = 7 is within 3% of it, and 9 is the first list that shows the
+// ROLL-OVER past the winner rather than stopping on it. (review 2026-08-14)
+const EIGF_KMAX = 9;
 const eigfBinOf = o => Math.max(0, Math.min(EIGF_KMAX, parseInt((o && o.eky) || "1", 10) || 1));
 // LINEAR y, autoscaled per frame: the mode grows exponentially, so the SHAPE is the
 // content and the level is not. It also costs nothing that a log axis would have cost --
 // phihat is odd about x0, so |phihat(x0)| = 0 is a zero on this axis rather than a
 // -infinity spike needing a floor clamp, and its sitting exactly on x = Lx/2 is a free
-// diagnostic (which is why the resonant surface is drawn).
+// diagnostic (which is why the x = Lx/2 guide is drawn -- as a box landmark, not as a
+// claim: it is the resonant surface of the TEARING equilibria only, and the card is
+// offered on KH too, whose shear layers are at Lx/4 and 3Lx/4).
 function drawEigf(c, d, o) {
   if (!c) return;
   const P = PADC, x0 = P.l, x1 = CW - P.r, y0 = P.t, y1 = CH - P.b;
@@ -2637,8 +2646,11 @@ function drawEigf(c, d, o) {
 
   c.save();
   c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
-  // the resonant surface of the shipped equilibria, x = Lx/2: psihat peaks there and
-  // phihat crosses zero there, so it is the line both shapes are read against
+  // x = Lx/2 -- the box midline, drawn on every preset because the card is. On the TEARING
+  // equilibria it is the resonant surface, psihat peaks there and phihat crosses zero
+  // there, so it is the line both shapes are read against; on KH it is simply the midline
+  // and the layers are at Lx/4 and 3Lx/4. The legend therefore names it and nothing more,
+  // and the hint carries the two readings (review 2026-08-14).
   c.strokeStyle = COL.cut; c.lineWidth = 1; c.setLineDash([3, 3]);
   c.beginPath(); c.moveTo(X(nx / 2), y0); c.lineTo(X(nx / 2), y1); c.stroke();
   c.setLineDash([]);
@@ -2646,9 +2658,16 @@ function drawEigf(c, d, o) {
   for (const s of series) {
     const a = s[2](prof);
     c.strokeStyle = s[1]; c.beginPath();
+    // a non-finite sample BREAKS the line rather than reaching lineTo. The canvas drops
+    // such a point silently, so no picture changes -- but one field going non-finite while
+    // the other stays finite (hi comes off the finite one, so the card still draws) would
+    // otherwise put a NaN through the context, which is precisely what checkeigf's
+    // degenerate leg asserts never happens (review 2026-08-14).
+    let pen = false;
     for (let i = 0; i < nx; i++) {
+      if (!isFinite(a[i])) { pen = false; continue; }
       const y = Y(a[i]);
-      if (i === 0) c.moveTo(X(i), y); else c.lineTo(X(i), y);
+      if (pen) c.lineTo(X(i), y); else { c.moveTo(X(i), y); pen = true; }
     }
     c.stroke();
   }
@@ -2786,8 +2805,9 @@ const CHART_TYPES = {
     avail: cfg => !cfg.zslice,
     opts: () => [
       { id: "eky", ti: "which k_y column to show; 1 is the box fundamental, which is the "
-          + "seeded mode of the tearing and KH presets. The island-chain preset seeds every "
-          + "mode up to 6 and lets the physics pick, so there the selector is the experiment",
+          + "seeded mode of the tearing and KH presets. The island-chain preset seeds a "
+          + "broadband ~24 modes flat and lets the physics pick the winner (n = 6 there), "
+          + "so working up this list is the experiment; it shows the first 9",
         o: Array.from({ length: EIGF_KMAX }, (_, i) =>
              [String(i + 1), "k_y = " + (i + 1) + "&middot;2&pi;/L_y"]) },
       { id: "efld", ti: "which moduli to draw; psi is the flux function (the one with the "
@@ -2802,7 +2822,10 @@ const CHART_TYPES = {
       + "column is the LIVE one, so late in a run it is measured against the state's own mean "
       + "profile rather than the initial equilibrium. linear y, autoscaled: the mode grows "
       + "exponentially, so the shape is the content. this is the OUTER solution &mdash; the "
-      + "resistive layer is about one cell wide at these grids."
+      + "resistive layer is about one cell wide at these grids. the dashed line is the box "
+      + "midline x = L<sub>x</sub>/2: on the tearing equilibria that is the resonant surface, "
+      + "and the card is meaningful on KH too &mdash; but there the shear layers sit at "
+      + "L<sub>x</sub>/4 and 3L<sub>x</sub>/4, so the guide is not one of them."
   },
   // the critical-balance card (ANISO_PLAN). `src: "spectrum"` says it feeds off the
   // spectrum readback -- the two 1D spectra it matches are already in that data object,
