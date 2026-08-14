@@ -1774,9 +1774,15 @@ function drawSpectrum(c, d, o, pins) {
 // unrelated), and while the W2 division restores the total variance it does not restore the
 // SHAPE: the Hann kernel spreads each parallel line into its neighbours (2/3, 1/6, 1/6),
 // which fattens the parallel marginal, makes Q_par decay more slowly and hands back k_par a
-// little high -- so chi comes back a little low. checkaniso.js section 8 measures that end
-// to end on a synthetic field with a prescribed ridge and reports alpha = chi_meas/chi_true;
-// it is REPORTED, never gated, and its job is to keep the hint's wording honest. The
+// little high -- so chi comes back a little low. checkaniso.js section 8 measures that on a
+// synthetic field with a prescribed ridge and reports alpha = chi_meas/chi_true. What alpha
+// covers is the PARALLEL ESTIMATOR -- window, periodogram, fold, line average, tail matching
+// -- and NOT the field-line march, which node has no GPU to run: that is bilinear in-plane
+// and RK2 in z at fp32 and low-passes ALONG the line, pushing k_par down and chi up, the
+// opposite sign to the Hann effect, so the two do not add (review 2026-08-14). Note also
+// that alpha reduces to kz_true/kz_meas at matched levels, i.e. it is a bias of the SHIPPED
+// ratio ordinate just as much as of chi; chi does not introduce it. It is REPORTED, never
+// gated, and its job is to keep the hint's wording honest. The
 // calibration that looks cheap is null by construction: sweeping Lz cannot expose the bias,
 // because the forcing is scattered onto the kz = +-2pi/Lz planes, so the ridge sits at the
 // same BIN INDICES whatever Lz is.
@@ -1784,6 +1790,11 @@ const ANISO_NLEV = 16;
 // the level of the chi ordinate's reference line -- the CB expectation, an order of
 // magnitude and not a fitted number, which is why it is a constant and not a fit index
 const ANISO_CHI_REF = 1;
+// ... and how that level is legended. Math.round(x*1000)/1000 legended an amplitude of
+// 4e-4 as "chi = 0" (review 2026-08-14), so this is cbarFmt's 3-significant-figure rule --
+// the same problem, already solved once -- with the trailing zeros dropped, because the
+// level is an order-of-magnitude statement and "chi = 1.00" would over-claim it.
+const anisoLev = v => { const s = cbarFmt(v); return s.indexOf("e") < 0 ? String(+s) : s; };
 // which energy the tails are built from -- the three lanes every spectrum here carries,
 // with E+- = E_u + E_b +- H_c (SPEC_SETS), so this needs no second binning either
 const ANISO_LANES = {
@@ -1904,7 +1915,11 @@ function anisoCurves(d, o) {
   let TPo = null;
   if (opp) {
     const po = _anisoLeg(d && d.perp, nb, 0, 1, ANISO_LANES[opp]);
-    if (po.length < 4) return { curves, hi, lo, nGlob, kA, kd };
+    // flagged, not merely empty: an empty return otherwise reads as "waiting…", which
+    // promises data that is never coming. This one is a RESULT -- there is no shearing
+    // field -- so drawAniso says so (review 2026-08-14). The flag rides the chi branch
+    // alone, so the ratio ordinate's returns are untouched, object shape and all.
+    if (po.length < 4) return { curves, hi, lo, nGlob, kA, kd, noShear: true };
     TPo = _anisoTail(po);
   }
   // z first, field line second: the fit line anchors on the field-line curve when it is
@@ -1970,10 +1985,15 @@ function drawAniso(c, d, o) {
   // "waiting…" covers everything the matching can legitimately fail on: no readback yet,
   // a quiescent field, a 2D-shaped data object, and (the common one) an open card whose
   // field-line spectrum has not landed yet on its own 2 Hz cadence -- no special casing,
-  // the global curve simply appears first. On chi it covers one more: an Elsasser lane
-  // whose OPPOSITE lane has no bracketable perpendicular tail, i.e. no shearing field.
+  // the global curve simply appears first. The chi ordinate has one case that is NOT
+  // waiting for anything: an Elsasser lane whose OPPOSITE lane has no bracketable
+  // perpendicular tail has no shearing field, so there is no chi to draw and none is
+  // coming. anisoCurves flags it and the line says so rather than promising a curve
+  // (review 2026-08-14).
   if (nb < 2 || !(A.hi > 0)) {
-    c.fillText((ay === "chi" ? "χ vs k⊥" : "k∥/k⊥ vs k⊥") + " — waiting…", x0 + 6, y0 + 13);
+    c.fillText(A.noShear ? "χ vs k⊥ — no counterpropagating energy"
+                         : (ay === "chi" ? "χ vs k⊥" : "k∥/k⊥ vs k⊥") + " — waiting…",
+               x0 + 6, y0 + 13);
     return;
   }
   // The chi reference LEVEL is settled before the axes, because it has to be inside them:
@@ -2045,7 +2065,7 @@ function drawAniso(c, d, o) {
   specStroke(c, A.curves, X, Y);
   c.restore();
   const items = A.curves.filter(cv => cv[0].length >= 4).map(cv => [cv[3], cv[1], cv[2]]);
-  if (anch > 0) items.push([ay === "chi" ? "χ = " + String(Math.round(anch * 1000) / 1000)
+  if (anch > 0) items.push([ay === "chi" ? "χ = " + anisoLev(anch)
                                          : fitLabel(fitP, FIT_FRACS_ANISO, "k⊥"),
                             COL.guide, [4, 3]]);
   legend(c, x0 + 6, y0 + 12, items, x1 - 30);
@@ -2858,7 +2878,9 @@ const CHART_TYPES = {
       { id: "ad", ti: "k&#8741; measured along the coordinate z axis (solid), along the "
           + "actual field lines (dashed), or both",
         o: [["both", "both k&#8741;"], ["z", "along z only"], ["fl", "field line only"]] },
-      { id: "fit", ti: "power-law reference line k&#8741;/k&perp; = A k&perp;^p",
+      { id: "fit", ti: "power-law reference line k&#8741;/k&perp; = A k&perp;^p. On the "
+          + "&chi; ordinate the reference is a LEVEL instead, not a slope: \"pin to curve\" "
+          + "draws the horizontal &chi; = 1 and \"set A\" moves that level",
         o: [["pin", "fit: pin to curve"], ["amp", "fit: set A"], ["off", "fit: off"]] },
       // the index box is hidden on the chi ordinate, where a power law is not what the
       // reference line is: there it is the horizontal chi = 1 (ANISO_CHI_REF), and the

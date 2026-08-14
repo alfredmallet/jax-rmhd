@@ -930,10 +930,15 @@ console.log("8.4 CHECK 4, alpha: the estimator bias, MEASURED and reported (neve
 //   k⊥ -- and since db is prescribed and identical on both sides, alpha isolates exactly
 //   the parallel estimator.
 //
-// What is synthetic and what is real: there is no GPU here, so the MARCH is replaced by
-// writing down the field along the line directly (which is all a march produces). The
-// window, the periodogram, the ±kz folding, the line average, the tails, the level window
-// and the inversion are the app's own code. Phases are deterministic and arranged so that
+// What is synthetic and what is real: there is no GPU here, so the MARCH is BYPASSED --
+// the samples are written down along a straight line instead. That is a real exclusion and
+// not a formality: the app's marcher (rmhd3d.html, fieldLine) is bilinear in-plane and RK2
+// in z at fp32, so it low-passes ALONG the line it is tracing, which pushes k∥ DOWN and chi
+// UP -- the opposite sign to the Hann effect measured here, so alpha is not a bound on the
+// two together (review 2026-08-14). What alpha IS, exactly: the bias of the parallel
+// ESTIMATOR -- window, periodogram, ±kz fold, line average, tail matching -- all of which
+// is the app's own code below, and all of which the SHIPPED ratio ordinate runs too, alpha
+// reducing to kz_true/kz_meas at matched levels. Phases are deterministic and arranged so that
 // the leakage cross terms between adjacent ridge bins cancel exactly over each group of
 // four lines (relative phase rotating by a quarter turn), so what comes back is the Hann
 // kernel and not one realisation of an interference pattern.
@@ -1009,6 +1014,7 @@ console.log("8.5 CHECK 5, degenerates on the chi ordinate: empty curves, never N
 {
   const empty = A => A.curves.length === 0 && A.hi === 0 && A.lo === Infinity;
   const CH = { ay: "chi" };
+  let IMB = null;                    // the maximally imbalanced case, re-used on the canvas
   ok("no data / silent / one-bin / no-overlap -> no curves, exactly as on the ratio axis",
      empty(C.anisoCurves(null, CH)) &&
      empty(C.anisoCurves({ perp: mk(64, () => 0), nb: 64, par: parLaw(3, -2), parKfac: 1 }, CH)) &&
@@ -1022,7 +1028,8 @@ console.log("8.5 CHECK 5, degenerates on the chi ordinate: empty curves, never N
   {
     const n = 4096, a = new Float32Array(3 * n);
     for (let j = 1; j < n; j++) { a[j] = Math.pow(j, -5 / 3); a[2 * n + j] = Math.pow(j, -5 / 3); }
-    const d = { perp: a, nb: n, par: parLaw(3, -2), parFL: parLaw(3, -2), parKfac: 1, fshell: [1, 5] };
+    const d = IMB = { perp: a, nb: n, par: parLaw(3, -2), parFL: parLaw(3, -2), parKfac: 1,
+                      fshell: [1, 5] };
     ok("a maximally imbalanced field (E- == 0) draws NO chi+ curve, rather than a wrong one",
        empty(C.anisoCurves(d, { aq: "zp", ad: "z", ay: "chi" })) &&
        empty(C.anisoCurves(d, { aq: "zm", ad: "z", ay: "chi" })),
@@ -1066,6 +1073,25 @@ console.log("8.5 CHECK 5, degenerates on the chi ordinate: empty curves, never N
   }
   ok("drawAniso says \"χ vs k⊥ — waiting…\" on all " + DEGEN.length + " degenerates", allWait);
   ok("  ... and nothing non-finite reached the canvas", !anyNon);
+  // ... but the empty-opposite-lane case above is NOT one of them: it is a RESULT, and an
+  // unflagged empty return drew "waiting…", promising a curve that was never coming
+  // (review 2026-08-14). The flag must be reachable from the chi branch ALONE -- §8.1 is
+  // what proves the ratio path did not MOVE, and this is what says it cannot get here.
+  {
+    const c = recCtx();
+    C.drawAniso(c, IMB, { aq: "zp", ad: "z", fit: "pin", ay: "chi" });
+    ok("the empty-opposite-lane case says \"no counterpropagating energy\", not \"waiting…\"",
+       C.anisoCurves(IMB, { aq: "zp", ad: "z", ay: "chi" }).noShear === true &&
+       /χ vs k⊥ — no counterpropagating energy/.test(txt(c)) && !/waiting/.test(txt(c)),
+       txt(c));
+    const cr = recCtx();
+    C.drawAniso(cr, { nb: 1 }, { aq: "zp", ad: "z", fit: "pin" });
+    ok("  ... and the flag is unreachable on the ratio ordinate, which still waits",
+       C.anisoCurves(IMB, { aq: "zp", ad: "z" }).noShear === undefined &&
+       DEGEN.every(d => C.anisoCurves(d, { aq: "zp", ad: "z" }).noShear === undefined) &&
+       /k∥\/k⊥ vs k⊥ — waiting…/.test(txt(cr)),
+       txt(cr));
+  }
   const live = [];
   for (const ad of ["both", "z", "fl"]) for (const fit of ["pin", "amp", "off"]) {
     const c = recCtx();
@@ -1083,6 +1109,16 @@ console.log("8.5 CHECK 5, degenerates on the chi ordinate: empty curves, never N
      C.ANISO_CHI_REF === 1 && /χ = 1/.test(txt(live[0])) && /χ = 2.5/.test(txt(live[1])) &&
      !/χ = /.test(txt(live[2])) && !/k⊥\^/.test(live.map(txt).join("|")),
      live.map(c => (txt(c).match(/χ = [0-9.]+/) || ["-"])[0]).join(","));
+  // ... and that level is legended with SIGNIFICANT FIGURES, not with three decimals:
+  // Math.round(x*1000)/1000 turned an amplitude of 4e-4 into "χ = 0" (review 2026-08-14),
+  // which is a level the card exists to report claiming to be zero
+  const levs = ["0.0004", "0.07", "1", "2.5", "1250"].map(A => {
+    const c = recCtx();
+    C.drawAniso(c, CASE_GS, { aq: "tot", ad: "z", fit: "amp", ay: "chi", fita: A });
+    return (txt(c).match(/χ = [-+0-9.e]+/) || ["χ = ?"])[0].slice(4);
+  });
+  ok("  ... and a small reference level legends its value, not \"χ = 0\"",
+     levs.join(",") === "4.0e-4,0.07,1,2.5,1.25e+3", levs.join(","));
   // ... and it must be INSIDE the frame, or "is the level 1?" is unanswerable. The y range
   // is the drawn extremes padded by 0.3 decades, so a curve sitting well below 1 has to
   // have pulled the top of the axis up to it.
