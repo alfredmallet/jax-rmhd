@@ -1722,7 +1722,68 @@ function drawSpectrum(c, d, o, pins) {
 // lesson: the coordinate-z measure saturates at the outer-scale k_z because field-line
 // wander decorrelates the z frame, and trends towards ratio ~ k_perp^-1, while the
 // field-line measure keeps reporting the real scaling.
+//
+// ---------------------------------------------------------------------------
+// ... and the SECOND ordinate the same matching supports: chi (CHI_PLAN)
+// ---------------------------------------------------------------------------
+// That gauge caveat is the card apologising for its own y axis, and chi is the quantity it
+// is pointing at. Under the rescaling z -> z/eps, Z -> eps Z, t -> t/eps both k_par and db
+// pick up a factor eps, so k_par/k_perp moves with Lz while
+//     chi(k_perp) = k_perp * db(k_perp) / (k_par(k_perp) * v_A)
+// does not. Same readback, same two tails, one more multiplication and a different label --
+// and critical balance stops being "a slope of -1/3 in a quantity whose level is a
+// convention" and becomes "this is O(1) across the inertial range", which is what CB
+// actually asserts. So it is an ORDINATE OPTION on this card (`ay`), not a second card:
+// the window, the lane select, the level loop and the legend are all already here.
+//
+// v_A = 1 in these units (rmhd3d.html: "the line equation is dx_perp/dz = b_perp/B0 with
+// B0 = v_A = 1"), and chi = (k_perp/k_par) * db is a pure RATIO times db, so it does not
+// care which wavenumber unit the two ks are in as long as it is the same one -- which it
+// is: parKfac puts the parallel bins in the perpendicular kunit. Hence chi = kp*sqrt(Q)/kz.
+//
+// DELTA-B IS THE MATCHED LEVEL ITSELF: db^2 = Q, the tail energy content above k_perp --
+// the very currency the matching is built on ("what matches physically is energy CONTENT",
+// above). It is defined at every matched level by construction, so it costs no second
+// interpolation; and it is a CONVENTION, a factor-of-two choice of what "db at k_perp"
+// means. The hint states it rather than hiding it, because chi is an O(1) quantity and
+// every O(1) quantity in this subject carries an O(1) convention: the FLATNESS is the sharp
+// claim, the level is an order of magnitude and never gets two significant figures.
+//
+// THE ELSASSER PAIRING. The counterpropagating field is what shears you, so
+//     chi+- = k_perp Z-+(k_perp) / (k_par+- v_A),
+// and exactly one thing crosses lanes: db. The (kp, kz) matching stays INSIDE the selected
+// lane, because that pair IS the measurement of k_par+-(k_perp) from Z+-'s own geometry;
+// db is then a lookup of the OPPOSITE lane's perpendicular tail AT kp (_anisoQAt, the
+// inverse direction of _anisoAt). Building the perpendicular tail from the opposite lane
+// wholesale is the adjacent mistake and a different measurement: it moves which k_perp
+// every level maps to, i.e. it measures k_par+ against Z-'s geometry. On the tot lane db^2
+// is the matched Q itself and the lookup never happens. All of this is invisible in a
+// balanced run and is the whole content of the card on the imbalanced and collision
+// presets, so devtools/checkaniso.js section 3 pins kp's PROVENANCE and not just the sign
+// of the asymmetry.
+//
+// WHAT IT SHOWS. The window is kA to the dissipation knee -- of order half a decade in a
+// browser-sized forced run -- so a flat line is a weak plot on its own and the content is
+// in the departures: chi rising above 1 towards the forcing shell (the outer scale is
+// driven, not critically balanced), the roll-off at the knee, the two lanes splitting when
+// eps+ != eps-, and chi_z peeling away from chi_B. That last one is NOT an independent
+// measurement: the same db divides both curves, so chi_B/chi_z = r_z/r_B exactly. It is the
+// Cho-Vishniac divergence of the ratio ordinate, replotted on the axis it bears on.
+//
+// ESTIMATOR BIAS. flSpectrum must window before transforming (a field line's two ends are
+// unrelated), and while the W2 division restores the total variance it does not restore the
+// SHAPE: the Hann kernel spreads each parallel line into its neighbours (2/3, 1/6, 1/6),
+// which fattens the parallel marginal, makes Q_par decay more slowly and hands back k_par a
+// little high -- so chi comes back a little low. checkaniso.js section 8 measures that end
+// to end on a synthetic field with a prescribed ridge and reports alpha = chi_meas/chi_true;
+// it is REPORTED, never gated, and its job is to keep the hint's wording honest. The
+// calibration that looks cheap is null by construction: sweeping Lz cannot expose the bias,
+// because the forcing is scattered onto the kz = +-2pi/Lz planes, so the ridge sits at the
+// same BIN INDICES whatever Lz is.
 const ANISO_NLEV = 16;
+// the level of the chi ordinate's reference line -- the CB expectation, an order of
+// magnitude and not a fitted number, which is why it is a constant and not a fit index
+const ANISO_CHI_REF = 1;
 // which energy the tails are built from -- the three lanes every spectrum here carries,
 // with E+- = E_u + E_b +- H_c (SPEC_SETS), so this needs no second binning either
 const ANISO_LANES = {
@@ -1730,6 +1791,10 @@ const ANISO_LANES = {
   zp: (u, b, h) => u + b + h,
   zm: (u, b, h) => u + b - h
 };
+// the lane whose amplitude shears the selected one, for chi's db lookup. Keyed by the
+// OPTION VALUE rather than by the lane function, so `tot` has no opposite (db is its own
+// matched level) and neither has an unrecognised aq, which falls back to tot above.
+const ANISO_OPP = { zp: "zm", zm: "zp" };
 // one leg's (k, E) pairs out of a three-lane bin stack of `n` bins. `j0` is the bin index
 // sitting at k = kf: 1 for the parallel stacks, whose bin 0 IS |kz| = 1, and 0 for the
 // perpendicular one, whose bin 0 is the (zero-energy) DC shell and is skipped. Bins that
@@ -1766,6 +1831,21 @@ function _anisoAt(T, Q) {
   if (!(dq > 0)) return T.ks[i];                  // flat rung: take the bin, do not divide
   return T.ks[i] * Math.pow(T.ks[i + 1] / T.ks[i], Math.log(T.qs[i] / Q) / dq);
 }
+// ... and the same inversion the OTHER way round: the level a tail sits at at the
+// wavenumber k. The chi ordinate is the only caller, and only on an Elsasser lane, where
+// db comes from the opposite lane's perpendicular tail sampled at the k_perp this lane's
+// own matching just returned. Same log-log interpolation between bracketing bins and the
+// same refusal to extrapolate: a k outside the grid returns 0 and the caller drops that
+// level rather than fabricating a point.
+function _anisoQAt(T, k) {
+  if (!(T.n > 0) || !(k > 0) || k < T.ks[0] || k > T.ks[T.n - 1]) return 0;
+  let i = 0;
+  while (i + 1 < T.n && T.ks[i + 1] <= k) i++;
+  if (i + 1 >= T.n) return T.qs[T.n - 1];
+  const dk = Math.log(T.ks[i + 1] / T.ks[i]);
+  if (!(dk > 0)) return T.qs[i];                  // repeated k: take the bin, do not divide
+  return T.qs[i] * Math.pow(T.qs[i + 1] / T.qs[i], Math.log(k / T.ks[i]) / dk);
+}
 // the band of levels one leg admits: the tail values at the first bin at or above kLo and
 // at the last bin below kHi, returned as [Qlo, Qhi] (Q falls as k rises). Levels outside
 // it are never generated, which is the same "drop it, do not extrapolate" rule again --
@@ -1793,6 +1873,7 @@ function _anisoPeak(pts) {
 function anisoCurves(d, o) {
   const lane = ANISO_LANES[(o && o.aq)] || ANISO_LANES.tot;
   const ad = (o && o.ad) || "both";
+  const ay = (o && o.ay) || "ratio";       // ordinate: the shipped ratio, or chi
   const nb = (d && d.nb) || 1, parKfac = (d && d.parKfac) || 1;
   const kA = fitKA(nb, (d && d.fshell) || [1, 3]);
   const curves = [];
@@ -1813,11 +1894,24 @@ function anisoCurves(d, o) {
   // ended at rather than measure it again.
   const kd = specKnee([[perp]], _anisoPeak(perp));
   const wP = _anisoWin(TP, kA, kd);
+  // chi's db, and ONLY db, crosses lanes (the pairing paragraph above): on zp/zm it is the
+  // opposite lane's perpendicular tail, sampled at each matched kp. The matching itself is
+  // untouched -- this tail is never inverted, only read. A lane whose opposite carries
+  // nothing bracketable (a run so imbalanced that E- has no two positive bins) has no
+  // shearing field to report, so the honest answer is no curve rather than a chi built out
+  // of the wrong lane.
+  const opp = ay === "chi" ? ANISO_OPP[(o && o.aq)] : undefined;
+  let TPo = null;
+  if (opp) {
+    const po = _anisoLeg(d && d.perp, nb, 0, 1, ANISO_LANES[opp]);
+    if (po.length < 4) return { curves, hi, lo, nGlob, kA, kd };
+    TPo = _anisoTail(po);
+  }
   // z first, field line second: the fit line anchors on the field-line curve when it is
   // there, and drawAniso finds it at index nGlob.
   const legs = [];
-  if (ad !== "fl") legs.push(["z", d && d.par, COL.ek, null, "k∥z / k⊥"]);
-  if (ad !== "z") legs.push(["fl", d && d.parFL, COL.em, [5, 3], "k∥B / k⊥"]);
+  if (ad !== "fl") legs.push(["z", d && d.par, COL.ek, null, ay === "chi" ? "χ (k∥z)" : "k∥z / k⊥"]);
+  if (ad !== "z") legs.push(["fl", d && d.parFL, COL.em, [5, 3], ay === "chi" ? "χ (k∥B)" : "k∥B / k⊥"]);
   for (const lg of legs) {
     const src = lg[1], nzb = Math.floor((src ? src.length : 0) / 3);
     const par = _anisoLeg(src, nzb, 1, parKfac, lane);
@@ -1831,15 +1925,25 @@ function anisoCurves(d, o) {
     if (!(Qhi > 0) || !(Qlo > 0) || Qlo > Qhi) continue;
     const nl = Qlo < Qhi ? ANISO_NLEV : 1;
     const pts = [];
-    let chi = 0, clo = Infinity;
+    let cvHi = 0, cvLo = Infinity;
     for (let m = 0; m < nl; m++) {
       const Q = nl > 1 ? Qhi * Math.pow(Qlo / Qhi, m / (nl - 1)) : Qhi;
       const kp = _anisoAt(TP, Q), kz = _anisoAt(TQ, Q);
       if (!(kp > 0) || !(kz > 0)) continue;
       const r = kz / kp;
       if (!(r > 0) || !isFinite(r)) continue;
-      pts.push(kp, r);
-      chi = Math.max(chi, r); clo = Math.min(clo, r);
+      let v = r;
+      if (ay === "chi") {
+        // db^2 = Q, the matched level itself -- or, on an Elsasser lane, the opposite
+        // lane's tail at THIS lane's kp. v_A = 1, and kp/kz is a pure ratio, so
+        // chi = kp*sqrt(db^2)/kz carries no unit of its own.
+        const db2 = TPo ? _anisoQAt(TPo, kp) : Q;
+        if (!(db2 > 0)) continue;                 // kp outside the opposite lane's grid
+        v = kp * Math.sqrt(db2) / kz;
+        if (!(v > 0) || !isFinite(v)) continue;
+      }
+      pts.push(kp, v);
+      cvHi = Math.max(cvHi, v); cvLo = Math.min(cvLo, v);
     }
     // a single surviving point cannot be stroked (specStroke skips < 2 points) and the
     // legend filters it, so letting it into the range pool would blank the card into a
@@ -1847,7 +1951,7 @@ function anisoCurves(d, o) {
     // two points the leg contributes NOTHING, and a card whose every leg is that
     // degenerate keeps its honest "waiting…" (review 2026-08-10, the one MINOR).
     if (pts.length < 4) continue;
-    hi = Math.max(hi, chi); lo = Math.min(lo, clo);
+    hi = Math.max(hi, cvHi); lo = Math.min(lo, cvLo);
     curves.push([pts, lg[2], lg[3], lg[4]]);
     if (lg[0] === "z") nGlob = 1;
   }
@@ -1861,14 +1965,29 @@ function drawAniso(c, d, o) {
   const nb = (d && d.nb) || 1;
   const fshell = (d && d.fshell) || [1, 3];
   const A = anisoCurves(d, o);
+  const ay = (o && o.ay) || "ratio";
+  const fitMode = (o && o.fit) || "pin";
   // "waiting…" covers everything the matching can legitimately fail on: no readback yet,
   // a quiescent field, a 2D-shaped data object, and (the common one) an open card whose
   // field-line spectrum has not landed yet on its own 2 Hz cadence -- no special casing,
-  // the global curve simply appears first.
-  if (nb < 2 || !(A.hi > 0)) { c.fillText("k∥/k⊥ vs k⊥ — waiting…", x0 + 6, y0 + 13); return; }
-  const ymax = Math.log10(A.hi) + 0.3;
+  // the global curve simply appears first. On chi it covers one more: an Elsasser lane
+  // whose OPPOSITE lane has no bracketable perpendicular tail, i.e. no shearing field.
+  if (nb < 2 || !(A.hi > 0)) {
+    c.fillText((ay === "chi" ? "χ vs k⊥" : "k∥/k⊥ vs k⊥") + " — waiting…", x0 + 6, y0 + 13);
+    return;
+  }
+  // The chi reference LEVEL is settled before the axes, because it has to be inside them:
+  // "is the measured level 1?" is unanswerable when the 1 is off the top of the frame. On
+  // the ratio ordinate nothing changes -- there the reference is a SLOPE and the fit line
+  // is anchored to the curve itself, so it cannot leave the frame in the first place.
+  let chiRef = 0;
+  if (ay === "chi" && fitMode !== "off") {
+    const Alev = parseFloat(o && o.fita);
+    chiRef = (fitMode === "amp" && isFinite(Alev) && Alev > 0) ? Alev : ANISO_CHI_REF;
+  }
+  const ymax = Math.log10(chiRef > 0 ? Math.max(A.hi, chiRef) : A.hi) + 0.3;
   // at least one decade always, so a flat ratio still has an axis to sit on
-  const ymin = Math.min(ymax - 1, Math.log10(A.lo) - 0.3);
+  const ymin = Math.min(ymax - 1, Math.log10(chiRef > 0 ? Math.min(A.lo, chiRef) : A.lo) - 0.3);
   const xmax = Math.log10(nb);
   const X = k => x0 + Math.log10(k) / xmax * (x1 - x0);
   const Y = v => px(y1 - (Math.log10(v) - ymin) / (ymax - ymin) * (y1 - y0));
@@ -1900,11 +2019,16 @@ function drawAniso(c, d, o) {
   // the global one otherwise, at the SAME intermediate scale the spectrum card's automatic
   // amplitude uses: halfway logarithmically between the box wavenumber and the dissipation
   // knee anisoCurves already measured for its level window (fitAnchorAuto, kA as fallback).
+  // ... and on the CHI ordinate that whole apparatus is beside the point: an index of -1/3
+  // is a statement about the ratio, and what critical balance asserts here is a LEVEL. So
+  // the reference becomes the horizontal chi = 1 (settled above; the amplitude box renames
+  // the level for anyone who wants to compare against a measured one, and `off` still hides
+  // it). Same drawn line, same legend slot, index 0.
   const kA = fitKA(nb, fshell);
-  const fitMode = (o && o.fit) || "pin";
-  const fitP = fitIndex(o && o.fitp, FIT_FRACS_ANISO);
+  const fitP = ay === "chi" ? 0 : fitIndex(o && o.fitp, FIT_FRACS_ANISO);
   let anch = 0;
-  if (fitMode !== "off") {
+  if (ay === "chi") anch = chiRef;
+  else if (fitMode !== "off") {
     const fc = A.curves.length > A.nGlob ? A.curves[A.nGlob] : (A.curves[0] || null);
     anch = fc ? fitAnchorAuto(fc[0], kA, A.kd, fitP) : 0;
     const Aamp = parseFloat(o && o.fita);
@@ -1921,7 +2045,9 @@ function drawAniso(c, d, o) {
   specStroke(c, A.curves, X, Y);
   c.restore();
   const items = A.curves.filter(cv => cv[0].length >= 4).map(cv => [cv[3], cv[1], cv[2]]);
-  if (anch > 0) items.push([fitLabel(fitP, FIT_FRACS_ANISO, "k⊥"), COL.guide, [4, 3]]);
+  if (anch > 0) items.push([ay === "chi" ? "χ = " + String(Math.round(anch * 1000) / 1000)
+                                         : fitLabel(fitP, FIT_FRACS_ANISO, "k⊥"),
+                            COL.guide, [4, 3]]);
   legend(c, x0 + 6, y0 + 12, items, x1 - 30);
 }
 
@@ -2544,10 +2670,21 @@ const CHART_TYPES = {
   // lives in docs.html under #aniso, in full sentences: the hint is the one-breath version
   // and the manual is the long one. "Solid" / "Dashed" are the dashes anisoCurves gives the
   // two legs (the z leg null, the field-line leg [5, 3]), not a second convention.
+  // CHI_PLAN put a second ORDINATE on this card rather than a second card: chi differs from
+  // the shipped curve by one multiplication and a label, and a card of its own would
+  // duplicate the window, the lane select, the level loop and the legend -- and cost a card
+  // slot on a phone. `ay` therefore leads the option row, where it reads as the card's
+  // subtitle beside the type name (which is why that name is no longer the ratio's own).
+  // Its first value is the shipped one, per the house rule; the hint follows the select.
   aniso: {
-    label: "anisotropy k&#8741;/k&perp;", w: SW, h: SH, src: "spectrum",
+    label: "anisotropy", w: SW, h: SH, src: "spectrum",
     avail: cfg => cfg.zslice,
     opts: () => [
+      { id: "ay", ti: "what is on the y axis: the anisotropy ratio itself, or the "
+          + "critical-balance parameter χ = k⊥δb/(k∥ v_A) built from the same matching "
+          + "(δb² = the matched energy content above k⊥, v_A = 1). χ is the combination the "
+          + "ratio's L_z convention cancels out of",
+        o: [["ratio", "k&#8741;/k&perp;"], ["chi", "&chi; = k&perp;&delta;b/k&#8741;"]] },
       { id: "aq", ti: "which energy the matched spectra are built from; "
           + "E&plusmn; = E_u + E_b &plusmn; H_c",
         o: [["tot", "E_u+E_b"], ["zp", "E&#8314;"], ["zm", "E&#8315;"]] },
@@ -2556,21 +2693,47 @@ const CHART_TYPES = {
         o: [["both", "both k&#8741;"], ["z", "along z only"], ["fl", "field line only"]] },
       { id: "fit", ti: "power-law reference line k&#8741;/k&perp; = A k&perp;^p",
         o: [["pin", "fit: pin to curve"], ["amp", "fit: set A"], ["off", "fit: off"]] },
+      // the index box is hidden on the chi ordinate, where a power law is not what the
+      // reference line is: there it is the horizontal chi = 1 (ANISO_CHI_REF), and the
+      // amplitude box below renames that level for anyone comparing against a measured one
       { id: "fitp", k: "num", w: 62, step: "any", v: -0.333,
         ti: "reference index p in k&#8741;/k&perp; = A k&perp;^p (-1/3 critical balance, "
           + "-1/2 aligned, -1 the wandering-z limit)",
-        vis: v => v.fit !== "off" },
+        vis: v => v.fit !== "off" && (v.ay || "ratio") !== "chi" },
       { id: "fita", k: "num", w: 74, step: "any", min: 0,
-        ti: "reference amplitude A at k&perp; = 1; blank pins it to the curve",
+        ti: "reference amplitude A at k&perp; = 1; blank pins it to the curve "
+          + "(on the χ axis: the level of the horizontal reference line, 1 when blank)",
         vis: v => v.fit === "amp" }
     ],
     draw: (c, d, o) => drawAniso(c, d, o),
-    hint: "k&#8741;(k&perp;)/k&perp; as a function of k&perp; by matching cumulative energy "
-      + "above k in the perpendicular and parallel spectra. Solid: k<sub>z</sub> (global "
-      + "mean field). Dashed: k&#8741; (local mean field along field lines). Eddies "
-      + "elongate along B as they shrink, so the ratio falls; somewhere between &minus;1/2 "
-      + "and &minus;1/3 is the classic critical balance prediction. experimental feature: "
-      + "imperfect agreement at these resolutions."
+    // Alfred's copy on the ratio ordinate, verbatim and unchanged. The chi branch is the
+    // same shape of sentence for the other axis, and carries the two things the ordinate
+    // cannot say for itself: the db convention, spelled out, and the fact that the level is
+    // an ORDER OF MAGNITUDE (never two significant figures -- see the block above
+    // anisoCurves). It points at the departures because a flat line over half a decade is
+    // not the content, and it says outright that the solid/dashed split is the ratio card's
+    // divergence replotted rather than a second measurement.
+    hint: v => ((v && v.ay) === "chi"
+      ? "&chi; = k&perp;&delta;b/(k&#8741;v<sub>A</sub>), from the same cumulative-energy "
+        + "matching, with <b>&delta;b&sup2; = Q</b>, the matched energy content above "
+        + "k&perp;, and v<sub>A</sub> = 1. Unlike k&#8741;/k&perp; its level does not move "
+        + "with L<sub>z</sub>: critical balance says &chi; is of order 1 across the inertial "
+        + "range, and &delta;b carries the usual O(1) convention, so read the level as an "
+        + "order of magnitude and the flatness as the claim. The departures are the "
+        + "interesting part &mdash; &chi; above 1 towards the forcing shell (the outer scale "
+        + "is driven, not balanced), the roll-off at the dissipation knee, and E&#8314; "
+        + "parting from E&#8315; when the run is imbalanced, each taking &delta;b from the "
+        + "<i>other</i> Elsasser field, which is what shears it. Solid and dashed part "
+        + "company for the same reason as on the ratio axis and by exactly the same factor "
+        + "&mdash; one &delta;b divides both &mdash; so that split is that lesson replotted, "
+        + "not a second measurement. experimental feature: imperfect agreement at these "
+        + "resolutions."
+      : "k&#8741;(k&perp;)/k&perp; as a function of k&perp; by matching cumulative energy "
+        + "above k in the perpendicular and parallel spectra. Solid: k<sub>z</sub> (global "
+        + "mean field). Dashed: k&#8741; (local mean field along field lines). Eddies "
+        + "elongate along B as they shrink, so the ratio falls; somewhere between &minus;1/2 "
+        + "and &minus;1/3 is the classic critical balance prediction. experimental feature: "
+        + "imperfect agreement at these resolutions.")
   },
   // ... and the distribution that curve is EXTRACTED from (ANISO_PLAN_2 C). The only chart
   // type with no readback source at all: its data is a GENERATE press, so it declares no
