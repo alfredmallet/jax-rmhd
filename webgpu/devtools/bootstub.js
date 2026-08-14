@@ -400,8 +400,11 @@ setTimeout(async () => {
         const c = cards.chart.filter(x => x.type() === "spectrum");
         return c.length ? c.map(x => x.optVals().clip).join(",") : "(no spectrum card)";
       }`, k);
-      // chain opens on two cut traces and no spectrum card, so it is not in this map
-      const want = { collapse: "off", forced: "on", decay: "on" };
+      // NOTE: as of 2026-08-13 no preset opens a spectrum card with clip off -- collapse
+      // and chain both moved to island/cut layouts -- so the "off" path is pinned directly
+      // on addChartCard below rather than through a preset. Keep both: the preset path is
+      // what would silently rot if `charts` stopped carrying options.
+      const want = { forced: "on", decay: "on" };
       for (const k of Object.keys(want)) {
         if (run("function(k){ return !PRESETS[k]; }", k)) continue;   // 3D has its own set
         const got = clipOf(k);
@@ -421,6 +424,11 @@ setTimeout(async () => {
         return before + "->" + c.optVals().clip;
       }`);
       if (live !== "on->off") fail("the clip checkbox does not toggle: " + live);
+      const direct = run(`function(){
+        const c = addChartCard({ t: "spectrum", clip: "off" });
+        const v = c.optVals().clip; cardClose(c); return v;
+      }`);
+      if (direct !== "off") fail("addChartCard({clip:'off'}) gave clip = " + direct);
       // the same mechanism carries a chart option that is a SELECT, not a checkbox:
       // `chain` opens on two cut traces, b first then u (Alfred, 2026-08-13). Both read
       // the perturbation alone -- the equilibrium is y-independent with its field along y,

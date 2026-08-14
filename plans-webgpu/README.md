@@ -23,10 +23,6 @@ disagree, the file is right.
 
 ## Live
 
-- **TEARNL_PLAN.md** — two new 2D presets off the tearing equilibrium: large-Δ′ X-point
-  collapse with a secondary island (Loureiro+ 2005), and a six-island chain that coalesces
-  in a new large 8π × 8π box. Needs a broadband-in-k_y seed in the tearing IC builder,
-  which is the one code change. Shipped `tearing` preset untouched.
 - **VOLTEX_PLAN.md** — the 3D volume raymarch should sample a `texture_3d` with hardware
   trilinear filtering instead of doing eight scalar loads per sample out of a storage
   buffer. Written 2026-08-12, **not started**. Item 7 of the audit.
@@ -46,6 +42,14 @@ disagree, the file is right.
 
 ## Executed — kept for provenance
 
+- **TEARNL_PLAN.md** — two new 2D presets off the tearing equilibrium: `tearing: X-point
+  collapse` (large Δ′, secondary island, Loureiro+ 2005) and `tearing: island chain`
+  (broadband seed, Δ′ selects the mode, then coalescence) in a new large 8π × 8π box.
+  Shipped `tearing` kept its physics but not its defaults. Read the EXECUTION NOTES at the
+  end: eight rounds of Alfred's on-device iteration moved nearly every number the plan had
+  settled, and three of the findings generalise well beyond this plan — the 4.3 resolution
+  benchmark is ~2× conservative (measured), a clean spectrum does NOT certify resolution,
+  and rescaling a/η buys nothing because δ/dx is scale-invariant.
 - **DEMOS_PLAN.md** — Elsasser displays, dual view, decaying A/B, AW collision, drawn ICs
   (phases A–E). The `physics.js` template refactor came out of Phase A.
 - **REFINE_PLAN.md** — successor to DEMOS_PLAN, from Alfred's phone-testing notes

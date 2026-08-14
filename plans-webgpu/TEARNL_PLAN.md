@@ -1,10 +1,13 @@
 # Nonlinear tearing plan: two new 2D presets (X-point collapse; island chain + coalescence)
 
-**Status: written 2026-08-13. Phase 0 gate PASSED the same day — all four diagnostic runs
-are done and eqSrc off is confirmed for both presets. Phases 1–4 EXECUTED 2026-08-13,
-adversarially reviewed, fixes applied; uncommitted pending Alfred's on-device pass. Phase 5
-is partly owed — see the note at the end of that section.** The parameters
-below are settled on their evidence. Base:
+**Status: EXECUTED AND DEPLOYED 2026-08-13** (committed 28f9dc3 "webgpu: more
+tearing/reconnection demos"; a second round of Alfred's text and layout changes followed on
+top). Written the same day, Phase 0 gate passed the same day, Phases 1–4 built by an opus
+implementer with a fresh-opus adversarial review, then reshaped by ~8 rounds of Alfred's own
+on-device runs. **The prose below is the plan AS DRAFTED; nearly every number in it was
+subsequently changed.** Each section carries its own dated correction, and the EXECUTION
+NOTES at the end of the file are the authoritative record — read those first. The
+parameters below were settled on their evidence at drafting time. Base:
 current `rmhd2d.html` `PRESETS`, `common.js` `icRegister("tearing")` / `BOXES` /
 `icSyncRows`. Shipped `tearing` preset keeps the FKR/Rutherford comparison and stays the
 quantitative one. It ended up modified in two ways during execution, both deliberate and
@@ -404,10 +407,39 @@ quoted in prose.
 
 ## Loose ends found while planning — not part of this plan
 
-1. **The shipped `tearing` hint claims γ ∝ η^{3/5}.** Measured η^0.49 over
-   η = 3e-4…1e-2, and η^0.54 locally at 1e-3. Δ′a = 8.4 is not small enough for the
-   constant-ψ asymptotic. This is public-facing text on a page Kunz is linking from a
-   problem sheet — worth fixing on its own.
+1. ~~**The shipped `tearing` hint claims γ ∝ η^{3/5}.**~~ **FIXED 2026-08-13** — the claim
+   is simply deleted, and nothing replaces it, because *no* single power law is right at
+   these parameters. The local exponent runs monotonically with η, between the two limits:
+
+   | η | 3e-4 | 1e-3 (shipped) | 3e-3 | 1e-2 |
+   |---|---|---|---|---|
+   | Δ′δ | 0.21 | **0.34** | 0.51 | 0.78 |
+   | local d ln γ / d ln η | 0.59 | **0.54** | 0.47 | 0.31 |
+
+   Constant-ψ (Δ′δ ≪ 1) gives 3/5; large-Δ′ (Δ′δ ≫ 1) gives 1/3; Δ′a = 8.4 puts the
+   shipped preset in the **crossover**, at Δ′δ ≈ 0.34, and the 0.49 fitted over the whole
+   range is an average across it. Quoting either limit would be wrong somewhere on the
+   slider, which is why the hint now quotes only Δ′a and the reference γ.
+
+   *Alfred: η^{1/2} is the expected scaling for the tearing MAX growth rate, "which is
+   probably what is going on". Correct, and the two statements above are the same
+   statement — I initially set them against each other, wrongly. The classic η^{1/2}
+   argument IS this crossover: constant-ψ and non-constant-ψ scale in opposite directions
+   with k, so γ(k) peaks where the branches meet, i.e. at Δ′δ ~ 1, and equating them there
+   gives η^{1/2}. The preset sits near that crossover (Δ′δ = 0.34), which is why a
+   fixed-k fit reads ≈ 0.49.*
+
+   *Two caveats that survive it, and are why the claim was still deleted rather than
+   replaced with η^{1/2}: (a) the local exponent genuinely runs 0.31 → 0.59 across the diss
+   slider, so any single power law on the page is wrong at one end or the other; (b) my own
+   scan of γ_max over unconstrained k_y returned η^0.36 with the peak at k_y ≈ 0.42 — but
+   that is below the box fundamental k_y = 1, so this box cannot host the true fastest mode
+   at all, and the peak sits where Δ′a is O(1), outside the small-k_y a asymptotics the
+   textbook argument assumes. Do not read that 0.36 as a refutation of anything; read it as
+   the scan being outside its own regime of validity.*
+   (Caveat on the table: at η ≲ 1e-4 the n = 192 eigensolve stops resolving δ itself —
+   δ/dx ≈ 0.1 at 1e-5 — so those rows are numerics, not physics. Raise n before quoting
+   anything down there.)
 2. **ψ contours speckle into broken cyan dashes over large parts of the frame.** Visible
    in test 1, and much worse in test 3, where they cover most of the box. **This is now a
    blocker for COLLAPSE, not a cosmetic note** — the preset ships with `cont: 3, nlev: 16`

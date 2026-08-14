@@ -157,7 +157,7 @@ controlsBuild({
     CTRL_GRP_FORCE,
     ctrlGrpIC({ letters: "letters A / B", amp: 0, pre: CTRL_ROWS_EQ,
                 presets: [["kh", "Kelvin–Helmholtz shear layers"],
-                          ["tearing", "tearing mode (magnetic islands)"]] }),
+                          ["tearing", "tearing mode"]] }),
     ctrlGrpDisp()
   ]
 });
@@ -1215,7 +1215,7 @@ const PRESETS = {
       + "you can check this on the <b>k<sub>y</sub> = 2&pi;/L<sub>y</sub> mode</b> chart."
   },
   tearing: {
-    label: "tearing mode (magnetic islands)",
+    label: "tearing mode",
     // the ONE preset that turns the auto-diss controller OFF. Its whole point is a
     // QUOTED resistivity -- eta = 1e-3, against a linear reference growth rate -- and a
     // controller wandering eta would falsify exactly what the demo measures, the same
@@ -1235,7 +1235,12 @@ const PRESETS = {
            rDiss: "-3", cbAutoDiss: false,
            selIC: "tearing", rEqA: "0.1", rEqPert: "-3", rEqPsi0: "1.65",
            cbEqSrc: true, cbTearBroad: false, rCflEvery: "4" },
-    layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }], charts: ["island", "energy"] },
+        // island width + the b_x/b_y cut trace (Alfred, 2026-08-13). The cut line IS the
+    // resonant surface x = Lx/2 and the island card already rides that readback, so the
+    // pair costs one readback between them; b_x = -d_y psi on that line is the reconnected
+    // flux with zero equilibrium content, i.e. the raw material of the W the chart plots.
+    layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }],
+              charts: ["island", { t: "cut", pair: "b" }] },
     hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "
       + "&phi;<sub>eq</sub> = 0: b<sub>y</sub> vanishes on x = L<sub>x</sub>/2, so that is the "
       + "resonant surface of the k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed. Watch the &psi; "
@@ -1243,8 +1248,8 @@ const PRESETS = {
       + "magnetic island; the <b>island width</b> chart is log&nbsp;W(t), so the linear stage is a "
       + "straight line and the Rutherford stage bends over. The diss slider is &eta; and "
       + "<b>Pm</b> = &nu;/&eta; (1 here). Linear reference &gamma; &asymp; 0.0287 at "
-      + "&eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4, &gamma; &prop; "
-      + "&eta;<sup>3/5</sup>), which <b>maintain equilibrium flux</b> reproduces: it adds the "
+      + "&eta; = &nu; = 10<sup>&minus;3</sup> (&Delta;&prime;a = 8.4), which "
+      + "<b>maintain equilibrium flux</b> reproduces: it adds the "
       + "static source S = &minus;&eta;&nabla;&sup2;&psi;<sub>eq</sub> that holds the layer &mdash; "
       + "the island chart's fitted &gamma; is what you compare against it. "
       + "Switch it off and &psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, dropping the "
@@ -1279,12 +1284,14 @@ const PRESETS = {
     // THROUGH W_c here and never reaches it at the Rutherford end -- which is the contrast
     // the slider exists to draw, now happening in time rather than in slider position.
     // Cost: ~10 time units before anything is visible. Accepted.
-    // the spectrum chart is not decoration: it is what the hint's resolution experiment
-    // points at, and a bump at the dealias end is how the under-resolved case is READ
+    // island width + the b_x/b_y cut trace, matching `tearing` (Alfred, 2026-08-13). The
+    // spectrum card that used to open here is GONE: the hint's resolution experiment ("drop
+    // diss to 3e-4 ... what happens?") is now read off the picture and the island trace
+    // rather than off a spectral bump. Anyone running the Phase 5 spectrum check has to add
+    // a spectrum card by hand AND untick `clip tail` -- the clipped default hides exactly
+    // the dealias end that check is about (see drawSpectrum).
     layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }],
-              // clip off: hyper = 1, so the dissipation range is gentle AND is what the
-              // resolution experiment below is read off -- see drawSpectrum
-              charts: ["island", "energy", { t: "spectrum", clip: "off" }] },
+              charts: ["island", { t: "cut", pair: "b" }] },
     // The hint ASKS for the current intensification rather than quoting it (Alfred's
     // text, 2026-08-13), which is why there is no number here and no placeholder waiting
     // to be filled: the colourbar answers it live, against the analytic equilibrium value

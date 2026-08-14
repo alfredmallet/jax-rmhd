@@ -721,9 +721,12 @@ source on the measured growth rate is the frozen-equilibrium eigenvalue (0.0284 
 0.028716 at the benchmark, `devtools/checkj.js` §4b) and the maintained ψ_eq is stationary
 to round-off; with it off, see the caveat under the table below.
 
-**The nonlinear pair: `collapse` and `chain` (TEARNL, 2026-08-13).** Two more presets on
+**The nonlinear pair: `tearing: X-point collapse` and `tearing: island chain`** (keys
+`collapse` / `chain`; TEARNL, 2026-08-13). Two more presets on
 the SAME tearing equilibrium and with no new physics — only the controls move — sitting
-either side of the instability's nonlinear fork. Both run the maintained-flux source
+either side of the instability's nonlinear fork. All three tearing presets run at
+`selRes` 256 and open on **island width + cut trace b_x/b_y**, except `chain`, which has no
+island chart (see the broadband seed below) and opens on **cut b + cut u** instead. Both run the maintained-flux source
 **off** (neither quotes a rate against a held equilibrium, and a source feeding flux in
 would make the collapse externally driven) and auto-diss off (the controller places the
 *cascade termination* at the dealias scale and has no term that knows a reconnection layer
@@ -736,12 +739,17 @@ exists; on a quiescent equilibrium it drives η to ~1e-9).
   down to 8.40 at a = 0.2, which is the shipped preset's own value — 0.2×2π is its
   0.1×4π, and Δ′a depends only on k_y a in this profile, so the two are *exactly* equal
   and the preset contains `tearing` as a slider endpoint.
-- **`chain`** — the tall box, seeded broadband (below), so the layer selects its own k_y
-  out of 24 offered: Δ′ falls monotonically with k_y while the resistive layer gets faster,
-  and the two peak together at k_y = 1.5, i.e. **six islands**, which then coalesce
-  6 → 3 → 1. The winner is deliberately *not* the longest wavelength in the box. Square
-  cells are mandatory here and not a nicety: the Sweet–Parker sheets between merging
-  islands lie normal to y.
+- **`chain`** — the LARGE box (8π × 8π, i.e. the square one four times bigger, not a long
+  thin one), seeded broadband (below), so the layer selects its own k_y out of 24 offered:
+  Δ′ falls monotonically with k_y while the resistive layer gets faster, and the two peak
+  together at k_y = 1.5, i.e. six islands, which then coalesce in pairs. Expect *roughly*
+  six rather than exactly six, and expect it to move with `#nSeed`: γ is flat near its peak
+  (modes 4–8 within 9%), so over the linear stage the winner leads its neighbours by only
+  ~7% and the phases settle the rest. What the preset actually demonstrates is that the box
+  FUNDAMENTAL loses, its γ being 3× down. Square cells are mandatory and not a nicety: the
+  Sweet–Parker sheets between merging islands lie normal to y. L_x/a = 53 because an
+  island's extent across the sheet grows with its wavelength along it and each merger
+  doubles that wavelength — size the box on the LAST merger, not the first.
 
 **Broadband seed.** `rowTear` carries a `broadband seed` checkbox (default off, so the
 shipped preset is untouched). On, the seed's y factor is Σ_{n=1..N} cos(nk₁y + φ_n) at
@@ -1008,11 +1016,12 @@ diss to resolve (k_η ≈ (ε/diss³)^¼ must stay below nx/3, e.g. diss ≳ 1.5
 - fp32: fine for eyeballs and demos, expect slow energy-budget drift over long runs;
   not a substitute for the JAX solver for science runs.
 - Resolutions 128/256/512 — n_x, since 2D also offers rectangular boxes: the wide 4π × 2π,
-  where n_y is n_x/4, and the large 8π × 8π, which `chain` runs at 512². A
+  where n_y is n_x/4, and the large 8π × 8π, which `chain` runs at 256². A
   1024-point line is exactly the WebGPU minimum workgroup-storage limit, so the 2D page
   asks for the adapter's own limit at boot and caps the longest line there (`NMAX_LINE`);
-  the tall box therefore tops out at 512 × 1024, and a resolution a box cannot run is
-  disabled in the select rather than silently clamped. See
+  a resolution a box cannot run is disabled in the select rather than silently clamped —
+  which as of the 8π × 8π box disables nothing, every box having fy ≤ 1, but the rule is
+  about the box table and not its current contents. See
   SPEC §8. Only 2D boxes are rectangular; the 3D perpendicular plane stays square.
 - Elsasser forcing only, no snapshots.
 - The perpendicular spectrum dispatches `nbins` = the smaller of the two axis dealias
