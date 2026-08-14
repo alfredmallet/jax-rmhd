@@ -221,14 +221,36 @@ the hint. Two things make that number trustworthy and both are asserted beside i
 synthetic periodogram returns 91.7% of the prescribed energy (the missing sixth of the first
 ridge bin leaks into the kz = 0 bin, which `flSpectrum` does not plot — a property of the
 instrument), and the measured parallel spectrum IS the (1/6, 2/3, 1/6) kernel on the exact
-one, to 2%. There is no GPU in node, so the *march* is replaced by writing the field along
-the line down directly, which is all a march produces; the window, the transform, the fold,
-the average, the tails and the inversion are the app's own code. Line phases are arranged so
+one, to 2%. The window, the transform, the fold, the average, the tails and the inversion
+are the app's own code. Line phases are arranged so
 the leakage cross terms between adjacent ridge bins cancel exactly over each group of four
 lines — otherwise what comes back is one realisation of an interference pattern rather than
 the kernel (the first attempt did exactly that and read α = 1.71, in the wrong direction).
 
-**The deviation: the card's title.** The plan asks for the card title to follow the
+**What α is a bias OF.** The first draft of this note called it end to end, and that was
+wrong (adversarial review, 2026-08-14). It is the **parallel ESTIMATOR** — window,
+periodogram, ±kz fold, line average, tail matching — with the field-line march **excluded**,
+which is deviation 1 below. Two of the reviewer's measurements are worth keeping beside it.
+With **random per-line phases** (what real field lines give, rather than this file's arranged
+cancellation) the ensemble α = **0.993** over 24 realisations at the app's own 64-line
+ensemble — so the arranged phases are a variance reduction, not the result. And α reduces to
+**kz_true / kz_meas** at matched levels, which makes it a bias of the **shipped ratio
+ordinate** exactly as much as of χ: χ does not introduce it, and nothing here is a reason to
+prefer one ordinate over the other.
+
+**Two deviations from the plan**, both recorded:
+
+**1. The α measurement BYPASSES the march.** The plan asks for the synthetic field to be
+pushed through "the real path — field-line march, Hann, periodogram, tail matching". There
+is no GPU in node, so the samples are written down along a straight line instead. An earlier
+version of this note treated that as a formality ("which is all a march produces"); it is
+not. The app's marcher (`rmhd3d.html`, `fieldLine`) is bilinear in-plane and RK2 in z at
+fp32, so it low-passes ALONG the line it traces — pushing k∥ **down** and χ **up**, the
+opposite sign to the Hann broadening α measures. The two therefore do not add, and α is not
+a bound on their sum. Measuring the march wants a GPU and is on the on-device list, not this
+one.
+
+**2. The card's title.** The plan asks for the card title to follow the
 selection. `CHART_TYPES[k].label` is read once, into the type dropdown, for every card of
 that type — following a per-card option would mean editing `ChartCard`, outside this plan's
 edit surface. What was done instead is the shipped idiom: the label is now just
@@ -261,7 +283,43 @@ diff does not go near the solver.
 
 **Checks run cold**, all green: `checkaniso` (the new §8 included), `checks`, `checkpin`,
 `check2dspec`, `checkk`, `checkiso`, `checkonepage` (89/89), `checkidle`, `checksh`,
-`checkgc` (154/154), `layout` (the sixth header control does not widen the busiest row —
+`checkgc` green (the leg count is not stable between trees and was quoted here as if it
+were), `layout` (the sixth header control does not widen the busiest row —
 the widest single item on 3D at 360 px is unchanged at 313 px), `names.mjs`. `checkj` was
 not run to completion (it is minutes long and is the 2D tearing/eigenvalue path, untouched
 here).
+
+### Adversarial review, 2026-08-14 — verdict PASS-WITH-MINORS; nothing structural
+
+Fresh reviewer against this plan and the merged diff. The pairing is wired the right way
+round, the ratio path is untouched, and the two things the review did that are worth naming
+by name:
+
+- **Mutation testing of the check file.** Four mutants, including the plan's own "adjacent
+  mistake" (building the perpendicular tail TP wholesale from the opposite lane, which is
+  invisible in a balanced run) — **all four convicted**, by §8.3's kp-provenance legs rather
+  than by the sign of an asymmetry. That is the check the plan asked for, doing the job the
+  plan asked it to do.
+- **The §8.1 gate is real**, not a promise: 616 draw-level comparisons against
+  `70ec5a8:webgpu/common.js` read through `git show`, over 14 data cases × 22 option sets ×
+  {`ay` absent, `ay: "ratio"`}, all identical — and it stayed identical through this round's
+  fixes, which is what says the `noShear` flag below cannot reach the shipped ordinate.
+
+Five minors, all fixed on `main` in `webgpu: review fixes — chi no-shear line, alpha's
+scope, legend format`: the deliberate empty-opposite-lane return rendered as
+"χ vs k⊥ — waiting…", promising data that never comes, while `docs.html` claimed the card
+"honestly draws nothing" (that return is flagged `noShear` now and the card says
+"no counterpropagating energy"; a new §8.5 leg asserts the flag is *unreachable* from the
+ratio ordinate rather than merely unset there); the `fit` select's tooltip had no χ clause
+though both its siblings did; α was labelled end to end (corrected above, with the
+reviewer's two measurements kept); the reference level legended through
+`Math.round(x*1000)/1000`, so a χ of 4e-4 read "χ = 0" — the one number the ordinate exists
+to report, claiming to be zero (now `cbarFmt`'s 3-significant-figure rule with trailing
+zeros dropped, gated over 4e-4 … 1250); and `docs.html`'s cross-reference to the
+"anisotropy k∥/k⊥ chart" was stale, the card being titled just "anisotropy" since the
+ordinate select landed.
+
+Gates after the fixes: `checkaniso` all-green with §8.1 still 616/616 identical and
+α = 0.9884 reported, plus `checkeigf`, `checkiso`, `checkgc`, `layout`, `names.mjs`,
+`wgslparse` over fresh dumps and `bootstub` on both pages. `refvectors.json` /
+`refvectors3d.json` byte-unchanged.

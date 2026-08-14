@@ -71,7 +71,8 @@ disagree, the file is right.
   matched energy level itself and only δb crossing Elsasser lanes. χ is the invariant of the
   RMHD rescaling that k∥/k⊥ is not, so the card's L_z gauge caveat does not apply to it.
   Written, revised and **executed 2026-08-14**. Read the EXECUTION NOTES: the estimator bias
-  came out at α = 0.988 (measured end to end, reported and never gated), the shipped ratio
+  came out at α = 0.988 (the PARALLEL ESTIMATOR, march excluded; reported and never gated,
+  and a bias of the shipped ratio ordinate just as much as of χ), the shipped ratio
   path is asserted bit-identical to base through `git show`, and the record of why the
   obvious `selLz` calibration sweep is null (forcing is pinned at |kz| bin 1) is worth
   keeping.

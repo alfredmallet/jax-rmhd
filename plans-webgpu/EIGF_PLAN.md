@@ -16,7 +16,8 @@ normalization, so the plotted quantity is the coefficient c_j(x) of ψ = Σ_j c_
 the `eigf` entry inserted immediately after `mode` in `CHART_TYPES` with `aniso` untouched,
 `Solver.readEigf` + the third throttled `src: "eigf"` readback in the frame loop (the cut
 line's idiom, with the card's k_y BIN where the cut card has its z plane — one gather per
-distinct bin on screen), the k_y (1…6) and field (ψ/φ/both) selectors, `avail: cfg =>
+distinct bin on screen), the k_y (1…9, raised from 6 in review — see below) and field
+(ψ/φ/both) selectors, `avail: cfg =>
 !cfg.zslice`, the card as `tearing`'s third chart and available-not-default everywhere
 else, and the side task (the stale 30–40 % clause deleted from the `tearing` hint, the
 diffusion statement it hung off kept). Docs: `docs.html` #eigf, `webgpu/README.md` (chart
@@ -26,22 +27,75 @@ Execution notes worth keeping:
 
 - **The plot is a genuine measurement of the transform, not of itself.** Check 3 builds the
   state by a direct fp64 forward DFT of ψ = g(x)cos(k_y y + p₀), φ = h(x)sin(k_y y + p₀)
-  and compares the card's output with the ANALYTIC g/2 and h/2 — agreement 9.3e-9 and
-  7.8e-9 (tol 1e-5), which also pins the direction of the transform and the normalization.
-  The two shape claims the card exists for fall out of the same mirror rather than out of
-  prose: ψ̂ peaks exactly on ix = NX/2 and |φ̂(x₀)| is 2.3e-9 of its lobes.
+  and compares the card's output with the ANALYTIC g/2 and h/2 — agreement 8.9e-9 and
+  2.5e-9 (tol 1e-5), which pins the normalization and, since **review 2026-08-14**, the
+  DIRECTION as well. As first shipped it did not pin the direction: g and h were both
+  symmetric about L_x/2 and the plotted quantity is a modulus, so a reversed inverse
+  reproduced them to the same 1e-9 and the note here claiming otherwise was wrong. The
+  envelopes are off-centre now (peaks at 0.31 L_x and 0.68 L_x — g/2 and h/2 is a property
+  of the transform, not of the shape, so the shape was free to move), plus an explicit
+  peak-position leg; reversing `fftPow2`'s sign fails four legs at O(1) and failed none
+  before. The two shape claims the card exists for keep the centred pair and fall out of
+  the same mirror rather than out of prose: ψ̂ peaks exactly on ix = NX/2, and |φ̂(x₀)| is
+  2.35e-9 — an ABSOLUTE number, i.e. 1.2e-8 of its 1.92e-1 lobes.
 - **The gather is bit-exact**, so "minus the equilibrium" is a property of the STATE and
   not of any code: check 4 puts a y-independent ψ_eq in and finds every k_y > 0 column at
   9.3e-16 of the k_y = 0 one.
 - **Three cards on `tearing`** was shipped rather than the plan's fallback (`eigf` replacing
   the cut trace). `devtools/layout.js` passes at 360 px with the new card's header measured
-  (widest single item 284 px of 316 available), but the plan's real question — whether three
-  cards *read* well on a phone — is an eye question and stays on the on-device list.
+  — but note what that measurement is and is not: the widest single 2D item is 284 px of
+  316 available and it is a **label + range + range + val control row**, not the eigf
+  header, which is nowhere near the limit. It is unchanged by this card, and unchanged
+  again by the k_y list going to 9 (review 2026-08-14). The plan's real question — whether
+  three cards *read* well on a phone — is an eye question and stays on the on-device list.
 - The same stale 30–40 % number survives in two DEVELOPER-facing places the side task did
   not name: `common.js`'s `ISLAND_FIT_RISE` comment (where it is load-bearing arithmetic for
   a gate constant) and one parenthetical in `webgpu/README.md`. Left alone deliberately —
   the ruling was about the user-facing hint, and re-deriving the gate constant is not this
   plan's business.
+
+### Adversarial review, 2026-08-14 — verdict FAIL; one major, six minors, all fixed
+
+Fresh reviewer against this plan and the merged diff. Fixed on `main` in
+`webgpu: review fixes — eigf uniform size, k_y range, direction check`.
+
+**The major, and it is a whole class.** `struct EigSel` was padded with a `vec3<u32>`,
+which has align 16 — so the declared struct's WGSL SizeOf is **32** against the **16**-byte
+`eigfU` the page allocates. The pipelines use `layout: "auto"` with a whole-buffer binding
+and the bind groups are built in the `Solver` constructor, so that is a `GPUValidationError`
+out of `createBindGroup` **at boot, on every real device, card open or not**. Nothing
+above could see it: no CPU gate allocates, so the entire check file passed a shader that
+could not bind. Fixed with three scalar pads (`rmhd3d.html`'s `struct FL` is the house
+pattern; the buffer did not move), and `checkeigf` gained the leg that is the **regression
+gate for the class**: reflect the EMITTED kernel and assert the uniform struct's SizeOf
+against the buffer size read off the booted solver. Reads 16 B vs 16 B; putting the vec3
+back reads 32 B vs 16 B.
+
+`devtools/checkiso.js` FAILED on the merged tree — its exact-additions list did not know
+about `eigfGather`. Listed there now, with the note the other borrowed kernels carry.
+
+The other minors, each fixed where it lived: check 3 could not pin the transform's
+DIRECTION and the note above claimed it did (both now true — see that note); "seeds every
+mode up to 6" was wrong by 4× in four places and `EIGF_KMAX` went 6 → 9 so the growth-rate
+roll-over past the n = 6 winner is on screen; the x = L_x/2 guide is drawn on every preset,
+so the hint now carries both readings (resonant surface on tearing, plain midline on KH,
+whose layers are at L_x/4 and 3L_x/4); `drawEigf` handed non-finite samples to `lineTo`
+when one field went NaN and the other did not, which a canvas drops silently while the
+degenerate leg claimed nothing non-finite was drawn (samples now break the polyline, and
+the NaN-φ/finite-ψ case that convicts the old code is in the suite); and two loose
+execution notes here — the 2.3e-9 and the 284 px — were corrected in place above. On
+terminology: a **y-independent** field lives entirely in the k_y = 0 column; it does not
+have "zero mean along y", which would mean that column is *empty*. Corrected in
+`physics.js`, `common.js`, `rmhd2d.html`'s `srcInit` note, `webgpu/README.md` and above.
+
+Owed, not done: the `island chain` PRESET HINT (`rmhd2d.html`) still says "seeded with
+random modes up to k_y = 6" — the same 4× error, in Alfred's own user-facing copy, which
+this round deliberately did not rewrite.
+
+Gates after the fixes, all green: `checkeigf` (with the two new legs), `checkaniso`,
+`checkiso` (now), `checkgc`, `layout` at 360 px, `names.mjs`, `wgslparse` over fresh dumps
+of both pages (124 / 270 kernels, 0 failures), `bootstub` both pages. `refvectors.json` /
+`refvectors3d.json` byte-unchanged.
 
 Provenance: Alfred, 2026-08-14 — "solution minus equilibrium, cut along x at a specified
 location: phi and psi: shows eigenmode structure at early times." The idea is his; two
@@ -72,7 +126,8 @@ eigenfunction itself rather than one realisation of it. (If a real-space trace i
 later it is the same data times a phase — a follow-on option, not this card.)
 
 **2. "Minus equilibrium" = drop the k_y = 0 column, taken LIVE.** The equilibrium *is* the
-k_y = 0 column by construction: every equilibrium seed has zero mean along y, which is
+k_y = 0 column by construction: every equilibrium seed is y-INDEPENDENT, so it lives
+entirely in that column — which is
 exactly what `srcInit` relies on when it extracts ψ_eq,k (`rmhd2d.html`, the eqsrc block —
 `eqk[m] = select(0, fields[NM + m], (m % NKY) == 0u)`). So the subtraction is free and
 exact, with no stored reference field, and selecting a k_y ≠ 0 column performs it
