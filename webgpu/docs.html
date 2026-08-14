@@ -549,6 +549,45 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     exists because the energy trace cannot show this at all: the equilibrium shear carries
     about a million times more energy than the seed, so the total energy sits flat while
     the instability grows through six decades.</p>
+  <p id="eigf"><b>eigenfunction &psi;&#770;(x)</b> (2D) &mdash; the <i>shape</i> of the
+    growing mode across the box, which is the one thing the tearing demo otherwise never
+    shows. The chart above says how fast the island grows; this one says what is growing.
+    It plots the size of one Fourier component in y &mdash; |&psi;&#770;| and
+    |&phi;&#770;| at a single k<sub>y</sub> &mdash; against x, right across the box.</p>
+  <ul>
+    <li>What to look for on the <b>tearing mode</b> preset: &psi;&#770; is a single hump
+      peaked on the current sheet at x = L<sub>x</sub>/2 (marked with a dashed line) with a
+      kink in its slope there, and &phi;&#770; is a pair of lobes with a zero exactly on
+      that line. That pair of shapes <i>is</i> the tearing eigenmode as it appears in the
+      textbooks, and it is what the growth rate belongs to. The flow (&phi;) has to vanish
+      on the surface by symmetry &mdash; it is pushing in from both sides &mdash; and the
+      kink in &psi; is the reconnection: the field cannot be smooth there.</li>
+    <li>Why a Fourier component and not simply a cut through the picture: the two fields
+      are a quarter of a wavelength apart in y, so wherever &psi; is largest &phi; is
+      exactly zero and vice versa. No single line across the box shows both. Taking the
+      size of the component shows both at once and does not depend on where along y you
+      look.</li>
+    <li>The equilibrium is <i>not</i> in this plot, and nothing had to be subtracted to
+      keep it out: the equilibrium here is the same all the way along y, which puts it
+      entirely in the k<sub>y</sub> = 0 component, and this chart never draws that one. The
+      component it does draw is taken live, so late in a run &mdash; once the island is
+      large and the current profile has flattened &mdash; what you are seeing is measured
+      against the state's own average profile at that moment, not against the equilibrium
+      it started from.</li>
+    <li>The <b>k<sub>y</sub></b> selector picks which component. 1 is the longest wave that
+      fits the box, which is the one seeded by the tearing and Kelvin&ndash;Helmholtz
+      presets. On <b>tearing: island chain</b>, where every wavelength up to 6 is seeded and
+      the physics picks the winner, working up the list is the experiment &mdash; and the
+      thing to notice is that the longest wave is <i>not</i> the winner there, though
+      several of the shorter ones grow at nearly the same rate as each other. The second
+      selector draws &psi; alone, &phi; alone, or both.</li>
+    <li>The y axis is linear and rescales itself every frame, because the mode grows
+      exponentially: it is the shape that is the content, never the height. And one honest
+      limit &mdash; what is drawn is the <i>outer</i> solution, the wide part that spans the
+      box. The thin resistive layer at the centre, where the reconnection actually happens,
+      is about one grid cell across at these resolutions, so it is not a picture of the
+      layer and is not offered as one.</li>
+  </ul>
 </details>
 
 <details>

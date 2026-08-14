@@ -215,6 +215,8 @@ is the default and is what the chart drew before they existed):
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
 | island width (2D) | — | log W(t) with a fitted γ = 2·d(ln W)/dt; needs the tearing IC (see below) |
 | k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
+| eigenfunction ψ̂(x) (2D) | k_y bin | `1`…`6`, the box fundamental first; picks which column is read back |
+| eigenfunction ψ̂(x) (2D) | fields | `ψ + φ` · `ψ only` · `φ only` |
 
 **The spectrum fit line** (FEEDBACK item 8) is a straight E = A k<sup>p</sup> from just
 above the forcing shell to the last bin, per CHART CARD, so two cards can carry two
@@ -288,6 +290,37 @@ is analytic in one small kernel (`cutPrep`), and only the inverse along y is a t
 (u_x, u_y, b_x, b_y), so the pair selector, |z<sup>±</sup>| = |u ± b| included, is pure
 CPU arithmetic on 4·ny numbers. Signed pairs are autoscaled symmetrically, the
 magnitude pair to [0,max].
+
+The **eigenfunction ψ̂(x)** chart card (2D only, EIGF_PLAN) is that card's transpose, and
+the only chart with a readback of its own. It plots |ψ̂(x, k_y)| and |φ̂(x, k_y)| against x
+at one selected k_y, on a **linear, autoscaled** y axis — the mode grows exponentially, so
+the shape is the content, and a linear axis also makes |φ̂| = 0 on the resonant surface a
+zero rather than a −∞ spike needing a floor clamp. The path is deliberately the cheapest
+one that exists:
+
+- `eigfGather` (`physics.js`) is a **pure gather**: the strided column m = ix·NKY + j₀ of
+  φ and ψ into a compact 2·NX complex buffer (4 kB at nx = 256), one dispatch, no
+  arithmetic, `fields` bound read-only, j₀ from a 16-byte uniform so the k_y selector costs
+  a `writeBuffer` rather than a pipeline. It exists only on the 2D page.
+- the inverse along **kx** is CPU work on those few kB (`common.js: eigfProfile`), through
+  the same `fftPow2` the field-line spectrum uses — nx is a power of two in every box. The
+  1/(nx·ny) is the full inverse-rfft2 normalization, so what is plotted is the coefficient
+  c_j(x) of ψ = Σ_j c_j(x) e^{i k_y y}.
+- `src: "eigf"` is a third throttled readback in the frame loop, on the cut line's idiom
+  (100 ms, keyed on `stateMark()`), with the card's **k_y bin** where the cut card has its
+  z plane: one gather per distinct bin on screen, so two cards on the same k_y cost one
+  round trip and two on different ones cost two.
+
+Two things it does *not* do. It never subtracts an equilibrium: every equilibrium seed here
+is y-independent, so it lives entirely in the k_y = 0 column (the same fact `srcInit` uses
+to read ψ_eq,k out of that column), and any other column has it removed exactly and for
+free — and the column is the LIVE one, so once the run is nonlinear the profile is measured
+against the state's own mean profile, flattened current and Reynolds-driven mean flow
+included. And it quotes no Δ′: a legend readout fitting ψ̂′/ψ̂ either side of x₀ was drafted
+and dropped in review (window-dependent, and not interesting enough at this resolution to
+earn a legend slot) — the card is the plot alone. What is drawn is the **outer** solution;
+the resistive layer is ~1 cell wide at the shipped presets (δ_lin/dx = 1.03 on `tearing`),
+which is why neither the hint nor `docs.html` promises a layer.
 
 **Colormaps** are per display card: `afmhot` (default), `viridis`, `RdBu`, `grayscale`.
 One WGSL `cmap(x, which)` serves the slice colorize and the 3D cube colorize; afmhot is

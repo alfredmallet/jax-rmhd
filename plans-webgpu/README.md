@@ -23,10 +23,6 @@ disagree, the file is right.
 
 ## Live
 
-- **EIGF_PLAN.md** — ψ̂(x), φ̂(x) at fixed k_y as a 2D chart card: the tearing eigenmode's
-  structure (the plot alone — a Δ′ legend readout was considered and dropped in review).
-  Written and revised 2026-08-14, **not started**. Near-disjoint from CHI_PLAN.md; its
-  Sequencing section owns the rules for both.
 - **CHI_PLAN.md** — χ = k⊥δb/k∥ as a second ordinate on the existing anisotropy card (3D),
   with δb² the matched energy level itself. χ is the invariant of the RMHD rescaling that
   k∥/k⊥ is not, so the card's L_z gauge caveat does not apply to it. Written and revised
@@ -51,6 +47,13 @@ disagree, the file is right.
 
 ## Executed — kept for provenance
 
+- **EIGF_PLAN.md** — ψ̂(x), φ̂(x) at fixed k_y as a 2D chart card: the tearing eigenmode's
+  structure (the plot alone — a Δ′ legend readout was considered and dropped in review).
+  Written, revised and executed 2026-08-14; `devtools/checkeigf.js` is its gate. One gather
+  kernel and a CPU inverse along kx, so the whole card is a display-only transform of the
+  state. Its header records why "minus the equilibrium" needed no subtraction and why three
+  cards on `tearing` is the one thing left for on-device. Near-disjoint from CHI_PLAN.md;
+  its Sequencing section owns the rules for both.
 - **TEARNL_PLAN.md** — two new 2D presets off the tearing equilibrium: `tearing: X-point
   collapse` (large Δ′, secondary island, Loureiro+ 2005) and `tearing: island chain`
   (broadband seed, Δ′ selects the mode, then coalescence) in a new large 8π × 8π box.

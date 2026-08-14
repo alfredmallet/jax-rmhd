@@ -1,9 +1,47 @@
 # Eigenfunction plan: ψ̂(x), φ̂(x) at fixed k_y — a tearing-mode card (2D app)
 
-**Status: DRAFTED 2026-08-14, REVISED same day after Alfred's review (Δ′ readout dropped,
-y axis now linear, stale hint clause to remove), NOT STARTED.** Base: `70ec5a8`, tree clean. One chart card,
-2D only. Sibling plan `CHI_PLAN.md` was drafted in the same session and touches the 3D app;
-the two are near-disjoint and the **Sequencing** section below says exactly where they meet.
+**Status: EXECUTED 2026-08-14** (drafted and revised the same day after Alfred's review —
+Δ′ readout dropped, y axis now linear, stale hint clause to remove). Built on branch `eigf`
+off `2cbfadd` (this plan's own commit; `70ec5a8` below is that commit's parent and the two
+are byte-identical under `webgpu/`). Gate: `devtools/checkeigf.js`, all passing, with
+`checkaniso.js` still all-passing beside it. One chart card, 2D only. Sibling plan
+`CHI_PLAN.md` was drafted in the same session and touches the 3D app; the two are
+near-disjoint and the **Sequencing** section below says exactly where they meet.
+
+**What shipped, against the plan below.** Everything, with no design departures:
+`eigfGatherWGSL` in `physics.js` (a pure strided gather, `fields` read-only, j₀ from a
+16-byte uniform, emitted by the 2D page alone), `eigfProfile` + `drawEigf` in `common.js`
+(the inverse along kx through the existing `fftPow2`, at the full 1/(nx·ny) inverse-rfft2
+normalization, so the plotted quantity is the coefficient c_j(x) of ψ = Σ_j c_j(x)e^{ik_y y}),
+the `eigf` entry inserted immediately after `mode` in `CHART_TYPES` with `aniso` untouched,
+`Solver.readEigf` + the third throttled `src: "eigf"` readback in the frame loop (the cut
+line's idiom, with the card's k_y BIN where the cut card has its z plane — one gather per
+distinct bin on screen), the k_y (1…6) and field (ψ/φ/both) selectors, `avail: cfg =>
+!cfg.zslice`, the card as `tearing`'s third chart and available-not-default everywhere
+else, and the side task (the stale 30–40 % clause deleted from the `tearing` hint, the
+diffusion statement it hung off kept). Docs: `docs.html` #eigf, `webgpu/README.md` (chart
+options table + a "Display modes" subsection), `SPEC.md` §7.
+
+Execution notes worth keeping:
+
+- **The plot is a genuine measurement of the transform, not of itself.** Check 3 builds the
+  state by a direct fp64 forward DFT of ψ = g(x)cos(k_y y + p₀), φ = h(x)sin(k_y y + p₀)
+  and compares the card's output with the ANALYTIC g/2 and h/2 — agreement 9.3e-9 and
+  7.8e-9 (tol 1e-5), which also pins the direction of the transform and the normalization.
+  The two shape claims the card exists for fall out of the same mirror rather than out of
+  prose: ψ̂ peaks exactly on ix = NX/2 and |φ̂(x₀)| is 2.3e-9 of its lobes.
+- **The gather is bit-exact**, so "minus the equilibrium" is a property of the STATE and
+  not of any code: check 4 puts a y-independent ψ_eq in and finds every k_y > 0 column at
+  9.3e-16 of the k_y = 0 one.
+- **Three cards on `tearing`** was shipped rather than the plan's fallback (`eigf` replacing
+  the cut trace). `devtools/layout.js` passes at 360 px with the new card's header measured
+  (widest single item 284 px of 316 available), but the plan's real question — whether three
+  cards *read* well on a phone — is an eye question and stays on the on-device list.
+- The same stale 30–40 % number survives in two DEVELOPER-facing places the side task did
+  not name: `common.js`'s `ISLAND_FIT_RISE` comment (where it is load-bearing arithmetic for
+  a gate constant) and one parenthetical in `webgpu/README.md`. Left alone deliberately —
+  the ruling was about the user-facing hint, and re-deriving the gate constant is not this
+  plan's business.
 
 Provenance: Alfred, 2026-08-14 — "solution minus equilibrium, cut along x at a specified
 location: phi and psi: shows eigenmode structure at early times." The idea is his; two

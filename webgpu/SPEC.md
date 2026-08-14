@@ -212,8 +212,11 @@ spin-up).
   modes, the display/chart CARD system (N ≤ 3 display chains, per-card quantity, colormap
   — afmhot / viridis / RdBu / grayscale, one shared WGSL `cmap(x, which)` — and arrows;
   addable chart cards, each with its own options: the energy trace draws E_kin/E_mag or
-  E±, the spectra E_u/E_b, E± or both, and the cut card its own selected pair of
-  components on its own prepared line — the CPU-built IC presets uploaded through
+  E±, the spectra E_u/E_b, E± or both, the cut card its own selected pair of
+  components on its own prepared line, and the eigenfunction card |ψ̂(x,k_y)| / |φ̂(x,k_y)|
+  against x at one selected k_y — a strided gather of that k_y column (one dispatch, state
+  read-only) plus a CPU inverse along kx with the §1 normalization, i.e. a pure transform
+  of the state, on a linear autoscaled axis — the CPU-built IC presets uploaded through
   `setICFromReal` — the
   Elsasser POTENTIALS ζ± (z± = ẑ×∇ζ±), stored unnormalized and scaled to their two
   amplitude sliders only at apply time, including the `custom` gaussian-blob editor,
