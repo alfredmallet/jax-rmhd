@@ -775,6 +775,45 @@ ${body}
 }
 
 // ---------------------------------------------------------------------------
+// eigenfunction column: the k_y = j0 column of phi and psi, in kx (EIGF_PLAN)
+// ---------------------------------------------------------------------------
+// The tearing eigenfunction card plots |psihat(x, k_y)| and |phihat(x, k_y)| against x at
+// ONE k_y. That is the strided column m = ix*NKY + j0 of the state, inverse-transformed
+// along kx alone -- the exact TRANSPOSE of what cutPrep prepares (which collapses x
+// analytically and leaves one inverse rfft along y), so it needs a kernel of its own and
+// gets the smallest one that can do the job: a pure gather of 2*NX complex numbers (4 KB
+// at NX = 256) into a compact buffer, one dispatch, no arithmetic and no new state. The
+// inverse along kx is then CPU work on those 4 KB (common.js: eigfProfile, through the
+// same fftPow2 the field-line spectrum uses), which is why nothing here transforms.
+//
+// DISPLAY ONLY: `fields` is bound read-only and the output buffer is scratch the solver
+// owns for this readback alone. j0 rides a uniform so the card's k_y selector costs a
+// 16-byte write rather than a pipeline.
+//
+// "minus the equilibrium" is free and exact here rather than something this kernel does:
+// every equilibrium seed in this app has zero mean along y (which is exactly what srcInit
+// relies on when it reads psi_eq,k out of the k_y = 0 column), so a column at j0 > 0
+// carries no equilibrium content at all -- and it is the LIVE column, so once the run is
+// nonlinear it is the perturbation about the state's own mean profile.
+function eigfGatherWGSL(C) {
+  return C.pre + `
+struct EigSel { j0: u32, epad: vec3<u32> };
+@group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
+@group(0) @binding(1) var<uniform> sel: EigSel;
+@group(0) @binding(2) var<storage, read_write> col: array<vec2<f32>>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let ix: u32 = gid.x;
+  if (ix >= NX) { return; }
+  // the CPU clamps j0 too; this is the belt to that pair of braces, so a stale uniform
+  // can never index past the field array
+  let m: u32 = ix * NKY + min(sel.j0, NKY - 1u);
+  col[ix]      = fields[m];
+  col[NX + ix] = fields[NM + m];
+}`;
+}
+
+// ---------------------------------------------------------------------------
 // colormaps: ONE WGSL implementation, selected per display card by md.cmap
 // ---------------------------------------------------------------------------
 // The coefficients live in common.js (CMAP_COEF) so the WGSL here and the CPU

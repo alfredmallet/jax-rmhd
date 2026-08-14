@@ -2418,6 +2418,118 @@ function drawCut(c, d, o) {
   legend(c, x0 + 6, y0 + 12, [[pair.t[0], pair.c[0]], [pair.t[1], pair.c[1]],
                               ["@ x = Lx/2", COL.cut]], x1 - 30);
 }
+
+// ---------------------------------------------------------------------------
+// eigenfunction: |psihat(x, k_y)| and |phihat(x, k_y)| against x (EIGF_PLAN)
+// ---------------------------------------------------------------------------
+// The transpose of the cut trace, and the tearing family's missing picture: the cut shows
+// one line of the box against y, this shows one Fourier coefficient in y against x --
+// psi peaked on the resonant surface with a kink in its slope, phi odd about it with a
+// pair of lobes, the outer solution spanning the box.
+//
+// WHY THE MODULUS and not a real-space cut at some y: linearising about the equilibrium,
+// gamma*psi1 = i*k_y*psi_eq'(x)*phi1 + eta*grad^2 psi1 with gamma and psi_eq' real, so
+// phi1 is 90 degrees out of phase with psi1 IN Y. At the y where psi is largest phi is
+// identically zero and vice versa -- no single y shows both fields. |psihat| and |phihat|
+// are phase-free, show both at once, need no y control, and are the eigenfunction itself
+// rather than one realisation of it.
+//
+// WHY NO EXPLICIT SUBTRACTION of the equilibrium: it IS the k_y = 0 column (every
+// equilibrium seed here has zero mean along y -- the same fact srcInit relies on), so any
+// k_y > 0 column has already had it removed, exactly and for free. The column is LIVE, so
+// once the run is nonlinear "the equilibrium" it is measured against is the state's own
+// mean profile at time t -- flattened current, Reynolds-driven mean flow and all -- which
+// is the honest thing to subtract then, and is why the card's hint does not promise a
+// linear eigenmode forever.
+//
+// `vals` is readEigf's 2*NX complex gather, [phi column | psi column] in the kernel's own
+// fftfreq-ordered ix. The inverse along kx is one fftPow2 per field (NX is a power of two
+// in every box) at sign +1, and the 1/(nx*ny) normalization is the full inverse rfft2 one,
+// so what is plotted is the coefficient c_j(x) of psi(x,y) = sum_j c_j(x) e^{i k_y y} --
+// the same convention as everything else here (SPEC.md 1: transforms are unnormalized
+// forward, 1/(nx*ny) inverse).
+function eigfProfile(vals, nx, ny) {
+  const out = { phi: new Float64Array(nx), psi: new Float64Array(nx) };
+  if (!vals || vals.length < 4 * nx || !(nx > 1)) return out;
+  const re = new Float64Array(nx), im = new Float64Array(nx), nrm = 1 / (nx * (ny || 1));
+  for (let f = 0; f < 2; f++) {
+    const o = 2 * f * nx, dst = f === 0 ? out.phi : out.psi;
+    for (let i = 0; i < nx; i++) { re[i] = vals[o + 2 * i]; im[i] = vals[o + 2 * i + 1]; }
+    fftPow2(re, im, +1);
+    for (let i = 0; i < nx; i++) dst[i] = Math.hypot(re[i], im[i]) * nrm;
+  }
+  return out;
+}
+// which fields the card draws: psi first everywhere, it being the one with the kink
+const EIGF_FIELDS = {
+  both: [["|ψ̂|", COL.em, p => p.psi], ["|φ̂|", COL.ek, p => p.phi]],
+  psi: [["|ψ̂|", COL.em, p => p.psi]],
+  phi: [["|φ̂|", COL.ek, p => p.phi]]
+};
+// the k_y bins the selector offers. 1 is the box fundamental -- the seeded mode on the
+// single-mode presets -- and the list runs far enough for `island chain`, whose seed is
+// broadband to k_y = 6 and whose whole point is watching a mode that is NOT the
+// fundamental win.
+const EIGF_KMAX = 6;
+const eigfBinOf = o => Math.max(0, Math.min(EIGF_KMAX, parseInt((o && o.eky) || "1", 10) || 1));
+// LINEAR y, autoscaled per frame: the mode grows exponentially, so the SHAPE is the
+// content and the level is not. It also costs nothing that a log axis would have cost --
+// phihat is odd about x0, so |phihat(x0)| = 0 is a zero on this axis rather than a
+// -infinity spike needing a floor clamp, and its sitting exactly on x = Lx/2 is a free
+// diagnostic (which is why the resonant surface is drawn).
+function drawEigf(c, d, o) {
+  if (!c) return;
+  const P = PADC, x0 = P.l, x1 = CW - P.r, y0 = P.t, y1 = CH - P.b;
+  chartFrame(c, CW, CH, P);
+  c.textAlign = "left"; c.fillStyle = COL.txt;
+  const series = EIGF_FIELDS[(o && o.efld)] || EIGF_FIELDS.both;
+  const j0 = eigfBinOf(o), Lx = (d && d.Lx) || 1;
+  const nx = d && d.nx ? d.nx : 0;
+  const prof = nx ? eigfProfile(d.vals, nx, d.ny) : null;
+  let hi = 0;
+  if (prof) for (const s of series) {
+    const a = s[2](prof);
+    for (let i = 0; i < nx; i++) if (isFinite(a[i]) && a[i] > hi) hi = a[i];
+  }
+  if (!prof || !(hi > 0)) {
+    c.fillText("eigenfunction |ψ̂|(x) at k_y — " + (prof ? "no amplitude yet" : "waiting…"),
+               x0 + 6, y0 + 13);
+    return;
+  }
+  const X = i => x0 + (i / nx) * (x1 - x0);
+  const Y = v => px(y1 - (v / hi) * (y1 - y0));
+  for (const tk of linTicks(4))
+    yTick(c, Y(hi * tk[0]), x0, x1, tk[1] ? (tk[0] === 0 ? "0" : (hi * tk[0]).toExponential(1)) : "",
+          tk[1]);
+  for (const tk of linTicks(8))
+    xTick(c, x0 + tk[0] * (x1 - x0), y0, y1, CH - 6, tk[1] ? (tk[0] * Lx).toFixed(2) : "", tk[1]);
+  c.fillStyle = COL.txt; c.textAlign = "left";
+  c.fillText("x", x0 + 4, CH - 6);
+  c.textAlign = "right";
+  c.fillText("k_y = " + j0 + "·2π/L_y", x1 - 5, y0 + 12);
+  c.textAlign = "left";
+
+  c.save();
+  c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
+  // the resonant surface of the shipped equilibria, x = Lx/2: psihat peaks there and
+  // phihat crosses zero there, so it is the line both shapes are read against
+  c.strokeStyle = COL.cut; c.lineWidth = 1; c.setLineDash([3, 3]);
+  c.beginPath(); c.moveTo(X(nx / 2), y0); c.lineTo(X(nx / 2), y1); c.stroke();
+  c.setLineDash([]);
+  c.lineWidth = 1.25;
+  for (const s of series) {
+    const a = s[2](prof);
+    c.strokeStyle = s[1]; c.beginPath();
+    for (let i = 0; i < nx; i++) {
+      const y = Y(a[i]);
+      if (i === 0) c.moveTo(X(i), y); else c.lineTo(X(i), y);
+    }
+    c.stroke();
+  }
+  c.restore();
+  legend(c, x0 + 6, y0 + 12, series.map(s => [s[0], s[1]]).concat([["x = Lx/2", COL.cut]]),
+         x1 - 90);
+}
 // ===========================================================================
 // cards: ONE display-card class, ONE chart-card interface
 // ===========================================================================
@@ -2533,6 +2645,38 @@ const CHART_TYPES = {
       + "midway between the layers, where the mode is evanescent (~e<sup>&minus;k<sub>y</sub>L<sub>x</sub>/4</sup> "
       + "= e<sup>&minus;&pi;</sup> per layer), so the amplitude is well below its on-layer value "
       + "&mdash; an offset of the line, not a change of its slope."
+  },
+  // the tearing EIGENFUNCTION (EIGF_PLAN). The one chart card with a readback of its own:
+  // `src: "eigf"` is its own type name, spelled out because the frame loop's third
+  // throttled readback is named after it -- a small gather kernel (physics.js
+  // eigfGatherWGSL) gives it the k_y = j0 column of (phi, psi) and the inverse along kx is
+  // CPU work in eigfProfile. 2D only, exactly as island/mode are: the equilibria are.
+  // Not gated on the tearing IC either, unlike those two -- it is a plain Fourier
+  // coefficient of the state, so it is meaningful on KH (where `mode` plots that same k_y
+  // amplitude ON ONE LINE and this generalises it to the whole x profile) and on anything
+  // else with structure at a chosen k_y.
+  eigf: {
+    label: "eigenfunction &psi;&#770;(x)", w: CW, h: CH, src: "eigf",
+    avail: cfg => !cfg.zslice,
+    opts: () => [
+      { id: "eky", ti: "which k_y column to show; 1 is the box fundamental, which is the "
+          + "seeded mode of the tearing and KH presets. The island-chain preset seeds every "
+          + "mode up to 6 and lets the physics pick, so there the selector is the experiment",
+        o: Array.from({ length: EIGF_KMAX }, (_, i) =>
+             [String(i + 1), "k_y = " + (i + 1) + "&middot;2&pi;/L_y"]) },
+      { id: "efld", ti: "which moduli to draw; psi is the flux function (the one with the "
+          + "kink on the resonant surface) and phi the stream function (odd about it)",
+        o: [["both", "&psi; + &phi;"], ["psi", "&psi; only"], ["phi", "&phi; only"]] }
+    ],
+    draw: (c, d, o) => drawEigf(c, d, o),
+    hint: "|&psi;&#770;(x)| and |&phi;&#770;(x)| at one k<sub>y</sub> &mdash; the tearing "
+      + "eigenfunction: &psi;&#770; peaked on the resonant surface x = L<sub>x</sub>/2 with a "
+      + "kink in its slope, &phi;&#770; odd about it. The k<sub>y</sub> = 0 column IS the "
+      + "equilibrium here, so any other column has it subtracted exactly and for free; the "
+      + "column is the LIVE one, so late in a run it is measured against the state's own mean "
+      + "profile rather than the initial equilibrium. linear y, autoscaled: the mode grows "
+      + "exponentially, so the shape is the content. this is the OUTER solution &mdash; the "
+      + "resistive layer is about one cell wide at these grids."
   },
   // the critical-balance card (ANISO_PLAN). `src: "spectrum"` says it feeds off the
   // spectrum readback -- the two 1D spectra it matches are already in that data object,
@@ -6746,7 +6890,7 @@ let frameHook = null, readoutExtra = null, specExtra = null;
 // second over a picture that cannot move. The marker is (solver, nsteps, stateSeq), not
 // the run flag, so exactly one more readback still lands AFTER the final step -- the
 // charts show the state you paused on, not the one 300 ms before it.
-const cardsThrottle = { spec: 0, cut: 0, specAt: null, cutAt: null };
+const cardsThrottle = { spec: 0, cut: 0, eigf: 0, specAt: null, cutAt: null, eigfAt: null };
 const statsCache = { s: null, at: null };
 // "fill these cards NOW": zero the clocks so the window is already over, and forget which
 // state they were last served for so the gate cannot answer "nothing new" to a card that
@@ -6754,8 +6898,8 @@ const statsCache = { s: null, at: null };
 // PAUSED page is exactly the case where the state has not moved and the card still wants
 // data.
 function cardsThrottleReset() {
-  cardsThrottle.spec = 0; cardsThrottle.cut = 0;
-  cardsThrottle.specAt = null; cardsThrottle.cutAt = null;
+  cardsThrottle.spec = 0; cardsThrottle.cut = 0; cardsThrottle.eigf = 0;
+  cardsThrottle.specAt = null; cardsThrottle.cutAt = null; cardsThrottle.eigfAt = null;
 }
 let stateSeq = 0;
 // `rebuild` ends in applyIC -> chartsReset -> stateBumped, so a new solver always moves
@@ -6941,6 +7085,26 @@ async function loop() {
         }
         for (const c of cutCards) c.draw(planes.get(cards.cfg.zsliceOf(c)));
       }
+    }
+
+    // eigenfunction columns (EIGF_PLAN): the same throttle / guard / marker idiom as the
+    // cut line above, with the card's k_y BIN in the place of the cut card's z plane --
+    // one gather + one 4*nx-float map round trip per distinct bin on screen, so two cards
+    // on the same k_y cost one readback and two on different ones cost two. The
+    // `readEigf` test is not defensive dressing: the gather kernel is 2D-only (as the card
+    // itself is, by `avail`), so the 3D solver genuinely does not have one.
+    const eigfCards = _chartsBySrc("eigf");
+    if (eigfCards.length && solver && solver.readEigf && cardsThrottle.eigfAt !== mark &&
+        performance.now() - cardsThrottle.eigf > 100) {
+      cardsThrottle.eigf = performance.now(); cardsThrottle.eigfAt = mark;
+      const sv = solver, bins = new Map();
+      for (const c of eigfCards) bins.set(eigfBinOf(c.optVals()), null);
+      for (const j0 of Array.from(bins.keys())) {
+        const vals = await sv.readEigf(j0);
+        if (sv !== solver) break;                 // retired while we were awaiting
+        bins.set(j0, { vals, nx: sv.p.nx, ny: sv.p.ny, Lx: sv.p.Lx, j0 });
+      }
+      if (sv === solver) for (const c of eigfCards) c.draw(bins.get(eigfBinOf(c.optVals())));
     }
 
     // spectra: a full extra pass over the fields + a map round trip -> throttle hard

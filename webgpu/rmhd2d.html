@@ -406,6 +406,10 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   // the cut chart's own prep (physics.js): (u_x, u_y, b_x, b_y) along x = Lx/2,
   // still in ky -- rowsC2R turns the four rows into real lines
   S.cutPrep = cutPrepWGSL(C);
+  // the eigenfunction chart's own prep (physics.js, EIGF_PLAN): the k_y = j0 column of
+  // (phi, psi) in kx, gathered into 2*NX complex numbers. 2D only -- the equilibria are,
+  // and so is the card (`avail: cfg => !cfg.zslice`), so the 3D page emits nothing.
+  S.eigfGather = eigfGatherWGSL(C);
   S.render = RENDER_WGSL;
   // sigma_c extras: |z+-|^2, the floor's max reduction, and the ratio
   S.vecMagSq = vecMagSqWGSL(C);
@@ -483,6 +487,10 @@ class Solver {
       // the cut chart's own line prep: 4 rows of NKY complex -> 4 real lines of NY
       cutK: d.createBuffer({ size: 4 * this.g.nky * 8, usage: SQ }),
       cutR: d.createBuffer({ size: 4 * this.g.ny * 4, usage: SQ }),
+      // the eigenfunction chart's column gather (EIGF_PLAN): 2*NX complex (phi then psi),
+      // 8 kB at nx = 512, plus the 16-byte uniform carrying its k_y bin
+      eigfK: d.createBuffer({ size: 2 * this.g.nx * 8, usage: SQ }),
+      eigfU: d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       cfg: d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       stage: [0, 1, 2].map(() => d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
@@ -636,7 +644,8 @@ class Solver {
       prepDisp: cp(S.prepDisp, "prepDisp"), maxPartial: cp(S.maxPartial, "maxPartial"),
       maxFinal: cp(S.maxFinal, "maxFinal"), colorize: cp(S.colorize, "colorize"),
       vecMag: cp(S.vecMag, "vecMag"), vecGather: cp(S.vecGather, "vecGather"),
-      cutPrep: cp(S.cutPrep, "cutPrep"), vecMagSq: cp(S.vecMagSq, "vecMagSq"),
+      cutPrep: cp(S.cutPrep, "cutPrep"), eigfGather: cp(S.eigfGather, "eigfGather"),
+      vecMagSq: cp(S.vecMagSq, "vecMagSq"),
       maxSumPartial: cp(S.maxSumPartial, "maxSumPartial"),
       sigmaCombine: cp(S.sigmaCombine, "sigmaCombine"), contLevel: cp(S.contLevel, "contLevel")
     };
@@ -677,6 +686,8 @@ class Solver {
       spectrum: bg(this.pl.spectrum, [B.fields, B.gridA, B.gridB, B.specBins]),
       cutPrep: bg(this.pl.cutPrep, [B.fields, B.gridA, B.cutK]),
       cutRows: bg(this.pl.rowsC2R, [B.cutK, B.cutR]),
+      // fields READ-ONLY, the column buffer as the only writable slot (EIGF_PLAN)
+      eigfGather: bg(this.pl.eigfGather, [B.fields, B.eigfU, B.eigfK]),
       tick: bg(this.pl.tick, [B.scalars]),
       ou: bg(this.pl.ou, [B.forcing, B.shell, B.noise, B.scalars, B.cfg]),
       scale: bg(this.pl.scale, [B.fields, B.forcing, B.gridA, B.gridB, B.shell, B.scalars, B.cfg]),
@@ -991,6 +1002,24 @@ class Solver {
   // Throttled by the caller: one small pass plus a 4*NY map round trip.
   async readCutLine(iz) { return cutLineRead(this, iz); }
 
+  // the eigenfunction chart's column (EIGF_PLAN): (phi, psi) at k_y bin j0, still in kx,
+  // as 2*NX complex numbers. One tiny dispatch plus a 4*NX-float map round trip, throttled
+  // by the caller exactly as the cut line is; the inverse along kx is CPU work
+  // (common.js: eigfProfile). Display-only -- nothing here writes the state.
+  // 2D only, so there is no `iz` and no Mode uniform: the k_y bin is the whole selection.
+  async readEigf(j0) {
+    const d = this.device;
+    const j = Math.max(0, Math.min(this.g.nky - 1, j0 | 0));
+    d.queue.writeBuffer(this.buf.eigfU, 0, new Uint32Array([j, 0, 0, 0]));
+    const enc = d.createCommandEncoder();
+    const p = enc.beginComputePass();
+    p.setPipeline(this.pl.eigfGather); p.setBindGroup(0, this.bg.eigfGather);
+    p.dispatchWorkgroups(Math.ceil(this.g.nx / 64));
+    p.end();
+    d.queue.submit([enc.finish()]);
+    return readBuf(d, this.buf.eigfK, 2 * this.g.nx * 8);
+  }
+
   // recompute + read back the shell spectra: 2*NB floats ([E_u | E_b]). Throttled by
   // the caller (this is a full pass over the fields plus a mapAsync round trip).
   async readSpectrum() {
@@ -1239,8 +1268,13 @@ const PRESETS = {
     // resonant surface x = Lx/2 and the island card already rides that readback, so the
     // pair costs one readback between them; b_x = -d_y psi on that line is the reconnected
     // flux with zero equilibrium content, i.e. the raw material of the W the chart plots.
+    // ... plus the EIGENFUNCTION card (EIGF_PLAN): this is the preset it was built for --
+    // single mode, quoted gamma, and the one place a reader of FKR can see the structure
+    // the growth rate belongs to. It opens on the box fundamental, which is the seeded
+    // mode here. Third card, hence the one thing owed on device: whether three fit a phone
+    // comfortably or the cut trace should yield to it.
     layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }],
-              charts: ["island", { t: "cut", pair: "b" }] },
+              charts: ["island", { t: "cut", pair: "b" }, "eigf"] },
     hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "
       + "&phi;<sub>eq</sub> = 0: b<sub>y</sub> vanishes on x = L<sub>x</sub>/2, so that is the "
       + "resonant surface of the k<sub>y</sub> = 2&pi;/L<sub>y</sub> seed. Watch the &psi; "
@@ -1252,8 +1286,9 @@ const PRESETS = {
       + "<b>maintain equilibrium flux</b> reproduces: it adds the "
       + "static source S = &minus;&eta;&nabla;&sup2;&psi;<sub>eq</sub> that holds the layer &mdash; "
       + "the island chart's fitted &gamma; is what you compare against it. "
-      + "Switch it off and &psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, dropping the "
-      + "measured slope some 30&ndash;40% below the reference."
+      + "Switch it off and &psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;. "
+      + "The <b>eigenfunction &psi;&#770;(x)</b> chart is the shape that &gamma; belongs to: "
+      + "the mode's own profile across the box at k<sub>y</sub> = 2&pi;/L<sub>y</sub>."
   },
   // ---- the nonlinear pair (TEARNL Phases 3 and 4) ---------------------------
   // Same equilibrium as `tearing`, either side of its nonlinear fork, and no new physics
