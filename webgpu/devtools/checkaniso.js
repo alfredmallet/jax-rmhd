@@ -4,9 +4,12 @@
 // Sections 1-6 are the plan's six groups, run against the REAL common.js functions in a
 // bare vm (no page, no canvas): slope recovery, the density trap as a regression guard,
 // uniqueness/robustness, the no-extrapolation rule, the degenerates, and the level
-// window. Section 7 boots rmhd3d / rmhd2d on stubenv and drives the card itself -- the
-// type selector, the option set, and the field-line readback gate, which is the one
-// functional per-app edit the plan allows.
+// window. Section 7 is the card entry itself. Section 8 is CHI_PLAN's five checks on the
+// second ordinate (chi = k_perp db / k_par v_A): the bit-identity gate on the shipped
+// ratio path, the chi arithmetic, the Elsasser pairing and its provenance, the reported
+// estimator bias alpha, and chi's own degenerates. The booted-page block at the end drives
+// the card on stubenv -- the type selector, the option set, and the field-line readback
+// gate, which is the one functional per-app edit ANISO_PLAN allowed.
 //
 // On the synthetic spectra of sections 1-2. The matching is exact only for CONTINUOUS
 // power-law tails; on binned ones two known instrument effects survive, and the tolerances
@@ -54,7 +57,8 @@ const C = Object.assign({}, vm.runInContext(
   "({ anisoCurves, drawAniso, ANISO_NLEV, ANISO_LANES, _anisoLeg, _anisoTail, _anisoAt,"
   + " _anisoWin, _anisoPeak, specKnee, specFloor, fitKA, fitIndex, fitLabel, FIT_FRACS,"
   + " FIT_FRACS_ANISO, FIT_SNAP, SPEC_KNEE, CHART_TYPES, COL,"
-  + " fitAnchor, fitAnchorAuto, fitKMatch, FIT_KBOX })", sandbox));
+  + " fitAnchor, fitAnchorAuto, fitKMatch, FIT_KBOX,"
+  + " _anisoQAt, ANISO_OPP, ANISO_CHI_REF, flSpectrum })", sandbox));
 
 // ---- synthetic spectra -----------------------------------------------------
 // a three-lane [E_u | E_b | H_c] bin stack of `n` bins, E_u carrying f(bin) and the other
@@ -545,29 +549,50 @@ console.log("7. the card: type entry, fit tables, and the field-line readback ga
      C.CHART_TYPES.island.avail({}) === true && !C.CHART_TYPES.island.avail({ zslice: true }));
   ok("  ... it declares no zslice of its own (the spectra are whole-box)", !T.zslice);
   const ids = T.opts({ zslice: true }).map(s => s.id).join(",");
-  ok("  ... its options are aq, ad and the fit trio", ids === "aq,ad,fit,fitp,fita", ids);
+  ok("  ... its options are the ordinate, aq, ad and the fit trio",
+     ids === "ay,aq,ad,fit,fitp,fita", ids);
   const os = T.opts({ zslice: true });
-  ok("  ... the defaults are the FIRST option of each list: total energy, both curves",
-     os[0].o[0][0] === "tot" && os[1].o[0][0] === "both" && os[2].o[0][0] === "pin");
+  ok("  ... the defaults are the FIRST option of each list: the ratio ordinate, total "
+     + "energy, both curves",
+     os[0].o[0][0] === "ratio" && os[1].o[0][0] === "tot" && os[2].o[0][0] === "both" &&
+     os[3].o[0][0] === "pin");
+  ok("  ... and the second ordinate is chi (CHI_PLAN), the only other one",
+     os[0].o.length === 2 && os[0].o[1][0] === "chi" && /&chi;/.test(os[0].o[1][1]),
+     os[0].o.map(x => x[0] + "=" + x[1]).join(" | "));
   ok("  ... the index box defaults to -0.333, which snaps to exactly -1/3",
-     C.fitIndex(String(os[3].v), C.FIT_FRACS_ANISO) === -1 / 3, String(os[3].v));
+     C.fitIndex(String(os[4].v), C.FIT_FRACS_ANISO) === -1 / 3, String(os[4].v));
   ok("  ... the two number boxes hide with the fit line, as on the spectrum card",
-     os[3].vis({ fit: "off" }) === false && os[3].vis({ fit: "pin" }) === true &&
-     os[4].vis({ fit: "pin" }) === false && os[4].vis({ fit: "amp" }) === true);
-  ok("  ... and it has a hint", typeof T.hint === "string" && T.hint.length > 80);
+     os[4].vis({ fit: "off" }) === false && os[4].vis({ fit: "pin" }) === true &&
+     os[5].vis({ fit: "pin" }) === false && os[5].vis({ fit: "amp" }) === true);
+  // ... and the INDEX box hides on the chi ordinate as well, where a power-law index is
+  // not what the reference line is (it is the horizontal chi = 1). The amplitude box
+  // stays: there it names the level of that line.
+  ok("  ... and the index box also hides on the chi ordinate, where it means nothing",
+     os[4].vis({ fit: "pin", ay: "chi" }) === false &&
+     os[4].vis({ fit: "amp", ay: "chi" }) === false &&
+     os[5].vis({ fit: "amp", ay: "chi" }) === true &&
+     os[4].vis({ fit: "pin", ay: "ratio" }) === true);
+  // the hint FOLLOWS the ordinate select, so it is a function of the options -- the shape
+  // gen2d's colour-scale hint already has
+  ok("  ... and it has a hint, one per ordinate",
+     typeof T.hint === "function" && T.hint({}).length > 80 &&
+     T.hint({ ay: "chi" }).length > 80 && T.hint({}) !== T.hint({ ay: "chi" }));
   // Alfred's copy (third feedback round), and the ONE thing in it that is a claim about the
   // code rather than about the physics: which leg is solid and which is dashed. anisoCurves
   // gives the z leg a null dash and the field-line leg [5, 3], so solid = k_z in the global
   // mean field and dashed = k_par along the local field, which is what the hint says. If a
   // future edit swaps the dashes, this leg fails rather than the copy quietly going wrong.
+  const H = T.hint({}), HC = T.hint({ ay: "chi" });
   ok("the hint is Alfred's copy: cumulative-energy matching, the two legs, the CB band",
-     /^k&#8741;\(k&perp;\)\/k&perp; as a function of k&perp; by matching cumulative energy/.test(T.hint) &&
-     /Solid: k<sub>z<\/sub> \(global mean field\)\./.test(T.hint) &&
-     /Dashed: k&#8741; \(local mean field along field lines\)\./.test(T.hint) &&
+     /^k&#8741;\(k&perp;\)\/k&perp; as a function of k&perp; by matching cumulative energy/.test(H) &&
+     /Solid: k<sub>z<\/sub> \(global mean field\)\./.test(H) &&
+     /Dashed: k&#8741; \(local mean field along field lines\)\./.test(H) &&
      /somewhere between &minus;1\/2 and &minus;1\/3 is the classic critical balance prediction/
-       .test(T.hint) &&
-     /experimental feature: imperfect agreement at these resolutions\.$/.test(T.hint),
-     T.hint.length + " chars");
+       .test(H) &&
+     /experimental feature: imperfect agreement at these resolutions\.$/.test(H),
+     H.length + " chars");
+  ok("  ... and the ratio hint is UNCHANGED by CHI_PLAN: `ay` absent reads as `ay: ratio`",
+     H === T.hint({ ay: "ratio" }) && H === T.hint(null) && H === T.hint({ aq: "zp" }));
   ok("  ... and SOLID / DASHED are the dashes anisoCurves actually strokes the legs with",
      (() => {
        const A = C.anisoCurves(CASE_GS, { aq: "tot", ad: "both" });
@@ -576,8 +601,23 @@ console.log("7. the card: type entry, fit tables, and the field-line readback ga
               JSON.stringify(fl[2]) === "[5,3]" && /k∥z/.test(z[3]) && /k∥B/.test(fl[3]);
      })(), "z leg dash null, field-line leg [5,3]");
   ok("  ... it drops to the manual the things the one-breath version cannot carry",
-     !/Cho/i.test(T.hint) && !/gauge/i.test(T.hint) && !/L<sub>z<\/sub>/.test(T.hint) &&
-     !/DIVERGE/.test(T.hint), T.hint);
+     !/Cho/i.test(H) && !/gauge/i.test(H) && !/L<sub>z<\/sub>/.test(H) &&
+     !/DIVERGE/.test(H), H);
+  // the chi hint's own load-bearing claims (CHI_PLAN): the db convention SPELLED OUT, the
+  // level framed as an order of magnitude and never to two figures, the departures rather
+  // than the flat line, and -- the one it would be easy to get wrong -- that the solid /
+  // dashed split on this axis is the ratio card's divergence replotted and NOT a second
+  // measurement. The last one is a physics claim about the code: one db divides both legs.
+  ok("the chi hint states the db convention verbatim and frames the level as O(1)",
+     /&delta;b&sup2; = Q/.test(HC) && /matched energy content above\s+k&perp;/.test(HC) &&
+     /v<sub>A<\/sub> = 1/.test(HC) && /order of magnitude/.test(HC) &&
+     /of order 1/.test(HC) && !/[0-9]\.[0-9]/.test(HC),
+     HC.length + " chars, no two-significant-figure level in it");
+  ok("  ... it points at the departures, not at the flat line",
+     /forcing shell/.test(HC) && /dissipation knee/.test(HC) &&
+     /imbalanc/.test(HC) && /<i>other<\/i> Elsasser field/.test(HC));
+  ok("  ... and it refuses to sell the solid/dashed split as a second measurement",
+     /not a second measurement/.test(HC) && /one &delta;b divides both/.test(HC));
   // the FIT_FRACS parameterization: two tables, neither leaking into the other
   ok("the spectrum card's snap table is UNCHANGED at -5/3, -3/2",
      JSON.stringify(C.FIT_FRACS) === JSON.stringify([[-5 / 3, "-5/3"], [-3 / 2, "-3/2"]]));
@@ -593,6 +633,469 @@ console.log("7. the card: type entry, fit tables, and the field-line readback ga
      C.fitLabel(-1, C.FIT_FRACS_ANISO, "k⊥") === "k⊥^-1");
   ok("  ... and nothing outside FIT_SNAP snaps on either table",
      C.fitIndex(String(-1 / 3 + 2 * C.FIT_SNAP), C.FIT_FRACS_ANISO) !== -1 / 3);
+}
+
+// ---------------------------------------------------------------------------
+console.log("8. the chi ordinate: χ = k⊥ δb / (k∥ v_A)   (CHI_PLAN checks 1-5)");
+// ---------------------------------------------------------------------------
+// `ay` picks what the card puts on its y axis: the shipped ratio, or chi. Everything the
+// two share -- the tails, the window, the level ladder, the legend -- is shared code, so
+// these legs are about the one multiplication, the one lookup that crosses Elsasser lanes,
+// and the promise that the shipped path did not move.
+//
+// The check's own arithmetic below rebuilds the LEVEL LADDER from the public helpers
+// (fitKA / specKnee / _anisoLeg / _anisoTail / _anisoWin / _anisoAt / ANISO_NLEV) rather
+// than reading it out of anisoCurves, so "chi = kp*sqrt(Q)/kz" is asserted against the
+// definition and the level set is available to say WHICH Q and WHICH lane each point came
+// from -- which is what check 3 needs.
+const LADDER_TOL = 1e-12;
+function anisoLadder(d, o) {
+  const lane = C.ANISO_LANES[(o && o.aq)] || C.ANISO_LANES.tot;
+  const nb = d.nb, kf = d.parKfac === undefined ? 1 : d.parKfac;
+  const perp = C._anisoLeg(d.perp, nb, 0, 1, lane);
+  const TP = C._anisoTail(perp);
+  const kd = C.specKnee([[perp]], C._anisoPeak(perp));
+  const wP = C._anisoWin(TP, C.fitKA(nb, d.fshell || [1, 3]), kd);
+  const src = (o && o.ad) === "fl" ? d.parFL : d.par;
+  const nzb = Math.floor((src ? src.length : 0) / 3);
+  const par = C._anisoLeg(src, nzb, 1, kf, lane);
+  const TQ = C._anisoTail(par);
+  const wQ = C._anisoWin(TQ, 0, C.specKnee([[par]], C._anisoPeak(par)));
+  const out = { TP, TQ, lev: [] };
+  if (!wP || !wQ) return out;
+  const Qhi = Math.min(wP[1], wQ[1]), Qlo = Math.max(wP[0], wQ[0]);
+  if (!(Qhi > 0) || !(Qlo > 0) || Qlo > Qhi) return out;
+  const nl = Qlo < Qhi ? C.ANISO_NLEV : 1;
+  for (let m = 0; m < nl; m++) {
+    const Q = nl > 1 ? Qhi * Math.pow(Qlo / Qhi, m / (nl - 1)) : Qhi;
+    const kp = C._anisoAt(TP, Q), kz = C._anisoAt(TQ, Q);
+    if (kp > 0 && kz > 0) out.lev.push({ Q, kp, kz });
+  }
+  return out;
+}
+// the worst relative disagreement between a drawn curve and a list of expected values
+const worstRel = (pts, want) => {
+  let w = 0;
+  for (let i = 0; i < want.length; i++) w = Math.max(w, Math.abs(pts[2 * i + 1] - want[i]) / want[i]);
+  return w;
+};
+// a (k, v) curve sampled at k, log-log -- for comparing two curves drawn over different
+// k ranges (the two Elsasser lanes are not drawn over the same one)
+const curveAt = (pts, k) => {
+  if (pts.length < 4 || k < pts[0] || k > pts[pts.length - 2]) return 0;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    if (k >= pts[i] && k <= pts[i + 2]) {
+      const dk = Math.log(pts[i + 2] / pts[i]);
+      return dk > 0 ? pts[i + 1] * Math.pow(pts[i + 3] / pts[i + 1], Math.log(k / pts[i]) / dk)
+                    : pts[i + 1];
+    }
+  }
+  return 0;
+};
+
+// ---------------------------------------------------------------------------
+console.log("8.1 CHECK 1, the gate: `ay: ratio` is BIT-IDENTICAL to what shipped");
+// ---------------------------------------------------------------------------
+// The base is the last commit that touched common.js before CHI_PLAN, read out of git
+// rather than vendored as a golden file: what this has to compare against is what SHIPPED,
+// and a golden copy is one more thing to keep honest. Both spellings of the default are
+// compared -- `ay` absent (every existing caller, including the app's own self-test and
+// any preset that never names it) and `ay: "ratio"` written out. Somewhere without the
+// repo (a tarball, an export) this reports a SKIP: this file reports, it never gates.
+{
+  const BASE = "70ec5a8";
+  let base = null, why = "";
+  try {
+    base = require("child_process").execFileSync(
+      "git", ["-C", dir, "show", BASE + ":webgpu/common.js"],
+      { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (e) { why = String((e && e.message) || e).split("\n")[0]; }
+  if (!base) {
+    console.log("  SKIP  " + BASE + ":webgpu/common.js is not readable here (" + why + ")");
+  } else {
+    const sb = {
+      document: { getElementById: () => stubEl(), createElement: () => stubEl(),
+                  createTextNode: () => ({}), querySelectorAll: () => [] },
+      window: { addEventListener() {}, devicePixelRatio: 1, matchMedia: () => ({ matches: true }) },
+      console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8ClampedArray, Map, Set,
+      Error, Promise, setTimeout, Number, String, Array, Object, isFinite, parseInt, parseFloat,
+      URLSearchParams, performance: { now: () => 0 }
+    };
+    sb.globalThis = sb;
+    vm.createContext(sb);
+    vm.runInContext(base, sb, { filename: BASE + ":common.js" });
+    const B = vm.runInContext("({ anisoCurves })", sb);
+    const wob2 = j => 1 + 0.6 * Math.sin(1.7 * j) * Math.cos(0.31 * j + 1);
+    const CASES = {
+      gs: CASE_GS, aligned: CASE_AL,
+      lanes: { perp: mk3(PERP_N, j => (j === 0 ? 0 : Math.pow(j, -5 / 3))), nb: PERP_N,
+               par: mk3(PAR_N, j => 3 * Math.pow(j + 1, -2)),
+               parFL: mk3(PAR_N, j => 5 * Math.pow(j + 1, -1.8)), parKfac: 1.37, fshell: [1, 5] },
+      noisy: Object.assign({}, CASE_GS, {
+        perp: mk(PERP_N, j => (j === 0 ? 0 : Math.pow(j, -5 / 3) * wob2(j))),
+        par: mk(PAR_N, j => 3 * Math.pow(j + 1, -2) * wob2(3 * j)) }),
+      knee: Object.assign({}, CASE_GS, {
+        perp: mk(PERP_N, j => (j === 0 ? 0 : Math.pow(j, -5 / 3) * Math.exp(-Math.pow(j / 300, 4)))) }),
+      shortpar: Object.assign({}, CASE_GS, { par: mk(6, j => 3 * Math.pow(j + 1, -2)) }),
+      loudpar: Object.assign({}, CASE_GS, { par: mk(4, () => 1e12) }),
+      flat: { perp: mk(64, j => (j === 0 ? 0 : Math.pow(j, -1))), nb: 64,
+              par: mk(32, j => 0.3 * Math.pow(j + 1, -1)),
+              parFL: mk(32, j => 0.3 * Math.pow(j + 1, -1)), parKfac: 1, fshell: [1, 3] },
+      nofl: Object.assign({}, CASE_GS, { parFL: null }),
+      nopar: Object.assign({}, CASE_GS, { par: null }),
+      silent: { perp: mk(64, () => 0), nb: 64, par: parLaw(3, -2), parKfac: 1 },
+      onebin: { perp: mk(2, () => 1), nb: 2, par: parLaw(3, -2), parKfac: 1 },
+      nothing: null, nbonly: { nb: 4 }
+    };
+    const OPTS = [];
+    for (const aq of ["tot", "zp", "zm", "junk", undefined])
+      for (const ad of ["both", "z", "fl", undefined]) OPTS.push({ aq, ad });
+    OPTS.push(null, {});
+    // Infinity is not JSON, and kd carries it on every knee-less spectrum, so it is spelled
+    const rep = (k, v) => (typeof v === "number" && !isFinite(v)) ? "#" + String(v) : v;
+    let n = 0, diff = 0, first = "";
+    for (const cn of Object.keys(CASES)) for (const o of OPTS) {
+      const want = JSON.stringify(B.anisoCurves(CASES[cn], o), rep);
+      for (const oo of [o, Object.assign({ ay: "ratio" }, o)]) {
+        n++;
+        if (JSON.stringify(C.anisoCurves(CASES[cn], oo), rep) !== want && !diff++)
+          first = cn + " " + JSON.stringify(oo);
+      }
+    }
+    ok("anisoCurves matches base " + BASE + " EXACTLY on every (data x aq x ad) pair",
+       diff === 0, n + " comparisons over " + Object.keys(CASES).length + " data cases"
+       + (diff ? ", first difference at " + first : ", implicit default and ay:\"ratio\""));
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log("8.2 CHECK 2, the arithmetic: chi = kp*sqrt(Q)/kz, and the slope that implies");
+// ---------------------------------------------------------------------------
+{
+  // the new helper first: _anisoQAt is _anisoAt's inverse direction, and inherits its
+  // no-extrapolation rule (section 4 is the same set of legs the other way round)
+  const lane = (u, b, h) => u + b;
+  const T = C._anisoTail(C._anisoLeg(CASE_GS.perp, PERP_N, 0, 1, lane));
+  ok("_anisoQAt refuses a k below the tail's FIRST bin and above its LAST (returns 0)",
+     C._anisoQAt(T, T.ks[0] * 0.999999) === 0 && C._anisoQAt(T, 1e9) === 0 &&
+     C._anisoQAt(T, 0) === 0 && C._anisoQAt(C._anisoTail([]), 1) === 0);
+  ok("  ... the two ends themselves map to the two end levels",
+     C._anisoQAt(T, T.ks[0]) === T.qs[0] && C._anisoQAt(T, T.ks[T.n - 1]) === T.qs[T.n - 1]);
+  ok("  ... an exact bin maps to that bin's level, a midpoint lands between",
+     Math.abs(C._anisoQAt(T, T.ks[7]) - T.qs[7]) < 1e-12 * T.qs[7] &&
+     C._anisoQAt(T, Math.sqrt(T.ks[7] * T.ks[8])) < T.qs[7] &&
+     C._anisoQAt(T, Math.sqrt(T.ks[7] * T.ks[8])) > T.qs[8]);
+  ok("  ... and it round-trips _anisoAt: Q -> k -> Q to fp64",
+     [3, 9, 40, 120].every(i => {
+       const Q = Math.sqrt(T.qs[i] * T.qs[i + 1]);
+       return Math.abs(C._anisoQAt(T, C._anisoAt(T, Q)) - Q) < 1e-12 * Q;
+     }));
+  // the ordinate itself, on the two power-law pairs of section 1
+  for (const [nm, d, p] of [["GS95 (-5/3 vs -2)", CASE_GS, -5 / 3],
+                            ["aligned (-3/2 vs -2)", CASE_AL, -3 / 2]]) {
+    for (const ad of ["z", "fl"]) {
+      const L = anisoLadder(d, { aq: "tot", ad });
+      const r = C.anisoCurves(d, { aq: "tot", ad }).curves[0][0];
+      const x = C.anisoCurves(d, { aq: "tot", ad, ay: "chi" }).curves[0][0];
+      let sameK = r.length === x.length;
+      for (let i = 0; sameK && i < r.length; i += 2) if (r[i] !== x[i]) sameK = false;
+      ok(nm + ", " + ad + ": the ordinate MULTIPLIES, it does not re-map k⊥",
+         sameK && x.length === 2 * L.lev.length, r.length / 2 + " vs " + x.length / 2 + " points");
+      ok("  ... chi = kp*sqrt(Q)/kz from the level ladder, to fp64",
+         worstRel(x, L.lev.map(l => l.kp * Math.sqrt(l.Q) / l.kz)) < LADDER_TOL,
+         "worst " + worstRel(x, L.lev.map(l => l.kp * Math.sqrt(l.Q) / l.kz)).toExponential(2));
+      ok("  ... equivalently chi = sqrt(Q(k⊥))/ratio: the two ordinates differ by sqrt(Q)",
+         worstRel(x, r.filter((v, i) => i % 2)
+                      .map((rv, i) => Math.sqrt(C._anisoQAt(L.TP, r[2 * i])) / rv)) < 1e-9);
+    }
+    // ... and what that predicts for the SLOPE, which is the physics statement: with
+    // E⊥ ~ k^p the tail goes as k^(p+1), sqrt(Q) as k^((p+1)/2), so chi's slope is
+    // (p+1)/2 minus the ratio's. GS95 gives exactly 0 -- flat chi IS critical balance --
+    // and the aligned pair +1/4, which is a different claim and worth failing on.
+    const r = C.anisoCurves(d, { aq: "tot", ad: "z" }).curves[0][0];
+    const x = C.anisoCurves(d, { aq: "tot", ad: "z", ay: "chi" }).curves[0][0];
+    const want = (p + 1) / 2 - (p === -5 / 3 ? -1 / 3 : -1 / 2);
+    ok("  ... so the chi slope is " + want.toFixed(4) + " where the ratio slope is "
+       + slope(r).toFixed(4), Math.abs(slope(x) - want) < SLOPE_TOL,
+       "got " + slope(x).toFixed(4) + " (tol " + SLOPE_TOL + ")");
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log("8.3 CHECK 3, the Elsasser pairing: db crosses lanes, the matching does not");
+// ---------------------------------------------------------------------------
+// chi± = k⊥ Z∓ / (k∥± v_A): the counterpropagating field is what shears you, so db comes
+// from the OPPOSITE lane -- and nothing else does. The adjacent wrong implementation
+// builds the whole perpendicular tail from the opposite lane, which also moves which k⊥
+// each level maps to; it survives a pure amplitude asymmetry with the right sign, so the
+// two lanes here get different perpendicular SLOPES as well, and what is asserted is kp's
+// provenance and not just the direction of the split.
+{
+  // E+ = k^-5/3 against E- = 0.05 k^-4/3 (different amplitude AND slope), carried as
+  // E_u = (E+ + E-)/2 and H_c = (E+ - E-)/2, which is what E± = E_u + E_b ± H_c inverts to.
+  // The PARALLEL stack carries the same imbalance, so each lane's k∥ comes off its own
+  // spectrum as it does in a real imbalanced run.
+  const mkPM = (n, fp, fm, j1) => {
+    const a = new Float32Array(3 * n);
+    for (let j = j1; j < n; j++) {
+      const p = fp(j), m = fm(j);
+      a[j] = 0.5 * (p + m); a[n + j] = 0; a[2 * n + j] = 0.5 * (p - m);
+    }
+    return a;
+  };
+  const IMB = 0.05;
+  const parPM = mkPM(PAR_N, j => 3 * Math.pow(j + 1, -2), j => IMB * 3 * Math.pow(j + 1, -2), 0);
+  const d = { perp: mkPM(PERP_N, j => Math.pow(j, -5 / 3), j => IMB * Math.pow(j, -4 / 3), 1),
+              nb: PERP_N, par: parPM, parFL: parPM, parKfac: 1, fshell: [1, 5] };
+  const TPp = C._anisoTail(C._anisoLeg(d.perp, PERP_N, 0, 1, C.ANISO_LANES.zp));
+  const TPm = C._anisoTail(C._anisoLeg(d.perp, PERP_N, 0, 1, C.ANISO_LANES.zm));
+  ok("the two lanes really are different curves, not one scaled (slopes -5/3 vs -4/3)",
+     Math.abs(slope(C.anisoCurves(d, { aq: "zp", ad: "z" }).curves[0][0])
+              - slope(C.anisoCurves(d, { aq: "zm", ad: "z" }).curves[0][0])) > 0.2,
+     "ratio slopes " + slope(C.anisoCurves(d, { aq: "zp", ad: "z" }).curves[0][0]).toFixed(3)
+     + " / " + slope(C.anisoCurves(d, { aq: "zm", ad: "z" }).curves[0][0]).toFixed(3));
+  for (const [aq, TPo, TPs] of [["zp", TPm, TPp], ["zm", TPp, TPm]]) {
+    const L = anisoLadder(d, { aq, ad: "z" });
+    const r = C.anisoCurves(d, { aq, ad: "z" }).curves[0][0];
+    const x = C.anisoCurves(d, { aq, ad: "z", ay: "chi" }).curves[0][0];
+    // PROVENANCE: kp is this lane's own measurement, bit for bit
+    let sameK = r.length === x.length;
+    for (let i = 0; sameK && i < r.length; i += 2) if (r[i] !== x[i]) sameK = false;
+    ok(aq + ": every k⊥ is the SELECTED lane's own, bit-identical to the ratio curve", sameK);
+    ok("  ... and chi takes db from the OPPOSITE lane's tail at that k⊥, to fp64",
+       worstRel(x, L.lev.map(l => l.kp * Math.sqrt(C._anisoQAt(TPo, l.kp)) / l.kz)) < LADDER_TOL);
+    ok("  ... it is NOT the own-lane level (which is the balanced-run coincidence)",
+       worstRel(x, L.lev.map(l => l.kp * Math.sqrt(C._anisoQAt(TPs, l.kp)) / l.kz)) > 0.5,
+       "own-lane db would be " +
+       (100 * worstRel(x, L.lev.map(l => l.kp * Math.sqrt(C._anisoQAt(TPs, l.kp)) / l.kz))).toFixed(0)
+       + "% off");
+  }
+  // ... and the wrong wiring, COMPUTED here rather than remembered: the same ladder with
+  // the perpendicular tail taken from the opposite lane wholesale. It reports different
+  // k⊥ for every level, which is what the leg above convicts it on.
+  {
+    const wrong = (() => {
+      const L = anisoLadder(d, { aq: "zm", ad: "z" });      // zm's TP with zp's ladder shape
+      return L.lev.map(l => l.kp);
+    })();
+    const right = anisoLadder(d, { aq: "zp", ad: "z" }).lev.map(l => l.kp);
+    let w = 0;
+    for (let i = 0; i < Math.min(right.length, wrong.length); i++)
+      w = Math.max(w, Math.abs(right[i] - wrong[i]) / right[i]);
+    ok("the swapped-tail implementation lands on visibly different k⊥ (the guard has teeth)",
+       w > 0.2, "worst k⊥ disagreement " + (100 * w).toFixed(0) + "%");
+  }
+  // the SIGN, at a common k⊥ (the two lanes are not drawn over the same range): with
+  // Z+ >> Z-, it is the WEAK field that is strongly sheared, so chi- > chi+.
+  {
+    const xp = C.anisoCurves(d, { aq: "zp", ad: "z", ay: "chi" }).curves[0][0];
+    const xm = C.anisoCurves(d, { aq: "zm", ad: "z", ay: "chi" }).curves[0][0];
+    const kLo = Math.max(xp[0], xm[0]), kHi = Math.min(xp[xp.length - 2], xm[xm.length - 2]);
+    let worst = Infinity, at = 0;
+    for (let m = 0; m <= 8; m++) {
+      const k = kLo * Math.pow(kHi / kLo, m / 8), q = curveAt(xm, k) / curveAt(xp, k);
+      if (q < worst) { worst = q; at = k; }
+    }
+    ok("with E+ " + (1 / IMB) + "x E-, chi- exceeds chi+ at every common k⊥",
+       kHi > kLo && worst > 2, "smallest chi-/chi+ = " + worst.toFixed(2) + " at k⊥ = "
+       + at.toFixed(1) + " (k⊥ " + kLo.toFixed(1) + ".." + kHi.toFixed(1) + ")");
+  }
+  // on `tot` there is no opposite lane at all and db is the matched level itself
+  ok("the tot lane has no opposite (ANISO_OPP), so db^2 is its own matched Q",
+     C.ANISO_OPP.tot === undefined && C.ANISO_OPP.junk === undefined &&
+     C.ANISO_OPP.zp === "zm" && C.ANISO_OPP.zm === "zp");
+  {
+    const L = anisoLadder(CASE_GS, { aq: "tot", ad: "z" });
+    const x = C.anisoCurves(CASE_GS, { aq: "tot", ad: "z", ay: "chi" }).curves[0][0];
+    ok("  ... and an unknown aq falls back to tot on the chi ordinate too",
+       worstRel(x, L.lev.map(l => l.kp * Math.sqrt(l.Q) / l.kz)) < LADDER_TOL &&
+       JSON.stringify(C.anisoCurves(CASE_GS, { aq: "junk", ad: "z", ay: "chi" }).curves[0][0]) ===
+       JSON.stringify(x));
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log("8.4 CHECK 4, alpha: the estimator bias, MEASURED and reported (never gated)");
+// ---------------------------------------------------------------------------
+// flSpectrum must window before transforming -- a field line's two ends are unrelated --
+// and the periodic Hann kernel is exactly (1/6, 2/3, 1/6) in bins, so each parallel line
+// leaks into its neighbours. That fattens the parallel tail (Q_par(k) picks up
+// (E(k-1) - E(k))/6, positive on a falling spectrum), the matching returns k∥ high, and chi
+// comes back low. How low is a number, not an argument, so it is measured here:
+//
+//   a field with a PRESCRIBED ridge k∥(k⊥) = round(k⊥^2/3) and a prescribed db (the
+//   perpendicular spectrum, since db^2 = Q by definition), sampled along lines, pushed
+//   through the REAL flSpectrum and the REAL anisoCurves, against the same field's exact
+//   parallel spectrum through the same matching. alpha = chi_measured / chi_true at equal
+//   k⊥ -- and since db is prescribed and identical on both sides, alpha isolates exactly
+//   the parallel estimator.
+//
+// What is synthetic and what is real: there is no GPU here, so the MARCH is replaced by
+// writing down the field along the line directly (which is all a march produces). The
+// window, the periodogram, the ±kz folding, the line average, the tails, the level window
+// and the inversion are the app's own code. Phases are deterministic and arranged so that
+// the leakage cross terms between adjacent ridge bins cancel exactly over each group of
+// four lines (relative phase rotating by a quarter turn), so what comes back is the Hann
+// kernel and not one realisation of an interference pattern.
+{
+  const NB = 128, NZ = 64, NL = 64, KD = 60, NZB = NZ >> 1;
+  const frac = x => x - Math.floor(x);
+  const E = j => (j < 1 ? 0 : Math.pow(j, -5 / 3) * Math.exp(-Math.pow(j / KD, 4)));
+  const perp = mk(NB, E);
+  const ridge = j => Math.max(1, Math.min(NZB - 1, Math.round(Math.pow(j, 2 / 3))));
+  // the exact parallel stack the ridge implies -- every k⊥ bin's energy lands whole in one
+  // k∥ bin, in the [E_u | E_b | H_c] layout flSpectrum itself returns
+  const parTrue = new Float32Array(3 * NZB);
+  for (let j = 1; j < NB; j++) if (E(j) > 0) parTrue[NZB + ridge(j) - 1] += E(j);
+  // ... and the along-line samples: one cosine per ridge bin per line, amplitude
+  // 2*sqrt(E) so that each contributes exactly E under flSpectrum's normalization
+  const smp = new Float32Array(4 * NL * NZ);
+  for (let l = 0; l < NL; l++) for (let k = 1; k < NZB; k++) {
+    const e = parTrue[NZB + k - 1];
+    if (!(e > 0)) continue;
+    const A = 2 * Math.sqrt(e);
+    const ph = 2 * Math.PI * (k * (l % 4) / 4 + frac(0.7548776662 * k));
+    for (let z = 0; z < NZ; z++)
+      smp[4 * (l * NZ + z) + 2] += A * Math.cos(2 * Math.PI * k * z / NZ + ph);
+  }
+  const parMeas = C.flSpectrum(smp, NL, NZ);
+  // the construction is only worth trusting if its bookkeeping is: the periodogram must
+  // carry the prescribed energy back, up to the kz = 0 bin flSpectrum does not plot (the
+  // Hann kernel leaks a sixth of the first ridge bin into it, and that is a real property
+  // of the instrument, not of this test)
+  let eT = 0, eM = 0;
+  for (let i = 0; i < NZB; i++) { eT += parTrue[NZB + i]; eM += parMeas[NZB + i]; }
+  ok("the synthetic field's periodogram carries its prescribed energy (bar the kz=0 leak)",
+     eM / eT > 0.85 && eM / eT < 1.0, "measured/prescribed = " + (eM / eT).toFixed(4));
+  ok("  ... and the measured parallel spectrum IS the (1/6, 2/3, 1/6) Hann kernel on it",
+     (() => {
+       let w = 0;
+       for (let b = 2; b <= 8; b++) {
+         const want = (parTrue[NZB + b - 2] + 4 * parTrue[NZB + b - 1] + parTrue[NZB + b]) / 6;
+         w = Math.max(w, Math.abs(parMeas[NZB + b - 1] - want) / want);
+       }
+       return w < 0.02;
+     })(), "bins 2..8, within 2%");
+  const dm = { perp, nb: NB, par: null, parFL: parMeas, parKfac: 1, fshell: [1, 3] };
+  const dt = { perp, nb: NB, par: null, parFL: parTrue, parKfac: 1, fshell: [1, 3] };
+  const o = { aq: "tot", ad: "fl", ay: "chi" };
+  const xm = C.anisoCurves(dm, o).curves[0][0], xt = C.anisoCurves(dt, o).curves[0][0];
+  let sl = 0, n = 0, amin = Infinity, amax = 0, aLow = 0;
+  for (let i = 0; i < xm.length; i += 2) {
+    const t = curveAt(xt, xm[i]);
+    if (!(t > 0)) continue;
+    const a = xm[i + 1] / t;
+    if (!n) aLow = a;
+    sl += Math.log(a); n++; amin = Math.min(amin, a); amax = Math.max(amax, a);
+  }
+  const alpha = Math.exp(sl / n);
+  console.log("        ALPHA = chi_measured / chi_true = " + alpha.toFixed(4)
+    + "   (range " + amin.toFixed(3) + ".." + amax.toFixed(3) + " over " + n
+    + " levels; " + aLow.toFixed(3) + " at the low-k⊥ end, where the ridge is a few bins up)");
+  console.log("        REPORTED, NEVER GATED (CHI_PLAN): its job is to keep the hint honest. "
+    + "Within tens of percent of 1, the hint's \"of order 1\" framing stands as written.");
+  ok("alpha is measurable at all: both curves drawn, every ratio finite and positive",
+     n >= 8 && isFinite(alpha) && alpha > 0 && amin > 0,
+     n + " levels compared, chi_meas " + xm[1].toFixed(3) + ".." + xm[xm.length - 1].toFixed(3));
+  // the DIRECTION is the falsifiable part of the argument above, and unlike the magnitude
+  // it is not a matter of taste: a fattened parallel tail returns k∥ high, so chi low.
+  ok("  ... and it lies on the LOW side, as the Hann-broadening argument says it must",
+     alpha < 1.0 && alpha > 0.5, "alpha = " + alpha.toFixed(4));
+}
+
+// ---------------------------------------------------------------------------
+console.log("8.5 CHECK 5, degenerates on the chi ordinate: empty curves, never NaN");
+// ---------------------------------------------------------------------------
+{
+  const empty = A => A.curves.length === 0 && A.hi === 0 && A.lo === Infinity;
+  const CH = { ay: "chi" };
+  ok("no data / silent / one-bin / no-overlap -> no curves, exactly as on the ratio axis",
+     empty(C.anisoCurves(null, CH)) &&
+     empty(C.anisoCurves({ perp: mk(64, () => 0), nb: 64, par: parLaw(3, -2), parKfac: 1 }, CH)) &&
+     empty(C.anisoCurves({ perp: mk(2, () => 1), nb: 2, par: parLaw(3, -2), parKfac: 1 }, CH)) &&
+     empty(C.anisoCurves(Object.assign({}, CASE_GS, { par: mk(4, () => 1e12) }),
+                         { ad: "z", ay: "chi" })) &&
+     empty(C.anisoCurves(Object.assign({}, CASE_GS, { par: null, parFL: null }), CH)));
+  // the one degenerate chi has that the ratio does not: an Elsasser lane whose OPPOSITE
+  // lane carries nothing. There is then no shearing field to divide by, so the honest
+  // answer is no curve -- never the own-lane level quietly standing in for it.
+  {
+    const n = 4096, a = new Float32Array(3 * n);
+    for (let j = 1; j < n; j++) { a[j] = Math.pow(j, -5 / 3); a[2 * n + j] = Math.pow(j, -5 / 3); }
+    const d = { perp: a, nb: n, par: parLaw(3, -2), parFL: parLaw(3, -2), parKfac: 1, fshell: [1, 5] };
+    ok("a maximally imbalanced field (E- == 0) draws NO chi+ curve, rather than a wrong one",
+       empty(C.anisoCurves(d, { aq: "zp", ad: "z", ay: "chi" })) &&
+       empty(C.anisoCurves(d, { aq: "zm", ad: "z", ay: "chi" })),
+       "and the ratio ordinate still draws E+: "
+       + C.anisoCurves(d, { aq: "zp", ad: "z" }).curves.length + " curve");
+    ok("  ... while its tot lane is untouched and finite",
+       C.anisoCurves(d, { aq: "tot", ad: "z", ay: "chi" }).curves.length === 1 &&
+       allFinite(C.anisoCurves(d, { aq: "tot", ad: "z", ay: "chi" }).curves[0][0]));
+  }
+  ok("NaN / Inf / negative bins are dropped on the chi ordinate too", (() => {
+    const p = mk(PERP_N, j => (j === 0 ? 0 : Math.pow(j, -5 / 3)));
+    p[7] = NaN; p[9] = Infinity; p[11] = -1;
+    const A = C.anisoCurves(Object.assign({}, CASE_GS, { perp: p }), { ad: "z", ay: "chi" });
+    return A.curves.length === 1 && allFinite(A.curves[0][0]);
+  })());
+  // and the canvas: the same recording context section 5 uses, over the same degenerates
+  const recCtx = () => {
+    const log = [];
+    const o = { fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1,
+                font: "10px x", textAlign: "left", textBaseline: "alphabetic" };
+    for (const m of ["clearRect", "strokeRect", "beginPath", "moveTo", "lineTo", "stroke",
+                     "fill", "clip", "save", "restore", "setLineDash", "rect", "fillRect"]) {
+      o[m] = (...a) => {
+        for (const v of a) if (typeof v === "number" && !isFinite(v)) log.push(["NONFINITE", m]);
+      };
+    }
+    o.measureText = t => ({ width: 6.2 * t.length, actualBoundingBoxAscent: 7.2,
+                            actualBoundingBoxDescent: 0 });
+    o.fillText = t => log.push(["text", t]);
+    o.log = log;
+    return o;
+  };
+  const txt = c => c.log.filter(e => e[0] === "text").map(e => e[1]).join("|");
+  const DEGEN = [null, {}, { nb: 4 }, { perp: mk(64, () => 0), nb: 64 },
+                 Object.assign({}, CASE_GS, { par: null, parFL: null })];
+  let anyNon = false, allWait = true;
+  for (const d of DEGEN) {
+    const c = recCtx(); C.drawAniso(c, d, { fit: "pin", ay: "chi" });
+    if (c.log.some(e => e[0] === "NONFINITE")) anyNon = true;
+    if (!/χ vs k⊥ — waiting…/.test(txt(c))) allWait = false;
+  }
+  ok("drawAniso says \"χ vs k⊥ — waiting…\" on all " + DEGEN.length + " degenerates", allWait);
+  ok("  ... and nothing non-finite reached the canvas", !anyNon);
+  const live = [];
+  for (const ad of ["both", "z", "fl"]) for (const fit of ["pin", "amp", "off"]) {
+    const c = recCtx();
+    C.drawAniso(c, CASE_GS, { aq: "tot", ad, fit, ay: "chi", fitp: -0.333,
+                              fita: fit === "amp" ? "2.5" : "" });
+    live.push(c);
+  }
+  ok("  ... every live (ad x fit) combination draws, all finite, none waiting",
+     live.every(c => !/waiting/.test(txt(c)) && !c.log.some(e => e[0] === "NONFINITE")),
+     live.length + " combinations");
+  // the reference line is a LEVEL here, not a slope: chi = 1 by default (ANISO_CHI_REF),
+  // the amplitude box renames it, `off` hides it, and the -1/3 legend never appears
+  ok("  ... the reference is the horizontal χ = 1, the amplitude box sets the level, "
+     + "\"off\" hides it",
+     C.ANISO_CHI_REF === 1 && /χ = 1/.test(txt(live[0])) && /χ = 2.5/.test(txt(live[1])) &&
+     !/χ = /.test(txt(live[2])) && !/k⊥\^/.test(live.map(txt).join("|")),
+     live.map(c => (txt(c).match(/χ = [0-9.]+/) || ["-"])[0]).join(","));
+  // ... and it must be INSIDE the frame, or "is the level 1?" is unanswerable. The y range
+  // is the drawn extremes padded by 0.3 decades, so a curve sitting well below 1 has to
+  // have pulled the top of the axis up to it.
+  ok("  ... and the χ = 1 line is inside the axes even when the curve sits far below it",
+     (() => {
+       const quiet = Object.assign({}, CASE_GS, { par: parLaw(30, -2) });   // chi ~ 0.07
+       const A = C.anisoCurves(quiet, { aq: "tot", ad: "z", ay: "chi" });
+       const c = recCtx();
+       C.drawAniso(c, quiet, { aq: "tot", ad: "z", fit: "pin", ay: "chi" });
+       // the top of the axis is log10(max(hi, 1)) + 0.3, so 1 is inside it by construction;
+       // assert the curve really is far below 1, so the leg is not vacuous
+       return A.hi < 0.1 && /χ = 1/.test(txt(c));
+     })());
 }
 
 // ---------------------------------------------------------------------------
@@ -620,8 +1123,8 @@ const boot = async (page, demo) => {
     + " (CHART_TYPES[c.type()].src || c.type()) === 'spectrum').length; }");
   const nSrc0 = bySrc();                    // the boot layout's own spectrum card(s)
   const card = env.run("function(){ const c = addChartCard('aniso'); cardsSync(); return c; }");
-  ok("  ... a card of that type builds, with its five option controls",
-     !!card && card.optEls.length === 5, card ? "n=" + card.optEls.length : "none");
+  ok("  ... a card of that type builds, with its six option controls",
+     !!card && card.optEls.length === 6, card ? "n=" + card.optEls.length : "none");
   const optId = (c, id) => env.run("function(c, i){ return c.optEls.filter(s => s.__optId === i)[0]; }", c, id);
   // the fl readback gate: OFF for the z-only view, ON for both / field line, and still
   // ON for a spectrum card asking for the field-line spectrum
@@ -663,10 +1166,38 @@ const boot = async (page, demo) => {
   ok("  ... retyping away leaves one option control and no fl demand",
      card.optEls.length === 1 && gate() === false, "n=" + card.optEls.length);
   env.run("function(c){ c.selType.value = 'aniso'; c.selType.onchange(); }", card);
-  ok("  ... and retyping back rebuilds the five and re-arms the gate",
-     card.optEls.length === 5 && gate() === true, "n=" + card.optEls.length);
-  ok("  ... optId lookup finds aq/ad (the option ids the draw branches on)",
-     !!optId(card, "aq") && !!optId(card, "ad"));
+  ok("  ... and retyping back rebuilds the six and re-arms the gate",
+     card.optEls.length === 6 && gate() === true, "n=" + card.optEls.length);
+  ok("  ... optId lookup finds ay/aq/ad (the option ids the draw branches on)",
+     !!optId(card, "ay") && !!optId(card, "aq") && !!optId(card, "ad"));
+  // the ordinate select drives the card end to end: it defaults to the shipped ratio, it
+  // does NOT arm the field-line readback by itself (that is `ad`'s job alone), and because
+  // the hint is a function of the options the card must RE-RENDER it on the switch --
+  // the gen2d colour-scale path, exercised here on a second consumer.
+  {
+    const feed = c => env.run("function(c, nb, nzb){"
+      + " const a = new Float32Array(3 * nb), p = new Float32Array(3 * nzb);"
+      + " for (let b = 1; b < nb; b++) { a[b] = Math.pow(b, -5/3); }"
+      + " for (let b = 0; b < nzb; b++) { p[b] = 3 * Math.pow(b+1, -2); }"
+      + " c.draw({ perp: a, nb: nb, fshell: [1,5], par: p, parFL: p, parKfac: 1, kunit: 1 });"
+      + "}", c, 512, 128);
+    const setAy = v => env.run("function(c, v){ const s = c.optEls.filter(x => x.__optId === 'ay')[0];"
+                               + " s.value = v; s.onchange(); }", card, v);
+    ok("  ... the ordinate select defaults to the shipped ratio",
+       env.run("function(c){ return c.optVals().ay; }", card) === "ratio");
+    feed(card);
+    const h0 = env.run("function(c){ return c.hint.innerHTML; }", card);
+    setAy("chi"); feed(card);
+    const h1 = env.run("function(c){ return c.hint.innerHTML; }", card);
+    ok("  ... switching it to χ re-renders the hint and draws without raising",
+       h1 !== h0 && /&delta;b&sup2; = Q/.test(h1) && env.fails.length === 0,
+       env.fails.join(" | ") || h1.slice(0, 60) + "...");
+    ok("  ... and the ordinate does not touch the field-line readback gate (that is `ad`)",
+       gate() === true);
+    setAy("ratio"); feed(card);
+    ok("  ... switching back restores Alfred's ratio copy verbatim",
+       env.run("function(c){ return c.hint.innerHTML; }", card) === h0);
+  }
   ok("3D boots clean through all of it", env.fails.length === 0, env.fails.join(" | "));
 }
 

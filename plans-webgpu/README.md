@@ -23,11 +23,6 @@ disagree, the file is right.
 
 ## Live
 
-- **CHI_PLAN.md** — χ = k⊥δb/k∥ as a second ordinate on the existing anisotropy card (3D),
-  with δb² the matched energy level itself. χ is the invariant of the RMHD rescaling that
-  k∥/k⊥ is not, so the card's L_z gauge caveat does not apply to it. Written and revised
-  2026-08-14, **not started**. Records why the obvious `selLz` calibration sweep is null
-  (forcing is pinned at |kz| bin 1).
 - **VOLTEX_PLAN.md** — the 3D volume raymarch should sample a `texture_3d` with hardware
   trilinear filtering instead of doing eight scalar loads per sample out of a storage
   buffer. Written 2026-08-12, **not started**. Item 7 of the audit.
@@ -72,6 +67,14 @@ disagree, the file is right.
   All built and reviewed the same day.
 - **ANISO_PLAN.md** — k∥/k⊥ vs k⊥ chart card (3D), global and field-line measures, entirely
   CPU-side arithmetic on existing readbacks.
+- **CHI_PLAN.md** — χ = k⊥δb/k∥ as a second ordinate (`ay`) on that same card, with δb² the
+  matched energy level itself and only δb crossing Elsasser lanes. χ is the invariant of the
+  RMHD rescaling that k∥/k⊥ is not, so the card's L_z gauge caveat does not apply to it.
+  Written, revised and **executed 2026-08-14**. Read the EXECUTION NOTES: the estimator bias
+  came out at α = 0.988 (measured end to end, reported and never gated), the shipped ratio
+  path is asserted bit-identical to base through `git show`, and the record of why the
+  obvious `selLz` calibration sweep is null (forcing is pinned at |kz| bin 1) is worth
+  keeping.
 - **ISO_PLAN.md** — box-unit aspect, semi-transparent volume view, scale filter. Physics
   WGSL byte-identical throughout by construction.
 - **ANISO_PLAN_2.md** — generated 2D spectrum E(k⊥, k∥) card (3D). Suggested by Jono
