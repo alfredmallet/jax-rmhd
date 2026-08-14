@@ -23,6 +23,15 @@ disagree, the file is right.
 
 ## Live
 
+- **EIGF_PLAN.md** — ψ̂(x), φ̂(x) at fixed k_y as a 2D chart card: the tearing eigenmode's
+  structure (the plot alone — a Δ′ legend readout was considered and dropped in review).
+  Written and revised 2026-08-14, **not started**. Near-disjoint from CHI_PLAN.md; its
+  Sequencing section owns the rules for both.
+- **CHI_PLAN.md** — χ = k⊥δb/k∥ as a second ordinate on the existing anisotropy card (3D),
+  with δb² the matched energy level itself. χ is the invariant of the RMHD rescaling that
+  k∥/k⊥ is not, so the card's L_z gauge caveat does not apply to it. Written and revised
+  2026-08-14, **not started**. Records why the obvious `selLz` calibration sweep is null
+  (forcing is pinned at |kz| bin 1).
 - **VOLTEX_PLAN.md** — the 3D volume raymarch should sample a `texture_3d` with hardware
   trilinear filtering instead of doing eight scalar loads per sample out of a storage
   buffer. Written 2026-08-12, **not started**. Item 7 of the audit.
