@@ -243,6 +243,38 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   kernel against itself — and the kernel's own dz/dx, dz/dy constants are read out of the
   emitted WGSL. Section 0 also pins `cubeTopXform` to its pre-K pixels and checks the
   box frame against all twelve projected face corners.
+- `checkeigf.js [dir]` — the EIGF_PLAN gate: the 2D eigenfunction chart card
+  (|ψ̂(x,k_y)|, |φ̂(x,k_y)| against x). Six sections. The discipline first — every emitted
+  kernel parses, `names.mjs` clean, `dup.py` showing no clone reaching into the shared
+  core, every kernel that existed at the base commit byte-identical with the additions
+  being EXACTLY `[eigfGather]` on the 2D page and nothing at all on the 3D one, and the RNG
+  reference (64 `Gauss(7)` draws, hashed) unmoved against a value recorded from the base
+  tree before a line was written. Then the gather kernel EXECUTED (wgsl_reflect's WGSL
+  interpreter) against the CPU-side strided column at five k_y bins — a BIT compare, the
+  path being a pure copy — plus its out-of-range clamp. Then the fp64 mirror: a field whose
+  k_y coefficient is known analytically (ψ = g(x)cos(k_y y+p), φ = h(x)sin(k_y y+p), the
+  two 90° apart in y, which is why the card plots moduli), with the state built by a direct
+  fp64 forward DFT written from the definition, so gather + `eigfProfile` is compared with
+  analysis and never with itself: |ψ̂| = g/2 and |φ̂| = h/2 to ~1e-8, ψ̂ peaked ON
+  x = L_x/2, φ̂ zero there with a lobe either side, every other column empty, and
+  `eigfProfile` itself against a direct fp64 inverse DFT (the leg that still runs where
+  wgsl_reflect is not installed). Then equilibrium exclusion — a y-independent ψ_eq is
+  entirely in the k_y = 0 column, every other column of it zero to round-off, which is what
+  makes "minus the equilibrium" free rather than a subtraction anyone performs. Then state
+  invariance three ways: the executed kernel's input array bit-identical word for word, the
+  emitted WGSL's access qualifiers (`fields` read-only, exactly one `read_write`), and the
+  booted page's encode path traced buffer by buffer — `readEigf` writes only its k_y
+  uniform, runs only the gather, copies only out of the column buffer, and its bind group
+  is `(fields, eigfU, eigfK)` in that order, recorded off a second solver built with
+  `createBindGroup` patched. Last the card: its `CHART_TYPES` entry sitting immediately
+  after `mode` (the plan's own placement rule, so a concurrent edit inside `aniso` stays a
+  disjoint hunk), 2D-only availability, its two options and their defaults, the hint's
+  claims — including that it says OUTER solution and promises no resistive layer — the
+  readback pool splitting when one card's k_y selector moves, `cardsThrottleReset`, 25
+  (data × options) degenerates through a recording context, the `tearing` preset opening
+  with it and no other preset doing so, and the plan's side task: the stale "30–40% below
+  the reference" clause gone from the tearing hint with the diffusion statement it hung off
+  still standing. CI reports, never gates.
 - `sigrcheck.js [dir]` — the residual-energy display mode (`sigma_r`, mode 9) in BOTH
   apps: boots rmhd2d and rmhd3d on the stub and records, off the stub device, the Mode
   uniforms each selected field writes (mode 9 + its pinned mate 5 = b, against sigma_c's
