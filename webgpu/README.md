@@ -213,6 +213,7 @@ is the default and is what the chart drew before they existed):
 | spectra | pin / unpin | buttons, not selects: freeze the drawn curves as ghosts, or clear them |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
+| anisotropy (3D) | y axis | `k∥/k⊥` · `χ = k⊥δb/k∥` (see below; the rest of its options — `aq`, `ad`, the fit trio — are ANISO_PLAN's) |
 | island width (2D) | — | log W(t) with a fitted γ = 2·d(ln W)/dt; needs the tearing IC (see below) |
 | k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
 
@@ -521,6 +522,53 @@ path, and the y-limit rule is unchanged: the ⊥ spectra set the range. The two 
 are independent: with such a chart open and no card in the lines view the lines are still
 traced and simply not drawn, and the along-line samples — four times the polylines' size —
 come back only while that chart is open.
+
+### χ = k⊥δb/(k∥v_A): the anisotropy card's second ordinate
+
+`ay` on the aniso card (CHI_PLAN). Not a second card: χ differs from the shipped curve by
+one multiplication and a label, and everything else — the tails, the level window, the lane
+select, the legend, the reference line — is the same code. Default is `ratio`, which is
+bit-for-bit what shipped (`devtools/checkaniso.js` §8.1 asserts that against the base commit
+through `git show`, on every (data × `aq` × `ad`) combination, for `ay` absent *and* spelled
+out).
+
+Why it is worth an ordinate: under the RMHD rescaling z → z/ε, Z → εZ, t → t/ε both k∥ and
+δb pick up a factor ε, so `k∥/k⊥` moves with L_z (the card's standing gauge caveat) while
+χ does not. Critical balance stops being "a slope of −1/3 in a quantity whose level is a
+convention" and becomes "this is O(1) across the inertial range".
+
+- **δb² = Q, the matched level itself** — the tail energy content above k⊥, which is the
+  currency the matching is already built on, so it needs no second interpolation and is
+  defined at every point of the curve. v_A = 1 in these units, and k⊥/k∥ is a pure ratio
+  (`parKfac` puts the parallel bins in the perpendicular `kunit`), so `chi = kp*sqrt(Q)/kz`
+  carries no unit of its own. It is an O(1) convention and the hint says so; the *flatness*
+  is the claim, the level is an order of magnitude.
+- **Elsasser pairing.** χ± = k⊥Z∓/(k∥±v_A): only **δb** crosses lanes. The (kp, kz) matching
+  stays inside the selected lane — that pair *is* the measurement of k∥±(k⊥) from Z±'s own
+  geometry — and δb is a lookup of the *opposite* lane's perpendicular tail at kp
+  (`_anisoQAt`, the inverse direction of `_anisoAt`). Building the perpendicular tail from
+  the opposite lane wholesale is the adjacent wrong implementation: it moves which k⊥ every
+  level maps to. checkaniso §8.3 pins kp's **provenance** (bit-identical to the ratio curve's
+  k⊥) and not merely the sign of the ± split, because a pure amplitude asymmetry cannot tell
+  the two apart. On `tot` there is no opposite lane and δb² is the matched Q itself. A lane
+  whose opposite carries nothing (E⁻ ≡ 0) has no shearing field, so the card draws nothing
+  rather than quietly substituting the own-lane level.
+- **The reference line** switches with the ordinate: a −1/3 power law is a statement about
+  the ratio, so on χ it becomes the horizontal χ = 1 (`ANISO_CHI_REF`), the index box hides,
+  and the amplitude box renames the level. The line is included in the y-range, because "is
+  the level 1?" is unanswerable with the 1 off the top of the frame.
+- **Estimator bias, measured.** `flSpectrum` must Hann-window each line before transforming,
+  and the periodic Hann kernel is exactly (1/6, 2/3, 1/6) in bins: that fattens the parallel
+  tail, the matching returns k∥ high, and χ comes back low. checkaniso §8.4 measures the
+  factor end to end — a synthetic field with a prescribed ridge k∥(k⊥) = round(k⊥^2/3) and a
+  prescribed δb, through the real `flSpectrum` and the real `anisoCurves` — and **reports**
+  α = χ_measured/χ_true = **0.988** (0.95 at the low-k⊥ end, where the ridge sits a few bins
+  up). Reported, never gated. The obvious calibration is null by construction: sweeping L_z
+  cannot expose the bias, because the forcing is scattered onto the kz = ±2π/L_z planes and
+  the ridge sits at the same *bin indices* whatever L_z is.
+
+Cost: nothing. No WGSL, no buffer, no readback, no kernel — the same CPU arithmetic on the
+same spectrum readback the card already rides.
 
 ## Initial conditions
 

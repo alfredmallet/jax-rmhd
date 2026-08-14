@@ -1,10 +1,12 @@
 # Critical-balance plan: χ = k⊥δb/k∥ on the anisotropy card (3D app)
 
-**Status: DRAFTED 2026-08-14, REVISED same day after Alfred's review (δb is now the
-matched level itself; the pairing wiring is pinned), NOT STARTED.** Base: `70ec5a8`, tree clean. **Not a new card:
-a y-axis mode on the existing `aniso` card.** Sibling plan `EIGF_PLAN.md` was drafted in the
-same session and touches the 2D app; the two are near-disjoint and EIGF's **Sequencing**
-section owns the rules where they meet.
+**Status: EXECUTED 2026-08-14** (branch `chi`, base `2cbfadd` / `70ec5a8` for the code).
+Drafted and revised the same day after Alfred's review (δb is now the matched level itself;
+the pairing wiring is pinned). Built as written — no redesign, one deviation, recorded in
+the EXECUTION NOTES at the end together with the measured α. **Not a new card: a y-axis mode
+on the existing `aniso` card.** Sibling plan `EIGF_PLAN.md` was drafted in the same session
+and touches the 2D app; the two are near-disjoint and EIGF's **Sequencing** section owns the
+rules where they meet.
 
 Provenance: Alfred, 2026-08-14 — "new plot option for 3d: chi = kperp db / kpar, with kpar
 the field-line-following one calculated in the same method as for the kpar/kperp vs kpar
@@ -196,3 +198,70 @@ back on `forced` (and how it compares to α from check 4); legibility of four cu
 select pinned to one leg; whether the χ = 1 reference line helps or preaches; the AW
 collision, where χ ought to be transient and large; whether the hint's O(1) framing reads
 as honest or as hedging.
+
+---
+
+## EXECUTION NOTES (2026-08-14)
+
+Built as drafted. `webgpu/common.js` (+~150 lines, most of them the comment block above
+`anisoCurves`) and `webgpu/devtools/checkaniso.js` (+~430 lines, the plan's checks 1–5 as
+§8.1–§8.5) are the whole of the code; `docs.html`, `README.md` and this file are the text.
+No WGSL, no buffer, no readback, no kernel, no `SPEC3D.md`, no per-app edit at all — the
+`ay` option is inert to `flChartOn`, so `rmhd3d.html` was not touched.
+
+**α = 0.988.** Measured, reported, not gated (checkaniso §8.4): a synthetic field with a
+prescribed ridge k∥(k⊥) = round(k⊥^2/3) and a prescribed δb, sampled along lines, pushed
+through the real `flSpectrum` (Hann window, periodogram, ±kz fold, line average) and the
+real `anisoCurves`, against the same field's exact parallel spectrum through the same
+matching. The bias is on the LOW side, as the Hann-broadening argument in the plan says it
+must be, and it is a **percent**, not a factor: 0.951 at the low-k⊥ end where the ridge is
+only a few bins up, 1.000 at the top. So the plan's "within tens of percent → ship it and
+let the hint say χ is O(1)" branch is the one taken, and no hedging sentence was added to
+the hint. Two things make that number trustworthy and both are asserted beside it: the
+synthetic periodogram returns 91.7% of the prescribed energy (the missing sixth of the first
+ridge bin leaks into the kz = 0 bin, which `flSpectrum` does not plot — a property of the
+instrument), and the measured parallel spectrum IS the (1/6, 2/3, 1/6) kernel on the exact
+one, to 2%. There is no GPU in node, so the *march* is replaced by writing the field along
+the line down directly, which is all a march produces; the window, the transform, the fold,
+the average, the tails and the inversion are the app's own code. Line phases are arranged so
+the leakage cross terms between adjacent ridge bins cancel exactly over each group of four
+lines — otherwise what comes back is one realisation of an interference pattern rather than
+the kernel (the first attempt did exactly that and read α = 1.71, in the wrong direction).
+
+**The deviation: the card's title.** The plan asks for the card title to follow the
+selection. `CHART_TYPES[k].label` is read once, into the type dropdown, for every card of
+that type — following a per-card option would mean editing `ChartCard`, outside this plan's
+edit surface. What was done instead is the shipped idiom: the label is now just
+`anisotropy`, and `ay` LEADS the option row, so the header reads
+`anisotropy | k∥/k⊥ | E_u+E_b | both k∥ | fit: pin` and, switched,
+`anisotropy | χ = k⊥δb/k∥ | …`. The ordinate is named in the header, in the legend
+(`χ (k∥z)` / `χ (k∥B)`), in the waiting line and in the hint, which is a function of the
+options — the `gen2d` colour-scale shape, now with a second consumer.
+
+**Two small things the plan did not settle**, both decided the conservative way:
+
+- An Elsasser lane whose OPPOSITE lane has no bracketable perpendicular tail (E⁻ ≡ 0, i.e.
+  maximal imbalance) draws **nothing** rather than falling back to the own-lane level. There
+  is no shearing field, so there is no χ; a silent fallback would have been the mispairing
+  the whole of check 3 exists to prevent. checkaniso §8.5 pins it.
+- The χ = 1 reference line is included in the y range. Without it a card whose χ sits at
+  0.07 draws its reference off the top of the frame and the legend claims a line nobody can
+  see — and "is the level 1?" is the question the ordinate exists to answer. `fit: off`
+  still hides the line, and `fit: amp` renames the level (the index box hides on χ, where a
+  power-law index is not what the reference is).
+
+**The gate.** checkaniso §8.1 is the plan's check 1 and it is a real regression gate, not a
+promise: it reads `70ec5a8:webgpu/common.js` through `git show`, runs both implementations
+over 14 data cases × 22 option sets × {`ay` absent, `ay: "ratio"`} and compares the
+serialised output — 616 comparisons, all identical. (An out-of-repo copy with no git reports
+a SKIP; this file reports, it never gates.) The same comparison was run standalone before
+any edit, over a wider option matrix including the fit options, with the same answer.
+`refvectors.json` / `refvectors3d.json` are byte-unchanged, which is trivially true — the
+diff does not go near the solver.
+
+**Checks run cold**, all green: `checkaniso` (the new §8 included), `checks`, `checkpin`,
+`check2dspec`, `checkk`, `checkiso`, `checkonepage` (89/89), `checkidle`, `checksh`,
+`checkgc` (154/154), `layout` (the sixth header control does not widen the busiest row —
+the widest single item on 3D at 360 px is unchanged at 313 px), `names.mjs`. `checkj` was
+not run to completion (it is minutes long and is the 2D tearing/eigenvalue path, untouched
+here).
