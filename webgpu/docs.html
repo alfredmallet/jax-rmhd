@@ -66,9 +66,14 @@ press the green <b>Run</b>, and change one thing at a time.</p>
   <summary>simulation settings</summary>
   <p><b>resolution</b> is the number of grid points across the box. Higher is sharper and
     slower. Changing it restarts the run.</p>
-  <p><b>box</b> (2D only) is the shape of the box: square 2&pi;&times;2&pi;, or wide
-    4&pi;&times;2&pi;. The wide box exists for the shear-layer and tearing demos, which
-    need room along x for one unstable wavelength along y.</p>
+  <p><b>box</b> (2D only) is the shape of the box: square 2&pi;&times;2&pi;, wide
+    4&pi;&times;2&pi;, or large 8&pi;&times;8&pi;. The wide box exists for the shear-layer
+    and tearing demos, which need room along x for one unstable wavelength along y; the
+    large box is simply four times bigger, which is what lets one thin layer hold many
+    unstable wavelengths along it so it can pick its own. Resolution means the number of
+    points across <i>x</i>, and the other axis follows the box.
+    (1024 points is the longest line the transforms will build, so a resolution a given box
+    cannot reach is greyed out in the list rather than quietly reduced.)</p>
   <p><b>L<sub>z</sub></b> (3D only) is the length of the box along the strong background
     magnetic field, which points along z. Longer boxes hold longer wave packets.</p>
   <p><b>seed</b> is the random seed. The same seed gives the same run.</p>
@@ -172,7 +177,12 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     <b>&psi;<sub>0</sub></b> the current-sheet strength for tearing.
     <b>maintain equilibrium flux</b> (tearing) holds the equilibrium against its own slow
     decay, so what you measure is the instability and not the layer spreading out; switch
-    it off and the measured growth rate drops noticeably.</p>
+    it off and the measured growth rate drops noticeably.
+    <b>broadband seed</b> (tearing) replaces the single seeded wavelength with every
+    wavelength the layer could go unstable to, at equal size and random phase, so the
+    layer selects its own instead of being handed one &mdash; which is what the
+    <b>island chain</b> demo is built on. The island-width chart switches off while it is
+    ticked: that chart measures one island, and this seeds many.</p>
 </details>
 
 <details>
@@ -401,6 +411,15 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       thing you do can be compared against the last thing you did &mdash; lower the
       dissipation and watch the straight range stretch, or pin at t = 0 and watch the
       spectrum fill in. Up to four; <b>unpin</b> clears them.</li>
+    <li><b>clip tail</b> sets where the bottom of the y axis goes. Ticked (the default) it
+      stops just below the dissipation scale: with <b>hyper</b> above 1 the spectrum falls
+      off a cliff there and runs many decades further down, and drawing all of that would
+      squash the interesting part into a few pixels. Untick it to see every scale that was
+      computed &mdash; which is what you want at <b>hyper</b> = 1, where the fall-off is
+      gradual, and whenever the question is whether energy is piling up at the smallest
+      scales. A run that is under-resolved shows a <i>bump</i> at the right-hand end, and
+      with the tail clipped that bump is drawn below the axis and looks exactly like a
+      clean run. The tearing demos open with it unticked for that reason.</li>
   </ul>
   <!-- Alfred's wording pass landed (third feedback round): the card's hint is his copy and
        this section is the long form of it. Solid = k_z in the global mean field, dashed =
@@ -573,6 +592,13 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       field's tension suppresses the whole thing.</li>
     <li><b>tearing mode (magnetic islands)</b> &mdash; a current sheet reconnects into a
       magnetic island, with a growth rate you can measure against linear theory.</li>
+    <li><b>X-point collapse (large &Delta;&prime;)</b> &mdash; the same sheet with twice
+      the drive, where the island never settles: it collapses the X-point into a second,
+      thinner sheet, which tears in turn. One slider walks it back to the tearing preset
+      above.</li>
+    <li><b>island chain and coalescence</b> &mdash; a long box seeded at every wavelength
+      at once, so the sheet picks its own: six islands appear, then merge in pairs,
+      6 &rarr; 3 &rarr; 1.</li>
   </ul>
   <p><b>3D</b></p>
   <ul>

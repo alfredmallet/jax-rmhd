@@ -231,9 +231,23 @@ Requirements, not implementation choices:
 - Real transforms may be implemented via complex FFTs (e.g. pack two real fields into
   one complex transform, or use a full complex ny transform and discard) — but the
   round-trip must be exactly real (write the imaginary part as 0, don't leave residue).
-- Sizes: 128–512, power of two, `nx == ny` may be assumed (keep Lx≠Ly working in the
-  math anyway). (1024 would need 16KB of workgroup shared memory per line — exactly the
-  WebGPU guaranteed minimum, zero margin — so it is not offered.)
+- Sizes: `n_x` 128–**1024**, power of two; `n_y` follows the box and may also reach 1024
+  (keep Lx≠Ly working in the math). A 1024-point line is 16KB of workgroup shared memory —
+  exactly the WebGPU guaranteed minimum, zero margin — which is why it was NOT offered
+  before TEARNL (2026-08-13). What changed: the 2D page now boots
+  `initGPU({maxLimits: true})` and so runs on the adapter's own
+  `maxComputeWorkgroupStorageSize`, which is larger everywhere in practice, and 1024 is
+  hard-capped as the longest line either app will build (`NMAX_LINE` in `rmhd2d.html`,
+  which clamps `n_x` — never `n_y`, since dropping `n_y` alone would shear the cells).
+  **2048 stays out**: 32KB is past the guaranteed minimum, so it would depend on the
+  raised limit actually being granted. Every offered configuration must remain buildable
+  on a DEFAULT device — the limit request is margin, and `initGPU` falls back to a
+  default device if it is refused.
+  Note that 1024 as an `n_x` option costs nothing over 1024 as an `n_y`: the constraint is
+  per LINE, and the longest line was already 1024 when the first long-y box shipped. What
+  1024² costs is points — 1.05 Mpts, the 3D app's own default grid — so it is the slow end
+  of the ladder by design and **nothing ships there**; it exists because the large box makes
+  it meaningful, and `chain` was measured down to 512² rather than assumed onto it.
 - Workgroup shared memory per 1D transform line is the standard approach (a 512-point
   complex f32 line = 4KB — fits easily; one workgroup per line, `workgroupBarrier`
   between butterfly stages).

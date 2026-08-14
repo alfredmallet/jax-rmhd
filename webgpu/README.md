@@ -680,10 +680,11 @@ drawing (`icRegister` in common.js: `rows` = the control rows the preset shows, 
 the exponent it locks, `src` = whether it offers the maintained-flux source, `fields(g)` =
 the (φ, ψ) pair), so adding a third costs one record.
 
-Both run in a **rectangular box**: 512 × 128 on 4π × 2π, chosen by the `box` select next
-to the resolution (which now means n_x — n_y and both box lengths follow the box). A long
-x holds the layer's far field inside the periodic box, a short y carries exactly one
-unstable wavelength k_y = 2π/L_y. Rectangular boxes are 2D-only; everything downstream
+The two SHIPPED presets run in a **rectangular box**: 512 × 128 on 4π × 2π, chosen by the
+`box` select next to the resolution (which now means n_x — n_y and both box lengths follow
+the box). A long x holds the layer's far field inside the periodic box, a short y carries
+exactly one unstable wavelength k_y = 2π/L_y. (The two TEARNL presets below take the other
+two boxes: `collapse` the square one, `chain` the large 8π × 8π.) Rectangular boxes are 2D-only; everything downstream
 that used to assume a square perpendicular plane is now min-based or aspect-aware
 (the shell-bin count `nbins`, the arrow subsample, the display and editor canvases,
 which get equal pixels per unit *length* so that contours and arrows are not sheared).
@@ -719,6 +720,42 @@ when the preset asks, so every other path keeps its byte-identical kernel text. 
 source on the measured growth rate is the frozen-equilibrium eigenvalue (0.0284 vs
 0.028716 at the benchmark, `devtools/checkj.js` §4b) and the maintained ψ_eq is stationary
 to round-off; with it off, see the caveat under the table below.
+
+**The nonlinear pair: `collapse` and `chain` (TEARNL, 2026-08-13).** Two more presets on
+the SAME tearing equilibrium and with no new physics — only the controls move — sitting
+either side of the instability's nonlinear fork. Both run the maintained-flux source
+**off** (neither quotes a rate against a held equilibrium, and a source feeding flux in
+would make the collapse externally driven) and auto-diss off (the controller places the
+*cascade termination* at the dealias scale and has no term that knows a reconnection layer
+exists; on a quiescent equilibrium it drives η to ~1e-9).
+
+- **`collapse`** — the square box at a = 0.1L_x, so Δ′a = **37.8** against the shipped
+  preset's 8.4. The island passes the critical width W_c ~ 1/Δ′ immediately and the
+  X-point collapses into a sheet, which itself tears and sheds a secondary island
+  (Loureiro et al., *PRL* **95**, 235003 (2005)). Its `a / L_x` slider walks Δ′a from 37.8
+  down to 8.40 at a = 0.2, which is the shipped preset's own value — 0.2×2π is its
+  0.1×4π, and Δ′a depends only on k_y a in this profile, so the two are *exactly* equal
+  and the preset contains `tearing` as a slider endpoint.
+- **`chain`** — the tall box, seeded broadband (below), so the layer selects its own k_y
+  out of 24 offered: Δ′ falls monotonically with k_y while the resistive layer gets faster,
+  and the two peak together at k_y = 1.5, i.e. **six islands**, which then coalesce
+  6 → 3 → 1. The winner is deliberately *not* the longest wavelength in the box. Square
+  cells are mandatory here and not a nicety: the Sweet–Parker sheets between merging
+  islands lie normal to y.
+
+**Broadband seed.** `rowTear` carries a `broadband seed` checkbox (default off, so the
+shipped preset is untouched). On, the seed's y factor is Σ_{n=1..N} cos(nk₁y + φ_n) at
+equal amplitude and random phase instead of a single cos(k₁y), normalized so its maximum
+over the grid is 1 — which is what keeps the `seed` slider meaning the same physical thing
+(peak perturbed flux at the resonant surface) in both branches, the x envelope being sech²
+and hence 1 there. N is derived, not a constant: Δ′ > 0 below k_y a = √5 (an analytic
+property of the sech² outer solution, independent of a and of the box), and N covers that
+band with a quarter of headroom, which is 24 at the `chain` parameters. The phases come
+from the page's own `#nSeed` stream, so the IC stays reproducible. The island-width chart
+turns **off** for a broadband seed (`icEq.on` stays false): W = 4√(ψ̃/|ψ″|) is a
+single-mode formula read off max − min of ψ on the resonant line, and with 24 modes that
+extremum belongs to whichever island is largest at that instant — after the first merger
+not even the count is fixed.
 
 **Per-field dissipation (Pm).** The 2D linear operator is diagonal per field, so ν (on φ)
 and η (on ψ) need not be equal: the **diss slider is η**, and the `Pm` box next to it is
@@ -970,9 +1007,13 @@ diss to resolve (k_η ≈ (ε/diss³)^¼ must stay below nx/3, e.g. diss ≳ 1.5
 
 - fp32: fine for eyeballs and demos, expect slow energy-budget drift over long runs;
   not a substitute for the JAX solver for science runs.
-- Resolutions 128/256/512 — n_x, since 2D also offers the wide 4π × 2π box, where n_y is
-  n_x/4 (1024 would hit the WebGPU minimum workgroup-storage limit exactly; see SPEC §8).
-  Only 2D boxes are rectangular; the 3D perpendicular plane stays square.
+- Resolutions 128/256/512 — n_x, since 2D also offers rectangular boxes: the wide 4π × 2π,
+  where n_y is n_x/4, and the large 8π × 8π, which `chain` runs at 512². A
+  1024-point line is exactly the WebGPU minimum workgroup-storage limit, so the 2D page
+  asks for the adapter's own limit at boot and caps the longest line there (`NMAX_LINE`);
+  the tall box therefore tops out at 512 × 1024, and a resolution a box cannot run is
+  disabled in the select rather than silently clamped. See
+  SPEC §8. Only 2D boxes are rectangular; the 3D perpendicular plane stays square.
 - Elsasser forcing only, no snapshots.
 - The perpendicular spectrum dispatches `nbins` = the smaller of the two axis dealias
   cutoffs in units of kunit = min(2π/L_x, 2π/L_y) (`floor(min(nx,ny)/3)` on a square box), but

@@ -66,7 +66,8 @@ Object.assign(C, vm.runInContext("({ icSigmaLetter, IC_SIGMA_PERP_FRAC, IC_SIGMA
   + " DISS_DECADES_BELOW, DISS_LG_OPEN, AUTODISS_SHELL_W, AUTODISS_SMOOTH,"
   + " AUTODISS_MAX_FACTOR, AUTODISS_PERIOD, IC_SINE, IC_SINE_N, icSigmaSine, icIsPacketIC,"
   + " FIT_FRACS, FIT_SNAP, FIT_KBOX, MODE_FIT_DT, MODE_FIT_RISE, MODE_FIT_R2,"
-  + " ISLAND_FIT_RISE })",
+  + " ISLAND_FIT_RISE, MODE_FIT_N, MODE_FIT_DT_MAX,"
+  + " specFloor, specYFloor, SPEC_MAXDEC })",
   sandbox));
 const L = 2 * Math.PI;
 
@@ -1005,6 +1006,100 @@ console.log("11. the island-width chart's gamma_fit (FEEDBACK_2026-08-10 item 9)
   }
   ok("only the trailing " + C.MODE_FIT_DT + " t-units are fitted",
      Math.abs(C.islandFitGamma(tk, wk) / GT - 1) < 1e-6, "got " + C.islandFitGamma(tk, wk).toPrecision(10));
+
+  // --- the STARVED window (2026-08-13) -------------------------------------
+  // The trace is sampled on a WALL clock (~10 Hz off the cut readback) while this window is
+  // in SIM time, so the samples it holds are 100 / (sim-units per second) -- and dropping
+  // `tearing` to selRes 256 took that from ~26 to ~6, with a quick machine reaching 3 and
+  // blanking the legend mid-linear-stage. fitLogSlope widens the window to MODE_FIT_N
+  // samples to cover it. Sweep the sample spacing a real run can produce and require a
+  // clean exponential to be fitted throughout, since nothing about it is unfittable --
+  // it is only sparse.
+  {
+    const starve = rate => {                       // rate = sim-units per wall-clock second
+      const dt = rate / 10, t = [], w = [];        // ... at the readback's 10 Hz
+      for (let i = 0; i < 600; i++) { t.push(i * dt); w.push(0.05 * Math.exp(GT * i * dt / 2)); }
+      return { n: Math.floor(C.MODE_FIT_DT / dt) + 1, g: C.islandFitGamma(t, w) };
+    };
+    let worst = "";
+    const okAll = [4, 19, 38, 60, 100].every(r => {
+      const { n, g } = starve(r);
+      const good = isFinite(g) && Math.abs(g / GT - 1) < 1e-6;
+      if (!good) worst += " " + r + " sim-units/s (" + n + " samples -> " + g + ")";
+      return good;
+    });
+    ok("a clean exponential is fitted however sparsely the window is sampled", okAll,
+       worst || "4-100 sim-units/s, i.e. 26 samples per window down to 2");
+    // ... and the widening is BOUNDED: past MODE_FIT_DT_MAX it gives up rather than
+    // fitting across an arbitrarily long stretch of a run
+    ok("but the widening stops at MODE_FIT_DT_MAX", !isFinite(starve(200).g),
+       "200 sim-units/s spaces samples " + 20 + " t-units apart, so even the widened "
+       + "window holds under 4");
+    // the widened window must not have weakened any guard -- re-run two of them at a
+    // spacing that DOES trigger widening
+    const tsp = [], wsat2 = [], wdec2 = [];
+    for (let i = 0; i < 300; i++) {
+      const t = 3.8 * i;                           // ~2.6 samples per MODE_FIT_DT window
+      tsp.push(t); wsat2.push(1.2 * (1 + 0.05 * Math.sin(0.7 * t))); wdec2.push(1e-3 * Math.exp(-GT * t));
+    }
+    ok("a saturated W is still blanked when the window has been widened",
+       !isFinite(C.islandFitGamma(tsp, wsat2)), "got " + C.islandFitGamma(tsp, wsat2));
+    ok("a decaying W is still blanked when the window has been widened",
+       !isFinite(C.islandFitGamma(tsp, wdec2)), "got " + C.islandFitGamma(tsp, wdec2));
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log("11b. the spectrum chart's y floor and its `clip` option (2026-08-13)");
+// ---------------------------------------------------------------------------
+// specFloor's tail rule is calibrated on a HYPER-DISSIPATIVE tail (15+ decades below the
+// peak, FEEDBACK_2026-08-08 item 4). At hyper = 1 the dissipation range is gentle and is
+// the thing being diagnosed -- a bump at the dealias end -- so the tearing presets turn
+// the clip off. Both states keep the SPEC_MAXDEC clamp.
+{
+  const mk = (tail, bump) => {                  // tail = decades of fall past the knee
+    const a = [];
+    for (let k = 1; k <= 85; k++) {
+      let v = k < 3 ? 3e-4 * Math.pow(k / 3, 1.5) : 3e-4 * Math.pow(k / 3, -3);
+      if (k > 45) v *= Math.pow(10, -((k - 45) / 40) * tail);
+      if (bump && k > 65) v *= 30;
+      a.push(k, v);
+    }
+    return a;
+  };
+  const range = (a, clip) => {
+    let hi = 0, lo = Infinity;
+    for (let i = 0; i < a.length; i += 2) { if (a[i + 1] > hi) hi = a[i + 1]; if (a[i + 1] > 0 && a[i + 1] < lo) lo = a[i + 1]; }
+    return { dec: Math.log10(hi) - Math.log10(C.specYFloor([[a]], hi, lo, clip)), hi, lo };
+  };
+  // hyper = 1-like: a gentle tail, entirely inside the clamp -- clipping HIDES the end
+  const g = mk(3, false);
+  const gOn = range(g, "on"), gOff = range(g, "off");
+  ok("clip on cuts a gentle (hyper = 1) tail off above its last bin",
+     gOn.dec < Math.log10(gOn.hi) - Math.log10(gOn.lo) - 0.5,
+     "shows " + gOn.dec.toFixed(1) + " of " + (Math.log10(gOn.hi) - Math.log10(gOn.lo)).toFixed(1) + " decades");
+  ok("... and clip off shows all of it", Math.abs(gOff.dec - (Math.log10(gOff.hi) - Math.log10(gOff.lo))) < 1e-9,
+     "shows " + gOff.dec.toFixed(1) + " decades");
+  // the whole point: with the clip on, a run WITH a dealias-end bump and one without are
+  // drawn on the same axis and the bump is off the bottom of it
+  const b = mk(3, true);
+  ok("clip off is what makes a dealias-end bump visible at all",
+     range(b, "on").dec <= gOn.dec + 1e-9 && range(b, "off").dec > range(b, "on").dec,
+     "clipped " + range(b, "on").dec.toFixed(1) + " decades, unclipped " + range(b, "off").dec.toFixed(1));
+  // hyper = 4-like: a 15-decade tail. Clip ON must still clip it (that is item 4), and
+  // clip OFF must still be caught by the SPEC_MAXDEC clamp rather than drawing 15 decades
+  const h = mk(15, false);
+  const hOn = range(h, "on"), hOff = range(h, "off");
+  ok("a hyper-dissipative tail is still clipped with clip on", hOn.dec < 6,
+     "shows " + hOn.dec.toFixed(1) + " decades");
+  ok("... and SPEC_MAXDEC still bounds it with clip off",
+     Math.abs(hOff.dec - C.SPEC_MAXDEC) < 1e-9 && hOff.dec < Math.log10(hOff.hi) - Math.log10(hOff.lo),
+     "shows " + hOff.dec.toFixed(1) + " decades of " + (Math.log10(hOff.hi) - Math.log10(hOff.lo)).toFixed(1));
+  ok("clip on is exactly the historical rule (specFloor under the clamp)", (() => {
+    const { hi, lo } = range(g, "on");
+    return C.specYFloor([[g]], hi, lo, "on")
+        === Math.max(C.specFloor([[g]], hi, lo), hi * Math.pow(10, -C.SPEC_MAXDEC));
+  })());
 }
 
 // ---------------------------------------------------------------------------

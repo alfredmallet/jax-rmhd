@@ -600,7 +600,12 @@ async function initGPU(opts) {
 }
 // opts.maxLimits asks the adapter for its own reported limits (always a legal request):
 // the 3D app's 8-field gradient stack is 129 MiB at 256^2x64, past the DEFAULT 128 MiB
-// storage-binding limit.
+// storage-binding limit, and since TEARNL the 2D app's `tall` box runs a 1024-point
+// transform line, whose 16 KiB of workgroup storage is EXACTLY the default
+// maxComputeWorkgroupStorageSize. That one fits at the default and the grid caps there
+// (rmhd2d's NMAX_LINE), so this is margin and not a requirement -- which is why the
+// requestDevice below still falls back to a default device rather than failing: every
+// grid either app offers must remain buildable on the guaranteed minimums.
 // Coarse UA sniff for the two failure banners ONLY -- it picks which safe advice to
 // show, never gates a feature, so a wrong guess costs one slightly-off sentence.
 // (Support facts as of 2026-08: gpuweb Implementation-Status wiki. Chrome/Linux is
@@ -666,7 +671,8 @@ async function initGPUTry(opts) {
   } catch (e) {}
   const need = {};
   if (opts && opts.maxLimits) {
-    for (const k of ["maxStorageBufferBindingSize", "maxBufferSize"]) {
+    for (const k of ["maxStorageBufferBindingSize", "maxBufferSize",
+                     "maxComputeWorkgroupStorageSize"]) {
       if (adapter.limits && adapter.limits[k]) need[k] = adapter.limits[k];
     }
   }
@@ -1112,6 +1118,19 @@ function modeReset() { modeHist.t.length = 0; modeHist.u.length = 0; modeHist.b.
 // and roll-up and reading systematically low. 10 t-units is ~2.7/gamma at the KH
 // reference rate: comfortably inside the linear stage, a few samples on any device.
 const MODE_FIT_DT = 10;
+// ... but a sim-time window sampled on a wall clock can come up EMPTY. Samples inside the
+// window are 100 / (sim-units per second), so a small grid with a large dt starves it:
+// `tearing` at selRes 256 runs ~19 sim-units/s (~6 samples) and a quicker machine reaches
+// 38 (~3), below the 4 a slope needs, so the legend blanks in the middle of a clean linear
+// stage. fitLogSlope therefore widens the window until it holds MODE_FIT_N samples, and no
+// further than MODE_FIT_DT_MAX. Both numbers are about the FIT's conditioning, not about
+// physics: 8 points is where a least-squares slope with an R^2 gate stops being swayed by
+// one sample, and 4x the window is as far as any preset's linear stage can be assumed to
+// extend (tearing's spans ~190 t-units, collapse's ~10 -- but collapse never widens,
+// having ~42 samples). The alternative fix, sampling on sim-time too, would mean extra GPU
+// readbacks, which is the trade LOOPLAT closed the door on.
+const MODE_FIT_N = 8;
+const MODE_FIT_DT_MAX = 4 * MODE_FIT_DT;
 // ... and a slope is only QUOTED when that window saw real, clean growth: at least
 // MODE_FIT_RISE of ln A end to end (~0.43 decades -- the fp32 noise floor's jitter and
 // the saturated stage's oscillation cannot fake it), with an R^2 of at least
@@ -1333,6 +1352,14 @@ function specFloor(rc, hi, lo) {
   return Math.max(Math.min(ea * Math.pow(10, -SPEC_TAIL), pre),
                   hi * Math.pow(10, -SPEC_MAXDEC));
 }
+// The y floor the CHART draws to, which is specFloor gated by the card's `clip` option
+// plus the SPEC_MAXDEC clamp that applies either way. Factored out of drawSpectrum so the
+// choice is testable without a canvas, and so there is exactly one place that knows
+// unclipping drops the knee rule and NOT the sanity limit.
+function specYFloor(rc, hi, lo, clip) {
+  return Math.max(clip === "off" ? lo : specFloor(rc, hi, lo), hi * Math.pow(10, -SPEC_MAXDEC));
+}
+
 // ---------------------------------------------------------------------------
 // the spectrum chart's FIT LINE (FEEDBACK_2026-08-08 item 8)
 // ---------------------------------------------------------------------------
@@ -1561,9 +1588,22 @@ function drawSpectrum(c, d, o, pins) {
     ? curves.slice(0, nPerp).concat(...G.map(p => p.curves.slice(0, p.nPerp)))
     : curves.slice(nPerp).concat(...G.map(p => p.curves.slice(p.nPerp)));
   const ymax = Math.log10(hi) + 0.3;
+  // The floor rule, or the data's own minimum when the card asks for the full range.
+  //
+  // `clip` OFF is not a debug view: specFloor's tail rule is calibrated on a HYPER-
+  // DISSIPATIVE tail, which runs 15+ decades below the peak and would squash the inertial
+  // range into a few pixels (FEEDBACK_2026-08-08 item 4). At hyper = 1 -- which every
+  // tearing-family preset locks -- the dissipation range is gentle, only a decade or two
+  // below where the rule puts the floor, and it is exactly what has to be read: a bump at
+  // the dealias end is how an under-resolved run is diagnosed, and clipped it looks
+  // identical to a clean one. So the presets that lock hyper = 1 turn the clip off and
+  // every other preset keeps it, rather than one rule pretending to serve both.
+  // SPEC_MAXDEC still applies in BOTH states: unclipping drops the knee/tail rule, not the
+  // sanity limit, or an early frame whose tail is at the fp32 noise floor (the seed is
+  // 1e-3 of the equilibrium) would draw a 12-decade axis nobody can read.
   // at least one decade always, so a flat or single-valued spectrum still has an axis
   const ymin = Math.min(ymax - 1,
-    Math.log10(Math.max(specFloor(rc, hi, lo), hi * Math.pow(10, -SPEC_MAXDEC))) - 0.3);
+    Math.log10(specYFloor(rc, hi, lo, o && o.clip)) - 0.3);
   const xmax = Math.log10(nb);
   const X = k => x0 + Math.log10(k) / xmax * (x1 - x0);
   const Y = v => px(y1 - (Math.log10(v) - ymin) / (ymax - ymin) * (y1 - y0));
@@ -2444,6 +2484,15 @@ const CHART_TYPES = {
         // the pins (PINCURVE Phase B). Per card, like the fit line: two cards can carry
         // different frozen states over the same run. `pin` is dead until the card has
         // been handed data; `unpin` only exists while there is something to clear.
+        // the y floor (2026-08-13). ON is the historical rule: specFloor's dissipation
+        // knee, which is calibrated on a hyper-dissipative tail and deliberately clips it.
+        // OFF shows every drawn bin (still under the SPEC_MAXDEC clamp) and is what the
+        // hyper = 1 presets ship with -- see drawSpectrum, where the reasoning lives.
+         { id: "clip", k: "cbl", t: "clip tail", v: "on",
+           ti: "cut the y axis off below the dissipation knee, so an inertial range is not "
+             + "squashed by a hyper-dissipative tail 15 decades down. Untick to see every "
+             + "bin drawn -- which is what a bump at the small-scale end is read off, and "
+             + "what the hyper = 1 (tearing) presets open with" },
          { id: "pin", k: "btn", t: "pin", onClick: c => c.pinAdd(),
            dis: (v, c) => !c.lastData,
            ti: "freeze the curves this card is drawing as grey ghosts, to compare what "
@@ -2469,10 +2518,8 @@ const CHART_TYPES = {
     label: "island width", w: CW, h: EH, src: "cut", avail: cfg => !cfg.zslice,
     draw: c => drawIsland(c),
     hint: "W = 4&radic;(&Delta;&psi;/2|&psi;&Prime;|) from the &psi; extrema on x = L<sub>x</sub>/2, "
-      + "with &psi;&Prime; measured on the equilibrium; log y, so the linear stage is a straight line "
-      + "whose slope the legend fits as &gamma; = 2&times;d(ln W)/dt (W &prop; e<sup>&gamma;t/2</sup>). "
-      + "It is a LOCAL rate: it falls away from the linear value once the Rutherford stage bends the "
-      + "curve over."
+      + "with &psi;&Prime; measured on the equilibrium. the linear stage is a straight line, with "
+      + "the local growth rate shown in the legend."
   },
   // the KH counterpart of the island trace, and on the SAME readback (`src: "cut"`): the
   // k_y = 2pi/Ly Fourier amplitude of u_x / b_x on x = Lx/2. Also 2D only -- the
@@ -4064,6 +4111,23 @@ class ChartCard {
     }
     return o;
   }
+  // the inverse, for a preset's chart spec (addChartCard): write the option values it
+  // names and leave the rest at their declared defaults. An id this card's type does not
+  // own is IGNORED, exactly as presetWrite ignores an id the page does not build -- so one
+  // layout can name `clip` for the spectrum card without every other chart type caring.
+  // Buttons carry no value and are skipped.
+  optSet(v) {
+    if (!v) return;
+    let hit = false;
+    for (const s of this.optEls) {
+      const x = v[s.__optId];
+      if (x === undefined || s.__optBtn) continue;
+      if (s.__optChk) s.__optChk.checked = (x === "on" || x === true);
+      else s.value = String(x);
+      hit = true;
+    }
+    if (hit) this._optSync();
+  }
   // show/hide the options whose meaning depends on another one (the fit line's boxes),
   // and enable/disable the ones that depend on the card's STATE (the pin button, which
   // has nothing to snapshot before the card has been handed data). Both hooks see the
@@ -4278,9 +4342,17 @@ function addDisplayCard(state) {
   }
   return c;
 }
-function addChartCard(type) {
-  const c = new ChartCard(chartTypeKeys().indexOf(type) >= 0 ? type : "energy");
+// A preset's `charts` entry is either a bare type string, as it has always been, or
+// {t: "<type>", <option id>: <value>} -- which is what `disp` entries have always been
+// ({sel, cont, nlev}), so this is the two halves of a layout finally agreeing rather than
+// a new concept. It exists because the spectrum card's `clip` default is per PRESET and
+// not global: the hyper = 1 presets need the tail visible, everything else needs it
+// clipped, and a viewer should not have to know that.
+function addChartCard(spec) {
+  const s = (spec && typeof spec === "object") ? spec : { t: spec };
+  const c = new ChartCard(chartTypeKeys().indexOf(s.t) >= 0 ? s.t : "energy");
   cards.chart.push(c);
+  c.optSet(s);
   return c;
 }
 function cardClose(c) {
@@ -5769,12 +5841,19 @@ function icShearPot(x, Lx, A, a) {
   const x1 = 0.25 * Lx, x2 = 0.75 * Lx;
   return A * a * (icLogCosh((x - x1) / a) - icLogCosh((x - x2) / a)) - A * (x - 0.5 * Lx);
 }
-// broadcast a 1D x profile (plus an optional k_y seed) into a plane
-function icPlaneFromX(prof, seed, g) {
+// broadcast a 1D x profile (plus an optional k_y seed) into a plane. The seed's y
+// dependence is a single ny-long FACTOR, tabulated once instead of being recomputed
+// nx times: `yfac` lets a caller hand its own in (TEARNL Phase 1's broadband seed builds
+// one out of many modes), and with none the table is exactly the cos(k_y y) this has
+// always broadcast -- same expression, same double, so the single-mode plane is bitwise
+// what it was before the argument existed.
+function icPlaneFromX(prof, seed, g, yfac) {
   const nx = g.nx, ny = g.ny, out = new Float32Array(nx * ny), ky = 2 * Math.PI / g.Ly;
+  let yf = yfac;
+  if (!yf) { yf = new Float64Array(ny); for (let j = 0; j < ny; j++) yf[j] = Math.cos(ky * j * g.Ly / ny); }
   for (let i = 0; i < nx; i++) {
     for (let j = 0; j < ny; j++) {
-      out[i * ny + j] = prof[i] + (seed ? seed[i] * Math.cos(ky * j * g.Ly / ny) : 0);
+      out[i * ny + j] = prof[i] + (seed ? seed[i] * yf[j] : 0);
     }
   }
   return out;
@@ -5811,17 +5890,86 @@ icRegister("kh", {
   }
 });
 
+// ---- the broadband-in-k_y seed for the tearing IC (TEARNL Phase 1) ---------
+// The single-mode seed below hands the run its answer: there is one k_y, so whatever
+// grows is that k_y. Ticking #cbTearBroad seeds modes 1..N together at EQUAL amplitude
+// and random phase, and Delta' -- which peaks at some interior k_y and goes negative
+// above k_y a = 2.2365 -- picks the winner instead. That is the whole point of the
+// `chain` preset, and the reason it is a control on the IC and not a preset flag: the
+// selection is worth watching at any (a, L_y) a user can dial.
+const icTearBroadOn = () => { const e = el("cbTearBroad"); return !!(e && e.checked); };
+// The one seeded source the page has (#nSeed, CTRL_SEED), shared with the OU forcing
+// stream so that "same seed, same run" stays a single statement -- Math.random() would
+// make this initial condition irreproducible, which is the one thing an initial condition
+// may not be. Read at IC-APPLY time, so a change of the box lands on the next apply (an
+// equilibrium slider release, an IC or preset switch, Reset, or a rebuild).
+function icTearSeed() {
+  const e = el("nSeed"), v = e ? parseInt(e.value, 10) : 7;
+  return isFinite(v) ? (v | 0) : 7;
+}
+// How many modes "broadband" is. DERIVED, not a constant: the tearing band of the sech^2
+// equilibrium is set by k_y a alone -- Delta' > 0 below k_y a = 2.2365 and negative above,
+// measured by bisecting devtools/eqlinear.py's `deltaprime`, and that figure moves by less
+// than 0.002 between a = 0.02 L_x and a = 0.2 L_x and between the 2pi and 4pi boxes, so it
+// is a property of the profile and not of the geometry. N covers that band with a quarter
+// of headroom wherever the a and box sliders are, rather than being a number that happens
+// to fit one preset: at the `chain` numbers (a = 0.075 L_x, L_x = 2pi, L_y = 8pi) it comes
+// out at exactly 24, and the last mode with gamma > 0 there is 15, so the headroom is real
+// and the marginal modes are seeded and simply do not grow -- which is the demonstration.
+// Capped at the 2/3 dealias, above which the transform throws the mode away anyway.
+const TEAR_KA_MARG = 2.2365;
+const TEAR_KA_HEAD = 1.25;
+function icTearN(g) {
+  const ka1 = (2 * Math.PI / g.Ly) * (icEqNum("rEqA", 0.1) * g.Lx);
+  const n = Math.ceil(TEAR_KA_HEAD * TEAR_KA_MARG / Math.max(ka1, 1e-300));
+  return Math.max(1, Math.min(n, Math.floor(g.ny / 3)));
+}
+// The y factor itself: sum_{n=1..N} cos(n k_1 y + phase_n), renormalised so its maximum
+// over the grid is exactly 1.
+//
+// That normalisation is the subtle part and it is forced, not chosen. The x envelope is
+// sech^2, which is 1 AT the resonant surface, so the seed's peak perturbed flux there is
+// exactly A * max_y |Y(y)| -- and the single-mode Y = cos(k_y y) has max_y |Y| = 1 on the
+// grid identically. Normalising to max 1 is therefore the only rule under which the
+// #rEqPert slider is the same physical quantity in both branches; leaving the sum raw
+// would put ~sqrt(N/2) times the slider in (a factor 3.5 at N = 24, i.e. an order of
+// magnitude in the flux), and dividing by N would put ~sqrt(2 ln N / N) times it in
+// (a factor 5 the other way). It rescales all N modes by ONE number, so the seed spectrum
+// stays flat -- which is what "let Delta' select" requires.
+//
+// It does NOT make the island chart's W_0 meaningful, and the builder below does not
+// pretend otherwise (see icEq.on): a normalisation fixes the total, and W = 4 sqrt(psitilde
+// / |psi''|) is about one mode's psitilde.
+function icTearYFac(g, N) {
+  const ny = g.ny, y = new Float64Array(ny), ph = new Float64Array(N);
+  const r = mulberry32(icTearSeed());
+  for (let n = 0; n < N; n++) ph[n] = 2 * Math.PI * r();
+  const k1 = 2 * Math.PI / g.Ly;
+  for (let j = 0; j < ny; j++) {
+    const yy = j * g.Ly / ny;
+    let s = 0;
+    for (let n = 1; n <= N; n++) s += Math.cos(n * k1 * yy + ph[n - 1]);
+    y[j] = s;
+  }
+  let m = 0;
+  for (let j = 0; j < ny; j++) { const v = Math.abs(y[j]); if (v > m) m = v; }
+  if (m > 0) for (let j = 0; j < ny; j++) y[j] /= m;
+  return y;
+}
+
 // Tearing [19]: psi_eq = psi0 sech^2((x - Lx/2)/a) (Numata / Loureiro style -- net-flux
 // free and exponentially periodic for a << Lx), phi_eq = 0. b_y = psi_eq' vanishes at
 // x = Lx/2, so that is the resonant surface of EVERY k_y mode and the line the island
 // chart reads. The seed perturbs psi at k_y = 2pi/Ly with the same even-in-x envelope, so
 // its value AT the surface is exactly the slider: psitilde(x_s) = A, and the initial
-// island width is 4 sqrt(A/|psi_eq''|).
+// island width is 4 sqrt(A/|psi_eq''|). With #cbTearBroad ticked the y factor is the
+// many-mode one above instead, normalised so that sentence still reads true.
 icRegister("tearing", {
   rows: ["rowEq", "rowTear"], hyper: 1, src: true,
   fields: g => {
     const psi0 = icEqNum("rEqPsi0", 1.65);
     const a = icEqNum("rEqA", 0.1) * g.Lx, A = icEqPert();
+    const broad = icTearBroadOn();
     const nx = g.nx, ps = new Float64Array(nx), sd = new Float64Array(nx);
     for (let i = 0; i < nx; i++) {
       const s2 = 1 / Math.pow(Math.cosh((i * g.Lx / nx - 0.5 * g.Lx) / a), 2);
@@ -5832,10 +5980,18 @@ icRegister("tearing", {
     // equilibrium profile ON THE GRID THE RUN USES, not the analytic -2 psi0/a^2, so the
     // chart divides by the number the discretization actually has. (fp64 on the profile:
     // a second difference cancels four digits, which fp32 storage would not survive.)
-    icEq.on = true; icEq.a = a;
+    // The BROADBAND branch leaves icEq.on false, so the island chart keeps its "needs the
+    // tearing IC preset" placeholder rather than quoting a W it cannot support: W(t) is
+    // 4 sqrt(psitilde / |psi''|) for ONE reconnecting mode measured off max - min of psi
+    // on the resonant line, and with 24 modes seeded together that extremum belongs to
+    // whichever island is largest at that instant -- and after the first merger not even
+    // the count is fixed. Better a placeholder than a plausible wrong number; the spectrum
+    // and the picture are what `chain` is read on.
+    icEq.on = !broad; icEq.a = a;
     icEq.curv = Math.abs(icD2(ps, Math.round(0.5 * nx), g.Lx / nx));
-    icEq.w0 = icEq.curv > 0 ? 4 * Math.sqrt(A / icEq.curv) : 0;
-    return { phi: new Float32Array(nx * g.ny), psi: icPlaneFromX(ps, sd, g) };
+    icEq.w0 = (!broad && icEq.curv > 0) ? 4 * Math.sqrt(A / icEq.curv) : 0;
+    const yfac = broad ? icTearYFac(g, icTearN(g)) : null;
+    return { phi: new Float32Array(nx * g.ny), psi: icPlaneFromX(ps, sd, g, yfac) };
   }
 });
 
@@ -5915,8 +6071,22 @@ function fitLogSlope(ts, as, riseMin) {
   let tl = NaN;
   for (let i = Math.min(ts.length, as.length) - 1; i >= 0; i--) {
     if (!(isFinite(ts[i]) && isFinite(as[i]) && as[i] > 0)) continue;
-    if (isFinite(tl) && ts[i] < tl - MODE_FIT_DT) break;
     if (!isFinite(tl)) tl = ts[i];
+    else {
+      // The window is MODE_FIT_DT of SIM time, but the trace is sampled on a WALL clock
+      // (the cut readback's ~10 Hz throttle), so the samples it contains are
+      // 100 / (sim-units per second) -- and a small grid with a large dt runs sim-time so
+      // fast that 10 t-units hold fewer than the 4 samples a slope needs. `tearing` at
+      // selRes 256 is exactly that case: ~19 sim-units/s, ~6 samples, and on a quicker
+      // machine 3 and the legend goes blank mid-linear-stage for no physical reason.
+      // So the window is "MODE_FIT_DT, or as far back as it takes to collect
+      // MODE_FIT_N samples, whichever is longer" -- capped at MODE_FIT_DT_MAX. Widening
+      // is safe because it cannot fake a rate: the R^2 gate below is what rejects a
+      // window straddling two stages, and it does not care how the window was chosen.
+      const span = tl - ts[i];
+      if (span > MODE_FIT_DT_MAX) break;
+      if (span > MODE_FIT_DT && t.length >= MODE_FIT_N) break;
+    }
     t.unshift(ts[i]); y.unshift(Math.log(as[i]));
   }
   const m = t.length;
@@ -5955,11 +6125,20 @@ function modePush(t, vals, ny) {
 const CTRL_ROWS_EQ = [
   { id: "rowEq", hide: true, items: [
     { k: "lab", t: "a / L<sub>x</sub>" },
-    { k: "rng", id: "rEqA", min: 0.02, max: 0.2, step: 0.005, v: 0.1,
+    // step 0.00125 and min 0.0125, both down from (0.005, 0.02) for TEARNL: `chain` in the
+    // 8pi x 8pi box needs a / Lx = 0.4712 / 8pi = 0.01875, which is below the old floor and
+    // off the old grid. Every preset value -- 0.01875, 0.05, 0.075, 0.1 -- is a multiple of
+    // 0.00125, checked. A slider that SNAPPED 0.01875 to 0.02 would not merely be 7% off:
+    // it moves the fastest mode from 6 to 5 and flattens the band further (gamma 0.2704 vs
+    // 0.2694 for its neighbour), i.e. it would change what the preset demonstrates.
+    { k: "rng", id: "rEqA", min: 0.0125, max: 0.2, step: 0.00125, v: 0.1,
       ti: "equilibrium layer width, as a fraction of Lx" }, { k: "val", id: "vEqA" },
     { k: "lab", t: "seed" },
     { k: "rng", id: "rEqPert", min: -6, max: -1, step: 0.1, v: -3,
-      ti: "amplitude of the k_y = 2pi/Ly perturbation (log10)" }, { k: "val", id: "vEqPert" }
+      ti: "seed amplitude at the resonant surface (log10). Single-mode: the amplitude of "
+        + "the k_y = 2pi/Ly perturbation. With `broadband seed` ticked: the PEAK over y of "
+        + "the many-mode seed, which is the same physical quantity" },
+    { k: "val", id: "vEqPert" }
   ] },
   { id: "rowKH", hide: true, items: [
     { k: "lab", t: "U&#8320;" },
@@ -5977,13 +6156,25 @@ const CTRL_ROWS_EQ = [
     { k: "val", id: "vEqPsi0" },
     { k: "cbl", id: "cbEqSrc", t: "maintain equilibrium flux", v: true,
       ti: "add the static source S = -eta grad^2 psi_eq, which holds the equilibrium "
-        + "against its own resistive decay (rebuilds the solver)" }
+        + "against its own resistive decay (rebuilds the solver)" },
+    // TEARNL Phase 1. Unlike cbEqSrc beside it this is NOT a rebuild: eqsrc is a
+    // compile-time constant of nlAssemble, whereas this only changes the real-space
+    // (phi, psi) handed to setICFromReal -- same grid, same kernels, same everything the
+    // solver was built from. It is wired through icSliders below, i.e. it re-applies the
+    // IC on change exactly as the equilibrium sliders one row up do, which is the closer
+    // precedent for a control that edits the initial condition and not the run.
+    { k: "cbl", id: "cbTearBroad", t: "broadband seed", v: false,
+      ti: "seed every k_y from 1 up to the marginal one at equal amplitude and random "
+        + "phase, and let Delta' select the mode, instead of seeding k_y = 2pi/Ly alone" }
   ] },
   { k: "hintdiv", id: "vEqInfo" }
 ];
-// the sliders above, in the order wireCommonControls should wire them (each re-applies
-// the IC on release, exactly like the zeta amplitudes)
-const EQ_SLIDERS = ["rEqA", "rEqPert", "rEqU0", "rEqB0", "rEqPsi0"];
+// the equilibrium presets' IC-shape controls, in the order wireCommonControls should wire
+// them (each re-applies the IC on release, exactly like the zeta amplitudes). The last is
+// a checkbox rather than a slider; it wants the identical contract (its `oninput` is a
+// harmless second label sync) and the alternative was a second wiring path saying the
+// same thing.
+const EQ_SLIDERS = ["rEqA", "rEqPert", "rEqU0", "rEqB0", "rEqPsi0", "cbTearBroad"];
 // their readouts, plus the one-line derived summary (max |b|, the initial island width)
 function syncEqLabels() {
   if (!icHasPreset("tearing")) return;
@@ -5998,7 +6189,12 @@ function syncEqLabels() {
     const c = 2 * icEqNum("rEqPsi0", 1.65) / (a * a);
     s = "a = " + a.toPrecision(3) + "  max|b| = " + (0.7698 * icEqNum("rEqPsi0", 1.65) / a).toPrecision(3) +
         "  k_y a = " + (2 * Math.PI / q.Ly * a).toPrecision(3) +
-        "  W(0) &asymp; " + (4 * Math.sqrt(icEqPert() / c)).toPrecision(3);
+        // W(0) is a single-mode number (icEq.w0 above), so the broadband seed says what it
+        // actually did instead of quoting one -- and the mode count is the derived N, so a
+        // user dragging `a / Lx` can watch the band it covers move.
+        (icTearBroadOn()
+          ? "  seed: k_y modes 1&ndash;" + icTearN(q) + ", flat, random phase"
+          : "  W(0) &asymp; " + (4 * Math.sqrt(icEqPert() / c)).toPrecision(3));
   } else if (p === "kh") {
     const U0 = icEqNum("rEqU0", 1), b0 = icEqNum("rEqB0", 0);
     s = "a = " + a.toPrecision(3) + "  k_y a = " + (2 * Math.PI / q.Ly * a).toPrecision(3) +

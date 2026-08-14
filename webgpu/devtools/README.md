@@ -146,6 +146,24 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   footer too — `save` and `rec` children of one `.capgrp` and neither a loose child of the
   footer — and again on the card an engine with no recording leg builds, where the group must
   still be there around the one button that is left.
+  TEARNL (2026-08-13) added the tearing FAMILY as one table — `kh`, `collapse`, `chain`,
+  `tearing` in that order, because `chain` is the only preset carrying the broadband seed and
+  that order runs the leak in the direction that can fail. Each is asserted on its grid, its
+  shell count, its display card (`chain`'s is the 128 × 512 one; `collapse`'s square card
+  leaves the wrapper's aspect-ratio EMPTY, by the setter's own rule), the hyper LOCK engaging
+  for the three resistive presets and releasing for the ideal one, the maintained-flux source,
+  the rows `icSyncRows` shows, and — the point of the sweep — the state of `#cbTearBroad`,
+  which `presetWrite` only writes for the presets that NAME it, so a preset staying silent
+  about it would inherit the last one's seed and silently stop being the run it is quoted as.
+  Then the `tall` box itself: ISOTROPIC cells (dy > dx would leave the merger sheets
+  unresolved, which is the whole reason the box exists), `kunit` = 1/4 following the box, and
+  a rebuild in and out of it driven from the box select alone. Then Phase 1's IC-BUILDER
+  change, the one thing here that is not a UI concept: `icPlaneFromX` with no y-factor is
+  asserted BITWISE against the literal `cos(k_y y)` broadcast it always was, and the broadband
+  factor against its own definition — the DERIVED mode count (24 at `chain`'s sliders, from
+  the marginal k_y a), a maximum of EXACTLY 1 (which is what keeps `#rEqPert` the same
+  physical quantity in both branches), a DFT flat over exactly modes 1..N and zero outside,
+  the same seed reproducing the same factor, and `#nSeed` really changing it.
 - `contrepro.js <dir> <page> [demo]` — contour-overlay dataflow tracer
   (FEEDBACK_2026-08-08 P0.2). Patches the stub device to record every `writeBuffer` and
   every (pipeline, bind group) dispatch IN ORDER, names every buffer and pipeline, and

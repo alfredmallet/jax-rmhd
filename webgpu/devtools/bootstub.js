@@ -388,6 +388,57 @@ setTimeout(async () => {
       await frame(); await frame();
     }
 
+    // --- the spectrum card's `clip` default, per preset (2026-08-13) ------------
+    // The y floor's tail rule is calibrated on a hyper-dissipative tail; the hyper = 1
+    // presets need it OFF or a bump at the dealias end is drawn below the axis. That is a
+    // per-preset default carried by the layout ({t: "spectrum", clip: "off"}), so the two
+    // things to pin are that the layout reaches the card at all and that it did not leak
+    // into the presets that still want the historical rule.
+    {
+      const clipOf = k => run(`function(k){
+        const s = document.getElementById("selPreset"); s.value = k; s.onchange();
+        const c = cards.chart.filter(x => x.type() === "spectrum");
+        return c.length ? c.map(x => x.optVals().clip).join(",") : "(no spectrum card)";
+      }`, k);
+      // chain opens on two cut traces and no spectrum card, so it is not in this map
+      const want = { collapse: "off", forced: "on", decay: "on" };
+      for (const k of Object.keys(want)) {
+        if (run("function(k){ return !PRESETS[k]; }", k)) continue;   // 3D has its own set
+        const got = clipOf(k);
+        if (got !== want[k]) fail("preset " + k + ": spectrum card clip = " + got
+                                  + ", wanted " + want[k]);
+      }
+      // and it is a live control, not just a boot value: unticking redraws from the same
+      // data rather than blanking the card (the pin/fit options' contract)
+      const live = run(`function(){
+        const s = document.getElementById("selPreset"); s.value = "forced"; s.onchange();
+        const c = cards.chart.filter(x => x.type() === "spectrum")[0];
+        if (!c) return "no card";
+        const before = c.optVals().clip;
+        for (const e of c.optEls) if (e.__optId === "clip" && e.__optChk) {
+          e.__optChk.checked = false; e.__optChk.onchange();
+        }
+        return before + "->" + c.optVals().clip;
+      }`);
+      if (live !== "on->off") fail("the clip checkbox does not toggle: " + live);
+      // the same mechanism carries a chart option that is a SELECT, not a checkbox:
+      // `chain` opens on two cut traces, b first then u (Alfred, 2026-08-13). Both read
+      // the perturbation alone -- the equilibrium is y-independent with its field along y,
+      // so u_x and b_x carry none of it on the cut line -- which is how the island count
+      // is read when the picture is moving too fast.
+      // (2D only -- the 3D page offers neither preset, and assigning a value a <select>
+      // does not have leaves it on whatever was selected, which would read as a failure)
+      const pairs = run(`function(){
+        if (!PRESETS.chain) return "(2D only)";
+        const s = document.getElementById("selPreset"); s.value = "chain"; s.onchange();
+        return cards.chart.map(c => c.type() + "/" + (c.optVals().pair || "-")).join(",");
+      }`);
+      if (pairs !== "(2D only)" && pairs !== "cut/b,cut/u")
+        fail("chain's chart layout is " + pairs + ", wanted cut/b,cut/u");
+      console.log(tag + " chart options from the layout: clip per preset (" + live
+                  + "), chain opens " + pairs);
+    }
+
     // --- Phase J: rectangular boxes, equilibria, island card, hyper lock -------
     // 2D only; the 3D app is square-perp by construction and offers none of this.
     if (page.indexOf("3d") < 0) {
@@ -404,12 +455,19 @@ setTimeout(async () => {
       // hyper is LOCKED to 1 by tearing (resistive-layer physics) and FREE for KH
       // (an ideal instability) -- REFINE_PLAN J2.5
       const HYPLOCK = { tearing: true, kh: false };
+      // The two share the wide BOX but no longer the grid: tearing dropped to selRes 256
+      // (2026-08-13) on the measured resolution floor, KH stayed at 512. Everything below
+      // this pair of lines is box-driven and hence common to both -- the card geometry, the
+      // aspect ratio, the canvases and the arrow frame all follow Lx/Ly, not n_x.
+      const WIDEGRID = { tearing: [256, 64, 42], kh: [512, 128, 85] };
       for (const k of ["tearing", "kh"]) {
         run(`function(k){ const s = document.getElementById("selPreset"); s.value = k; s.onchange(); }`, k);
         const g = geom();
-        if (g.nx !== 512 || g.ny !== 128) fail(k + ": expected a 512x128 grid, got " + g.nx + "x" + g.ny);
+        const [wnx, wny, wnb] = WIDEGRID[k];
+        if (g.nx !== wnx || g.ny !== wny)
+          fail(k + ": expected a " + wnx + "x" + wny + " grid, got " + g.nx + "x" + g.ny);
         if (Math.abs(g.Lx / g.Ly - 2) > 1e-12) fail(k + ": expected Lx/Ly = 2, got " + g.Lx / g.Ly);
-        if (g.nb !== 85) fail(k + ": expected 85 shell bins on the wide box, got " + g.nb);
+        if (g.nb !== wnb) fail(k + ": expected " + wnb + " shell bins on the wide box, got " + g.nb);
         // aspect-correct card: equal pixels per unit LENGTH, so 2:1 here
         if (g.gw !== 512 || g.gh !== 256) fail(k + ": card geometry " + g.gw + "x" + g.gh + " is not aspect-correct");
         if (g.ar !== "512 / 256") fail(k + ": wrapper aspect-ratio not set: '" + g.ar + "'");
@@ -435,6 +493,140 @@ setTimeout(async () => {
         await frame();
         console.log(tag + " " + k + ": " + JSON.stringify(g));
       }
+      // --- TEARNL: the `tall` box and the two nonlinear presets (Phase 5 item 4) --
+      // The whole tearing FAMILY in one table: the hyper lock must engage for the three
+      // presets whose physics is resistive and release for KH, which is ideal; the grid,
+      // the shell count and the display card must follow each box; and `chain` must be
+      // the only one arriving with the broadband seed on. That last row is the leak test
+      // and it is a property of the PRESET TABLE, not of the checkbox: presetWrite only
+      // writes the ids a preset names, so a preset that stays silent about cbTearBroad
+      // inherits whatever the last one left -- which for `tearing` would mean silently
+      // ceasing to be the single-mode FKR/Rutherford comparison it is quoted as. The
+      // order below is deliberate: `chain` (broad on) is followed by `tearing`, so the
+      // sweep runs the leak in the direction that can fail.
+      const TEARFAM = [
+        { k: "kh",       nx: 512, ny: 128, nb: 85, gw: 512, gh: 256, lock: false, broad: false, src: false },
+        { k: "collapse", nx: 256, ny: 256, nb: 85, gw: 512, gh: 512, lock: true,  broad: false, src: false },
+        { k: "chain",    nx: 256, ny: 256, nb: 85, gw: 512, gh: 512, lock: true,  broad: true,  src: false },
+        { k: "tearing",  nx: 256, ny: 64,  nb: 42, gw: 512, gh: 256, lock: true,  broad: false, src: true }
+      ];
+      for (const c of TEARFAM) {
+        run(`function(k){ const s = document.getElementById("selPreset"); s.value = k; s.onchange(); }`, c.k);
+        await frame();
+        const g = geom();
+        const bs = run(`function(){ const e = document.getElementById("cbTearBroad");
+          return { on: !!(e && e.checked), vis: document.getElementById("rowTear").style.display,
+                   eq: icEq.on, w0: icEq.w0, ic: document.getElementById("selIC").value,
+                   dx: solver.p.Lx / solver.p.nx, dy: solver.p.Ly / solver.p.ny }; }`);
+        if (g.nx !== c.nx || g.ny !== c.ny)
+          fail(c.k + ": expected a " + c.nx + "x" + c.ny + " grid, got " + g.nx + "x" + g.ny);
+        if (g.nb !== c.nb) fail(c.k + ": expected " + c.nb + " shell bins, got " + g.nb);
+        if (g.gw !== c.gw || g.gh !== c.gh)
+          fail(c.k + ": card geometry " + g.gw + "x" + g.gh + " is not " + c.gw + "x" + c.gh);
+        // a square card leaves the wrapper's aspect-ratio EMPTY (the CSS 1/1), so the
+        // expectation is the setter's own rule and not "always a ratio string"
+        const wantAr = c.gw === c.gh ? "" : c.gw + " / " + c.gh;
+        if (g.ar !== wantAr) fail(c.k + ": wrapper aspect-ratio '" + g.ar + "', wanted '" + wantAr + "'");
+        // the LOCKED presets are pinned at hyper 1; KH's control is merely free -- where
+        // its handle sits depends on what icSyncRows remembered from the preset before it,
+        // which is the restore path J2.5's own leg above covers
+        if (g.hyperLock !== c.lock || (c.lock && g.hyper !== "1"))
+          fail(c.k + ": wrong hyper lock state: " + JSON.stringify(g));
+        if (c.lock && run("function(){ return solver.p.hyper; }") !== 1)
+          fail(c.k + ": the solver kept a hyper != 1 under the lock");
+        if (g.eqsrc !== c.src) fail(c.k + ": wrong maintain-flux state: " + g.eqsrc);
+        if (bs.on !== c.broad)
+          fail(c.k + ": broadband seed is " + bs.on + ", expected " + c.broad + " (leak?)");
+        // rowTear (which carries both checkboxes) is shown exactly for the tearing IC
+        if ((bs.vis === "none") !== (bs.ic !== "tearing"))
+          fail(c.k + ": rowTear display '" + bs.vis + "' for IC " + bs.ic);
+        // the island chart's equilibrium record follows the SEED, not the preset: one
+        // reconnecting mode has a W_0, twenty-four do not (see icRegister("tearing"))
+        const wantEq = bs.ic === "tearing" && !c.broad;
+        if (bs.eq !== wantEq)
+          fail(c.k + ": icEq.on = " + bs.eq + " (wanted " + wantEq + ") with broadband " + bs.on);
+        if (c.broad && bs.w0 !== 0) fail(c.k + ": a broadband seed still quoted W_0 = " + bs.w0);
+        console.log(tag + " " + c.k + ": " + JSON.stringify(Object.assign({ broad: bs.on, eq: bs.eq }, g)));
+      }
+      // ISOTROPIC cells are what the payload needs -- the sheets between merging islands
+      // lie normal to y, so dy > dx would leave exactly the payload unresolved. `big` gets
+      // them from fy = 1; the point of asserting it is that a future box may not.
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "chain"; s.onchange(); }`);
+      await frame();
+      const iso = run("function(){ return [solver.p.Lx / solver.p.nx, solver.p.Ly / solver.p.ny]; }");
+      if (Math.abs(iso[0] - iso[1]) > 1e-15) fail("the large box is not isotropic: " + JSON.stringify(iso));
+      // ... and the spectrum's k unit follows the box (kunit = min(2pi/Lx, 2pi/Ly) = 1/4
+      // here), which is what the shell count above is counted in
+      const ku = run("function(){ return dissGrid().kunit; }");
+      if (Math.abs(ku - 0.25) > 1e-12) fail("the large box's kunit is " + ku + ", not 1/4");
+      // in and OUT of the large box: a box switch is a full rebuild either way (selBox is in
+      // rebuildOn), and the grid must land back on the square one it came from
+      run(`function(){ const s = document.getElementById("selPreset"); s.value = "forced"; s.onchange(); }`);
+      await frame();
+      const back = run("function(){ return [solver.p.nx, solver.p.ny, solver.p.Ly]; }");
+      if (back[0] !== 256 || back[1] !== 256 || Math.abs(back[2] - 2 * Math.PI) > 1e-12)
+        fail("leaving the tall box did not rebuild the square grid: " + JSON.stringify(back));
+      run(`function(){ const b = document.getElementById("selBox"); b.value = "big"; b.onchange(); }`);
+      await frame();
+      const there = run("function(){ return [solver.p.nx, solver.p.ny, solver.p.Lx, solver.p.Ly]; }");
+      if (there[1] !== there[0] || Math.abs(there[2] - 8 * Math.PI) > 1e-12
+          || Math.abs(there[3] - 8 * Math.PI) > 1e-12)
+        fail("the box select alone did not build the large grid: " + JSON.stringify(there));
+      run(`function(){ const b = document.getElementById("selBox"); b.value = "sq"; b.onchange(); }`);
+      await frame();
+      console.log(tag + " large box: isotropic cells, kunit 1/4, rebuilds in and out cleanly");
+      // The single-mode seed must be BITWISE what it was before icPlaneFromX grew its
+      // y-factor argument -- this is the in-app half of that claim (the cross-checkout
+      // half is a byte comparison of the built planes against the base commit).
+      const bitw = run(`function(){
+        const g = { nx: 64, ny: 32, Lx: 2 * Math.PI, Ly: 8 * Math.PI };
+        const prof = new Float64Array(g.nx), sd = new Float64Array(g.nx);
+        for (let i = 0; i < g.nx; i++) { prof[i] = 1.7 * Math.sin(i * 0.37); sd[i] = 1e-3 * Math.cos(i * 0.11); }
+        const got = icPlaneFromX(prof, sd, g);
+        const ky = 2 * Math.PI / g.Ly, ref = new Float32Array(g.nx * g.ny);
+        for (let i = 0; i < g.nx; i++) for (let j = 0; j < g.ny; j++)
+          ref[i * g.ny + j] = prof[i] + sd[i] * Math.cos(ky * j * g.Ly / g.ny);
+        const A = new Uint8Array(got.buffer), B = new Uint8Array(ref.buffer);
+        let bad = 0;
+        for (let i = 0; i < A.length; i++) if (A[i] !== B[i]) bad++;
+        return bad;
+      }`);
+      if (bitw !== 0) fail("icPlaneFromX's single-mode path is no longer the cos broadcast: " + bitw + " bytes differ");
+      // The broadband factor itself: N derived from the marginal k_y a (24 at the `chain`
+      // sliders), a FLAT amplitude over exactly modes 1..N and nothing outside, a maximum
+      // of exactly 1 -- which is what keeps the #rEqPert slider meaning the same physical
+      // quantity in both branches -- and reproducibility off the page's own seed box.
+      const yb = run(`function(){
+        const g = { nx: 8, ny: 1024, Lx: 2 * Math.PI, Ly: 8 * Math.PI };
+        const sd = document.getElementById("nSeed"), s0 = sd.value;
+        document.getElementById("rEqA").value = "0.075";
+        const N = icTearN(g);
+        const y = icTearYFac(g, N), y2 = icTearYFac(g, N);
+        sd.value = "8"; const y3 = icTearYFac(g, N); sd.value = s0;
+        let m = 0, dif = 0, difSeed = 0;
+        for (let j = 0; j < g.ny; j++) {
+          m = Math.max(m, Math.abs(y[j]));
+          if (y[j] !== y2[j]) dif++;
+          if (y[j] !== y3[j]) difSeed++;
+        }
+        const amp = n => { let cr = 0, ci = 0;
+          for (let j = 0; j < g.ny; j++) { const th = 2 * Math.PI * n * j / g.ny;
+            cr += y[j] * Math.cos(th); ci -= y[j] * Math.sin(th); }
+          return 2 * Math.sqrt(cr * cr + ci * ci) / g.ny; };
+        const inb = [], out = [];
+        for (let n = 1; n <= N; n++) inb.push(amp(n));
+        for (let n = N + 1; n <= N + 6; n++) out.push(amp(n));
+        return { N: N, max: m, dif: dif, difSeed: difSeed,
+                 flat: Math.max.apply(null, inb) / Math.min.apply(null, inb),
+                 lo: Math.min.apply(null, inb), out: Math.max.apply(null, out) };
+      }`);
+      if (yb.N !== 24) fail("the derived broadband mode count is " + yb.N + ", not 24 at the chain sliders");
+      if (yb.max !== 1) fail("the broadband y factor is not normalized to exactly 1: " + yb.max);
+      if (yb.dif !== 0) fail("the broadband seed is not reproducible from one seed: " + yb.dif + " samples differ");
+      if (yb.difSeed === 0) fail("the broadband seed ignored #nSeed");
+      if (Math.abs(yb.flat - 1) > 1e-9) fail("the broadband seed is not flat in k_y: ratio " + yb.flat);
+      if (!(yb.out < 1e-12 * yb.lo)) fail("the broadband seed leaked past mode N: " + yb.out);
+      console.log(tag + " broadband seed: " + JSON.stringify(yb));
       // the island card: add, feed it real cut readbacks, close
       run(`function(){ const s = document.getElementById("selPreset"); s.value = "tearing"; s.onchange();
                        addChartCard("island"); cardsSync(); }`);

@@ -110,10 +110,31 @@ const REFVEC = JSON.parse(String.raw`{"nx": 32, "ny": 32, "Lx": 6.28318530717958
 // lengths come from here, so "resolution" keeps meaning n_x. Rectangular boxes are what
 // the equilibrium demos need: a long x to hold the layer's far field inside the periodic
 // box, a short y carrying one unstable wavelength. (fy must keep ny a power of two --
-// the FFT is radix-2 -- which 1 and 1/4 do at every offered resolution.)
+// the FFT is radix-2 -- which 1, 1/4 and 4 all do at every offered resolution: selRes is
+// 128 / 256 / 512, so `tall` resolves 512 / 1024 / 2048 in y.)
+// `big` (TEARNL Phase 2) is not a new SHAPE -- it is the square box four times bigger, and
+// what it buys is a small a / L_x: ONE layer with many unstable wavelengths along it, so
+// the equilibrium selects its own k_y out of a broadband seed instead of being handed one.
+// L_y = 8pi carries six of them; L_x = 8pi is what holds the islands.
+//
+// It arrived at 2pi x 8pi, went to 4pi x 8pi and then to this, both times because Alfred
+// ran it and the islands did not fit: their extent ACROSS the sheet grows with their
+// wavelength ALONG it, and coalescence keeps doubling that wavelength, so the last merger
+// is much wider than the first. Separatrices reaching the periodic x boundary both look
+// wrong and invalidate the far field Delta' is defined against. L_x/a is now 53.3, from
+// 13.3. Raising eta to buy the resolution back at 512^2 instead was tried on paper and is
+// worse: it takes 5x the resistivity to reach the benchmark and drops S to 91, which stops
+// the mergers being the clean reconnection the preset is about.
+//
+// The price is POINTS and only points -- 1024^2 = 1.05 Mpts, which is exactly the 3D app's
+// own default grid (128^2 x 64), Alfred's stated ceiling for this. Workgroup storage does
+// NOT move: the longest transform line was already n_y = 1024 in the 4pi x 8pi version, so
+// this is the same 16 KiB. Cells are isotropic by construction (fy = 1), which the payload
+// requires -- the Sweet-Parker sheets between merging islands lie normal to y.
 const BOXES = {
   sq:   { t: "square 2&pi; &times; 2&pi;", fy: 1, Lx: 2 * Math.PI, Ly: 2 * Math.PI },
-  wide: { t: "wide 4&pi; &times; 2&pi;", fy: 1 / 4, Lx: 4 * Math.PI, Ly: 2 * Math.PI }
+  wide: { t: "wide 4&pi; &times; 2&pi;", fy: 1 / 4, Lx: 4 * Math.PI, Ly: 2 * Math.PI },
+  big:  { t: "large 8&pi; &times; 8&pi;", fy: 1, Lx: 8 * Math.PI, Ly: 8 * Math.PI }
 };
 const boxOf = () => BOXES[el("selBox").value] || BOXES.sq;
 
@@ -121,7 +142,11 @@ controlsBuild({
   groups: [
     { id: "grpSim", summary: "simulation", rows: [
       [{ k: "lab", t: "resolution n<sub>x</sub>" },
-       { k: "sel", id: "selRes", o: [[128, "128"], [256, "256"], [512, "512"]], v: 256 },
+       // 1024 is offered ONLY because `big` needs it, and costs no workgroup storage to
+       // offer: the longest line is 1024 points either way (16 KiB, the guaranteed
+       // minimum). It is 1.05 Mpts, so it is the slow end deliberately, and resSyncBox
+       // disables it on any box whose n_y would then exceed NMAX_LINE.
+       { k: "sel", id: "selRes", o: [[128, "128"], [256, "256"], [512, "512"], [1024, "1024"]], v: 256 },
        { k: "lab", t: "box" },
        { k: "sel", id: "selBox", o: Object.keys(BOXES).map(k => [k, BOXES[k].t]),
          ti: "perpendicular box shape; n_y and L_y follow it" },
@@ -990,8 +1015,25 @@ function uiPm() {
   const v = parseFloat(el("nPm").value);
   return (isFinite(v) && v >= 0) ? v : 1;
 }
+// The longest 1D transform line the app will build, in POINTS. The row/column FFT keeps a
+// whole complex line in workgroup storage -- 2N vec2<f32> after the radix-2 padding, i.e.
+// 16N bytes -- so 1024 points is 16 KiB, exactly `maxComputeWorkgroupStorageSize`'s
+// guaranteed minimum. SPEC.md called 1024 "not offered" for that reason until TEARNL
+// needed the tall box; what changed is that this page now ASKS the adapter for its own
+// (invariably larger) limit, so the guaranteed minimum is a floor we sit on rather than a
+// ceiling we sit under -- see initGPU({maxLimits}) at the boot call and SPEC.md 8. 2048
+// would be 32 KiB, which is past the minimum, so the cap is a real one and is enforced
+// here rather than trusted to the box table: `tall` is fy = 4, so selRes 512 would ask for
+// it and the pipeline would simply fail to create.
+const NMAX_LINE = 1024;
 function uiParams() {
-  const eps = uiEps(), b = boxOf(), nx = parseInt(el("selRes").value, 10);
+  const eps = uiEps(), b = boxOf();
+  // clamp n_x, never n_y: dropping n_y alone would silently shear the cells, and for
+  // `tall` in particular anisotropic cells leave the nonlinear Sweet-Parker sheets (which
+  // lie normal to y) unresolved -- the one thing that box exists to avoid. Capping n_x
+  // instead keeps dx = dy and costs only the resolution the device could not have run.
+  const sel = parseInt(el("selRes").value, 10);
+  const nx = Math.min(sel, Math.max(32, Math.floor(NMAX_LINE / Math.max(1, b.fy))));
   return {
     nx: nx, ny: Math.max(32, Math.round(nx * b.fy)),
     Lx: b.Lx, Ly: b.Ly,
@@ -1012,9 +1054,36 @@ function cardAspect() {
   return r >= 1 ? { w: 512, h: Math.max(64, Math.round(512 / r)) }
                 : { w: Math.max(64, Math.round(512 * r)), h: 512 };
 }
+// Resolutions this box cannot run are DISABLED rather than silently clamped: the tall box
+// is fy = 4, so selRes 512 would want a 2048-point transform line, past NMAX_LINE. The
+// idiom is icSyncRows' hyper lock -- disable the control, say why in its title, and move
+// the value to the nearest legal one -- because a readout saying "512, but actually 256"
+// is a control lying about itself. uiParams still clamps: this is the UI half of one rule,
+// not the rule.
+// As of the 8pi x 8pi box this DISABLES NOTHING -- every entry in BOXES has fy <= 1, so
+// n_y never exceeds n_x <= NMAX_LINE. It is kept because the rule is about the box table
+// and not about today's contents: the 4pi x 8pi box this replaced had fy = 2 and did trip
+// it, and the next long-y box would too. Do not delete it as unreachable.
+function resSyncBox() {
+  const b = boxOf(), sel = el("selRes"), cap = Math.floor(NMAX_LINE / Math.max(1, b.fy));
+  let best = null;
+  for (const o of sel.options) {
+    const v = parseInt(o.value, 10);
+    o.disabled = v > cap;
+    if (!o.disabled && (best === null || v > best)) best = v;
+  }
+  sel.title = best !== null && best < 512
+    ? "this box is " + b.fy + "× longer in y, so n_x above " + best + " would need a "
+      + "transform line longer than " + NMAX_LINE + " points (the app's limit)"
+    : "";
+  // a disabled option can still be the SELECTED one (a preset wrote it, or the box changed
+  // under it), which no amount of styling makes legible -- move the value instead
+  if (best !== null && parseInt(sel.value, 10) > cap) sel.value = String(best);
+}
 // the 2D-only readouts: the resolved box, and the equilibrium-preset knobs
 function syncLabels() {
   syncCommonLabels();
+  resSyncBox();
   const q = uiParams();
   el("vBox").textContent = q.nx + "×" + q.ny;
   syncEqLabels();
@@ -1151,10 +1220,21 @@ const PRESETS = {
     // QUOTED resistivity -- eta = 1e-3, against a linear reference growth rate -- and a
     // controller wandering eta would falsify exactly what the demo measures, the same
     // argument that makes this preset lock hyper to 1 (icSyncRows).
-    set: { selRes: "512", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
+    // cbTearBroad false is not a change of this preset, it is what KEEPS it unchanged:
+    // presetWrite only writes the ids a preset names, so without this line a visitor
+    // arriving here from `chain` would still be carrying that preset's broadband seed and
+    // this one would silently stop being the single-mode FKR/Rutherford comparison it is
+    // quoted as. Every preset that selects the tearing IC pins the flag, and only they
+    // need to: nothing else reads it.
+    // selRes 256 (Alfred, 2026-08-13, 4x faster and he has run it): 256 x 64 puts the
+    // resistive layer at 1.03 cells, and his own calibration says that costs 2.4% in the
+    // fitted gamma -- 0.0280 against the 0.0287 this hint quotes. That is still an
+    // agreement a viewer reads as success, and it is the number they will actually see;
+    // 512 is one click away for anyone who wants the 2.06-cell version.
+    set: { selRes: "256", selBox: "wide", selHyper: "1", nPm: "1", cbForce: false,
            rDiss: "-3", cbAutoDiss: false,
            selIC: "tearing", rEqA: "0.1", rEqPert: "-3", rEqPsi0: "1.65",
-           cbEqSrc: true, rCflEvery: "4" },
+           cbEqSrc: true, cbTearBroad: false, rCflEvery: "4" },
     layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }], charts: ["island", "energy"] },
     hint: "&psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a), "
       + "&phi;<sub>eq</sub> = 0: b<sub>y</sub> vanishes on x = L<sub>x</sub>/2, so that is the "
@@ -1169,6 +1249,128 @@ const PRESETS = {
       + "the island chart's fitted &gamma; is what you compare against it. "
       + "Switch it off and &psi;<sub>eq</sub> also diffuses at &sim;&eta;/a&sup2;, dropping the "
       + "measured slope some 30&ndash;40% below the reference."
+  },
+  // ---- the nonlinear pair (TEARNL Phases 3 and 4) ---------------------------
+  // Same equilibrium as `tearing`, either side of its nonlinear fork, and no new physics
+  // in either: only the controls move. Both run with the maintained-flux source OFF --
+  // neither quotes a rate against a held equilibrium, and a source feeding flux in would
+  // make the collapse externally driven, which is the opposite of "watch it relax"
+  // (resistive spreading is not a threat: a^2/eta is 400 growth times for `collapse` and
+  // 22 for `chain`). Both also turn the auto-diss controller off, and for a harder reason
+  // than `tearing` does: autoDissTarget places the CASCADE TERMINATION at the dealias
+  // scale and has no term that knows a reconnection layer exists, so on a quiescent
+  // equilibrium it drives eta to ~1e-9 -- a layer 0.04 cells wide -- and, being on a
+  // wall-clock period, it would do so at a rate that depends on the viewer's frame rate.
+  collapse: {
+    label: "tearing: X-point collapse",
+    set: { selRes: "256", selBox: "sq", selHyper: "1", nPm: "1", cbForce: false,
+           rDiss: "-3", cbAutoDiss: false,
+           selIC: "tearing", rEqA: "0.1", rEqPert: "-4", rEqPsi0: "1.65",
+           cbEqSrc: false, cbTearBroad: false, rCflEvery: "4" },
+    // rEqPert is -4 and NOT the plan's -3 (Alfred, 2026-08-13). At -3 the seed island is
+    // already as wide as the resistive layer it is supposed to grow out of -- W0 = 0.0438
+    // against delta_lin = 0.0423, a ratio of 1.03 -- so there is no linear stage at all
+    // and the island chart's headline claim, two straight segments of different slope,
+    // is a segment short. -4 puts W0/delta_lin at 0.33 and buys ~10 time units of clean
+    // exponential growth before the island reaches the layer width.
+    // It also repairs the NARRATIVE: at -3, W0/W_c = 2.63, i.e. the island starts ALREADY
+    // past the critical width it is described as passing. At -4 the ratio is 0.83 at this
+    // `a` and falls monotonically to 0.18 at a / Lx = 0.2, so the island genuinely grows
+    // THROUGH W_c here and never reaches it at the Rutherford end -- which is the contrast
+    // the slider exists to draw, now happening in time rather than in slider position.
+    // Cost: ~10 time units before anything is visible. Accepted.
+    // the spectrum chart is not decoration: it is what the hint's resolution experiment
+    // points at, and a bump at the dealias end is how the under-resolved case is READ
+    layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }],
+              // clip off: hyper = 1, so the dissipation range is gentle AND is what the
+              // resolution experiment below is read off -- see drawSpectrum
+              charts: ["island", "energy", { t: "spectrum", clip: "off" }] },
+    // The hint ASKS for the current intensification rather than quoting it (Alfred's
+    // text, 2026-08-13), which is why there is no number here and no placeholder waiting
+    // to be filled: the colourbar answers it live, against the analytic equilibrium value
+    // 2 psi0/a^2 = 8.36. That also retires what TEARNL Phase 5 item 2 was blocking on --
+    // measuring max |J| over a run is still worth doing for the RECORD, but nothing
+    // user-facing is now waiting on it. If a number is ever put back, it must be a maximum
+    // over a run of exactly this configuration: the frame grabs on hand are single frames
+    // of different runs at different times (82 with the source on, 47 near the collapse,
+    // 25.4 at island formation with it off) and peak |J| varies strongly THROUGH a
+    // collapse, so they compare nothing.
+    hint: "tearing setup &psi;<sub>eq</sub> = &psi;&#8320; sech&sup2;((x&minus;L<sub>x</sub>/2)/a) again, but in a square box: so a is half as "
+      + "thick, and k<sub>y</sub>a is smaller, resulting in a larger instability parameter "
+      + "&Delta;&prime;a = 37.8 vs the tearing preset&rsquo;s &Delta;&prime;a = 8.4. the initial "
+      + "seed starts just below the critical width W<sub>c</sub> &sim; 1/&Delta;&prime;; once it "
+      + "grows past this limit, the X-point collapses into a thin, Sweet&ndash;Parker-like sheet, "
+      + "which eventually tears itself, developing a secondary island which coalesces with the "
+      + "first (see Loureiro et al. 2005 for the careful version of all this). what is the peak "
+      + "current in the collapsed sheet compared to the initial equilibrium? drop <b>diss</b> to "
+      + "3&times;10<sup>&minus;4</sup> and reset; what happens? this last experiment isn&rsquo;t "
+      + "physical: a consequence of the collapsed sheet wanting to be thinner than the grid and "
+      + "another warning to be careful with simulations."
+  },
+  chain: {
+    label: "tearing: island chain",
+    // selRes 512, NOT the 1024 that dx = 0.02454 would want. That is a deliberate
+    // departure from the plan's k_max.delta >= 4.3 benchmark, and it is Alfred's
+    // MEASUREMENT rather than a concession: he ran the `tearing` preset -- the only
+    // configuration whose growth rate the app actually displays and whose reference value
+    // (gamma = 0.0287) is published -- down the resolution ladder and read the island
+    // chart's fitted gamma at each step:
+    //
+    //   selRes 512   delta_lin/dx = 2.06   gamma 0.0287   <- where the benchmark was set
+    //   selRes 256   delta_lin/dx = 1.03   gamma 0.0280   -2.4%
+    //   selRes 128   delta_lin/dx = 0.52   gamma 0.0315   +9.8%, and visible junk early on
+    //
+    // So ~1 cell across the linear layer costs a couple of percent, and only at ~0.5 does
+    // the error jump AND change sign -- non-monotonic, which is the signature of the layer
+    // genuinely not being represented. `chain` at 512^2 sits at 1.26 cells, inside the
+    // measured-good range; at 256^2 it would be 0.63, i.e. exactly the row that misbehaves.
+    // The 4.3 benchmark was inferred from ONE working configuration and is conservative by
+    // about a factor of two; this is the first time anything measured the other side of it.
+    // The spectrum is clean at every one of these grids (Alfred, three pinned ghosts) --
+    // which is necessary but was never sufficient, since the linear layer sits four decades
+    // down the spectrum and carries too little energy to show up there at all.
+    // a is held at its absolute 0.4712 throughout, so rEqA tracks Lx: 0.4712 / 8pi = 0.01875.
+    set: { selRes: "256", selBox: "big", selHyper: "1", nPm: "1", cbForce: false,
+           rDiss: "-2.5", cbAutoDiss: false,
+           selIC: "tearing", rEqA: "0.01875", rEqPert: "-3", rEqPsi0: "0.60",
+           cbEqSrc: false, cbTearBroad: true, rCflEvery: "4" },
+    // the two cut traces, b first: the cut line is x = Lx/2, the resonant surface, so
+    // b_x = -d_y psi is the reconnected flux mode by mode along the chain and u_x is the
+    // inflow feeding it. Both carry ZERO equilibrium content on that line (the equilibrium
+    // is y-independent with its field along y), so what they show is the perturbation
+    // alone -- which is why they read the island count more cleanly than the picture does.
+    layout: { disp: [{ sel: 1, cont: 3, nlev: 16 }],
+              charts: [{ t: "cut", pair: "b" }, { t: "cut", pair: "u" }] },
+    // Pm = 1 is load-bearing for THIS preset and not merely conventional: gamma falls as
+    // roughly Pm^-0.25 over Pm = 1-10 and by Pm = 100 the short-wavelength end of the band
+    // is outright stable -- so a viewer nudging the Pm box would silently truncate the
+    // chain rather than slow it. NOTE this is no longer said in the hint (Alfred's text,
+    // 2026-08-13, is deliberately short and asks questions instead of listing caveats), so
+    // this comment is now the only record of it. A viewer who moves Pm gets a quietly
+    // different demo and is not told.
+    //
+    // The selection is a TRADE and not "largest Delta'": Delta' falls
+    // monotonically with k_y here (1081 at the box fundamental, 29.7 at mode 6, marginal
+    // near mode 19), so if Delta' alone chose, mode 1 would win. It is the eigenvalue that
+    // peaks at mode 6, the resistive layer being thinner and faster at larger k_y. All
+    // figures from devtools/eqlinear.py at these exact slider values.
+    //
+    // The hint no longer states a count at all -- it asks "how many islands form?", which
+    // is the honest form given the evidence: Alfred's run showed four early in the
+    // nonlinear stage where linear theory's peak is six. That is not a bug and not
+    // under-resolution -- gamma is
+    // flat near its peak (modes 4-8 are 0.2842 / 0.3056 / 0.3113 / 0.3034 / 0.2844, i.e.
+    // all within 9%), so over the ~14 time units of linear growth from a 1e-3 seed the
+    // winner ends only ~8% above its neighbours and the random phases settle the rest.
+    // Lowering the seed does not rescue it: at 1e-5 the linear stage roughly doubles and
+    // the margin only reaches 18%. The claim that DOES discriminate -- and the one the
+    // preset is really for -- is that the fundamental loses, its gamma being 3x down.
+    hint: "the same tearing equilibrium in a larger box, seeded with random modes up to "
+      + "k<sub>y</sub> = 6: the physics decides which is fastest. how many islands form, and "
+      + "how do they behave after formation? what is the final state? what happens if you "
+      + "rerun with <b>maintain equilibrium flux</b> checked? (note: on some machines this "
+      + "demo runs too fast to check island numbers; if this is true for you, increase the "
+      + "resolution to 512&sup2;)"
   }
 };
 
@@ -1338,7 +1540,10 @@ async function boot() {
   // with its grid and dissipation. Done ahead of initGPU so the hint is on the page
   // even where WebGPU is missing.
   const pre = presetBoot(PRESETS);
-  if (!await initGPU()) return;
+  // maxLimits since TEARNL: the `tall` box's 1024-point y line wants 16 KiB of workgroup
+  // storage, which is exactly the guaranteed minimum. NMAX_LINE caps the grid so every
+  // offered configuration still fits a DEFAULT device -- this only buys margin.
+  if (!await initGPU({ maxLimits: true })) return;
 
   cardsInit({
     fields: DISP_FIELDS,

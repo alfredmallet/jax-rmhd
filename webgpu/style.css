@@ -79,7 +79,10 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
 /* ---- cards ---- */
 .card.disp, .card.chart { background: #181b21; border: 1px solid #252a33; border-radius: 6px;
                           padding: 6px 8px 8px; box-sizing: border-box; }
-.card.disp { flex: 1 1 300px; min-width: 0; max-width: 540px; }
+/* container-type so .cvwrap's max-height can be written against the CARD's width (100cqw)
+   rather than the viewport -- see the note there. inline-size only: the card's own height
+   must stay content-driven, or the wrap's height would depend on the card's and vice versa. */
+.card.disp { flex: 1 1 300px; min-width: 0; max-width: 540px; container-type: inline-size; }
 .card.chart { width: 100%; }
 .cardhead { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 6px; }
 .cardhead select { padding: 2px 5px; font-size: 12px; max-width: 100%; }
@@ -138,8 +141,19 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
 
 /* the border lives on the wrapper, so the absolutely-positioned overlays
    (inset 0 of the padding box) line up with the WebGPU canvas exactly at every scale */
-.cvwrap { position: relative; display: block; width: 100%;
-          border: 1px solid #2b303a; box-sizing: border-box; aspect-ratio: 1 / 1; }
+.cvwrap { position: relative; display: block; width: auto;
+          border: 1px solid #2b303a; box-sizing: border-box; aspect-ratio: 1 / 1;
+          /* A card sizes from its WIDTH, so an aspect-correct card taller than it is wide
+             (the tall 2pi x 8pi box: 1/4, hence 4x the card width in height) would run off
+             the screen -- 2160 px at the 540 px max card width. Cap the height at the
+             card's own width, i.e. at the height a SQUARE box would have had, and let the
+             ratio take it out of the width instead: a tall card becomes narrow, not long.
+             `100cqw` is the card's content width (container-type below); with `width: auto`
+             and a definite max-height, aspect-ratio resolves the width from the height, so
+             this is inert for every box with h <= w and nothing about the square and wide
+             cards changes. Container queries predate every browser version that has
+             WebGPU, so this needs no fallback. */
+          max-height: 100cqw; margin-inline: auto; }
 .cvmain { width: 100%; height: 100%; background: #000; image-rendering: auto; display: block; }
 .cvvec { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
          display: block; pointer-events: none; }

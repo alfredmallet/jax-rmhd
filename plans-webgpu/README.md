@@ -23,6 +23,10 @@ disagree, the file is right.
 
 ## Live
 
+- **TEARNL_PLAN.md** — two new 2D presets off the tearing equilibrium: large-Δ′ X-point
+  collapse with a secondary island (Loureiro+ 2005), and a six-island chain that coalesces
+  in a new large 8π × 8π box. Needs a broadband-in-k_y seed in the tearing IC builder,
+  which is the one code change. Shipped `tearing` preset untouched.
 - **VOLTEX_PLAN.md** — the 3D volume raymarch should sample a `texture_3d` with hardware
   trilinear filtering instead of doing eight scalar loads per sample out of a storage
   buffer. Written 2026-08-12, **not started**. Item 7 of the audit.
