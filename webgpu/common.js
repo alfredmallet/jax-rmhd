@@ -2656,11 +2656,18 @@ function drawEigf(c, d, o) {
   for (const tk of linTicks(4))
     yTick(c, Y(hi * tk[0]), x0, x1, tk[1] ? (tk[0] === 0 ? "0" : (hi * tk[0]).toExponential(1)) : "",
           tk[1]);
-  for (const tk of linTicks(8))
+  // x: the cut card's end-label idiom -- the axis is NAMED in the left end label ("x = 0",
+  // flush with the frame) and closed by the right end value, interior majors centred.
+  // The lone "x" glyph that used to sit at x0+4 collided with the 0.00 tick label
+  // (Alfred, on-device 2026-08-14).
+  for (const tk of linTicks(8)) {
+    if (tk[0] === 0 || tk[0] === 1) continue;
     xTick(c, x0 + tk[0] * (x1 - x0), y0, y1, CH - 6, tk[1] ? (tk[0] * Lx).toFixed(2) : "", tk[1]);
+  }
   c.fillStyle = COL.txt; c.textAlign = "left";
-  c.fillText("x", x0 + 4, CH - 6);
+  c.fillText("x = 0", x0, CH - 6);
   c.textAlign = "right";
+  c.fillText(Lx.toFixed(2), x1, CH - 6);
   c.fillText("k_y = " + j0 + "·2π/L_y", x1 - 5, y0 + 12);
   c.textAlign = "left";
 
@@ -2821,7 +2828,7 @@ const CHART_TYPES = {
   // amplitude ON ONE LINE and this generalises it to the whole x profile) and on anything
   // else with structure at a chosen k_y.
   eigf: {
-    label: "eigenfunction &psi;&#770;(x)", w: CW, h: CH, src: "eigf",
+    label: "eigenfunction", w: CW, h: CH, src: "eigf",
     avail: cfg => !cfg.zslice,
     opts: () => [
       { id: "eky", ti: "which k_y column to show; 1 is the box fundamental, which is the "
@@ -2835,17 +2842,13 @@ const CHART_TYPES = {
         o: [["both", "&psi; + &phi;"], ["psi", "&psi; only"], ["phi", "&phi; only"]] }
     ],
     draw: (c, d, o) => drawEigf(c, d, o),
-    hint: "|&psi;&#770;(x)| and |&phi;&#770;(x)| at one k<sub>y</sub> &mdash; the tearing "
-      + "eigenfunction: &psi;&#770; peaked on the resonant surface x = L<sub>x</sub>/2 with a "
-      + "kink in its slope, &phi;&#770; odd about it. The k<sub>y</sub> = 0 column IS the "
-      + "equilibrium here, so any other column has it subtracted exactly and for free; the "
-      + "column is the LIVE one, so late in a run it is measured against the state's own mean "
-      + "profile rather than the initial equilibrium. linear y, autoscaled: the mode grows "
-      + "exponentially, so the shape is the content. this is the OUTER solution &mdash; the "
-      + "resistive layer is about one cell wide at these grids. the dashed line is the box "
-      + "midline x = L<sub>x</sub>/2: on the tearing equilibria that is the resonant surface, "
-      + "and the card is meaningful on KH too &mdash; but there the shear layers sit at "
-      + "L<sub>x</sub>/4 and 3L<sub>x</sub>/4, so the guide is not one of them."
+    // Alfred's own copy (2026-08-14), replacing the drafted hint wholesale.
+    hint: "|&psi;&#770;(x)| and |&phi;&#770;(x)| at one k<sub>y</sub> &ne; 0 &mdash; the "
+      + "eigenfunction: for tearing, &psi;&#770; peaked on the resonant surface "
+      + "x = L<sub>x</sub>/2 with a kink in its slope, &phi;&#770; odd about it. for "
+      + "Kelvin&ndash;Helmholtz, there are two shear layers at x = L<sub>x</sub>/4 and "
+      + "3L<sub>x</sub>/4, so the guide doesn&rsquo;t apply. The equilibrium is at "
+      + "k<sub>y</sub> = 0 so it is not included in the plot."
   },
   // the critical-balance card (ANISO_PLAN). `src: "spectrum"` says it feeds off the
   // spectrum readback -- the two 1D spectra it matches are already in that data object,

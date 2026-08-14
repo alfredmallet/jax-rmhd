@@ -53,6 +53,17 @@ Execution notes worth keeping:
   a gate constant) and one parenthetical in `webgpu/README.md`. Left alone deliberately —
   the ruling was about the user-facing hint, and re-deriving the gate constant is not this
   plan's business.
+- **On-device round 1 (Alfred, 2026-08-14):** title cut to plain "eigenfunction" and the
+  hint replaced wholesale with his copy (the check legs now pin his claims); the lone "x"
+  axis glyph collided with the 0.00 tick and became the cut card's end-label idiom
+  ("x = 0" … L_x); the island-chain hint moved to "up to k_y = 9" and the out-of-date
+  512-vs-256 resolution comment on the chain preset was removed at his call. His "φ̂
+  doesn't look odd around L_x/2" was run down via `eqlinear.py`'s eigenvector at the
+  shipped `tearing` numbers: φ̂ IS exactly odd (parity residual 6e-8; ψ̂ even at 3e-10),
+  but its lobes peak at 0.13a from x₀ — **≈ 3 cells at 256, back to half-max by 10** — so
+  the odd structure is layer-localised and reads as a single narrow spike with a ~1-cell
+  notch. Physics, not plumbing: FKR's outer φ is small and the flow concentrates in the
+  layer. Anyone captioning φ̂'s shape should caption a spike, not lobes.
 
 ### Adversarial review, 2026-08-14 — verdict FAIL; one major, six minors, all fixed
 

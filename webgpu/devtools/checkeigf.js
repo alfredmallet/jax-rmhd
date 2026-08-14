@@ -541,15 +541,21 @@ console.log("6. the card: its entry, options, hint, readback pool and presets");
   ok("  ... and the bin list runs to " + C.kmax + ", i.e. past island chain's n = 6 winner",
      os_[0].o.length === C.kmax && os_[0].o[C.kmax - 1][0] === String(C.kmax) && C.kmax >= 8,
      os_[0].o.map(o => o[0]).join(","));
-  // the hint: what it must say, and the one thing it must NOT claim
-  ok("  ... the hint names both moduli, the resonant surface and the linear y axis",
-     /\|&psi;&#770;\(x\)\| and \|&phi;&#770;\(x\)\|/.test(T.hint) &&
-     /resonant surface x = L<sub>x<\/sub>\/2/.test(T.hint) && /linear y/.test(T.hint),
+  // the hint is Alfred's own copy (2026-08-14, replacing the drafted hint wholesale):
+  // what these legs pin is HIS claims -- both moduli at one k_y != 0, the tearing reading
+  // (resonant surface + kink + phi odd), the KH reading (two layers, guide does not
+  // apply), and the equilibrium exclusion -- plus the one thing the card must still
+  // never promise, a resolved resistive layer. The linear-y / live-column / outer-
+  // solution prose moved to docs.html #eigf, which keeps its own leg below.
+  ok("  ... the hint (Alfred's copy) names both moduli at one k_y != 0 and the tearing reading",
+     /\|&psi;&#770;\(x\)\| and \|&phi;&#770;\(x\)\|/.test(T.hint) && /&ne; 0/.test(T.hint) &&
+     /resonant surface/.test(T.hint) && /kink/.test(T.hint) && /odd about it/.test(T.hint),
      T.hint.length + " chars");
-  ok("  ... says the k_y = 0 column IS the equilibrium, and that the column is LIVE",
-     /k<sub>y<\/sub> = 0 column IS the/.test(T.hint) && /LIVE/.test(T.hint));
-  ok("  ... and calls this the OUTER solution rather than promising a resistive layer",
-     /OUTER solution/.test(T.hint) && /one cell/.test(T.hint) &&
+  ok("  ... gives KH its two shear layers and rules the guide out there",
+     /L<sub>x<\/sub>\/4 and 3L<sub>x<\/sub>\/4/.test(T.hint) &&
+     /guide doesn&rsquo;t apply/.test(T.hint));
+  ok("  ... states the equilibrium sits at k_y = 0 and is not in the plot",
+     /equilibrium is at k<sub>y<\/sub> = 0/.test(T.hint) && /not included/.test(T.hint) &&
      !/resolv(e|es|ed) the (resistive )?layer/.test(T.hint));
   // the readback pool, and the throttle that gates it
   const pool = env2d.run(`function(){

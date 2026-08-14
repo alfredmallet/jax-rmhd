@@ -1352,26 +1352,9 @@ const PRESETS = {
   },
   chain: {
     label: "tearing: island chain",
-    // selRes 512, NOT the 1024 that dx = 0.02454 would want. That is a deliberate
-    // departure from the plan's k_max.delta >= 4.3 benchmark, and it is Alfred's
-    // MEASUREMENT rather than a concession: he ran the `tearing` preset -- the only
-    // configuration whose growth rate the app actually displays and whose reference value
-    // (gamma = 0.0287) is published -- down the resolution ladder and read the island
-    // chart's fitted gamma at each step:
-    //
-    //   selRes 512   delta_lin/dx = 2.06   gamma 0.0287   <- where the benchmark was set
-    //   selRes 256   delta_lin/dx = 1.03   gamma 0.0280   -2.4%
-    //   selRes 128   delta_lin/dx = 0.52   gamma 0.0315   +9.8%, and visible junk early on
-    //
-    // So ~1 cell across the linear layer costs a couple of percent, and only at ~0.5 does
-    // the error jump AND change sign -- non-monotonic, which is the signature of the layer
-    // genuinely not being represented. `chain` at 512^2 sits at 1.26 cells, inside the
-    // measured-good range; at 256^2 it would be 0.63, i.e. exactly the row that misbehaves.
-    // The 4.3 benchmark was inferred from ONE working configuration and is conservative by
-    // about a factor of two; this is the first time anything measured the other side of it.
-    // The spectrum is clean at every one of these grids (Alfred, three pinned ghosts) --
-    // which is necessary but was never sufficient, since the linear layer sits four decades
-    // down the spectrum and carries too little energy to show up there at all.
+    // (The resolution-ladder argument that used to live here -- 512 vs 256 via the
+    // delta_lin/dx table -- was out of date and removed at Alfred's call, 2026-08-14;
+    // the measured ladder itself is preserved in TEARNL_PLAN's execution notes.)
     // a is held at its absolute 0.4712 throughout, so rEqA tracks Lx: 0.4712 / 8pi = 0.01875.
     set: { selRes: "256", selBox: "big", selHyper: "1", nPm: "1", cbForce: false,
            rDiss: "-2.5", cbAutoDiss: false,
@@ -1409,7 +1392,7 @@ const PRESETS = {
     // the margin only reaches 18%. The claim that DOES discriminate -- and the one the
     // preset is really for -- is that the fundamental loses, its gamma being 3x down.
     hint: "the same tearing equilibrium in a larger box, seeded with random modes up to "
-      + "k<sub>y</sub> = 6: the physics decides which is fastest. how many islands form, and "
+      + "k<sub>y</sub> = 9: the physics decides which is fastest. how many islands form, and "
       + "how do they behave after formation? what is the final state? what happens if you "
       + "rerun with <b>maintain equilibrium flux</b> checked? (note: on some machines this "
       + "demo runs too fast to check island numbers; if this is true for you, increase the "

@@ -216,8 +216,8 @@ is the default and is what the chart drew before they existed):
 | anisotropy (3D) | y axis | `k∥/k⊥` · `χ = k⊥δb/k∥` (see below; the rest of its options — `aq`, `ad`, the fit trio — are ANISO_PLAN's) |
 | island width (2D) | — | log W(t) with a fitted γ = 2·d(ln W)/dt; needs the tearing IC (see below) |
 | k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
-| eigenfunction ψ̂(x) (2D) | k_y bin | `1`…`9`, the box fundamental first; picks which column is read back |
-| eigenfunction ψ̂(x) (2D) | fields | `ψ + φ` · `ψ only` · `φ only` |
+| eigenfunction (2D) | k_y bin | `1`…`9`, the box fundamental first; picks which column is read back |
+| eigenfunction (2D) | fields | `ψ + φ` · `ψ only` · `φ only` |
 
 **The spectrum fit line** (FEEDBACK item 8) is a straight E = A k<sup>p</sup> from just
 above the forcing shell to the last bin, per CHART CARD, so two cards can carry two
@@ -292,7 +292,7 @@ is analytic in one small kernel (`cutPrep`), and only the inverse along y is a t
 CPU arithmetic on 4·ny numbers. Signed pairs are autoscaled symmetrically, the
 magnitude pair to [0,max].
 
-The **eigenfunction ψ̂(x)** chart card (2D only, EIGF_PLAN) is that card's transpose, and
+The **eigenfunction** chart card (2D only, EIGF_PLAN) is that card's transpose, and
 the only chart with a readback of its own. It plots |ψ̂(x, k_y)| and |φ̂(x, k_y)| against x
 at one selected k_y, on a **linear, autoscaled** y axis — the mode grows exponentially, so
 the shape is the content, and a linear axis also makes |φ̂| = 0 on the resonant surface a
