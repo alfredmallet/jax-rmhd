@@ -213,7 +213,7 @@ is the default and is what the chart drew before they existed):
 | spectra | pin / unpin | buttons, not selects: freeze the drawn curves as ghosts, or clear them |
 | cut trace | component pair | `u_x, u_y` · `b_x, b_y` · `|z⁺|, |z⁻|` |
 | cut trace (3D) | z source | manual slider · track z⁺ · track z⁻ |
-| anisotropy (3D) | y axis | `k∥/k⊥` · `χ = k⊥δb/k∥` (see below; the rest of its options — `aq`, `ad`, the fit trio — are ANISO_PLAN's) |
+| anisotropy (3D) | y axis | `k∥/k⊥` only while `ANISO_CHI_UI` is off; the χ ordinate is flag-gated (see below). The rest of its options — `aq`, `ad`, the fit trio — are ANISO_PLAN's |
 | island width (2D) | — | log W(t) with a fitted γ = 2·d(ln W)/dt; needs the tearing IC (see below) |
 | k_y = 2π/L_y mode (2D) | — | log A(t) of u_x / b_x at that k_y; needs the KH IC (see below) |
 | eigenfunction (2D) | k_y bin | `1`…`9`, the box fundamental first; picks which column is read back |
@@ -556,7 +556,14 @@ are independent: with such a chart open and no card in the lines view the lines 
 traced and simply not drawn, and the along-line samples — four times the polylines' size —
 come back only while that chart is open.
 
-### χ = k⊥δb/(k∥v_A): the anisotropy card's second ordinate
+### χ = k⊥δb/(k∥v_A): the anisotropy card's second ordinate — OFF by flag
+
+**Not currently offered in the UI**: `ANISO_CHI_UI = false` in `common.js` (Alfred,
+on-device 2026-08-14 — χ came out ~2 at the defaults and strongly scale-dependent, so the
+flat-line claim is not attainable in a low-resolution real-time run). The code below is
+all still live and checked — `checkaniso` drives the χ branch directly, bypassing the
+header — and one `true` re-offers the select, the tooltips' χ clauses and the docs' #chi
+section (hidden beside the same note) with it.
 
 `ay` on the aniso card (CHI_PLAN). Not a second card: χ differs from the shipped curve by
 one multiplication and a label, and everything else — the tails, the level window, the lane

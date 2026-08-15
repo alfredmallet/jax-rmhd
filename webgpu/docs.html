@@ -430,10 +430,12 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     thinner they are along the field. This chart measures that, and it is the one plot
     where the theory of the last thirty years is directly visible. To see the same thing by
     eye rather than as a curve, put a display card's
-    <a href="#filter">scale filter</a> on and slide it up. The first select chooses what
-    goes on the y axis: the ratio k<sub>&#8741;</sub>/k<sub>&perp;</sub> (the default, and
-    what everything below describes) or <a href="#chi">&chi;</a>, the same measurement in
-    the combination critical balance is actually a statement about.</p>
+    <a href="#filter">scale filter</a> on and slide it up.</p>
+  <!-- chi ordinate OFF (ANISO_CHI_UI in common.js, Alfred on-device 2026-08-14). The
+       sentence that offered it here: "The first select chooses what goes on the y axis:
+       the ratio k∥/k⊥ (the default, and what everything below describes) or χ, the same
+       measurement in the combination critical balance is actually a statement about." -->
+
   <p>It is built from the two spectra of the chart above, with no extra work asked of the
     GPU. For a given amount of energy at small scales, it asks which perpendicular scale
     and which parallel scale hold that much, and plots one against the other; doing it for
@@ -462,8 +464,9 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       an imbalanced run can be anisotropic differently in the two.</li>
     <li>Two honest caveats. The height of the curve is a convention, not a measurement:
       it moves if you change L<sub>z</sub>, so compare slopes and never absolute values.
-      (That is what the <a href="#chi">&chi;</a> setting below is for: it is the
-      combination the convention cancels out of.) And at the left-hand end the parallel
+      <!-- chi off: "(That is what the chi setting below is for: it is the combination
+           the convention cancels out of.)" -->
+      And at the left-hand end the parallel
       scales are whole numbers of box lengths, too
       coarse to resolve, which flattens the curve there &mdash; that is the instrument,
       not the plasma. Give it a forced run, a while to develop, and read the middle.</li>
@@ -473,6 +476,11 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       the ratio fall and the two curves part company, and not enough to measure an
       exponent off.</li>
   </ul>
+  <!-- chi ordinate OFF (ANISO_CHI_UI in common.js, Alfred on-device 2026-08-14: the level
+       tops out around 2 at the defaults and is strongly scale-dependent, so the flat-line
+       claim is not attainable in a low-resolution real-time run). The section is kept and
+       hidden with the flag; checkaniso still holds its load-bearing sentences. -->
+  <div hidden>
   <p id="chi"><b>&chi; = k<sub>&perp;</sub>&delta;b / (k<sub>&#8741;</sub>v<sub>A</sub>)</b>
     &mdash; the second setting of that card's first select, and the same measurement said
     differently. The ratio's height is a convention because stretching the box stretches
@@ -513,6 +521,7 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       is 0.99, i.e. a percent &mdash; far inside the order-of-magnitude reading the level
       gets anyway.</li>
   </ul>
+  </div>
   <!-- Alfred's wording pass landed (third feedback round): the card's hint is his copy,
        down to the colour-scale word that follows the `gc` select, and this section is the
        long form of it. -->

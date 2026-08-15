@@ -56,7 +56,7 @@ vm.runInContext(fs.readFileSync(path.join(dir, "common.js"), "utf8"), sandbox, {
 const C = Object.assign({}, vm.runInContext(
   "({ anisoCurves, drawAniso, ANISO_NLEV, ANISO_LANES, _anisoLeg, _anisoTail, _anisoAt,"
   + " _anisoWin, _anisoPeak, specKnee, specFloor, fitKA, fitIndex, fitLabel, FIT_FRACS,"
-  + " FIT_FRACS_ANISO, FIT_SNAP, SPEC_KNEE, CHART_TYPES, COL,"
+  + " FIT_FRACS_ANISO, FIT_SNAP, SPEC_KNEE, CHART_TYPES, COL, ANISO_CHI_UI,"
   + " fitAnchor, fitAnchorAuto, fitKMatch, FIT_KBOX,"
   + " _anisoQAt, ANISO_OPP, ANISO_CHI_REF, flSpectrum })", sandbox));
 
@@ -548,30 +548,42 @@ console.log("7. the card: type entry, fit tables, and the field-line readback ga
      T.avail({ zslice: true }) === true && !T.avail({}) &&
      C.CHART_TYPES.island.avail({}) === true && !C.CHART_TYPES.island.avail({ zslice: true }));
   ok("  ... it declares no zslice of its own (the spectra are whole-box)", !T.zslice);
-  const ids = T.opts({ zslice: true }).map(s => s.id).join(",");
-  ok("  ... its options are the ordinate, aq, ad and the fit trio",
-     ids === "ay,aq,ad,fit,fitp,fita", ids);
   const os = T.opts({ zslice: true });
-  ok("  ... the defaults are the FIRST option of each list: the ratio ordinate, total "
-     + "energy, both curves",
-     os[0].o[0][0] === "ratio" && os[1].o[0][0] === "tot" && os[2].o[0][0] === "both" &&
-     os[3].o[0][0] === "pin");
-  ok("  ... and the second ordinate is chi (CHI_PLAN), the only other one",
-     os[0].o.length === 2 && os[0].o[1][0] === "chi" && /&chi;/.test(os[0].o[1][1]),
-     os[0].o.map(x => x[0] + "=" + x[1]).join(" | "));
+  const ids = os.map(s => s.id).join(",");
+  // the header follows ANISO_CHI_UI: the ay ordinate leads the row when the flag offers
+  // it (CHI_PLAN) and is ABSENT -- not greyed, absent -- when it does not (Alfred's
+  // on-device ruling, 2026-08-14: chi ~ 2 and strongly scale-dependent at the defaults).
+  // Everything downstream indexes off `ofs`, so the same legs hold in both states.
+  const ofs = C.ANISO_CHI_UI ? 1 : 0;
+  ok("  ... its options are " + (ofs ? "the ordinate, aq, ad" : "aq, ad (ANISO_CHI_UI off)")
+     + " and the fit trio",
+     ids === (ofs ? "ay,aq,ad,fit,fitp,fita" : "aq,ad,fit,fitp,fita"), ids);
+  ok("  ... the defaults are the FIRST option of each list"
+     + (ofs ? ": the ratio ordinate, total energy, both curves" : ": total energy, both curves"),
+     (!ofs || os[0].o[0][0] === "ratio") && os[ofs].o[0][0] === "tot" &&
+     os[ofs + 1].o[0][0] === "both" && os[ofs + 2].o[0][0] === "pin");
+  if (ofs) {
+    ok("  ... and the second ordinate is chi (CHI_PLAN), the only other one",
+       os[0].o.length === 2 && os[0].o[1][0] === "chi" && /&chi;/.test(os[0].o[1][1]),
+       os[0].o.map(x => x[0] + "=" + x[1]).join(" | "));
+  } else {
+    ok("  ... the chi ordinate is withheld by the flag, not deleted (its branch legs run "
+       + "below regardless)", C.ANISO_CHI_UI === false);
+  }
   ok("  ... the index box defaults to -0.333, which snaps to exactly -1/3",
-     C.fitIndex(String(os[4].v), C.FIT_FRACS_ANISO) === -1 / 3, String(os[4].v));
+     C.fitIndex(String(os[ofs + 3].v), C.FIT_FRACS_ANISO) === -1 / 3, String(os[ofs + 3].v));
   ok("  ... the two number boxes hide with the fit line, as on the spectrum card",
-     os[4].vis({ fit: "off" }) === false && os[4].vis({ fit: "pin" }) === true &&
-     os[5].vis({ fit: "pin" }) === false && os[5].vis({ fit: "amp" }) === true);
+     os[ofs + 3].vis({ fit: "off" }) === false && os[ofs + 3].vis({ fit: "pin" }) === true &&
+     os[ofs + 4].vis({ fit: "pin" }) === false && os[ofs + 4].vis({ fit: "amp" }) === true);
   // ... and the INDEX box hides on the chi ordinate as well, where a power-law index is
   // not what the reference line is (it is the horizontal chi = 1). The amplitude box
-  // stays: there it names the level of that line.
+  // stays: there it names the level of that line. These vis rules are flag-independent
+  // on purpose -- they are part of what "kept, not deleted" means.
   ok("  ... and the index box also hides on the chi ordinate, where it means nothing",
-     os[4].vis({ fit: "pin", ay: "chi" }) === false &&
-     os[4].vis({ fit: "amp", ay: "chi" }) === false &&
-     os[5].vis({ fit: "amp", ay: "chi" }) === true &&
-     os[4].vis({ fit: "pin", ay: "ratio" }) === true);
+     os[ofs + 3].vis({ fit: "pin", ay: "chi" }) === false &&
+     os[ofs + 3].vis({ fit: "amp", ay: "chi" }) === false &&
+     os[ofs + 4].vis({ fit: "amp", ay: "chi" }) === true &&
+     os[ofs + 3].vis({ fit: "pin", ay: "ratio" }) === true);
   // the hint FOLLOWS the ordinate select, so it is a function of the options -- the shape
   // gen2d's colour-scale hint already has
   ok("  ... and it has a hint, one per ordinate",
@@ -1167,8 +1179,9 @@ const boot = async (page, demo) => {
     + " (CHART_TYPES[c.type()].src || c.type()) === 'spectrum').length; }");
   const nSrc0 = bySrc();                    // the boot layout's own spectrum card(s)
   const card = env.run("function(){ const c = addChartCard('aniso'); cardsSync(); return c; }");
-  ok("  ... a card of that type builds, with its six option controls",
-     !!card && card.optEls.length === 6, card ? "n=" + card.optEls.length : "none");
+  ok("  ... a card of that type builds, with its option controls (5 + the ay flag)",
+     !!card && card.optEls.length === 5 + (C.ANISO_CHI_UI ? 1 : 0),
+     card ? "n=" + card.optEls.length : "none");
   const optId = (c, id) => env.run("function(c, i){ return c.optEls.filter(s => s.__optId === i)[0]; }", c, id);
   // the fl readback gate: OFF for the z-only view, ON for both / field line, and still
   // ON for a spectrum card asking for the field-line spectrum
@@ -1210,10 +1223,35 @@ const boot = async (page, demo) => {
   ok("  ... retyping away leaves one option control and no fl demand",
      card.optEls.length === 1 && gate() === false, "n=" + card.optEls.length);
   env.run("function(c){ c.selType.value = 'aniso'; c.selType.onchange(); }", card);
-  ok("  ... and retyping back rebuilds the six and re-arms the gate",
-     card.optEls.length === 6 && gate() === true, "n=" + card.optEls.length);
-  ok("  ... optId lookup finds ay/aq/ad (the option ids the draw branches on)",
-     !!optId(card, "ay") && !!optId(card, "aq") && !!optId(card, "ad"));
+  // the header's option count and the ay select follow ANISO_CHI_UI: with the flag OFF
+  // (Alfred's on-device ruling, 2026-08-14 -- chi ~ 2 and strongly scale-dependent at the
+  // defaults, so the ordinate is not offered) the card is the shipped five-control header
+  // and `ay` must NOT be findable; with it ON the sixth control comes back. Either way
+  // aq/ad are there and the chi MACHINERY stays reachable -- the direct-call legs above
+  // never went through the header.
+  const nOpt = 5 + (C.ANISO_CHI_UI ? 1 : 0);
+  ok("  ... and retyping back rebuilds the " + nOpt + " (ANISO_CHI_UI " +
+     (C.ANISO_CHI_UI ? "on" : "off") + ") and re-arms the gate",
+     card.optEls.length === nOpt && gate() === true, "n=" + card.optEls.length);
+  ok("  ... optId finds aq/ad, and finds ay exactly when the flag offers it",
+     !!optId(card, "aq") && !!optId(card, "ad") &&
+     !!optId(card, "ay") === !!C.ANISO_CHI_UI);
+  if (!C.ANISO_CHI_UI) {
+    // flag off: the header cannot reach chi, but the code below the flag is not dead --
+    // the chi branch still draws directly and the hint function still carries Alfred's
+    // chi copy, which is what makes the flag a SWITCH and not a soft delete.
+    ok("  ... flag off: optVals carries no ay and the card draws the shipped ratio hint",
+       env.run("function(c){ return c.optVals().ay; }", card) === undefined &&
+       /matching cumulative energy/.test(env.run("function(c){ return c.hint.innerHTML; }", card)));
+    ok("  ... while drawAniso({ay:'chi'}) still draws without raising (kept, not deleted)",
+       (() => {
+         const a = new Float64Array(3 * 64); for (let b = 1; b < 64; b++) a[b] = Math.pow(b, -5 / 3);
+         const p = new Float64Array(3 * 16); for (let b = 0; b < 16; b++) p[b] = 3 * Math.pow(b + 1, -2);
+         const cv = C.anisoCurves({ perp: a, nb: 64, fshell: [1, 5], par: p, parFL: p, parKfac: 1 },
+                                  { ay: "chi" });
+         return cv.curves.length >= 1;
+       })());
+  } else {
   // the ordinate select drives the card end to end: it defaults to the shipped ratio, it
   // does NOT arm the field-line readback by itself (that is `ad`'s job alone), and because
   // the hint is a function of the options the card must RE-RENDER it on the switch --
@@ -1241,6 +1279,7 @@ const boot = async (page, demo) => {
     setAy("ratio"); feed(card);
     ok("  ... switching back restores Alfred's ratio copy verbatim",
        env.run("function(c){ return c.hint.innerHTML; }", card) === h0);
+  }
   }
   ok("3D boots clean through all of it", env.fails.length === 0, env.fails.join(" | "));
 }

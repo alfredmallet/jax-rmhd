@@ -70,7 +70,9 @@ disagree, the file is right.
 - **CHI_PLAN.md** — χ = k⊥δb/k∥ as a second ordinate (`ay`) on that same card, with δb² the
   matched energy level itself and only δb crossing Elsasser lanes. χ is the invariant of the
   RMHD rescaling that k∥/k⊥ is not, so the card's L_z gauge caveat does not apply to it.
-  Written, revised and **executed 2026-08-14**. Read the EXECUTION NOTES: the estimator bias
+  Written, revised, **executed 2026-08-14 — and switched OFF the same day on-device**
+  (χ ~ 2 at the defaults and strongly scale-dependent; `ANISO_CHI_UI = false` in
+  `common.js`, code and checks kept live). Read the EXECUTION NOTES: the estimator bias
   came out at α = 0.988 (the PARALLEL ESTIMATOR, march excluded; reported and never gated,
   and a bias of the shipped ratio ordinate just as much as of χ), the shipped ratio
   path is asserted bit-identical to base through `git show`, and the record of why the

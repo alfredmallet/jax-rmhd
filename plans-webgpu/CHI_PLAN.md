@@ -1,10 +1,13 @@
 # Critical-balance plan: χ = k⊥δb/k∥ on the anisotropy card (3D app)
 
-**Status: EXECUTED 2026-08-14** (branch `chi`, base `2cbfadd` / `70ec5a8` for the code).
-Drafted and revised the same day after Alfred's review (δb is now the matched level itself;
-the pairing wiring is pinned). Built as written — no redesign, one deviation, recorded in
-the EXECUTION NOTES at the end together with the measured α. **Not a new card: a y-axis mode
-on the existing `aniso` card.** Sibling plan `EIGF_PLAN.md` was drafted in the same session
+**Status: EXECUTED 2026-08-14, then SWITCHED OFF the same day** — built, adversarially
+reviewed and fixed, then Alfred ran it on-device: χ ~ 2 at the defaults and strongly
+scale-dependent, so the ordinate is **not offered** (`ANISO_CHI_UI = false` in `common.js`;
+the code, checks and docs all kept — see the final section). Drafted and revised the same
+day after Alfred's review (δb is now the matched level itself; the pairing wiring is
+pinned). Built as written — no redesign, one deviation, recorded in the EXECUTION NOTES
+together with the measured α. **Not a new card: a y-axis mode on the existing `aniso`
+card.** Sibling plan `EIGF_PLAN.md` was drafted in the same session
 and touches the 2D app; the two are near-disjoint and EIGF's **Sequencing** section owns the
 rules where they meet.
 
@@ -323,3 +326,25 @@ Gates after the fixes: `checkaniso` all-green with §8.1 still 616/616 identical
 α = 0.9884 reported, plus `checkeigf`, `checkiso`, `checkgc`, `layout`, `names.mjs`,
 `wgslparse` over fresh dumps and `bootstub` on both pages. `refvectors.json` /
 `refvectors3d.json` byte-unchanged.
+
+## On-device, and the switch-off (2026-08-14)
+
+Alfred ran it: on `forced` at the default settings χ tops out around 2 — order unity,
+which is what the plan promised the level could only be — but the curve is **strongly
+scale-dependent**, and the flatness is the sharp claim. His hint copy had already said the
+quiet part ("whether we can attain this in a low-resolution simulation in real time is
+somewhat dubious"); measured, the doubt wins. His call: **the ordinate is not offered**,
+and the code stays.
+
+Mechanically that is one flag, `ANISO_CHI_UI = false` in `common.js`: the `ay` select is
+absent from the header (absent, not greyed), the two tooltips' χ clauses gate with it, and
+`docs.html`'s #chi section is hidden in place beside the same note. Nothing below the flag
+is dead — the χ branch, the Elsasser pairing, the `noShear` return, the χ = 1 reference
+and Alfred's hint copy are all still driven directly by `checkaniso` (154 legs green with
+the flag off, §8.1 ratio identity untouched), so `true` brings the whole feature back as
+reviewed. The α machinery and its 0.988 stay in the check output either way.
+
+The plan's own postscript: the physics motivation (χ is the rescaling invariant) survives
+intact; what failed is the resolution, exactly as the "What the card will actually show"
+section feared — half a decade of window is not enough for a flat line to be flat in.
+See Mallet et al. 2015 for the better-resolved test the hint pointed at.

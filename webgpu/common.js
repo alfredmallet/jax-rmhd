@@ -1790,6 +1790,16 @@ const ANISO_NLEV = 16;
 // the level of the chi ordinate's reference line -- the CB expectation, an order of
 // magnitude and not a fitted number, which is why it is a constant and not a fit index
 const ANISO_CHI_REF = 1;
+// whether the chi ordinate is OFFERED in the card header at all. Alfred, on-device
+// 2026-08-14: at the default settings chi tops out around 2 and is strongly
+// scale-dependent -- the flatness that would justify the axis is not attained in a
+// low-resolution real-time run (the doubt his own hint copy states, now measured), so the
+// ordinate is switched off rather than shipped as a wobbly curve under a flat-line claim.
+// NOTHING below this flag is dead: the chi branch, the pairing, the no-shear return and
+// the reference line all stay live and checkaniso drives them directly, bypassing the
+// header -- one `true` here brings the option back, and the docs' #chi section is
+// commented out beside it rather than deleted.
+const ANISO_CHI_UI = false;
 // ... and how that level is legended. Math.round(x*1000)/1000 legended an amplitude of
 // 4e-4 as "chi = 0" (review 2026-08-14), so this is cbarFmt's 3-significant-figure rule --
 // the same problem, already solved once -- with the trailing zeros dropped, because the
@@ -2870,20 +2880,22 @@ const CHART_TYPES = {
     label: "anisotropy", w: SW, h: SH, src: "spectrum",
     avail: cfg => cfg.zslice,
     opts: () => [
+      ...(ANISO_CHI_UI ? [
       { id: "ay", ti: "what is on the y axis: the anisotropy ratio itself, or the "
           + "critical-balance parameter χ = k⊥δb/(k∥ v_A) built from the same matching "
           + "(δb² = the matched energy content above k⊥, v_A = 1). χ is the combination the "
           + "ratio's L_z convention cancels out of",
-        o: [["ratio", "k&#8741;/k&perp;"], ["chi", "&chi; = k&perp;&delta;b/k&#8741;"]] },
+        o: [["ratio", "k&#8741;/k&perp;"], ["chi", "&chi; = k&perp;&delta;b/k&#8741;"]] }] : []),
       { id: "aq", ti: "which energy the matched spectra are built from; "
           + "E&plusmn; = E_u + E_b &plusmn; H_c",
         o: [["tot", "E_u+E_b"], ["zp", "E&#8314;"], ["zm", "E&#8315;"]] },
       { id: "ad", ti: "k&#8741; measured along the coordinate z axis (solid), along the "
           + "actual field lines (dashed), or both",
         o: [["both", "both k&#8741;"], ["z", "along z only"], ["fl", "field line only"]] },
-      { id: "fit", ti: "power-law reference line k&#8741;/k&perp; = A k&perp;^p. On the "
-          + "&chi; ordinate the reference is a LEVEL instead, not a slope: \"pin to curve\" "
-          + "draws the horizontal &chi; = 1 and \"set A\" moves that level",
+      { id: "fit", ti: "power-law reference line k&#8741;/k&perp; = A k&perp;^p"
+          + (ANISO_CHI_UI ? ". On the &chi; ordinate the reference is a LEVEL instead, "
+             + "not a slope: \"pin to curve\" draws the horizontal &chi; = 1 and \"set A\" "
+             + "moves that level" : ""),
         o: [["pin", "fit: pin to curve"], ["amp", "fit: set A"], ["off", "fit: off"]] },
       // the index box is hidden on the chi ordinate, where a power law is not what the
       // reference line is: there it is the horizontal chi = 1 (ANISO_CHI_REF), and the
@@ -2893,8 +2905,9 @@ const CHART_TYPES = {
           + "-1/2 aligned, -1 the wandering-z limit)",
         vis: v => v.fit !== "off" && (v.ay || "ratio") !== "chi" },
       { id: "fita", k: "num", w: 74, step: "any", min: 0,
-        ti: "reference amplitude A at k&perp; = 1; blank pins it to the curve "
-          + "(on the χ axis: the level of the horizontal reference line, 1 when blank)",
+        ti: "reference amplitude A at k&perp; = 1; blank pins it to the curve"
+          + (ANISO_CHI_UI ? " (on the χ axis: the level of the horizontal reference line, "
+             + "1 when blank)" : ""),
         vis: v => v.fit === "amp" }
     ],
     draw: (c, d, o) => drawAniso(c, d, o),
