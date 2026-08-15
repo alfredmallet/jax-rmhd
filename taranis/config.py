@@ -10,16 +10,14 @@ import inspect
 import warnings
 
 def _json_scalar(v):
-    # json.dump fallback for Parameters.save: numpy/jax 0-d scalars (e.g. a dt pulled out
-    # of an array) aren't natively JSON-serializable; unwrap them to python scalars.
+    # fallback for Parameters.save: numpy/jax 0-d scalars unwrapped to python scalars.
     item = getattr(v, "item", None)
     if item is not None and getattr(v, "ndim", 0) == 0:
         return item()
     raise TypeError(f"Parameter value {v!r} (type {type(v).__name__}) can't be recorded "
                     f"in params.json — pass plain python types to Parameters")
 
-# ctor args excluded from params.json's "differing record" check (transport only, no
-# effect on the trajectory or the on-disk layout)
+# ctor args excluded from params.json's "differing record" check
 _TRANSPORT_KEYS = ("comm_backend",)
 
 # ctor args that MOVED into the per-equation `eqpars` dict (2026-08-01). A params.json
@@ -123,8 +121,7 @@ class Parameters():
         self.Ly=Ly
         self.dx=Lx/nx
         self.dy=Ly/ny
-        #equation-set parameters (plain-JSON dict; RMHD: diss/hyper, which were ctor args
-        #before 2026-08-01). Interpreted by the equation recipe, not here.
+        #equation-set parameters; interpreted by equation recipe in physics (plain-JSON dict).
         if eqpars is not None and not isinstance(eqpars, dict):
             raise ValueError(f"eqpars must be a dict of equation parameters (e.g. "
                              f"{{'diss': (nu, eta), 'hyper': 1}}), got {eqpars!r}")

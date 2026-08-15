@@ -85,14 +85,8 @@ _EQPARS_REQUIRED_3D = _EQPARS_REQUIRED_2D + ("D_par",)
 _EQPARS_OPTIONAL = ("gpar_fac", "lin_dt_safety")
 
 def _eqpars(params):
-    # pull (and validate) GDI's equation parameters out of params.eqpars (rmhd._diss_hyper
-    # pattern). gpar_fac scales the eq (4.3) closure floor: gamma_par = gpar_fac*nu_in*k^2
-    # (in eq (4.7)'s parametrization alpha = 1 + gpar_fac, so the 2D default 1 gives
-    # alpha=2, the minimum-gamma_par result). D_par (3D only, required) scales the real
-    # parallel closure gamma_par = D_par*kz^2 (eq 3.5-3.7); gpar_fac's 3D default is 0
-    # (module docstring). Unknown keys are rejected -- a typo'd optional key would
-    # otherwise silently fall back to its default, and D_par in a 2D run would silently
-    # do nothing (there is no kz axis to apply it to).
+    # pull & validate GDI eqpars out of params.eqpars.
+    # Unknown keys are rejected
     _check_supported(params)
     is3d = params.spatial_dimensions == 3
     required = _EQPARS_REQUIRED_3D if is3d else _EQPARS_REQUIRED_2D
@@ -109,8 +103,7 @@ def _eqpars(params):
 
 
 def _lin_dt_safety(params):
-    # safety factor on the dt ceiling from max|Re lambda(L)| (default: fairly conservative,
-    # since it's an ACCURACY floor, not a stability one -- L is applied exactly)
+    # safety factor on the dt ceiling from max|Re lambda(L)|
     return float(params.eqpars.get("lin_dt_safety", 0.5))
 
 
@@ -235,7 +228,6 @@ def set_timestep(grads, params):
     max_all = comms.allreduce_max(max_all, params)   # no-op in 2D; keeps the rmhd pattern
     dt_cfl = params.cfl_safety / max_all
     # growth-rate-only ceiling (see _max_re_lambda); 0.0 = linearly stable = no ceiling.
-    # _max_re_lambda(params) is a static python float, so plain `if` is correct here.
     gmax = _max_re_lambda(params)
     if gmax > 0.0:
         dt_cfl = jnp.minimum(dt_cfl, _lin_dt_safety(params)/gmax)
