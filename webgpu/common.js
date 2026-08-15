@@ -2905,21 +2905,17 @@ const CHART_TYPES = {
     // anisoCurves). It points at the departures because a flat line over half a decade is
     // not the content, and it says outright that the solid/dashed split is the ratio card's
     // divergence replotted rather than a second measurement.
+    // The chi branch is Alfred's own copy (2026-08-14), replacing the drafted hint
+    // wholesale — same as the ratio branch, which is his third-feedback-round copy. What
+    // the draft carried and his copy does not (the departures list, the Elsasser pairing
+    // disclosure, the fl/z-split caveat) lives in docs.html #chi, and checkaniso now
+    // holds it there rather than here.
     hint: v => ((v && v.ay) === "chi"
-      ? "&chi; = k&perp;&delta;b/(k&#8741;v<sub>A</sub>), from the same cumulative-energy "
-        + "matching, with <b>&delta;b&sup2; = Q</b>, the matched energy content above "
-        + "k&perp;, and v<sub>A</sub> = 1. Unlike k&#8741;/k&perp; its level does not move "
-        + "with L<sub>z</sub>: critical balance says &chi; is of order 1 across the inertial "
-        + "range, and &delta;b carries the usual O(1) convention, so read the level as an "
-        + "order of magnitude and the flatness as the claim. The departures are the "
-        + "interesting part &mdash; &chi; above 1 towards the forcing shell (the outer scale "
-        + "is driven, not balanced), the roll-off at the dissipation knee, and E&#8314; "
-        + "parting from E&#8315; when the run is imbalanced, each taking &delta;b from the "
-        + "<i>other</i> Elsasser field, which is what shears it. Solid and dashed part "
-        + "company for the same reason as on the ratio axis and by exactly the same factor "
-        + "&mdash; one &delta;b divides both &mdash; so that split is that lesson replotted, "
-        + "not a second measurement. experimental feature: imperfect agreement at these "
-        + "resolutions."
+      ? "&chi; = k&perp;&delta;b/(k&#8741;v<sub>A</sub>), from cumulative-energy matching, "
+        + "with &delta;b&sup2; = Q, the matched energy content above k&perp;, and "
+        + "v<sub>A</sub> = 1. critical balance says &chi; ~ 1, flat across the inertial "
+        + "range: whether we can attain this in a low-resolution simulation in real time "
+        + "is somewhat dubious. see e.g. Mallet et al. 2015 for a better-resolved test."
       : "k&#8741;(k&perp;)/k&perp; as a function of k&perp; by matching cumulative energy "
         + "above k in the perpendicular and parallel spectra. Solid: k<sub>z</sub> (global "
         + "mean field). Dashed: k&#8741; (local mean field along field lines). Eddies "

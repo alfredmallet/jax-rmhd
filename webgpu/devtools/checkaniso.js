@@ -603,21 +603,29 @@ console.log("7. the card: type entry, fit tables, and the field-line readback ga
   ok("  ... it drops to the manual the things the one-breath version cannot carry",
      !/Cho/i.test(H) && !/gauge/i.test(H) && !/L<sub>z<\/sub>/.test(H) &&
      !/DIVERGE/.test(H), H);
-  // the chi hint's own load-bearing claims (CHI_PLAN): the db convention SPELLED OUT, the
-  // level framed as an order of magnitude and never to two figures, the departures rather
-  // than the flat line, and -- the one it would be easy to get wrong -- that the solid /
-  // dashed split on this axis is the ratio card's divergence replotted and NOT a second
-  // measurement. The last one is a physics claim about the code: one db divides both legs.
-  ok("the chi hint states the db convention verbatim and frames the level as O(1)",
+  // the chi hint is Alfred's own copy (2026-08-14, replacing the drafted one wholesale,
+  // like the ratio branch before it). What these legs pin is HIS claims -- the db
+  // convention still spelled out, chi ~ 1 flat as CB's statement, no two-figure level --
+  // plus the honesty clause that replaced the drafted departures list: whether the level
+  // is attainable at these resolutions is doubted OUT LOUD, with the literature pointer
+  // (Mallet et al. 2015) for the better-resolved test. The pairing disclosure and the
+  // solid/dashed-split caveat the draft carried moved to docs.html #chi, and the last leg
+  // holds them THERE -- the split one is a physics claim about the code (one db divides
+  // both legs) and may not be dropped from both places.
+  ok("the chi hint (Alfred's copy) states the db convention and chi ~ 1 flat, no two-figure level",
      /&delta;b&sup2; = Q/.test(HC) && /matched energy content above\s+k&perp;/.test(HC) &&
-     /v<sub>A<\/sub> = 1/.test(HC) && /order of magnitude/.test(HC) &&
-     /of order 1/.test(HC) && !/[0-9]\.[0-9]/.test(HC),
+     /v<sub>A<\/sub> = 1/.test(HC) && /&chi; ~ 1/.test(HC) &&
+     /flat across the inertial range/.test(HC) && !/[0-9]\.[0-9]/.test(HC),
      HC.length + " chars, no two-significant-figure level in it");
-  ok("  ... it points at the departures, not at the flat line",
-     /forcing shell/.test(HC) && /dissipation knee/.test(HC) &&
-     /imbalanc/.test(HC) && /<i>other<\/i> Elsasser field/.test(HC));
-  ok("  ... and it refuses to sell the solid/dashed split as a second measurement",
-     /not a second measurement/.test(HC) && /one &delta;b divides both/.test(HC));
+  ok("  ... doubts the level's attainability out loud and points at the literature",
+     /somewhat dubious/.test(HC) && /low-resolution/.test(HC) &&
+     /Mallet et al. 2015/.test(HC));
+  const DOCS = fs.readFileSync(path.join(dir, "docs.html"), "utf8");
+  const DCHI = (DOCS.split(/id="chi"/)[1] || "").slice(0, 4000);
+  ok("  ... and the manual's #chi carries what the one-breath copy dropped",
+     /Which &delta;b, on E<sup>&plusmn;<\/sup>/.test(DCHI) &&
+     /not a new measurement/.test(DCHI) && /same &delta;b divides both/.test(DCHI) &&
+     /nothing to shear the other/.test(DCHI));
   // the FIT_FRACS parameterization: two tables, neither leaking into the other
   ok("the spectrum card's snap table is UNCHANGED at -5/3, -3/2",
      JSON.stringify(C.FIT_FRACS) === JSON.stringify([[-5 / 3, "-5/3"], [-3 / 2, "-3/2"]]));
