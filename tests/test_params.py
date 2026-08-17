@@ -438,7 +438,7 @@ def test_eqpars_nested_tuples_roundtrip():
 
 
 def test_unused_z_options_warn():
-    # z_diff_order / z_diss_hyper are stored but never read back by rmhd.LinearTerm.
+    # z_diff_order / z_diss_hyper are stored but never read back by rmhd.FDLinearTerm.
     with checks() as c:
         _, out = _capture(lambda: fresh_params(dims=3, z_diff_order=6))
         c.check("a non-default z_diff_order warns that it is ignored",

@@ -9,7 +9,7 @@
 # dissipation commutes with d/dz (diagonal in k_perp vs acting only in z) -- so the
 # only deviations are RK3 amplitude error (~ (omega*dt)^4 per step, negligible at
 # dt=0.01) and round-off. z_diss is set to 0.0 explicitly: its DEFAULT is 0.25, and
-# rmhd.LinearTerm applies z_diss*(dz/2)^4 * d4/dz4 as an RHS term, which would add
+# rmhd.FDLinearTerm applies z_diss*(dz/2)^4 * d4/dz4 as an RHS term, which would add
 # spurious decay of the kz=1 envelope on top of the perp prediction.
 # pytest: single-process (stub). Savio driver: `mpirun -n 4 python
 # tests/test_dissipation.py` (nz=8 divisible by 4; energies are global via the

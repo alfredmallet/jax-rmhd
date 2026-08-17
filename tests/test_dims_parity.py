@@ -1,5 +1,5 @@
 # 2D/3D parity: a z-INVARIANT 3D IC must evolve exactly like the corresponding
-# dims=2 run, plane by plane -- every z-derivative in LinearTerm acts on constants
+# dims=2 run, plane by plane -- every z-derivative in FDLinearTerm acts on constants
 # (round-off-level output, see test_z_stencils' constant-field case) and the
 # perpendicular dynamics are identical code.
 #
@@ -62,7 +62,7 @@ def test_z_invariant_3d_matches_2d():
     # so all local planes must stay BITWISE equal -- z-invariance is exact.
     planes_bitwise = bool(np.all(f3 == f3[:, :1]))
 
-    # planes vs the 2D run: the 3D RHS adds LinearTerm's round-off-level output
+    # planes vs the 2D run: the 3D RHS adds FDLinearTerm's round-off-level output
     # (z stencils on constants) that the 2D branch skips entirely, so this is
     # round-off, not bitwise. Observed rel ~1e-15 (fp64) / ~1e-7 (fp32) after 20
     # steps of O(1) nonlinear dynamics.

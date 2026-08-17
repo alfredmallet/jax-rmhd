@@ -88,7 +88,10 @@ def NonlinearTerm(state,grads,kgrid,params,halo=None):
     NLTerm_fields = jnp.stack([-kgrid.inv_ksq*NLTerm_vort_k,NLTerm_psi_k])*kgrid.dealias
     return NLTerm_fields
 
-def LinearTerm(state,grads,kgrid,params,halo=None):
+def FDLinearTerm(state,grads,kgrid,params,halo=None):
+    # the NON-k-local remainder of the linear physics: the finite-difference-z Alfven
+    # stencil plus the d4/dz4 z filter. Live only for dims==3 without z_spectral; the
+    # k-local part lives in linear_matrix and is applied by the propagators.
     # todo: add functionality for variable z_order
     if params.spatial_dimensions==2 or params.z_spectral:
         return jnp.zeros_like(state.fields)

@@ -136,7 +136,7 @@ def _nonvacuous(ref, params, kgrid):
     E1 = sum(float(e) for e in diagnostics.energy(ref, kgrid, params))
     grads = rmhd.grad(ic, kgrid, params)
     nl = _global_max_abs(rmhd.NonlinearTerm(ic, grads, kgrid, params), params)
-    lin = _global_max_abs(rmhd.LinearTerm(ic, grads, kgrid, params), params)
+    lin = _global_max_abs(rmhd.FDLinearTerm(ic, grads, kgrid, params), params)
     return 1.0 - E1 / E0, nl / (nl + lin)
 
 

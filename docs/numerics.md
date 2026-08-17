@@ -174,11 +174,11 @@ z axis is Fourier rather than finite-difference. `grids.fft/ifft` become `rfftn`
 `kz`. Everything downstream follows from three consequences:
 
 - **The parallel operator is k-local**, so it leaves the RHS entirely and joins `L`:
-  `∂ₜφ = i·kz·ψ`, `∂ₜψ = i·kz·φ` — the exact spectral form of `rmhd.LinearTerm`'s `∂ψ/∂z` in the
+  `∂ₜφ = i·kz·ψ`, `∂ₜψ = i·kz·φ` — the exact spectral form of `rmhd.FDLinearTerm`'s `∂ψ/∂z` in the
   (vorticity/−k⊥²) equation and `∂φ/∂z` in the ψ equation. The 2×2 putzer2 backend gives
   eigenvalues `±i·kz`, i.e. `z± = φ±ψ` propagating at unit speed, *exactly*: no wave CFL and no
   dispersion error, which is why `rmhd.set_timestep` drops both its `1/dz` and `z_diss` entries
-  there and `halo_start`/`LinearTerm` are skipped (plain `if` on the static parameter).
+  there and `halo_start`/`FDLinearTerm` are skipped (plain `if` on the static parameter).
   `eqpars['z_diss_k']` adds an optional `−z_diss_k·kz⁴` diagonal; it is a truncation choice, not
   a stability need, and is rejected outside this mode.
 - **`i·kz` needs the same Nyquist fix as gdi's `ky_deriv`** (`rmhd._kz_deriv`). The reality

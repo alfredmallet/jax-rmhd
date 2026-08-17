@@ -239,7 +239,7 @@ class Parameters():
         self.lsrk_scan = lsrk_scan
         if self.spatial_dimensions==3 and self.rank==0 and (z_diff_order != 4 or z_diss_hyper != 2.0):
             warnings.warn(f"z_diff_order={z_diff_order}, z_diss_hyper={z_diss_hyper}: both are "
-                          "stored but IGNORED. rmhd.LinearTerm is fixed at 4th-order centered "
+                          "stored but IGNORED. rmhd.FDLinearTerm is fixed at 4th-order centered "
                           "differences with d_z^4 hyperdissipation.", stacklevel=2)
         if self.z_spectral and self.rank==0 and z_diss != 0.25:
             warnings.warn(f"z_spectral=True: z_diss={z_diss} is a finite-difference-z knob and "

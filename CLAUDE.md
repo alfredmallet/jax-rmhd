@@ -60,7 +60,7 @@ k-space directly must preserve it, and `i*kz` needs the kz-Nyquist plane zeroed 
 gdi's `ky_deriv`); `dealias` gains a 2/3 kz cut; `perp_reduce` divides by nz^2, not nz
 (Parseval), which is what keeps `energy`/`perpspec`/forcing power identical to the real-z
 computation; the parallel operator lives in `rmhd.linear_matrix` as `+-i*kz` off-diagonals
-(`LinearTerm`/`halo_start` skipped, `set_timestep` drops 1/dz and z_diss); optional
+(`FDLinearTerm`/`halo_start` skipped, `set_timestep` drops 1/dz and z_diss); optional
 `eqpars['z_diss_k']` (`-z_diss_k*kz^4`). Fields have the SAME shape in both modes and
 different meaning — `z_spectral` is recorded in params.json and `params.save`'s
 differing-record check is the ONLY thing stopping a cross-mode restart. Derivations:
@@ -79,7 +79,7 @@ so every attribute is a compile-time constant — plain `if params.foo:` is corr
 preferred over `lax.cond`. Never pass it as a traced jit arg or inside a scanned tree.
 z attributes (`dz`, `Lz`, `z_diss`, `cart_comm`, neighbors) exist only when `dims==3` —
 guard access. `z_diff_order`/`z_diss_hyper` are accepted and stored but not read back by
-`rmhd.LinearTerm`; `Parameters` warns when either is set away from its default (so is
+`rmhd.FDLinearTerm`; `Parameters` warns when either is set away from its default (so is
 `z_diss` under `z_spectral`, where every finite-difference-z knob is dead).
 
 Per-equation physics parameters live in `params.eqpars` (a plain-JSON dict, recorded in
