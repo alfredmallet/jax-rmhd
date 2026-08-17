@@ -169,7 +169,7 @@ def set_timestep(grads, params):
     gphi, gN, gvort = grads
     max_vy = jnp.max(jnp.abs(gphi[0]))
     max_vx = jnp.max(jnp.abs(gphi[1]))
-    eps = 0.1
+    eps = shared_physics.QUIESCENT_EPS
     max_eps = jnp.maximum(eps/params.dx, eps/params.dy)
     max_all = jnp.maximum(max_vx/params.dx, max_vy/params.dy)
     max_all = jnp.maximum(max_all, max_eps)

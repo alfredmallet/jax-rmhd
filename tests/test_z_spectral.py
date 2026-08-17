@@ -268,14 +268,16 @@ def test_parspec_integrates_to_energy():
 def test_parallel_terms_are_skipped_and_dt_is_perp_only():
     # LinearTerm/halo_start are dead in this mode (the propagator owns the parallel physics),
     # and set_timestep drops the 1/dz and z_diss entries -- the payoff of the mode.
-    params, kgrid = ctx(nz=8, z_spectral=True)
-    params_fd, kgrid_fd = ctx(nz=8)
+    # adaptive_timestep=True: set_timestep caps at rmhd._quiescent_dt, which is params.dt
+    # on the fixed-dt path (tests/test_quiescent_dt.py).
+    params, kgrid = ctx(nz=8, z_spectral=True, adaptive_timestep=True)
+    params_fd, kgrid_fd = ctx(nz=8, adaptive_timestep=True)
     state = make_state(params, ic=zero_ic)
     grads = rmhd.grad(state, kgrid, params)
     dt_sp = float(rmhd.set_timestep(grads, params))
     dt_fd = float(rmhd.set_timestep(rmhd.grad(make_state(params_fd, ic=zero_ic),
                                               kgrid_fd, params_fd), params_fd))
-    eps = 0.1
+    eps = shared_physics.QUIESCENT_EPS
     dt_perp_only = params.cfl_safety / max(eps / params.dx, eps / params.dy)
     with checks() as c:
         c.check("LinearTerm is exactly zero in z_spectral mode",

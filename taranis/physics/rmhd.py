@@ -66,18 +66,13 @@ def set_timestep(grads,params):
     gpsi = grads[1]    
     max_vy_eff = jnp.max(jnp.abs(gphi[0])+jnp.abs(gpsi[0]))
     max_vx_eff = jnp.max(jnp.abs(gphi[1])+jnp.abs(gpsi[1]))
-    #velocity floor: caps dt at cfl_safety*min(dx,dy)/eps for a near-quiescent field
-    # NB: _quiescent_dt (below) mirrors this eps to bound the per-stage forcing scale cap --
-    # CHANGE BOTH SITES TOGETHER or the forcing mitigation silently stops being a bound.
-    eps=0.1
-    max_eps = jnp.maximum(eps/params.dx,eps/params.dy)
     max_all = jnp.maximum(max_vx_eff/params.dx, max_vy_eff/params.dy)
-    max_all = jnp.maximum(max_all,max_eps)
     if params.spatial_dimensions==3 and not params.z_spectral:
         max_all = jnp.maximum(max_all,1.0/params.dz)
         max_all = jnp.maximum(max_all,params.z_diss)
     max_all = comms.allreduce_max(max_all,params)
-    return params.cfl_safety / max_all
+    # the velocity floor is the _quiescent_dt ceiling: dt <= _quiescent_dt for every state
+    return jnp.minimum(params.cfl_safety / max_all, _quiescent_dt(params))
 
 def halo_start(state,kgrid,params):
     # width must match what shared_physics.z_derivatives' stencil expects
@@ -105,10 +100,11 @@ def LinearTerm(state,grads,kgrid,params,halo=None):
     return df_dz_rmhd - diss * d4f_dz4
 
 def _quiescent_dt(params):
-    # static upper bound on the timestep.
+    # static upper bound on the timestep: the ceiling set_timestep itself enforces on the
+    # adaptive path (its velocity floor), which is what bounds the per-stage forcing cap.
     if not params.adaptive_timestep:
         return params.dt
-    return params.cfl_safety*min(params.dx,params.dy)/0.1
+    return params.cfl_safety*min(params.dx,params.dy)/shared_physics.QUIESCENT_EPS
 
 def _forcing_scale_from(fields, f_raw, kgrid, params, dt=None):
     # (n_ou,) power-normalization scale factor(s) for the given fields and forcing envelope.

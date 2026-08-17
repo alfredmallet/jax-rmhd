@@ -3,6 +3,9 @@ import jax.numpy as jnp
 from .. import comms
 from .. import _precision
 
+# velocity floor for the adaptive CFL dt: caps dt at cfl_safety*min(dx,dy)/QUIESCENT_EPS
+QUIESCENT_EPS = 0.1
+
 # takes gradient in fourier space
 # expects the kx,ky axes to be the last two (-2,-1)
 def gradk(fk,kgrid):

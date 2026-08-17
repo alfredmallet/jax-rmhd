@@ -218,8 +218,13 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   `run._advance_forcing` passes the just-completed step's (lagged, exact under `cfl_every`),
   `_refresh_forcing_scale` passes `0.0` (guard → `safe_scale`; a fresh `initialize` has
   `f_raw = 0` anyway). Never re-derive `dt` inside a term func.
-- `rmhd._quiescent_dt` mirrors `rmhd.set_timestep`'s velocity floor (`eps=0.1`) to bound
-  the per-stage path's scale cap — **change both sites together**.
+- `rmhd._quiescent_dt` IS `rmhd.set_timestep`'s velocity floor: `set_timestep` returns
+  `min(cfl_safety/max_all, _quiescent_dt(params))`, so the bound the per-stage scale cap
+  relies on (`dt <= _quiescent_dt`) holds by construction on the adaptive path
+  (`tests/test_quiescent_dt.py`). The floor value lives once, in
+  `shared_physics.QUIESCENT_EPS` (`gdi.set_timestep` reads it too). On the fixed-dt path
+  `_quiescent_dt` is `params.dt`, so a direct `set_timestep` call there also caps at
+  `params.dt`.
 - All `perp_*` reductions share one normalization (rfft2 ky-doubling, `/ nz*(nx*ny)^2`),
   matching `diagnostics.perpspec`/`energy` and `forcing_power` — keep new energy-like
   diagnostics on this convention or their numbers won't be comparable. `parspec` is

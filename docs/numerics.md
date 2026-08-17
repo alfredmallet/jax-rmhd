@@ -362,8 +362,10 @@ would repeat the CFL allreduce every stage *and* give the wrong value inside a b
 Rather than thread `dt` through `construct_rhs` and every stepper, that path gets a
 mitigation instead: its clip is tightened to `min(s_max, √(2·target/(F₂·dt_q)))`, with
 `dt_q` the **params-static** bound on the quiescent step length (`params.dt` when
-`adaptive_timestep=False`, where it is exact; otherwise `cfl_safety·min(dx,dy)/0.1`,
-mirroring `rmhd.set_timestep`'s velocity floor — the two sites cross-reference each other).
+`adaptive_timestep=False`, where it is exact; otherwise
+`cfl_safety·min(dx,dy)/QUIESCENT_EPS`, which `rmhd.set_timestep` applies as an explicit
+`jnp.minimum` ceiling — so `dt ≤ dt_q` holds by construction for every state, not by
+keeping two expressions in sync).
 That bounds the from-rest kick at `~target·dt_q` instead of `~½s_max²F₂dt_q²`, and only
 binds when `P` is small, i.e. near-quiescent states. **From-rest starts that need exact
 normalization should use the production default.**
