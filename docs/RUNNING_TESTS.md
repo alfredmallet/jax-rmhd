@@ -12,7 +12,7 @@ pip install -e ".[test]"   # once; on a cluster wanting real MPI, add the extra:
 make test
 ```
 
-`make test` runs the fast tier twice: once at double precision (`RMHD_PRECISION=64`)
+`make test` runs the fast tier twice: once at double precision (`TARANIS_PRECISION=64`)
 and once at single (the production default, 32). Everything in it runs on a laptop
 with no MPI installed, in a few minutes. Other targets: `make test-fast` (fp64 only),
 `make test-slow` (minutes-scale convergence studies), and
@@ -39,7 +39,7 @@ and `savio` — you get the fast tier. Markers:
 | `slow` | minutes-scale study | `pytest tests -m slow --runslow` |
 | `mpi` | needs a real `mpirun -n N` | run the file as a script under mpirun |
 | `savio` | needs cluster hardware/walltime | `RMHD_SAVIO=1` on the cluster |
-| `fp32` / `fp64` | needs that precision session | run under matching `RMHD_PRECISION` |
+| `fp32` / `fp64` | needs that precision session | run under matching `TARANIS_PRECISION` |
 | `multidev` | needs ≥4 XLA devices | automatic (fake devices locally) |
 
 Precision is fixed once per process (read at `import taranis`), which is why

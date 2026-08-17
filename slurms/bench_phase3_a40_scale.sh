@@ -53,7 +53,7 @@ echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 export NCCL_P2P_DISABLE=1
 export RMHD_REQUIRE_GPU=1  # abort any case where a rank silently falls back to CPU (job 35894622)
 
-export RMHD_PRECISION=32   # A40 fp64 is ~1/32 of fp32; the fp64 anchor is the V100 job
+export TARANIS_PRECISION=32   # A40 fp64 is ~1/32 of fp32; the fp64 anchor is the V100 job
 
 # Set CUDA_MPI=1 only if slurms/probe_cuda_mpi.sh showed the openmpi module is CUDA-aware.
 # Never set CUDA_VISIBLE_DEVICES -- Slurm scopes it per task.
@@ -82,7 +82,7 @@ run() { local n=$1; shift; local gpn=$(( n < GPUS_PER_NODE ? n : GPUS_PER_NODE )
         --cpus-per-task=8 --gres=gpu:A40:"$gpn" $bind \
         "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
-echo "=== config: precision=$RMHD_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="
+echo "=== config: precision=$TARANIS_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="
 
 pass() {
     run 4  a4    3d_forced donate nx$NX nz$NZ nps cfl1 halo_late  $STEPS

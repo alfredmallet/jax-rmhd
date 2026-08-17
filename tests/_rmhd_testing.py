@@ -7,7 +7,7 @@
 #     import taranis as jr
 #
 # bootstrap() must run before taranis (or jax device work) happens anywhere in the
-# process: it sets RMHD_PRECISION (read once at taranis import), installs the local
+# process: it sets TARANIS_PRECISION (read once at taranis import), installs the local
 # MPI stub when no real MPI toolchain is importable, and requests fake XLA host
 # devices for the shard_map ("jax" backend) tests. It is idempotent, so the double
 # call under pytest (conftest first, then the module header) is harmless.
@@ -73,9 +73,9 @@ def bootstrap(precision=None, devices=None, stub=None):
                            "as the first statement of the test module.")
 
     if precision is not None:
-        os.environ["RMHD_PRECISION"] = str(precision)
+        os.environ["TARANIS_PRECISION"] = str(precision)
     else:
-        os.environ.setdefault("RMHD_PRECISION", "64")
+        os.environ.setdefault("TARANIS_PRECISION", "64")
     os.environ.setdefault("MPLBACKEND", "Agg")
 
     if _HERE not in sys.path:
@@ -307,14 +307,14 @@ def _script_skip_reason(fn):
         return None
     import jax
     from taranis import _precision
-    # FIELD precision (RMHD_PRECISION), not the jax_enable_x64 config flag: that flag
+    # FIELD precision (TARANIS_PRECISION), not the jax_enable_x64 config flag: that flag
     # is now unconditionally on (taranis/__init__.py) -- only _precision knows
     # whether this is an fp32 or fp64 session.
     x64 = _precision.precision == "64"
     if "fp32" in names and x64:
-        return "requires an RMHD_PRECISION=32 session"
+        return "requires a TARANIS_PRECISION=32 session"
     if "fp64" in names and not x64:
-        return "requires an RMHD_PRECISION=64 session"
+        return "requires a TARANIS_PRECISION=64 session"
     if "mpi" in names and mpi_size() == 1:
         return "needs a real multi-rank MPI launch"
     if "savio" in names and os.environ.get("RMHD_SAVIO") != "1":

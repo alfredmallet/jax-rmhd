@@ -38,7 +38,7 @@ def _gen():
     _gen_precision_reference.py in test_precision_dtypes).
 
     Imported LAZILY, inside the fp64-marked tests: the generator asserts at import that
-    RMHD_PRECISION == 64, so a module-level import would hard-fail pytest COLLECTION in the
+    TARANIS_PRECISION == 64, so a module-level import would hard-fail pytest COLLECTION in the
     fp32 session instead of letting the marker skip these tests."""
     import _gen_forcing_spinup_reference as gen
     return gen

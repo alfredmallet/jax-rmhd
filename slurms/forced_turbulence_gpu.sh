@@ -21,7 +21,7 @@
 
 # --- Alternative: A40 (more available than V100 -- 16 vs 2 GPUs for regular FCA
 # priority -- but its FP64 rate is ~1/32 of FP32, same as any workstation-class Ampere
-# card, so it's only a good trade if you can run at RMHD_PRECISION=32). To switch:
+# card, so it's only a good trade if you can run at TARANIS_PRECISION=32). To switch:
 #   --partition=savio3_gpu, --gres=gpu:A40:1, --qos=a40_gpu3_normal, --cpus-per-task=8
 
 module purge
@@ -45,7 +45,7 @@ NVLIBS=$("$HOME/.conda/envs/jax_gpu/bin/python" -c "import nvidia,os;print(':'.j
 [ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
-export RMHD_PRECISION=64
+export TARANIS_PRECISION=64
 
 # Do NOT set/override CUDA_VISIBLE_DEVICES -- Slurm's --gres=gpu already scopes this
 # process to its assigned GPU.

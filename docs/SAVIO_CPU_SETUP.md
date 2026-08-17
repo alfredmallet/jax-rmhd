@@ -54,7 +54,7 @@ python -c "import jax, taranis, orbax.checkpoint; print(jax.__version__)"
 
 ## 2. Things this codebase does differently (read before running)
 
-- **Precision is an env var, not a flag**: `RMHD_PRECISION=64 python script.py` for
+- **Precision is an env var, not a flag**: `TARANIS_PRECISION=64 python script.py` for
   float64/complex128 (production); the default is 32. It is read ONCE at import time.
 - **2D runs (`dims=2`) are single-process only.** Only 3D decomposes across MPI ranks
   (along z; max useful ranks ≈ nz/2). A 2D run under `mpirun -n 4` just warns and wastes
@@ -71,7 +71,7 @@ Login nodes are shared — anything heavier than imports belongs in a job. Inter
 
 ```bash
 srun --pty -A fc_kawturb -p savio3 -N 1 -t 00:30:00 bash
-source activate jax_cpu && export PYTHONNOUSERSITE=1 RMHD_PRECISION=64
+source activate jax_cpu && export PYTHONNOUSERSITE=1 TARANIS_PRECISION=64
 cd ~/taranis && mpirun -n 1 python tests/test_forcing_smoke.py   # ends "ALL PASS"
 ```
 
@@ -109,7 +109,7 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
-export RMHD_PRECISION=64
+export TARANIS_PRECISION=64
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
 REPO=$HOME/taranis

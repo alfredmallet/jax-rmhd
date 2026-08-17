@@ -21,11 +21,11 @@
 #
 # Not a test module (leading underscore keeps pytest away). Run as:
 #   python3 tests/_gen_forcing_spinup_reference.py [out.npz]
-# (RMHD_PRECISION defaults to 64 below if unset; must be 64 for this reference.)
+# (TARANIS_PRECISION defaults to 64 below if unset; must be 64 for this reference.)
 import os
-os.environ.setdefault("RMHD_PRECISION", "64")
-assert os.environ["RMHD_PRECISION"] == "64", \
-    "forcing_spinup_reference must be generated at fp64 (RMHD_PRECISION=64)"
+os.environ.setdefault("TARANIS_PRECISION", "64")
+assert os.environ["TARANIS_PRECISION"] == "64", \
+    "forcing_spinup_reference must be generated at fp64 (TARANIS_PRECISION=64)"
 
 import subprocess
 import sys

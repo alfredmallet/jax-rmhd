@@ -54,7 +54,7 @@ DRIVER="$REPO/tests/test_backend_jax_mpi.py"
 OUT=data/test_backend_jax
 NRANK=4
 
-export RMHD_PRECISION=64
+export TARANIS_PRECISION=64
 export RMHD_PKG=$REPO          # printed in every result line, per the Phase 3 ground rules
 export RMHD_NX=64
 export RMHD_NZ=32

@@ -13,7 +13,7 @@
 #               cross-backend restart chain work, and it routes every cwd-relative
 #               `data/...` write into a clean dir (stale dirs trip the snapshot
 #               layout guard).
-#   precisions  RMHD_PRECISION sessions to run the whole phase list under
+#   precisions  TARANIS_PRECISION sessions to run the whole phase list under
 #               (default ("64",)). Files with fp64-marked tests print [SKIP] in a
 #               32 session; that still counts as ALL PASS.
 #   banner      pass rule is ALWAYS "exit 0" plus, when banner=True (default),

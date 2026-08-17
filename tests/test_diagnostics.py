@@ -27,7 +27,7 @@ _TOL = None  # set per-test: 1e-12 fp64 / 1e-5 fp32 (fft round-off floor)
 
 
 def _tol():
-    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    # FIELD precision (TARANIS_PRECISION) -- jax_enable_x64 is now unconditionally on.
     return 1e-12 if _precision.precision == "64" else 1e-5
 
 

@@ -1,15 +1,15 @@
-# fp32 coverage: RMHD_PRECISION defaults to 32 (taranis/__init__.py), so this is the
+# fp32 coverage: TARANIS_PRECISION defaults to 32 (taranis/__init__.py), so this is the
 # production default. Everything here is @fp32-marked, so it runs in the
-# `RMHD_PRECISION=32` session of `make test` and prints [SKIP] in the fp64 session
+# `TARANIS_PRECISION=32` session of `make test` and prints [SKIP] in the fp64 session
 # (script mode included).
 #
-# The default-precision check spawns a SUBPROCESS with RMHD_PRECISION scrubbed
+# The default-precision check spawns a SUBPROCESS with TARANIS_PRECISION scrubbed
 # from the environment -- the in-process value is pinned by bootstrap() at import
 # and cannot be re-tested here. The subprocess falls back to the MPI stub exactly
 # like bootstrap() does, so it works both locally and on Savio login/compute nodes.
 #
 # Single-process by design (snapshot tmp dirs); listed serially, "32" session
-# only, in the Savio manifest. Script: `RMHD_PRECISION=32 python tests/...py`.
+# only, in the Savio manifest. Script: `TARANIS_PRECISION=32 python tests/...py`.
 from _rmhd_testing import bootstrap, checks, ctx, make_state, managed_manager, mpi_size, snap_dir, zero_ic
 
 bootstrap()
@@ -35,7 +35,7 @@ _FORCED = dict(nx=16, ny=16, nz=16, diss=(1e-4, 1e-4), hyper=2,
 
 @pytest.mark.fp32
 def test_default_precision_is_32():
-    # import taranis with NO RMHD_PRECISION in the environment and read back
+    # import taranis with NO TARANIS_PRECISION in the environment and read back
     # _precision.precision -- the honest check of the production default FIELD
     # precision. jax_enable_x64 is unconditionally on since A1 (PRECISION_PLAN) and
     # no longer distinguishes fp32 from fp64 sessions -- checked here too, as the
@@ -55,13 +55,13 @@ def test_default_precision_is_32():
         "print('X64_IS', bool(jax.config.jax_enable_x64))\n"
         "print('PRECISION_IS', _precision.precision)\n"
     )
-    env = {k: v for k, v in os.environ.items() if k != "RMHD_PRECISION"}
+    env = {k: v for k, v in os.environ.items() if k != "TARANIS_PRECISION"}
     out = subprocess.run([sys.executable, "-c", code], env=env,
                          capture_output=True, text=True, timeout=300)
     with checks() as c:
-        c.check("subprocess import (no RMHD_PRECISION) succeeded",
+        c.check("subprocess import (no TARANIS_PRECISION) succeeded",
                 out.returncode == 0, out.stderr[-300:])
-        c.check("x64 is unconditionally on regardless of RMHD_PRECISION",
+        c.check("x64 is unconditionally on regardless of TARANIS_PRECISION",
                 "X64_IS True" in out.stdout, out.stdout[-200:])
         c.check("default FIELD precision is 32",
                 "PRECISION_IS 32" in out.stdout, out.stdout[-200:])

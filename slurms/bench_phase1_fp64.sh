@@ -10,7 +10,7 @@
 #SBATCH --error=bench_p1_64_%j.err
 #SBATCH --mem=0
 
-# fp64 re-validation of the Phase 1 decisions (production runs at RMHD_PRECISION=64):
+# fp64 re-validation of the Phase 1 decisions (production runs at TARANIS_PRECISION=64):
 # doubles message sizes and memory traffic, so donation cost, stacked allreduce, shell
 # vs full-grid RNG, and the nps gain are all re-measured. Same layout as bench_p1_ab.
 
@@ -30,7 +30,7 @@ export VECLIB_MAXIMUM_THREADS=1
 export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
-export RMHD_PRECISION=64
+export TARANIS_PRECISION=64
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
 REPO=$HOME/taranis
@@ -44,8 +44,8 @@ git -C "$REPO" ls-files taranis | while read -r f; do
 done
 
 BENCH=$REPO/bench/bench_phase1.py
-run_old() { RMHD_PKG=$OLDDIR mpirun -n "$SLURM_NTASKS" -x RMHD_PKG -x RMHD_PRECISION "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision"; }
-run_new() { RMHD_PKG=$REPO   mpirun -n "$SLURM_NTASKS" -x RMHD_PKG -x RMHD_PRECISION "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision"; }
+run_old() { RMHD_PKG=$OLDDIR mpirun -n "$SLURM_NTASKS" -x RMHD_PKG -x TARANIS_PRECISION "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision"; }
+run_new() { RMHD_PKG=$REPO   mpirun -n "$SLURM_NTASKS" -x RMHD_PKG -x TARANIS_PRECISION "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision"; }
 
 NX=128; NZ=256
 

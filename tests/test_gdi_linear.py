@@ -34,7 +34,7 @@
 #
 # Dual precision: dispersion/propagator checks are precision-independent algebra (loose
 # fp32 tolerance, tight fp64; the numpy-only quadratic/quartic cross-checks are float64
-# regardless of RMHD_PRECISION, but keep the same rtol idiom for consistency); the
+# regardless of TARANIS_PRECISION, but keep the same rtol idiom for consistency); the
 # energy-budget closure tests are fp64-gated (their tolerance is below fp32 roundoff) per
 # CLAUDE.md's "print+return, never pytest.skip" convention.
 # pytest: `pytest tests/test_gdi_linear.py`. Script: `python tests/test_gdi_linear.py`.
@@ -52,7 +52,7 @@ from taranis.physics import gdi
 
 
 def _fp64():
-    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    # FIELD precision (TARANIS_PRECISION) -- jax_enable_x64 is now unconditionally on.
     return _precision.precision == "64"
 
 

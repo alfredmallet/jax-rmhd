@@ -35,12 +35,12 @@ def construct_rhs(recipe):
         # check that precision of the fields is correct.
         assert state.fields.dtype == _precision.ctype, (
             f"state.fields dtype {state.fields.dtype} != expected field dtype "
-            f"{_precision.ctype} (RMHD_PRECISION={_precision.precision}) -- a strong-typed "
+            f"{_precision.ctype} (TARANIS_PRECISION={_precision.precision}) -- a strong-typed "
             "array leaked into field math upstream."
         )
         assert state.forcing_state.dtype == _precision.ctype, (
             f"state.forcing_state dtype {state.forcing_state.dtype} != expected field dtype "
-            f"{_precision.ctype} (RMHD_PRECISION={_precision.precision}) -- a strong-typed "
+            f"{_precision.ctype} (TARANIS_PRECISION={_precision.precision}) -- a strong-typed "
             "array leaked into forcing math upstream."
         )
         use_halo = recipe.halo_start_func is not None and _halo_start_enabled(params)

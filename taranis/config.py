@@ -170,13 +170,13 @@ class Parameters():
         self.rank=self.comm.Get_rank()
         self.size=self.comm.Get_size()
         if self.size > 1:
-            # all ranks must read the same RMHD_PRECISION
+            # all ranks must read the same TARANIS_PRECISION
             precs = self.comm.allgather(_precision.precision)
             if len(set(precs)) != 1:
                 raise RuntimeError(
-                    f"RMHD_PRECISION differs across ranks: rank {self.rank} sees "
+                    f"TARANIS_PRECISION differs across ranks: rank {self.rank} sees "
                     f"{_precision.precision!r}, gathered {precs!r} — export the same "
-                    "RMHD_PRECISION in every rank's environment")
+                    "TARANIS_PRECISION in every rank's environment")
         if self.comm_backend=="jax" and self.spatial_dimensions!=3:
             raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
         if self.spatial_dimensions==3:
@@ -321,7 +321,7 @@ class Parameters():
                           f"eqpars={rec['eqpars']!r}. Re-save to update the file.",
                           stacklevel=2)
         if prec is not None and prec != current_prec and rank0:
-            warnings.warn(f"{path} was written at precision {prec}, but RMHD_PRECISION is "
+            warnings.warn(f"{path} was written at precision {prec}, but TARANIS_PRECISION is "
                           f"currently {current_prec} (precision is set by env var at import time).",
                           stacklevel=2)
         # tolerate records from newer/older code versions: ignore unknown keys with a warning

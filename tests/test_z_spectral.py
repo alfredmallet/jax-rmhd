@@ -27,7 +27,7 @@ _BOX = dict(nx=16, ny=16, Lx=2.0 * np.pi, Ly=2.0 * np.pi, Lz=2.0 * np.pi, dims=3
 
 
 def _fp64():
-    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    # FIELD precision (TARANIS_PRECISION) -- jax_enable_x64 is now unconditionally on.
     return _precision.precision == "64"
 
 

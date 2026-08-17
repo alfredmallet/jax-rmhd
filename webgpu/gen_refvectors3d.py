@@ -2,7 +2,7 @@
 the one-step test starts from recorded (fields, forcing_state, scale) with dt_override;
 the OU/RNG path is validated statistically in-browser. See webgpu/SPEC3D.md section 6."""
 import os, json
-os.environ["RMHD_PRECISION"] = "64"
+os.environ["TARANIS_PRECISION"] = "64"
 import numpy as np
 import jax.numpy as jnp
 

@@ -29,7 +29,7 @@ def test_fp64_session():
 def test_fp32_session():
     import jax
     from taranis import _precision
-    # x64 is unconditionally on since A1 -- RMHD_PRECISION only sets FIELD dtype now,
+    # x64 is unconditionally on since A1 -- TARANIS_PRECISION only sets FIELD dtype now,
     # it no longer toggles jax_enable_x64.
     assert jax.config.jax_enable_x64
     assert _precision.precision == "32"

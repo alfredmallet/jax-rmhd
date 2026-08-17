@@ -32,7 +32,7 @@ export VECLIB_MAXIMUM_THREADS=1
 export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
-export RMHD_PRECISION=64
+export TARANIS_PRECISION=64
 
 PY=$HOME/.conda/envs/jax_cpu/bin/python
 REPO=$HOME/taranis
@@ -43,7 +43,7 @@ BENCH=$REPO/bench/bench_phase1.py
 # -x every perf-relevant env var: OpenMPI only forwards -x-listed vars to remote ranks,
 # and thread oversubscription on non-launch nodes would silently corrupt the numbers.
 # `|| true`: a crashed case (empty output -> grep exit 1) must not abort the whole matrix.
-XVARS="-x RMHD_PKG -x RMHD_PRECISION -x OMP_PROC_BIND -x OMP_PLACES -x OMP_NUM_THREADS -x OPENBLAS_NUM_THREADS -x MKL_NUM_THREADS -x NUMEXPR_NUM_THREADS -x VECLIB_MAXIMUM_THREADS -x XLA_CPU_ASYNC_THREAD_COUNT"
+XVARS="-x RMHD_PKG -x TARANIS_PRECISION -x OMP_PROC_BIND -x OMP_PLACES -x OMP_NUM_THREADS -x OPENBLAS_NUM_THREADS -x MKL_NUM_THREADS -x NUMEXPR_NUM_THREADS -x VECLIB_MAXIMUM_THREADS -x XLA_CPU_ASYNC_THREAD_COUNT"
 run() { RMHD_PKG=$REPO mpirun -n "$SLURM_NTASKS" $XVARS "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
 NX=128; NZ=256

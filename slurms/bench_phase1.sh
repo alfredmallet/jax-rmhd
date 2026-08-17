@@ -35,7 +35,7 @@ PY=$HOME/.conda/envs/jax_cpu/bin/python
 REPO=$HOME/taranis
 
 # fp32 (the code default) per the plan; uncomment for an fp64 spot check.
-# export RMHD_PRECISION=64
+# export TARANIS_PRECISION=64
 
 # extract the old package from git into a scratch dir
 OLD_REF=${OLD_REF:-origin/main}

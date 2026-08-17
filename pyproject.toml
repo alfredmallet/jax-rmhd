@@ -64,7 +64,7 @@ markers = [
     "mpi: needs a real multi-rank MPI launch (mpirun); skipped when size==1",
     "savio: needs cluster resources (multi-GPU / long wall clock); set RMHD_SAVIO=1",
     "slow: minutes-scale convergence or physics study; pass --runslow",
-    "fp32: requires an RMHD_PRECISION=32 session",
-    "fp64: requires an RMHD_PRECISION=64 session",
+    "fp32: requires a TARANIS_PRECISION=32 session",
+    "fp64: requires a TARANIS_PRECISION=64 session",
     "multidev: requires >=4 (fake or real) XLA devices",
 ]

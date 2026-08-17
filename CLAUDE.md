@@ -14,11 +14,14 @@ architecture supports adding others without touching the core solver.
 ## Setup / running
 
 ```
-pip install -e .                     # laptop / no MPI toolchain: comm_backend="serial"
-pip install -e ".[mpi]"              # generic Linux box with a working MPI toolchain (mpi4py/mpi4jax); zsh needs the quotes
-pip install -e ".[examples]"         # adds matplotlib for notebooks/plot scripts
-RMHD_PRECISION=64 python script.py   # FIELD precision only (float64/complex128; default 32); x64 always on, t always fp64. Read at import.
+pip install -e .                        # laptop / no MPI toolchain: comm_backend="serial"
+pip install -e ".[mpi]"                 # generic Linux box with a working MPI toolchain (mpi4py/mpi4jax); zsh needs the quotes
+pip install -e ".[examples]"            # adds matplotlib for notebooks/plot scripts
+TARANIS_PRECISION=64 python script.py   # FIELD precision only (float64/complex128; default 32); x64 always on, t always fp64. Read at import.
 ```
+
+`RMHD_PRECISION` (the pre-2026-08-17 name) is rejected with an error, never honored:
+setting it without `TARANIS_PRECISION` raises at import.
 
 Tests: `make test` locally (two pytest sessions, fp64 then fp32; no MPI needed —
 `tests/conftest.py` auto-installs `tests/local_mpi_stub.py` + 4 fake XLA devices when

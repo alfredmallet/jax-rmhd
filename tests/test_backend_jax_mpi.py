@@ -21,8 +21,8 @@ import numpy as np
 
 def compare(dir_a, dir_b):
     # Diff the per-rank field dumps of two phases; tolerance follows the precision.
-    tol = float(os.environ.get("RMHD_CMP_TOL",
-                               1e-12 if os.environ.get("RMHD_PRECISION", "32") == "64" else 1e-4))
+    fp64 = os.environ.get("TARANIS_PRECISION", "32") == "64"
+    tol = float(os.environ.get("RMHD_CMP_TOL", 1e-12 if fp64 else 1e-4))
     ok = True
     ranks = sorted(int(f.split("rank")[1].split(".")[0])
                    for f in os.listdir(dir_a) if f.startswith("fields_rank"))
@@ -66,7 +66,7 @@ params = jr.Parameters(nx=nx, ny=ny, Lx=2*np.pi, Ly=2*np.pi, nz=nz, Lz=2*np.pi,
                        fshell=(1, 3), forcing_seed=7)
 print(f"pkg={_pkgdir or 'default'} backend={backend} rank={params.rank}/{params.size} "
       f"platform={jax.devices()[0].platform} local_devices={jax.local_devices()} "
-      f"global_devices={jax.device_count()} precision={os.environ.get('RMHD_PRECISION','32')}",
+      f"global_devices={jax.device_count()} precision={os.environ.get('TARANIS_PRECISION','32')}",
       flush=True)
 
 # RMHD_DEBUG_HANG=1: dump every thread's python stack to stderr every 120 s — turns a

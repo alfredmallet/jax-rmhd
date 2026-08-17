@@ -65,7 +65,7 @@ _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
 
 
 def _fp64():
-    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    # FIELD precision (TARANIS_PRECISION) -- jax_enable_x64 is now unconditionally on.
     return _precision.precision == "64"
 
 
@@ -224,7 +224,7 @@ def _real_mode(params, f):
     """k-space representation of the real (1,1,nx,ny) field built by f(x,y)."""
     # dtype=ftype (PRECISION_PLAN.md A2 pattern, e.g. run.py::initialize): x64 is
     # unconditionally on, so an unpinned linspace is a STRONG float64 array that poisons
-    # f(x,y) and its fft -- the resulting Fh would be complex128 under RMHD_PRECISION=32,
+    # f(x,y) and its fft -- the resulting Fh would be complex128 under TARANIS_PRECISION=32,
     # which is exactly the leak construct_rhs's dtype tripwire (A3) now catches when this
     # helper's output gets _replace'd straight into state.fields, bypassing initialize's
     # own choke-point .astype(ctype).
@@ -258,7 +258,7 @@ def _mfg_term(state, grads, kgrid, params, halo=None):
     # PRECISION_PLAN.md A3: this manufactured term func is the second place (besides
     # run.py::_advance_forcing) found to read state.t (float64, every precision) straight
     # into field math -- _mfg_N mixes it with Fh (ftype/ctype-pinned) via jnp.sin/cos,
-    # which promotes the whole RHS to complex128 under RMHD_PRECISION=32 and trips
+    # which promotes the whole RHS to complex128 under TARANIS_PRECISION=32 and trips
     # construct_rhs's dtype tripwire one scan step later. Downcast before the field mix,
     # exactly like _advance_forcing's dt.
     return _mfg_N(state.fields, state.t.astype(_precision.ftype), kgrid, params)

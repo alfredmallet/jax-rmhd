@@ -29,7 +29,7 @@ Rules that will otherwise cost you a day of pending jobs:
   keep scaling jobs at or under 1 hour of walltime.
 - Account is `fc_kawturb` everywhere.
 - **fp64 only on V100.** A5000/A40/L40/2080Ti are workstation-class: fp64 runs at ~1/32 of
-  fp32. Run those at `RMHD_PRECISION=32` and take fp64 numbers from the 2×V100 job. Phase 1's
+  fp32. Run those at `TARANIS_PRECISION=32` and take fp64 numbers from the 2×V100 job. Phase 1's
   lesson still applies — fp32 flatters comm savings by ~3×, so keep/revert decisions get made
   on the fp64 anchor.
 
@@ -259,7 +259,7 @@ collectives on their own stream, running concurrently with FFT kernels rather th
 
 ## 6. Codebase-specific gotchas
 
-- `RMHD_PRECISION` (32/64) is read **at import time**, so it must be exported before the
+- `TARANIS_PRECISION` (32/64) is read **at import time**, so it must be exported before the
   process starts — it is not a runtime flag. The scripts set it per job.
 - Do not set `CUDA_VISIBLE_DEVICES` (see §2). Do not launch multi-GPU steps with `mpirun`.
 - `dims=2` runs are single-process only; all GPU benchmark cases are 3D.

@@ -49,7 +49,7 @@ echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 export NCCL_P2P_DISABLE=1
 export RMHD_REQUIRE_GPU=1  # abort any case where a rank silently falls back to CPU (job 35894622)
 
-export RMHD_PRECISION=32
+export TARANIS_PRECISION=32
 
 # Host-staged transport is the default assumption; set CUDA_MPI=1 only if slurms/probe_cuda_mpi.sh
 # showed the openmpi module is CUDA-aware. Do NOT set CUDA_VISIBLE_DEVICES -- Slurm scopes it.
@@ -73,7 +73,7 @@ run() { local n=$1; shift; local bind="--gpu-bind=single:1"; case "$*" in *backe
         srun --mpi=$MPI_MODE --ntasks="$n" --cpus-per-task=4 \
         --gres=gpu:A5000:"$n" $bind "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
-echo "=== config: precision=$RMHD_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="
+echo "=== config: precision=$TARANIS_PRECISION cuda_mpi=$MPI4JAX_USE_CUDA_MPI run_jax=$RUN_JAX grid=${NX}^2x$NZ ==="
 
 pass() {
     run 1 g1    3d_forced donate nx$NX nz$NZ nps cfl1 halo_late  $STEPS

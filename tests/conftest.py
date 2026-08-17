@@ -1,6 +1,6 @@
 # pytest entry point. The first executable lines below MUST run before any test
 # module is imported: they put tests/ on sys.path and run bootstrap(), which sets
-# RMHD_PRECISION / XLA_FLAGS and installs the MPI stub -- all consumed at
+# TARANIS_PRECISION / XLA_FLAGS and installs the MPI stub -- all consumed at
 # jax/taranis import time. Do not import jax or taranis above bootstrap().
 import os
 import sys
@@ -38,7 +38,7 @@ def pytest_collection_modifyitems(config, items):
     import jax
     from taranis import _precision
 
-    # FIELD precision (RMHD_PRECISION), not the jax_enable_x64 config flag: that flag
+    # FIELD precision (TARANIS_PRECISION), not the jax_enable_x64 config flag: that flag
     # is now unconditionally on (taranis/__init__.py), so it no longer distinguishes
     # an "fp32 session" from an "fp64 session" -- only _precision knows that.
     x64 = _precision.precision == "64"
@@ -49,8 +49,8 @@ def pytest_collection_modifyitems(config, items):
     skip_mpi = pytest.mark.skip(reason="needs a real multi-rank MPI launch (size==1 here)")
     skip_savio = pytest.mark.skip(reason="needs cluster resources (set RMHD_SAVIO=1)")
     skip_slow = pytest.mark.skip(reason="slow; pass --runslow")
-    skip_fp32 = pytest.mark.skip(reason="requires an RMHD_PRECISION=32 session")
-    skip_fp64 = pytest.mark.skip(reason="requires an RMHD_PRECISION=64 session")
+    skip_fp32 = pytest.mark.skip(reason="requires a TARANIS_PRECISION=32 session")
+    skip_fp64 = pytest.mark.skip(reason="requires a TARANIS_PRECISION=64 session")
     skip_multidev = pytest.mark.skip(reason=f"needs >=4 devices, have {jax.device_count()}")
 
     for item in items:

@@ -1,6 +1,6 @@
 """Generate reference test vectors for the WebGPU RMHD port.
 
-Run at fp64 (RMHD_PRECISION=64) so the reference is cleaner than the browser's fp32;
+Run at fp64 (TARANIS_PRECISION=64) so the reference is cleaner than the browser's fp32;
 the browser self-test compares with fp32-appropriate tolerances.
 
 Everything recorded is DETERMINISTIC given the recorded inputs: the one-step
@@ -9,7 +9,7 @@ uses dt_override, so no RNG needs to be reproduced in the browser (jax threefry 
 not portable). The OU update itself is validated statistically in-browser instead.
 """
 import os, json
-os.environ["RMHD_PRECISION"] = "64"
+os.environ["TARANIS_PRECISION"] = "64"
 import numpy as np
 import jax.numpy as jnp
 

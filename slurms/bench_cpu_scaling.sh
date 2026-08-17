@@ -34,7 +34,7 @@ export VECLIB_MAXIMUM_THREADS=1
 export XLA_CPU_ASYNC_THREAD_COUNT=1
 export OMPI_MCA_pml=ucx
 
-export RMHD_PRECISION=64
+export TARANIS_PRECISION=64
 # Persistent compile cache: pass 2 (and same-shape cases) skip XLA recompilation.
 export RMHD_COMPILATION_CACHE=$SLURM_SUBMIT_DIR/.jaxcache_cpu_scaling_$SLURM_JOB_ID
 
@@ -42,7 +42,7 @@ PY=$HOME/.conda/envs/jax_cpu/bin/python
 REPO=$HOME/taranis
 BENCH=$REPO/bench/bench_phase1.py
 
-XVARS="-x RMHD_PKG -x RMHD_PRECISION -x RMHD_COMPILATION_CACHE -x PYTHONNOUSERSITE -x OMP_PROC_BIND -x OMP_PLACES -x OMP_NUM_THREADS -x OPENBLAS_NUM_THREADS -x MKL_NUM_THREADS -x NUMEXPR_NUM_THREADS -x VECLIB_MAXIMUM_THREADS -x XLA_CPU_ASYNC_THREAD_COUNT"
+XVARS="-x RMHD_PKG -x TARANIS_PRECISION -x RMHD_COMPILATION_CACHE -x PYTHONNOUSERSITE -x OMP_PROC_BIND -x OMP_PLACES -x OMP_NUM_THREADS -x OPENBLAS_NUM_THREADS -x MKL_NUM_THREADS -x NUMEXPR_NUM_THREADS -x VECLIB_MAXIMUM_THREADS -x XLA_CPU_ASYNC_THREAD_COUNT"
 # run <nranks> <tag> <case args...>
 run() { local n=$1; shift; RMHD_PKG=$REPO mpirun -n "$n" $XVARS "$PY" -u "$BENCH" "$@" 2>&1 | grep -v "bit precision" || true; }
 
@@ -72,7 +72,7 @@ pass
 # forced+nps) -> direct "N savio3 nodes ~ M A5000s" statement. nz=128 caps the rank count
 # at 64 (nz_local=2 = halo width; 128 ranks would give nz_local=1, illegal), so the
 # comparison points are 1 node (32) and 2 nodes (64); the s/w curves above cover 128.
-export RMHD_PRECISION=32
+export TARANIS_PRECISION=32
 echo "=== cross-comparison (fp32, 512^2x128 = A5000 bench grid) ==="
 for p in 1 2; do
     run 32  x32  3d_forced donate nx512 nz128 nps cfl1 halo_late $STEPS

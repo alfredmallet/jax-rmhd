@@ -87,7 +87,7 @@ def _capture(fn):
 
 
 def _current_precision():
-    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on;
+    # FIELD precision (TARANIS_PRECISION) -- jax_enable_x64 is now unconditionally on;
     # this must match config.py's own record (taranis._precision.precision).
     return _precision.precision
 

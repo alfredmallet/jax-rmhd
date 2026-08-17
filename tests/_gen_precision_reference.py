@@ -5,7 +5,7 @@
 # to within fp32 round-off (t's dtype, and hence the exact dt handed to ou_update,
 # changed by design — see tests/test_precision_dtypes.py for the assertion and the
 # mechanism). Run as:
-#   RMHD_PRECISION=32 python tests/_gen_precision_reference.py [out.npz]
+#   TARANIS_PRECISION=32 python tests/_gen_precision_reference.py [out.npz]
 # Not a test module (leading underscore keeps pytest away).
 #
 # CONFIGS / config_ctx / run_config are the SHARED definition of the three recorded

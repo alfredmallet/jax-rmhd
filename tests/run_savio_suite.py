@@ -113,7 +113,7 @@ def main(argv=None):
                 script = os.path.join(REPO, job["script"])
                 cmd = (_prefix(ph["launch"], ph["n"])
                        + [sys.executable, "-u", script] + list(ph.get("args", ())))
-                env = dict(os.environ, RMHD_PRECISION=prec, **ph.get("env", {}))
+                env = dict(os.environ, TARANIS_PRECISION=prec, **ph.get("env", {}))
                 log = os.path.join(jobdir, f"phase{i}_{label}.log")
                 print(f"=== {job['name']} [fp{prec}] phase {i}/{len(job['phases'])} "
                       f"({label}): {' '.join(cmd)}")

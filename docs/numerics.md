@@ -32,14 +32,14 @@ forcing power and the dissipation rate.
 ## Precision model
 
 `jax_enable_x64` is turned on unconditionally at import (`taranis/__init__.py`) — x64
-availability and *field* precision are no longer the same question. `RMHD_PRECISION`
+availability and *field* precision are no longer the same question. `TARANIS_PRECISION`
 (`"32"`/`"64"`, default `"32"`, read exactly once by `taranis/_precision.py` at import)
 sets `_precision.ftype`/`ctype`, the dtypes that `fields`/`forcing_state`/`forcing_scale`
 are pinned to; it does not touch `SimulationState.t`, which is float64 at *both* field
 precisions. This exists to fix a real failure mode: at fp32, `t + dt == t` exactly once
 `t/dt > 1/eps32 ≈ 1.7e7`, so `while state.t < t_end` never terminates, and even before
 that point roundoff random-walks `t` by `~sqrt(N)·eps32`. With x64 always on, `t` can be
-fp64 for free while every field array stays at the dtype `RMHD_PRECISION` selects — an
+fp64 for free while every field array stays at the dtype `TARANIS_PRECISION` selects — an
 x64-enabled JAX process compiles an all-fp32/complex64 op graph to the same kernels it
 always did; the flag only changes *default* dtypes and the promotion of any 64-bit input
 that leaks in. The entire risk of the design is exactly that leak, which is why
@@ -76,7 +76,7 @@ Storing a field at complex64 quantizes every Fourier coefficient to relative pre
 absolute terms, a perpendicular spectrum is showing fp32 storage/arithmetic roundoff, not
 physics. Don't fit a dissipation range below that floor, and don't mistake a flattening
 spectrum there for a bottleneck or condensate effect — check the same run at
-`RMHD_PRECISION=64` before drawing a physics conclusion from spectral content that close
+`TARANIS_PRECISION=64` before drawing a physics conclusion from spectral content that close
 to `eps²·E_peak`. This is a separate mechanism from the z-stencil error below (which is
 about `k∥`-resolution, not overall field storage) and from the fp64 budget-closure gap
 fixed by promoting the *reductions* rather than the fields themselves (Appendix B of

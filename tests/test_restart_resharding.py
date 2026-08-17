@@ -1,5 +1,5 @@
 import os
-os.environ["RMHD_PRECISION"] = "64"
+os.environ["TARANIS_PRECISION"] = "64"
 import jax
 import jax.numpy as jnp
 import taranis as jr

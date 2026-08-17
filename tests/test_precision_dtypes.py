@@ -1,4 +1,4 @@
-# Precision-model guards (plans/PRECISION_PLAN.md A5). Three independent questions:
+# Precision-model guards (plans/PRECISION_PLAN.md A5). Four independent questions:
 #
 #   1. DTYPE LEAKS (test_step_leaks_no_64bit_dtype / test_kgrid_carries_no_64bit_leaves).
 #      jax_enable_x64 is now unconditionally on, so a bare jnp.array/linspace/arange or
@@ -29,12 +29,20 @@
 #      normalization gained its self-energy term that day, which moves fields and
 #      forcing_scale by a few percent BY DESIGN (see _REF_BAND_20260808 below).
 #
+#   4. THE STALE ENV VAR NAME (test_stale_env_var_name_is_rejected). RMHD_PRECISION was
+#      renamed to TARANIS_PRECISION on 2026-08-17 with no fallback, so a stale recipe
+#      setting only the old name must fail loudly rather than run at the default 32.
+#
 # Single-process by design (the reference runs use snapshot tmp dirs, and the z_spectral
 # kgrid variant is size==1 only); listed serially in the Savio manifest, both sessions.
-# Script: `RMHD_PRECISION=32 python tests/test_precision_dtypes.py`.
+# Script: `TARANIS_PRECISION=32 python tests/test_precision_dtypes.py`.
 from _rmhd_testing import bootstrap, checks, ctx, make_state, mpi_size, multimode_ic
 
 bootstrap()
+
+import os
+import subprocess
+import sys
 
 import jax
 import jax.numpy as jnp
@@ -162,11 +170,48 @@ def test_t_accumulates_exactly_at_fp64():
         c.check("float64 t still advances there", not frozen64)
 
 
+def test_stale_env_var_name_is_rejected():
+    # the in-process value is pinned by bootstrap() at import, so the guard can only be
+    # exercised in a SUBPROCESS with the old name set and the new one absent.
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(tests_dir)
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        f"sys.path.insert(0, {repo_root!r})\n"
+        "try:\n"
+        "    from mpi4py import MPI  # noqa: F401\n"
+        "except Exception:\n"
+        "    import local_mpi_stub  # noqa: F401\n"
+        "import taranis\n"
+        "from taranis import _precision\n"
+        "print('PRECISION_IS', _precision.precision)\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "TARANIS_PRECISION"}
+    stale = subprocess.run([sys.executable, "-c", code],
+                           env=dict(env, RMHD_PRECISION="64"),
+                           capture_output=True, text=True, timeout=300)
+    # both set: the new name wins, silently
+    both = subprocess.run([sys.executable, "-c", code],
+                          env=dict(env, RMHD_PRECISION="64", TARANIS_PRECISION="32"),
+                          capture_output=True, text=True, timeout=300)
+    with checks() as c:
+        c.check("RMHD_PRECISION alone fails the import",
+                stale.returncode != 0, stale.stdout[-200:])
+        c.check("the error names TARANIS_PRECISION",
+                "TARANIS_PRECISION" in stale.stderr, stale.stderr[-300:])
+        c.check("RMHD_PRECISION never sets the precision (no silent fallback to 64)",
+                "PRECISION_IS 64" not in stale.stdout, stale.stdout[-200:])
+        c.check("TARANIS_PRECISION wins when both are set",
+                both.returncode == 0 and "PRECISION_IS 32" in both.stdout,
+                both.stdout[-200:] + both.stderr[-200:])
+
+
 # -------------------------------------------------- fp32 RNG stream / recorded reference
 
 # First OU noise draw of each recorded config, entry by entry, as (n_ou, ab, kx, ky) index
 # plus float.hex() of the real and imaginary parts. RECORDED FROM THE CURRENT TREE at
-# RMHD_PRECISION=32 (2026-08-06) -- so they pin the stream going FORWARD; the pre-change
+# TARANIS_PRECISION=32 (2026-08-06) -- so they pin the stream going FORWARD; the pre-change
 # agreement is what the reference npz below covers. float.hex() round-trips exactly and a
 # float32 widens to double losslessly, so the comparison is bitwise.
 #
@@ -305,6 +350,5 @@ def test_fp32_matches_precision_reference():
 
 
 if __name__ == "__main__":
-    import sys
     from _rmhd_testing import script_main
     sys.exit(script_main(globals()))

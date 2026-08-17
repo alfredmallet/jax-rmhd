@@ -35,7 +35,7 @@ from taranis.physics import rmhd
 
 
 def _fp64():
-    # FIELD precision (RMHD_PRECISION) -- jax_enable_x64 is now unconditionally on.
+    # FIELD precision (TARANIS_PRECISION) -- jax_enable_x64 is now unconditionally on.
     return _precision.precision == "64"
 
 

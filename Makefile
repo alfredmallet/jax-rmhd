@@ -11,15 +11,15 @@ PYTEST ?= python -m pytest
 # Both sessions run the whole suite: every file carries precision-split tolerances,
 # and fp64/fp32-marked tests auto-skip in the other session.
 test:
-	RMHD_PRECISION=64 $(PYTEST) tests
-	RMHD_PRECISION=32 $(PYTEST) tests
+	TARANIS_PRECISION=64 $(PYTEST) tests
+	TARANIS_PRECISION=32 $(PYTEST) tests
 
 test-fast:
-	RMHD_PRECISION=64 $(PYTEST) tests
+	TARANIS_PRECISION=64 $(PYTEST) tests
 
 test-slow:
-	RMHD_PRECISION=64 $(PYTEST) tests -m slow --runslow
+	TARANIS_PRECISION=64 $(PYTEST) tests -m slow --runslow
 
 # make test-one T=tests/test_halo_width.py
 test-one:
-	RMHD_PRECISION=64 $(PYTEST) $(T)
+	TARANIS_PRECISION=64 $(PYTEST) $(T)

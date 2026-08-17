@@ -24,7 +24,7 @@ the dir is flat. Each backend can restart from either layout.
   `tests/test_restart_resharding.py`).
 - `forcing_key`'s dtype comes from `jax.eval_shape(lambda: jax.random.key(0)).dtype`, not
   a guessed public constant.
-- `t` is float64 at both field precisions (`RMHD_PRECISION` only sets field dtype; see
+- `t` is float64 at both field precisions (`TARANIS_PRECISION` only sets field dtype; see
   docs/numerics.md "Precision model"). `load_snapshot`/`old_snapshot_repair` restore `t`
   with its STORED dtype first (`snapshot_io._stored_t_dtype`, float32 for pre-precision-plan
   snapshots, float64 for current ones), then widen explicitly with

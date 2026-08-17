@@ -446,7 +446,7 @@ def test_true_no_mpi_import_path_subprocess():
     script = f"""
 import os, sys
 sys.path.insert(0, {tests_dir!r})
-os.environ.setdefault("RMHD_PRECISION", "64")
+os.environ.setdefault("TARANIS_PRECISION", "64")
 from _rmhd_testing import bootstrap
 bootstrap(stub=False)
 import taranis as jr

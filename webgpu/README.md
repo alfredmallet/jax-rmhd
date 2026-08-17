@@ -59,7 +59,7 @@ spectra.
 To regenerate the vectors after changing the physics:
 
 ```
-PYTHONPATH=<repo root> RMHD_PRECISION=64 python3 webgpu/gen_refvectors.py
+PYTHONPATH=<repo root> TARANIS_PRECISION=64 python3 webgpu/gen_refvectors.py
 ```
 
 then re-inline the JSON into `rmhd2d.html` (it sits on a single marked line — splice it
