@@ -266,11 +266,9 @@ Two traps in the 2×2 form, both guarded in `tests/test_linear_propagator.py`:
 Nyquist rows: without it the exponential would break the reality constraint of the rfft2
 layout (see "Fourier conventions").
 
-`apply_exp`'s optional third argument (`coef`) multiplies the propagator *factor* rather
-than the array, and `scaled(c)` returns the propagator of `c·L`. Both exist so the
-steppers can preserve the exact floating-point op order of the pre-propagator code
-(`exp(hdiss·dt·γ)`, `dt·exp(hdiss·dt/2)·k₃`): with them the refactor is bitwise identical
-on RMHD, without them it moves at round-off.
+`scaled(c)` returns the propagator of `c·L`. `lsrk_advance` uses it to pre-scale by `dt`
+so a stage exponent is formed as `exp((L·dt)·γ)` — the floating-point op order of the
+pre-propagator code, which keeps the LSRK schemes bitwise identical to it on RMHD.
 
 ## Stochastic forcing
 

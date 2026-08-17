@@ -29,8 +29,7 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None)
     f2 = prop.apply_exp(state.fields,dt/2) + 0.5*dt*k2
     #RK4 substep 3
     k3,_ = rhs(state._replace(t=state.t+dt/2.0,fields=f2),kgrid,params)
-    # coef=dt: the dt multiplies the propagator FACTOR (pre-P1 `dt*diss_half*k3` order)
-    f3 = prop.apply_exp(state.fields,dt) + prop.apply_exp(k3,dt/2,dt)
+    f3 = prop.apply_exp(state.fields,dt) + dt*prop.apply_exp(k3,dt/2)
     #RK4 final step
     k4,_ = rhs(state._replace(t=state.t+dt,fields=f3),kgrid,params)
     f_end = prop.apply_exp(state.fields,dt) + (dt/6.0) * (prop.apply_exp(k1,dt)

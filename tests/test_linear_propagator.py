@@ -199,11 +199,6 @@ def test_scaled_matches_rescaling_tau():
             err = float(np.max(np.abs(a - b)))/max(1.0, float(np.max(np.abs(b))))
             c.check(f"scaled(dt).apply_exp(.,gamma) == apply_exp(.,dt*gamma) "
                     f"({label}, {name})", err < rtol*10, f"rel err {err:.3e}")
-        # coef multiplies the FACTOR (the rk_advance op order), not the result
-        got = np.asarray(diag.apply_exp(arr, dt, gamma))
-        ref = np.asarray(gamma*diag.apply_exp(arr, dt))
-        c.check(f"apply_exp coef == scaling the factor ({label})",
-                float(np.max(np.abs(got - ref))) < rtol*10)
 
 
 def test_rmhd_uses_the_diagonal_backend_with_eqpars_dissipation():

@@ -28,8 +28,8 @@ class IdentityPropagator:
     def scaled(self, factor):
         return self
 
-    def apply_exp(self, arr, tau, coef=None):
-        return arr if coef is None else coef*arr
+    def apply_exp(self, arr, tau):
+        return arr
 
     def solve_shifted(self, arr, a):
         return arr
@@ -46,9 +46,8 @@ class DiagonalPropagator:
         # propagator of factor*L (LSRK pre-scales by dt: see lsrk_advance)
         return DiagonalPropagator(self.L*factor)
 
-    def apply_exp(self, arr, tau, coef=None):
-        factor = jnp.exp(self.L*tau)
-        return factor*arr if coef is None else (coef*factor)*arr
+    def apply_exp(self, arr, tau):
+        return jnp.exp(self.L*tau)*arr
 
     def solve_shifted(self, arr, a):
         return arr/(1.0 - a*self.L)
@@ -84,11 +83,9 @@ class Putzer2Propagator:
                           jnp.sinh(z_safe)/z_safe)
         return jnp.cosh(z), tau*sinhc
 
-    def apply_exp(self, arr, tau, coef=None):
+    def apply_exp(self, arr, tau):
         cosh_z, sinh_over_s = self._coeffs(tau)
         pref = jnp.exp(self.m*tau)
-        if coef is not None:
-            pref = coef*pref
         # M = pref*(cosh I + (sinh/s)(L - m I)), applied to the (2, ...) field stack
         d = cosh_z - sinh_over_s*self.m
         m00 = pref*(d + sinh_over_s*self.L[0,0])
