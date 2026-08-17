@@ -5,4 +5,4 @@ from . import gdi, rmhd
 from .core import _binned
 from .rmhd import energy, perpspec, parspec
 
-__all__ = ["gdi", "rmhd", "energy", "perpspec", "parspec"]
+__all__ = ["gdi", "rmhd", "energy", "perpspec", "parspec", "_binned"]
