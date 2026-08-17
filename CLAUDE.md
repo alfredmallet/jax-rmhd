@@ -107,6 +107,18 @@ is an assertion failure (`z_derivatives` derives offsets from the received slab)
 `physics/shared_physics.py` holds equation-agnostic helpers (`gradk`, `bracket`,
 z-stencils, O-U forcing mechanics); `physics/rmhd.py` maps them onto (phi,psi).
 
+`physics/<eq>.py` holds ONLY what the solver consumes: the recipe functions and their
+helpers (including `_max_re_lambda`/`_lin_dt_safety`, which `set_timestep` calls).
+Everything read-only and user-facing lives in `diagnostics/<eq>.py` — `diagnostics.rmhd`
+(`energy`, `perpspec`, `parspec`) and `diagnostics.gdi` (`energy_enstrophy`,
+`energy_budget`, `perp_spectrum`, `cross_phase_spectrum`, `kperp_break`, `measure_alpha`,
+`theory_cross_phase`), with `diagnostics/core.py` for the shared machinery (`_binned`).
+`diagnostics.<eqtype>` is the naming convention; the registry stays a solver contract, so
+there is no diagnostics hook on `EquationRecipe` — diagnostics are plain imports, and the
+dependency runs diagnostics -> physics, never back. The RMHD names plus `_binned` are
+re-exported at the top level (`diagnostics.energy(...)` etc.) — that is the historical
+surface, keep it working.
+
 All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_sum`,
 `allreduce_max`, dispatched on the static `params.comm_backend`:
 

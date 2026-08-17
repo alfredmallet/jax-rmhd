@@ -1,14 +1,9 @@
+# RMHD diagnostics: (phi, psi) energies and per-field grad-square spectra.
 import jax.numpy as jnp
 import jax.numpy.fft as ft
-from . import _precision
-from .physics.shared_physics import perp_gradsq, perp_reduce, perp_inner_product
-
-def _binned(kmag, energies, kunit, kmax, bin_factor):
-    # radial binning shared by perpspec/parspec: (bin_centers, one spectrum per energy)
-    dk = kunit*bin_factor
-    bin_edges = jnp.arange(0,kmax+dk,dk,dtype=_precision.ftype)
-    specs = tuple(jnp.histogram(kmag,bins=bin_edges,weights=e/dk)[0] for e in energies)
-    return ((bin_edges[1:] + bin_edges[:-1]) / 2,) + specs
+from .. import _precision
+from ..physics.shared_physics import perp_gradsq, perp_reduce, perp_inner_product
+from .core import _binned
 
 def perpspec(state,kgrid,params,bin_factor=2.0):
     # perpendicular energy spectrum, z-averaged.

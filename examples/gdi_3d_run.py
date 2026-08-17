@@ -12,9 +12,10 @@
 # past the linear e-folding budget below) but was not tuned/verified to reach a
 # statistically STEADY saturated cascade the way the 2D driver eventually was -- there was
 # no sandbox time budget in this task for that iteration. The diagnostics
-# (kperp_break/measure_alpha/cross_phase_spectrum) are demonstrated on whatever state this
-# reaches via report() below (there is no companion notebook yet -- report() prints the
-# run's actual energy-vs-time honestly rather than asserting saturation).
+# (taranis.diagnostics.gdi: kperp_break/measure_alpha/cross_phase_spectrum/
+# theory_cross_phase) are demonstrated on whatever state this reaches via report() below
+# (there is no companion notebook yet -- report() prints the run's actual energy-vs-time
+# honestly rather than asserting saturation).
 import time
 
 import numpy as np
@@ -22,6 +23,7 @@ import jax.numpy as jnp
 
 import taranis as jr
 import taranis.snapshot_io as sn
+from taranis.diagnostics import gdi as gdi_diag
 from taranis.physics import gdi, shared_physics
 from taranis.run import block_of_steps
 from taranis.timestepping import get_scheme
@@ -134,39 +136,6 @@ def unstable_modes_report(params, kgrid):
                dt_ceiling=dt_ceiling)
 
 
-def theory_cross_phase(params, kz, ky_list, kx=0.0):
-    # the THEORETICAL N/phi eigenvector ratio (dominant eigenvalue, exact -- not a nonlinear
-    # measurement) vs ky at fixed kz: the clean way to see eq (4.6)<->(4.8)'s adiabaticity
-    # transition, since (as the P4b report documents) a real run's cross_phase_spectrum can
-    # be dominated by nonlinear mode-coupling long before/after the linear structure is
-    # cleanly resolved at every k. IMPORTANT finding (see gdi.py's module docstring and the
-    # P4b report): under the pure D_par*kz^2 closure (gpar_fac=0, the 3D default) gamma_par
-    # does NOT grow with k_perp (unlike the 2D floor gpar_fac*nu_in*k_perp^2), so at fixed
-    # kz!=0 the crossover runs the OPPOSITE way from the P4a 2D-floor picture: ADIABATIC
-    # (small phase, N~phi) at SMALL k_perp (gamma_par/k_perp^2 -> large there) and GDI-like
-    # (phase -> 90deg) at LARGE k_perp (gamma_par/k_perp^2 -> 0) -- gdi.kperp_break's
-    # marginal-STABILITY k_perp (eq 4.5's analog, where the GROWTH RATE crosses zero) is a
-    # genuinely different scale from this adiabaticity crossover in the pure-D_par model.
-    Ln, nu_in, v0, gpar_fac, diss, hyper, D_par = gdi._eqpars(params)
-    gamma_par_kz = D_par*kz*kz
-    out = []
-    for ky in ky_list:
-        ksq = kx*kx + ky*ky
-        inv_ksq = 0.0 if ksq == 0.0 else 1.0/ksq
-        gamma_par = gpar_fac*nu_in*ksq + gamma_par_kz
-        gpar_ratio = gpar_fac*nu_in + gamma_par_kz*inv_ksq
-        L00, L01, L10, L11 = gdi._L_entries(ksq, ky, inv_ksq, Ln, nu_in, v0,
-                                            gamma_par, gpar_ratio, diss, hyper)
-        m, s2 = shared_physics.eig2_ms(L00, L01, L10, L11)
-        s = np.sqrt(complex(s2))
-        lam1, lam2 = m + s, m - s
-        lam = lam1 if lam1.real > lam2.real else lam2
-        ratio = -L01/(L00 - lam)
-        out.append(dict(ky=ky, growth=lam.real, amp_ratio=abs(ratio),
-                        phase_deg=float(np.degrees(np.angle(ratio)))))
-    return out
-
-
 def report(snap_path="examples/data/gdi-3D", snapshot_index=None):
     # prints the full P4b science-diagnostics demonstration (k_perp break vs eq 4.5, alpha
     # vs eq 4.7, N-phi cross-phase vs eq 4.6/4.8) on whatever state make_data reached --
@@ -182,7 +151,7 @@ def report(snap_path="examples/data/gdi-3D", snapshot_index=None):
     print(f"\n=== energy vs t ({len(steps)} snapshots) ===")
     for i in steps:
         st = sn.load_snapshot(i, snap_path, params)
-        E, Z = gdi.energy_enstrophy(st, kgrid, params)
+        E, Z = gdi_diag.energy_enstrophy(st, kgrid, params)
         print(f"  t={float(st.t):7.3f}  E={float(E):.4e}  Z={float(Z):.4e}")
 
     idx = steps[-1] if snapshot_index is None else snapshot_index
@@ -191,14 +160,14 @@ def report(snap_path="examples/data/gdi-3D", snapshot_index=None):
 
     print("\n-- k_perp break (eq 4.5 analog), numeric root of max Re(lambda(L))=0 --")
     for kz in (0.0, 1.0, 2.0, 3.0, 4.0):
-        kc = gdi.kperp_break(params, kz=kz)
+        kc = gdi_diag.kperp_break(params, kz=kz)
         print(f"  kz={kz:.1f}  k_perp_break={kc}")
 
     print("\n-- theoretical N/phi eigenvector cross-phase vs ky (kx=0), by kz --")
+    ky_list = [0.25, 0.75, 1.25, 2.0, 2.75, 3.25, 4.0, 4.5, 5.0, 5.25, 6.0, 7.0]
     for kz in (0.0, 1.0, 2.0, 3.0):
         print(f"  kz={kz:.1f}:")
-        for row in theory_cross_phase(params, kz, [0.25, 0.75, 1.25, 2.0, 2.75, 3.25, 4.0,
-                                                    4.5, 5.0, 5.25, 6.0, 7.0]):
+        for row in gdi_diag.theory_cross_phase(params, kz, ky_list):
             print(f"    ky={row['ky']:.2f}  growth={row['growth']:+.4f}  "
                  f"|N/phi|={row['amp_ratio']:.3f}  phase={row['phase_deg']:.1f}deg")
 
@@ -208,7 +177,7 @@ def report(snap_path="examples/data/gdi-3D", snapshot_index=None):
     for ikz in (0, 1, 2):
         kz_val = float(kgrid.kz[ikz, 0, 0])
         print(f"  kz_index={ikz} (kz={kz_val:.1f}):")
-        for r in gdi.measure_alpha(state, kgrid, params, ikz, modes):
+        for r in gdi_diag.measure_alpha(state, kgrid, params, ikz, modes):
             print(f"    (ikx={r['ikx']},iky={r['iky']})  alpha_measured={r['alpha_measured']:.3f}"
                  f"  alpha_theory={r['alpha_theory']:.3f}  |ratio|={abs(r['ratio']):.3f}"
                  f"  arg={np.degrees(np.angle(r['ratio'])):.1f}deg")
@@ -217,7 +186,7 @@ def report(snap_path="examples/data/gdi-3D", snapshot_index=None):
          "above) --")
     for ikz in (0, 1, 2):
         kz_val = float(kgrid.kz[ikz, 0, 0])
-        kbins, amp, phase = gdi.cross_phase_spectrum(state, kgrid, params, kz_index=ikz)
+        kbins, amp, phase = gdi_diag.cross_phase_spectrum(state, kgrid, params, kz_index=ikz)
         print(f"  kz_index={ikz} (kz={kz_val:.1f}):")
         for k, a, p in zip(np.asarray(kbins), np.asarray(amp), np.degrees(np.asarray(phase))):
             if np.isfinite(a):

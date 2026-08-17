@@ -448,7 +448,7 @@ IC, `NonlinearTerm` masks every step), so the "misweighted nonlinear forcing of 
 mode" concern the ceiling exists for cannot apply there, and the propagator applies `L`
 there exactly regardless of how large `γ_∥` gets.
 
-**Energy budget.** `gdi.energy_budget` extends eq (3.18) (which is derived at `v0=0,
+**Energy budget.** `diagnostics/gdi.py`'s `energy_budget` extends eq (3.18) (which is derived at `v0=0,
 1/Ln=0` — no drive) with the Ln/Pedersen drive terms and the perp-hyperdissipation sink,
 since the bracket/advection nonlinearity conserves `E = ½⟨N² + |∇⊥φ|²⟩` exactly under
 periodic BCs — so the full linear operator's contraction against `(N, φ)` accounts for the

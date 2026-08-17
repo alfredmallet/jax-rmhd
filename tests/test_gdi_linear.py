@@ -22,11 +22,11 @@
 #   5. 3D's kz=0 plane is EXACTLY the 2D operator at the same gpar_fac (required
 #      consistency property of the additive gamma_par_total construction).
 #   6. nonlinear energy-budget closure (extended eq 3.18): a short fp64 run's measured
-#      dE/dt matches gdi.energy_budget's total to a tight relative tolerance, in both 2D
-#      (lsrk54) and 3D (imexcb3e, the P4b production scheme).
-#   7. energy_enstrophy/cross_phase_spectrum against a direct numpy reference on a known
-#      field (normalization gate, CLAUDE.md's "keep new energy-like diagnostics on the
-#      shared perp_reduce convention").
+#      dE/dt matches diagnostics.gdi.energy_budget's total to a tight relative tolerance,
+#      in both 2D (lsrk54) and 3D (imexcb3e, the P4b production scheme).
+#   7. diagnostics/gdi.py's energy_enstrophy/cross_phase_spectrum against a direct numpy
+#      reference on a known field (normalization gate, CLAUDE.md's "keep new energy-like
+#      diagnostics on the shared perp_reduce convention").
 #   8. gdi's setup-time numpy k-grid/dealias rebuild (_perp_grids_np/_kz_values_np, which
 #      feed _max_re_lambda's dt ceiling) against grids.dealias_mask/setup_kgrids: the
 #      dealias regions EXACTLY, the k values to within a few ulp, over 2D and 3D grids with
@@ -47,6 +47,7 @@ import numpy as np
 
 import taranis as jr
 from taranis import _precision, propagators
+from taranis.diagnostics import gdi as gdi_diag
 from taranis.physics import gdi
 
 
@@ -233,7 +234,7 @@ def _single_mode_ic(kx_idx, ky_idx, amp_N, amp_phi, params):
 
 
 def test_energy_budget_closure_nonlinear():
-    # fp64-only: short random-IC run, centered-difference dE/dt vs gdi.energy_budget's
+    # fp64-only: short random-IC run, centered-difference dE/dt vs diagnostics.gdi.energy_budget's
     # total at the midpoint state. NL brackets conserve E exactly, so L (this decomposition)
     # should account for the whole measured budget.
     if not _fp64():
@@ -264,15 +265,15 @@ def test_energy_budget_closure_nonlinear():
     state2 = block_of_steps(state1, kgrid, params, 1, scheme, stepper)
     dt_actual = float(state2.t - state0.t)/2.0
 
-    E0, _ = gdi.energy_enstrophy(state0, kgrid, params)
-    E2, _ = gdi.energy_enstrophy(state2, kgrid, params)
+    E0, _ = gdi_diag.energy_enstrophy(state0, kgrid, params)
+    E2, _ = gdi_diag.energy_enstrophy(state2, kgrid, params)
     dEdt_measured = (float(E2) - float(E0))/(2*dt_actual)
-    budget = gdi.energy_budget(state1, kgrid, params)
+    budget = gdi_diag.energy_budget(state1, kgrid, params)
     dEdt_budget = float(budget["total"])
 
     rel = abs(dEdt_measured - dEdt_budget)/max(abs(dEdt_budget), 1e-30)
     with checks() as c:
-        c.check("measured dE/dt (centered difference) matches gdi.energy_budget total",
+        c.check("measured dE/dt (centered difference) matches diagnostics.gdi.energy_budget total",
                 rel < 1e-4, f"measured={dEdt_measured:.10e}, budget={dEdt_budget:.10e}, "
                 f"rel={rel:.3e}, dt={dt_actual:.3e}")
 
@@ -289,7 +290,7 @@ def test_energy_enstrophy_numpy_reference():
         return jnp.stack([N, phi])
 
     state = jr.initialize(ic, params)
-    E, Z = gdi.energy_enstrophy(state, kgrid, params)
+    E, Z = gdi_diag.energy_enstrophy(state, kgrid, params)
 
     x = np.linspace(0, float(params.Lx), params.nx, endpoint=False).reshape(-1, 1)
     y = np.linspace(0, float(params.Ly), params.ny, endpoint=False).reshape(1, -1)
@@ -517,7 +518,7 @@ def test_energy_budget_closure_nonlinear_3D():
     # fp64-only (tight tolerance): short random-IC 3D run under imexcb3e (the P4b
     # production scheme -- CB-IMEX is L-stable and recovers the quasi-static balance the
     # stiff gamma_par/k_perp^2 -> D_par*kz^2/k_perp^2 term needs), same centered-difference
-    # dE/dt vs gdi.energy_budget check as the 2D test above, now exercising the kz-dependent
+    # dE/dt vs diagnostics.gdi.energy_budget check as the 2D test above, now exercising the kz-dependent
     # gamma_par sink term.
     if not _fp64():
         print("[SKIP] test_energy_budget_closure_nonlinear_3D -- fp64 only (tight tolerance)")
@@ -549,15 +550,15 @@ def test_energy_budget_closure_nonlinear_3D():
     state2 = block_of_steps(state1, kgrid, params, 1, scheme, stepper)
     dt_actual = float(state2.t - state0.t)/2.0
 
-    E0, _ = gdi.energy_enstrophy(state0, kgrid, params)
-    E2, _ = gdi.energy_enstrophy(state2, kgrid, params)
+    E0, _ = gdi_diag.energy_enstrophy(state0, kgrid, params)
+    E2, _ = gdi_diag.energy_enstrophy(state2, kgrid, params)
     dEdt_measured = (float(E2) - float(E0))/(2*dt_actual)
-    budget = gdi.energy_budget(state1, kgrid, params)
+    budget = gdi_diag.energy_budget(state1, kgrid, params)
     dEdt_budget = float(budget["total"])
 
     rel = abs(dEdt_measured - dEdt_budget)/max(abs(dEdt_budget), 1e-30)
     with checks() as c:
-        c.check("3D imexcb3e: measured dE/dt matches gdi.energy_budget total",
+        c.check("3D imexcb3e: measured dE/dt matches diagnostics.gdi.energy_budget total",
                 rel < 1e-4, f"measured={dEdt_measured:.10e}, budget={dEdt_budget:.10e}, "
                 f"rel={rel:.3e}, dt={dt_actual:.3e}")
 
