@@ -1,8 +1,8 @@
 # One-page plan: first-visit layout overhaul
 
-Source: non-physicist feedback (Alfred's wife, sketch, 2026-08-10). Her layout, top to
-bottom: title → one line of text → 2D/3D tabs → toolbar with a big RUN and a hide toggle
-→ the canvas → "what is…" as a side panel. Notes on the sketch: *hide params by default*,
+Source: non-physicist feedback (a sketch from an outside reader, 2026-08-10). That
+layout, top to bottom: title → one line of text → 2D/3D tabs → toolbar with a big RUN and
+a hide toggle → the canvas → "what is…" as a side panel. Notes on the sketch: *hide params by default*,
 *run/pause is green/red*, *put "what is…" on the side?*
 
 Guiding principle: **a first-time visitor sees something pretty within one screen and one
@@ -22,7 +22,7 @@ physics, no WGSL, no SPEC changes; this is chrome only (`common.js` UI regions,
 
 The pages were built and reviewed exclusively under expert eyes; the wall of controls
 above the fold and the essay-only landing page are invisible costs to us and the first
-thing a lay visitor hits. Her sketch is standard demo UX: hero canvas, one obvious
+thing a lay visitor hits. The sketch is standard demo UX: hero canvas, one obvious
 action, explanation off to the side. Almost all of it is cheap because the pieces
 already exist — `btnParams` already toggles `#controls`, the topbar is already sticky,
 the "what is…" panes already exist as `<details>` on index.html.

@@ -173,7 +173,7 @@ first `await`.
 
 ## The on-device reading (Alfred, 2026-08-12, three devices, 2D forced, recording)
 
-| | before (iPhone 11) | laptop | Alfred's phone | wife's iPhone 11 |
+| | before (iPhone 11) | laptop | Alfred's phone | second iPhone 11 |
 |---|---|---|---|---|
 | `pass` (smoothed) | 68 ms | 24.7 | 21.4 | **34.9** |
 | passes/s | 14.7 | 40.5 | 46.7 | **28.7** |
@@ -230,7 +230,7 @@ now — `[slot N pool N enc N ...]` — because one counter with six ways to rea
 rising on three devices at once with no way to tell a late pass from a saturated pool from
 encoder backpressure, and those have three different fixes.
 
-**The wife's iPhone 11 is a different problem and is not fixed.** `sf 1` at `pass 34.9 ms`
+**The second iPhone 11 is a different problem and is not fixed.** `sf 1` at `pass 34.9 ms`
 means one step plus one display chain plus the readbacks already overruns a capture slot:
 the device is display-bound, not step-bound, and the take ceiling correctly refuses to add
 steps it cannot afford. That is the case this plan's own hand-off note predicted ("if `sf`

@@ -11,7 +11,7 @@ per-card band UI. Agreed order: ANISO → ISO → this plan. Run after ISO Phase
 lands and REUSE its k⊥ band factor (half-cosine edges, exact-1.0 passthrough),
 its per-card band-control pattern, and its checkiso §6 fp64 factor mirror. (If
 ISO is abandoned or Phase D cut, this plan defines the factor itself — the
-soft-dependency fallback, not the expected path.) Suggested by Jono Squire.
+soft-dependency fallback, not the expected path.) Suggested by a collaborator.
 
 ## What it is / why
 

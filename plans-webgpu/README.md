@@ -80,11 +80,11 @@ disagree, the file is right.
   keeping.
 - **ISO_PLAN.md** — box-unit aspect, semi-transparent volume view, scale filter. Physics
   WGSL byte-identical throughout by construction.
-- **ANISO_PLAN_2.md** — generated 2D spectrum E(k⊥, k∥) card (3D). Suggested by Jono
-  Squire; reuses ISO's band factor. Sequencing note at the top explains why it is a
+- **ANISO_PLAN_2.md** — generated 2D spectrum E(k⊥, k∥) card (3D). Suggested by a
+  collaborator; reuses ISO's band factor. Sequencing note at the top explains why it is a
   separate file from ANISO_PLAN.
-- **ONEPAGE_PLAN.md** — first-visit layout overhaul, from Alfred's wife's sketch: something
-  pretty within one screen and one click.
+- **ONEPAGE_PLAN.md** — first-visit layout overhaul, from a non-physicist's sketch:
+  something pretty within one screen and one click.
 - **PINCURVE_PLAN.md** — frozen ghost spectra on the spectrum chart cards, the comparison
   primitive the planned lessons need.
 - **RECRAF_PLAN.md** — move recording capture into the rAF render and demote the 33 ms
