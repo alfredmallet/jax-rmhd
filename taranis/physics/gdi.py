@@ -102,11 +102,12 @@ def linear_matrix(kgrid, params):
     return L if params.spatial_dimensions == 3 else L[:, :, None, :, :]
 
 
-@functools.lru_cache(maxsize=32)   # bounded: params is identity-hashed, so an unbounded
-def _max_re_lambda(params):        # cache would pin every Parameters in a long param scan
-    # dt ceiling for nonlinear-vs-linear accuracy near saturation: the fastest growing
-    # linear rate max(Re lambda(L), 0)
-    Ln, nu_in, v0, gpar_fac, diss, hyper, D_par = _eqpars(params)
+def _perp_grids_np(params):
+    # numpy float64 rebuild of the perpendicular k-grid and dealias region used by
+    # _max_re_lambda (setup-time only; see its comment for why grids/kgrid are not used).
+    # kx, ky are broadcast-shaped (nkx,1) and (1,nky) like kgrid.kx/ky; perp_dealias is the
+    # (nkx,nky) boolean 2/3 ellipse, i.e. grids.dealias_mask's perpendicular factor.
+    # tests/test_gdi_linear.py pins both against grids.setup_kgrids/dealias_mask.
     kx = np.fft.fftfreq(params.nx) * params.nx * 2*np.pi/params.Lx
     ky = np.fft.rfftfreq(params.ny) * params.ny * 2*np.pi/params.Ly
     kx_grid, ky_grid = kx.reshape(-1, 1), ky.reshape(1, -1)
@@ -114,11 +115,28 @@ def _max_re_lambda(params):        # cache would pin every Parameters in a long 
     with np.errstate(divide="ignore", invalid="ignore"):
         inv_ksq = np.where(ksq > 0, 1.0/ksq, 0.0)
     ky_deriv = ky_grid.copy()
-    ky_deriv[..., -1] = 0.0
+    ky_deriv[..., -1] = 0.0   # Nyquist row: matches linear_matrix's ky_deriv
     ix = np.fft.fftfreq(params.nx) * params.nx
     iy = np.fft.rfftfreq(params.ny) * params.ny
     perp_dealias = ((ix.reshape(-1, 1)/(params.nx/3.0))**2 +
                     (iy.reshape(1, -1)/(params.ny/3.0))**2) < 1.0
+    return kx_grid, ky_grid, ksq, inv_ksq, ky_deriv, perp_dealias
+
+
+def _kz_values_np(params):
+    # kz planes surviving the 2/3 rule, as a list of (kz, mode index iz) float pairs in
+    # fftfreq order. Companion to _perp_grids_np; requires dims==3 (z_spectral).
+    kzs = np.fft.fftfreq(params.nz) * params.nz * 2*np.pi/params.Lz
+    iz = np.fft.fftfreq(params.nz) * params.nz
+    return [(float(k), float(i)) for k, i in zip(kzs, iz) if abs(i) < params.nz/3.0]
+
+
+@functools.lru_cache(maxsize=32)   # bounded: params is identity-hashed, so an unbounded
+def _max_re_lambda(params):        # cache would pin every Parameters in a long param scan
+    # dt ceiling for nonlinear-vs-linear accuracy near saturation: the fastest growing
+    # linear rate max(Re lambda(L), 0)
+    Ln, nu_in, v0, gpar_fac, diss, hyper, D_par = _eqpars(params)
+    _, _, ksq, inv_ksq, ky_deriv, perp_dealias = _perp_grids_np(params)
 
     def _plane_gmax(kz_val):
         # fastest-growing signed rate over one kz plane
@@ -131,9 +149,7 @@ def _max_re_lambda(params):        # cache would pin every Parameters in a long 
         return float(np.max(np.where(perp_dealias, re_max, -np.inf)))
 
     if params.spatial_dimensions == 3:
-        kzs = np.fft.fftfreq(params.nz) * params.nz * 2*np.pi/params.Lz
-        iz = np.fft.fftfreq(params.nz) * params.nz
-        gmax = max(_plane_gmax(float(k)) for k, i in zip(kzs, iz) if abs(i) < params.nz/3.0)
+        gmax = max(_plane_gmax(kz_val) for kz_val, _ in _kz_values_np(params))
     else:
         gmax = _plane_gmax(None)
     return max(gmax, 0.0)

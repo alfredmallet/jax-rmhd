@@ -27,6 +27,10 @@
 #   7. energy_enstrophy/cross_phase_spectrum against a direct numpy reference on a known
 #      field (normalization gate, CLAUDE.md's "keep new energy-like diagnostics on the
 #      shared perp_reduce convention").
+#   8. gdi's setup-time numpy k-grid/dealias rebuild (_perp_grids_np/_kz_values_np, which
+#      feed _max_re_lambda's dt ceiling) against grids.dealias_mask/setup_kgrids: the
+#      dealias regions EXACTLY, the k values to within a few ulp, over 2D and 3D grids with
+#      nx,ny,nz not divisible by 3 and anisotropic boxes.
 #
 # Dual precision: dispersion/propagator checks are precision-independent algebra (loose
 # fp32 tolerance, tight fp64; the numpy-only quadratic/quartic cross-checks are float64
@@ -556,6 +560,79 @@ def test_energy_budget_closure_nonlinear_3D():
         c.check("3D imexcb3e: measured dE/dt matches gdi.energy_budget total",
                 rel < 1e-4, f"measured={dEdt_measured:.10e}, budget={dEdt_budget:.10e}, "
                 f"rel={rel:.3e}, dt={dt_actual:.3e}")
+
+
+def _max_ulp_diff(ref, other, dtype):
+    # max |ref - other| in units of an ulp of `dtype`, after casting `other` down to it.
+    ref64 = np.asarray(ref, dtype=np.float64)
+    other64 = np.asarray(other, dtype=dtype).astype(np.float64)
+    ulp = np.spacing(np.maximum(np.abs(ref64), np.abs(other64)).astype(dtype)).astype(np.float64)
+    return float(np.max(np.abs(ref64 - other64)/ulp))
+
+
+def test_np_grid_rebuild_matches_grids_module():
+    # gdi._max_re_lambda deliberately rebuilds the k-grid and the 2/3 dealias region in
+    # numpy from params alone (cacheability, plane-at-a-time memory), re-encoding rules that
+    # also live in grids.dealias_mask/setup_kgrids. This pins the two together.
+    #
+    # The dealias REGIONS are compared exactly (np.array_equal) in both precision sessions:
+    # grids builds the ellipse/kz cut in ftype (float32 in the fp32 session) while gdi
+    # rebuilds it in float64, so a mode sitting on the boundary is exactly where the two
+    # could disagree. The k VALUES cannot be exact even at fp64 -- grids evaluates
+    # fftfreq*n*2*pi/L as ((f*n)*2)*pi/L, gdi folds the constant into (f*n)*(2*pi)/L, so
+    # they round differently (measured <= 2 ulp) -- so they are compared after casting the
+    # float64 rebuild down to the kgrid dtype, to a few-ulp bound.
+    from taranis.grids import dealias_mask
+
+    ulp_tol = 4.0
+    # nz=20 and nx=64 give an inexact n/3; ny=48 gives an exact one (|iy|=16 lands on the
+    # ellipse boundary, excluded by the strict "< 1.0" in both implementations).
+    cases = [dict(nx=8, ny=8, nz=8, Lx=2*np.pi, Ly=2*np.pi, Lz=2*np.pi),
+             dict(nx=64, ny=48, nz=20, Lx=8*np.pi, Ly=3*np.pi, Lz=5.0),
+             dict(nx=32, ny=16, nz=12, Lx=1.0, Ly=7.3, Lz=2*np.pi)]
+    with checks() as c:
+        for cs in cases:
+            tag = f"{cs['nx']}x{cs['ny']}x{cs['nz']}, L=({cs['Lx']:.3g},{cs['Ly']:.3g},{cs['Lz']:.3g})"
+            for params in (_gdi_params(nx=cs["nx"], ny=cs["ny"], Lx=cs["Lx"], Ly=cs["Ly"]),
+                           _gdi_params_3d(nx=cs["nx"], ny=cs["ny"], nz=cs["nz"],
+                                          Lx=cs["Lx"], Ly=cs["Ly"], Lz=cs["Lz"])):
+                dims = params.spatial_dimensions
+                kgrid = jr.setup_kgrids(params)
+                kx, ky, ksq, inv_ksq, ky_deriv, perp = gdi._perp_grids_np(params)
+                mask = np.asarray(dealias_mask(params)).astype(bool)
+                dtype = np.asarray(kgrid.kx).dtype
+
+                c.check(f"[{dims}D {tag}] _perp_grids_np kx/ky broadcast shapes match kgrid",
+                        kx.shape == np.asarray(kgrid.kx).shape and
+                        ky.shape == np.asarray(kgrid.ky).shape,
+                        f"np {kx.shape},{ky.shape} vs kgrid {kgrid.kx.shape},{kgrid.ky.shape}")
+                for name, ref, got in (("kx", kgrid.kx, kx), ("ky", kgrid.ky, ky)):
+                    d = _max_ulp_diff(np.asarray(ref), got, dtype)
+                    c.check(f"[{dims}D {tag}] _perp_grids_np {name} matches kgrid.{name} "
+                            f"({dtype})", d <= ulp_tol, f"max diff {d:.1f} ulp")
+
+                if dims == 2:
+                    c.check(f"[{dims}D {tag}] perp_dealias == grids.dealias_mask exactly",
+                            np.array_equal(perp, mask),
+                            f"{int(np.sum(perp != mask))} differing modes")
+                    continue
+
+                # 3D: the mask's kz axis is the region _kz_values_np applies its |iz| < nz/3
+                # cut to. The perp factor always keeps mode (0,0), so a kz plane is kept iff
+                # the mask has any True entry on it.
+                iz_all = np.fft.fftfreq(params.nz)*params.nz
+                kept = np.any(mask, axis=(1, 2))
+                kz_np = np.array([kz for kz, _ in gdi._kz_values_np(params)])
+                iz_np = np.array([i for _, i in gdi._kz_values_np(params)])
+                c.check(f"[{dims}D {tag}] _kz_values_np keeps exactly the mask's live kz "
+                        "planes", np.array_equal(iz_np, iz_all[kept]),
+                        f"gdi iz={iz_np}, mask iz={iz_all[kept]}")
+                c.check(f"[{dims}D {tag}] dealias_mask factorizes as kept-kz x perp_dealias "
+                        "exactly", np.array_equal(mask, kept[:, None, None] & perp),
+                        f"{int(np.sum(mask != (kept[:, None, None] & perp)))} differing modes")
+                d = _max_ulp_diff(np.asarray(kgrid.kz).reshape(-1)[kept], kz_np, dtype)
+                c.check(f"[{dims}D {tag}] _kz_values_np kz matches kgrid.kz ({dtype})",
+                        d <= ulp_tol, f"max diff {d:.1f} ulp")
 
 
 if __name__ == "__main__":
