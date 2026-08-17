@@ -125,8 +125,8 @@ def _max_re_lambda(params):        # cache would pin every Parameters in a long 
         gamma_par, gpar_ratio = _closure_terms(ksq, inv_ksq, kz_val, gpar_fac, nu_in, D_par)
         L00, L01, L10, L11 = _L_entries(ksq, ky_deriv, inv_ksq, Ln, nu_in, v0,
                                         gamma_par, gpar_ratio, diss, hyper)
-        m = 0.5*(L00 + L11)
-        s = np.sqrt((m*m - (L00*L11 - L01*L10)).astype(complex))
+        m, s2 = shared_physics.eig2_ms(L00, L01, L10, L11)
+        s = np.sqrt(s2.astype(complex))
         re_max = np.maximum((m + s).real, (m - s).real)
         return float(np.max(np.where(perp_dealias, re_max, -np.inf)))
 
@@ -251,8 +251,8 @@ def kperp_break(params, kz=0.0, ky_lo=1e-3, ky_hi=None, tol=1e-6, max_iter=60):
         gpar_ratio = gpar_fac*nu_in + gamma_par_kz*inv_ksq
         L00, L01, L10, L11 = _L_entries(ksq, ky, inv_ksq, Ln, nu_in, v0,
                                         gamma_par, gpar_ratio, diss, hyper)
-        m = 0.5*(L00 + L11)
-        s = np.sqrt(complex(m*m - (L00*L11 - L01*L10)))
+        m, s2 = shared_physics.eig2_ms(L00, L01, L10, L11)
+        s = np.sqrt(complex(s2))
         return max((m + s).real, (m - s).real)
 
     if ky_hi is None:

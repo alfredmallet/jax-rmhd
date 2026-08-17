@@ -12,6 +12,13 @@ def gradk(fk,kgrid):
 def bracket(a,b):
     return a[0]*b[1] - a[1]*b[0]
 
+# half-trace and discriminant of a 2x2: m = tr/2, s2 = m^2 - det, eigenvalues m +- sqrt(s2).
+# Pure arithmetic (no np/jnp calls): serves numpy arrays, jnp arrays and python scalars
+# alike. The sqrt and any complex cast stay at the call site.
+def eig2_ms(L00, L01, L10, L11):
+    m = 0.5*(L00 + L11)
+    return m, m*m - (L00*L11 - L01*L10)
+
 # gets the necessary z derivatives.
 def z_derivatives(f,params,halo=None):
     # z axis is axis 1. 

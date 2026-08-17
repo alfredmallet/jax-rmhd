@@ -22,7 +22,7 @@ import jax.numpy as jnp
 
 import taranis as jr
 import taranis.snapshot_io as sn
-from taranis.physics import gdi
+from taranis.physics import gdi, shared_physics
 from taranis.run import block_of_steps
 from taranis.timestepping import get_scheme
 
@@ -120,9 +120,8 @@ def unstable_modes_report(params, kgrid):
     # quick static report: dt ceiling and the count/max of unstable dealiased lattice modes
     # (same style as gdi_2d_run.py's calibration probes, kept here as a reusable summary).
     L = gdi.linear_matrix(kgrid, params)
-    m = 0.5*(L[0, 0] + L[1, 1])
-    s2 = (m*m - (L[0, 0]*L[1, 1] - L[0, 1]*L[1, 0])).astype(jnp.complex64)
-    s = jnp.sqrt(s2)
+    m, s2 = shared_physics.eig2_ms(L[0, 0], L[0, 1], L[1, 0], L[1, 1])
+    s = jnp.sqrt(s2.astype(jnp.complex64))
     max_re = jnp.maximum(jnp.real(m + s), jnp.real(m - s))
     dealias = kgrid.dealias
     n_unstable = int(jnp.sum((max_re > 1e-8) & dealias))
@@ -158,8 +157,8 @@ def theory_cross_phase(params, kz, ky_list, kx=0.0):
         gpar_ratio = gpar_fac*nu_in + gamma_par_kz*inv_ksq
         L00, L01, L10, L11 = gdi._L_entries(ksq, ky, inv_ksq, Ln, nu_in, v0,
                                             gamma_par, gpar_ratio, diss, hyper)
-        m = 0.5*(L00 + L11)
-        s = np.sqrt(complex(m*m - (L00*L11 - L01*L10)))
+        m, s2 = shared_physics.eig2_ms(L00, L01, L10, L11)
+        s = np.sqrt(complex(s2))
         lam1, lam2 = m + s, m - s
         lam = lam1 if lam1.real > lam2.real else lam2
         ratio = -L01/(L00 - lam)

@@ -186,7 +186,8 @@ def linear_fields(L, params):
     return dict(lin_L=Lc, lin_m=m, lin_s2=s2)
 
 def putzer2_precompute(L):
+    # local import: physics sits above this module (physics -> grids -> propagators)
+    from .physics.shared_physics import eig2_ms
     Lc = jnp.asarray(L).astype(jnp.result_type(jnp.asarray(L).dtype, jnp.complex64))
-    m = 0.5*(Lc[0,0] + Lc[1,1])
-    s2 = m*m - (Lc[0,0]*Lc[1,1] - Lc[0,1]*Lc[1,0])
+    m, s2 = eig2_ms(Lc[0,0], Lc[0,1], Lc[1,0], Lc[1,1])
     return Lc, m, s2
