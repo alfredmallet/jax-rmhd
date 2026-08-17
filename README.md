@@ -1,35 +1,39 @@
 # taranis
 Code to solve nonlinear plasma models in jax.
 
-Requires jax (tested on 0.10.0), orbax_checkpoint (tested on 0.11.37), and python (tested on 3.11.5). You can get these with pip:
+Requires jax (tested on 0.10.0), orbax-checkpoint (tested on 0.11.37), and python (tested on 3.11.5). You can get these with pip:
 
 ```
 pip install -e .                # laptop / no MPI toolchain: runs single-process, comm_backend="serial"
 pip install -e ".[mpi]"         # generic Linux box with a working MPI toolchain (mpi4py/mpi4jax); zsh needs the quotes
 ```
 
-Currently only the RMHD equations are implemented, but it should now be relatively easy to add new equation types (haha).
+Currently solves two sets of equations
 
-The current architecture is that the code is grid along the z-axis, and pseudospectral in x,y. This is to potentially handle non-periodic boundary conditions (future work), and for improved parallelization in z.
-The fields are stored in k-space (nfields,nz,nkx,nky); the gradients are stored in real space (ngrads,nz,nx,ny). If you want to look at more details look at rmhd.py, for example.
+1) reduced MHD
+2) drift-GDI equations (for ionospheric turbulence)
 
-Currently only some basic explicit solvers are implemented: classic RK4, low-storage RK3 (LSRK33, Williamson 1980), and low-storage 5-stage 4th-order RK (LSRK54, Carpenter & Kennedy 1994).
+It should now be relatively easy to add new equation types (haha).
 
-To see how to use the code, start with an example, e.g. examples/orzag-tang-2D.ipynb (see examples/README.md for the full list and suggested order).
+The code has options to be fully spectral, or parallelized across devices using finite-differences in the z direction.
+
+Currently various basic explicit schemes are implemented: classic RK4, low-storage RK3 (LSRK33, Williamson 1980), low-storage 5-stage 4th-order RK (LSRK54, Carpenter & Kennedy 1994), and four related IMEX RK schemes (Cavaglieri & Bewley 2015).
+
+To see how to use the code, there are some example notebooks.
 
 To add a new equation type you need to:
 
-1. Add a new entry to equation_registry in physics/__init__.py. This is an EquationRecipe: (set_timestep, (term1,term2,...), grad, nfields, and optionally forcing_scale and halo_start functions)
-2. Add a new file under physics/. This should contain everything you listed in equation_registry.
+1. Add a new entry to equation_registry in physics/__init__.py. This is an EquationRecipe: (set_timestep_func, term_funcs, grad_func, nfields, forcing_scale_func, halo_start_func, linear_matrix_func)
+2. Add a new file under physics/. This should contain code to calculate everything you need in equation_registry
 3. Import this file in physics/__init__.py
 
 Tips:
 
 set_timestep is supposed to encode any cfl conditions you want to satisfy.
 
-The tuple (term1,term2,...) is functions which will be combined into the RHS $R$ of the equations $\partial_t f = R(f,t)$. You can put any terms you like, but be aware that currently the available solvers are explicit so it might be awkward if it is a stiff term (e.g. dispersive waves).
+The tuple term_funcs=(term1,term2,...) is functions which will be combined into the RHS $R$ of the equations $\partial_t f = R(f,t)$. You can put any terms you like, but all these terms will be solved explicitly.
 
-Perpendicular dissipation is handled via integrating factor, so you don't need to write a new term for that.
+linear_matrix defines the set of linear terms to be solved either with integrating factor or implicitly: e.g. in RMHD with z_spectral=True, this is dissipation and Alfvénic advection, while with z_spectral=False, this is just the perpendicular dissipation.
 
 The grad function is supposed to calculate all (and only all!) the gradients you'll need for the other terms.
 
@@ -37,10 +41,11 @@ The terms and grad are then used to build the rhs of your equations.
 
 If there is some function that should be useful for many equation sets, you can add it to physics/shared_physics.py.
 
+Finally, webgpu contains a browser-based RMHD solver using the same algorithms as the main taranis code. This is for demonstration/educational/intuition-building purposes; resolution is limited so it can't really be used for production.
+
 Some future plans: 
 
-- Do some more testing (tearing modes, AW collision,...)
-- Add a spectral option for the z direction (the advection terms can then be shunted into an integrating factor)
-- Add some implicit solver, at least for the z direction, and operator splitting capabilities
-- Add different equation sets (in order of increasing complexity: gradient drift instability, compressible RMHD, KRMHD, FLR-MHD, KREHM, isothermal electron model, gyrokinetics...??) The last four models have fast waves, so likely need an implicit solver option first. The last three models are kinetic, and will need a spectral treatment of the velocity space and more parallelization.
+- Add test particles
+- Add different equation sets (in order of increasing complexity: compressible RMHD, KRMHD, FLR-MHD, KREHM, isothermal electron model, gyrokinetics...??) The last three models are kinetic, and will need a spectral treatment of the velocity space and more parallelization.
+- Parallelize implicit solves: this is fiddly.
 

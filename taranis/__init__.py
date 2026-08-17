@@ -1,15 +1,11 @@
 import os
 import jax
 
-# x64 is now unconditional: RMHD_PRECISION only sets FIELD dtype (fp32/fp64
-# fields can coexist with fp64 scalars like SimulationState.t). This must run
-# before anything else touches jax numerics -- _precision (imported right
-# after) is the only module allowed to read RMHD_PRECISION back out.
 jax.config.update("jax_enable_x64", True)
 
 from . import _precision
 
-print(f"jax is using {_precision.precision}bit precision.")
+print(f"field variables are using {_precision.precision}bit precision.")
 
 # persistent JIT compilation cache, keyed off RMHD_COMPILATION_CACHE dir path.
 cache_dir = os.environ.get("RMHD_COMPILATION_CACHE")

@@ -1,42 +1,30 @@
-# Exact per-mode propagators for the k-local LINEAR part of an equation set.
-#
-# Sign convention (fixed repo-wide): a recipe's linear_matrix_func returns L with
-#
+# Exact per-mode propagators for the k-local linear part of an equation set.
+# Sign convention: a recipe's linear_matrix_func returns L with
 #       dt f = L f + N(f)          ->   propagator = exp(L*tau)
-#
-# The timesteppers never see L: they only call the three hook methods
+# Timesteppers never see L: they only call
 #   apply_exp(arr, tau)     multiply by exp(L*tau)        (integrating-factor schemes)
-#   solve_shifted(arr, a)   apply (I - a*L)^-1            (IMEX schemes, P3)
-#   apply_L(arr)            multiply by L                 (IMEX schemes, P3)
+#   solve_shifted(arr, a)   apply (I - a*L)^-1            (IMEX schemes)
+#   apply_L(arr)            multiply by L                 (IMEX schemes)
 # plus scaled(factor), which returns the propagator of factor*L (see LSRK note below).
-# apply_exp's optional `coef` multiplies the FACTOR, not the array: coef*exp(L*tau) @ arr.
-# It exists so the steppers can keep the exact floating-point op order of the pre-P1
-# `dt * exp(hdiss*dt/2) * k3` (the bitwise-equivalence gate), and costs nothing otherwise.
 #
 # Backends are selected by the shape of L (built once in grids.setup_kgrids):
 #   diagonal  L.ndim == 4: (nfields-or-1, nz-or-1, nkx, nky)   elementwise
 #   putzer2   L.ndim == 5: (2, 2, nz-or-1, nkx, nky)           closed-form 2x2 exponential
-# The z/kz axis is size 1 (broadcast) for perpendicular-only operators; the slot exists so
-# a spectral-z operator can fill it later without changing this interface.
 import jax.numpy as jnp
 import numpy as np
 
 from . import _precision
 
-# Taylor branch for sinh(z)/z at small |z| (z = s*tau): the closed form is 0/0 at a
-# defective mode (s=0). Thresholds are on |z^2| and are evaluated here at fp64, then used
-# as weak-typed python floats so an fp32 run compares in fp32. Truncating after z^6/5040
-# the relative error is |z|^8/362880, i.e. <1e-27 (fp64) / <1e-22 (fp32) at these cutoffs.
+# Taylor branch for sinh(z)/z at small |z| (z = s*tau)
 _TOL_Z2_FP64 = 1e-6   # |z| < 1e-3
 _TOL_Z2_FP32 = 1e-4   # |z| < 1e-2
 
 def _tol_z2():
-    # precision-dependent Taylor cutoff -- FIELD precision (RMHD_PRECISION), not the
-    # (now unconditionally-on) jax_enable_x64 flag; see taranis/_precision.py.
+    # precision-dependent Taylor cutoff
     return _TOL_Z2_FP64 if _precision.precision == "64" else _TOL_Z2_FP32
 
 class IdentityPropagator:
-    # L = 0: what an equation set with no linear_matrix_func gets. Both hooks are no-ops.
+    # L = 0
     def scaled(self, factor):
         return self
 
@@ -47,7 +35,6 @@ class IdentityPropagator:
         return arr
 
     def apply_L(self, arr):
-        # L = 0: an IMEX scheme on this backend degenerates to its explicit part
         return jnp.zeros_like(arr)
 
 class DiagonalPropagator:
@@ -60,7 +47,6 @@ class DiagonalPropagator:
         return DiagonalPropagator(self.L*factor)
 
     def apply_exp(self, arr, tau, coef=None):
-        # op order is load-bearing: this is verbatim the pre-P1 `jnp.exp(hdiss*dt)*fields`
         factor = jnp.exp(self.L*tau)
         return factor*arr if coef is None else (coef*factor)*arr
 
@@ -68,14 +54,13 @@ class DiagonalPropagator:
         return arr/(1.0 - a*self.L)
 
     def apply_L(self, arr):
-        # the IMEX steppers' stiff-derivative evaluation L*u (never reads kgrid.lin_L)
         return self.L*arr
 
 class Putzer2Propagator:
     # nfields=2: exp(L*tau) = e^(m*tau)[cosh(s*tau) I + (sinh(s*tau)/s)(L - m I)] with
-    # m = tr L/2 and s^2 = m^2 - det L (Putzer/Sylvester). m and s2 are precomputed at
-    # setup. ALL of the arithmetic is complex: s^2 < 0 (waves) is normal, and a real sqrt
-    # would silently NaN.
+    # m = tr L/2 and s^2 = m^2 - det L (Putzer/Sylvester). 
+    # m and s2 are precomputed at setup. 
+    # all of the arithmetic is complex (waves)
     def __init__(self, L, m, s2):
         self.L = L
         self.m = m
@@ -86,13 +71,10 @@ class Putzer2Propagator:
         return Putzer2Propagator(self.L*factor, self.m*factor, self.s2*(factor*factor))
 
     def _coeffs(self, tau):
-        # (cosh(s*tau), sinh(s*tau)/s) with a Taylor branch at small |s*tau|; both are
-        # EVEN functions of s, so they are single-valued in s^2 and the sqrt branch cut
-        # is irrelevant. Overflow note: cosh/sinh overflow at |Re(s*tau)| ~ 710 (fp64) /
-        # 88 (fp32), producing inf*0=NaN against the exp(m*tau) prefactor even when the
-        # product exp((m+-s)*tau) is finite. Unreachable under an adaptive dt (the
-        # equation sets' dt ceilings keep |lambda*dt| ~ O(1)), but a large FIXED dt with
-        # a strongly damped L can hit it -- symptom is instant NaNs, not drift.
+        # (cosh(s*tau), sinh(s*tau)/s) with a Taylor branch at small |s*tau|
+        # overflow note: cosh/sinh overflow at |Re(s*tau)| ~ 710 (fp64) /
+        # 88 (fp32). unreachable under adaptive dt but a large FIXED dt with
+        # a strongly damped L can hit it, giving instant NaNs.
         z2 = self.s2*(tau*tau)
         z = jnp.sqrt(z2)
         small = jnp.abs(z2) < _tol_z2()
@@ -117,11 +99,10 @@ class Putzer2Propagator:
 
     def solve_shifted(self, arr, a):
         # closed-form inverse of the 2x2 M = I - a*L. Pole note (mirrors apply_exp's
-        # overflow note): det(I - a*L) = 0 when a GROWING eigenvalue satisfies
-        # lambda = 1/a (a = a_ii*dt in the IMEX steppers, so lambda*dt ~ 2-3). Unreachable
-        # under an adaptive dt (the equation sets' ceilings keep gamma_max*dt ~ O(1) with
-        # safety < 1), but a large FIXED dt on an unstable L can hit it -- symptom is
-        # instant NaNs/huge values from the division, not drift.
+        # overflow note): det(I - a*L) = 0 when a growing eigenvalue satisfies
+        # lambda = 1/a (a = a_ii*dt in the IMEX steppers, so lambda*dt ~ 2-3). 
+        # unreachable under an adaptive dt (gamma_max*dt ~ O(1) with safety < 1)
+        # possible with large fixed dt: symptom is instant NaNs/huge values.
         m00 = 1.0 - a*self.L[0,0]
         m01 = -a*self.L[0,1]
         m10 = -a*self.L[1,0]
@@ -131,12 +112,10 @@ class Putzer2Propagator:
                           (m00*arr[1] - m10*arr[0])/det])
 
     def apply_L(self, arr):
-        # plain 2x2 matvec: the IMEX steppers' stiff-derivative evaluation L*u
         return jnp.stack([self.L[0,0]*arr[0] + self.L[0,1]*arr[1],
                           self.L[1,0]*arr[0] + self.L[1,1]*arr[1]])
 
 def get_propagator(kgrid, params):
-    # Backend chosen by the shape of the stored L (grids.setup_kgrids validated it).
     L = kgrid.lin_L
     if L is None:
         return IdentityPropagator()
@@ -149,7 +128,7 @@ def _mirror_k(arr, axis):
     return np.roll(np.flip(arr, axis=axis), 1, axis=axis)
 
 def _check_hermitian_compatible(L, params):
-    # Reality of the fields survives exp(L*tau) only if L(-kx,ky) = conj(L(kx,ky)) on the
+    # reality of the fields survives exp(L*tau) only if L(-kx,ky) = conj(L(kx,ky)) on the
     # rfft2 self-conjugate rows ky=0 and ky=Nyquist (kx is two-sided there). Under
     # params.z_spectral the z axis is kz (also two-sided), so the constraint there is
     # L(-kx,-kz,ky) = conj(L(kx,kz,ky)) and the mirror covers both axes.
@@ -207,8 +186,6 @@ def linear_fields(L, params):
     return dict(lin_L=Lc, lin_m=m, lin_s2=s2)
 
 def putzer2_precompute(L):
-    # (L, tr L/2, (tr L/2)^2 - det L) for a (2, 2, ...) operator, COMPLEX throughout: s^2
-    # is negative for any oscillatory mode and a real sqrt of it would silently NaN.
     Lc = jnp.asarray(L).astype(jnp.result_type(jnp.asarray(L).dtype, jnp.complex64))
     m = 0.5*(Lc[0,0] + Lc[1,1])
     s2 = m*m - (Lc[0,0]*Lc[1,1] - Lc[0,1]*Lc[1,0])

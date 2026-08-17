@@ -49,7 +49,7 @@ _MPI_HINT = ('install the MPI extra: pip install "taranis[mpi]" (or use '
              "comm_backend='serial'/None for single-process runs)")
 
 def _resolve_backend(requested):
-    # Pick the transport for THIS process. requested=None (the default) auto-resolves:
+    # pick the transport for THIS process. requested=None (the default) auto-resolves:
     # mpi4py+mpi4jax -> "mpi4jax" (the unchanged production path), else "serial". Never
     # "serial" under a real multi-rank launcher — every rank would run the full domain and
     # overwrite the others' snapshots — so the launcher env is sniffed on every path.
@@ -99,7 +99,7 @@ def _resolve_backend(requested):
     return "serial"
 
 class Parameters():
-    #Stores all static parameters for the problem
+    # stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,cfl_safety,eqpars=None,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0e4,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
@@ -170,10 +170,7 @@ class Parameters():
         self.rank=self.comm.Get_rank()
         self.size=self.comm.Get_size()
         if self.size > 1:
-            # All ranks must read the same RMHD_PRECISION, or halo exchanges and
-            # allreduces mix float32/float64 buffers and fail far from the cause
-            # (PRECISION_PLAN "Risks"). One host-side collective is fine here:
-            # Parameters construction is already collective under MPI.
+            # all ranks must read the same RMHD_PRECISION
             precs = self.comm.allgather(_precision.precision)
             if len(set(precs)) != 1:
                 raise RuntimeError(
@@ -186,8 +183,6 @@ class Parameters():
             if self.nz % self.size != 0:
                 raise ValueError(f"nz={self.nz} must be divisible by the number of MPI ranks ({self.size})")
             if self.comm_backend=="serial":
-                # single process: no cartesian topology to build, and cart_comm=None keeps the
-                # allreduces at identity (comms.halo_exchange wraps z onto self)
                 self.cart_comm = None
                 self.left_neighbor = None
                 self.right_neighbor = None
@@ -201,10 +196,6 @@ class Parameters():
             if self.size > 1 and self.rank==0:
                 warnings.warn("You probably should only run a 2D run on one device, since this "
                               "isn't parallelized.", stacklevel=2)
-        # spectral z (plans/GDI_PLAN.md P2): fields' axis 1 is kz, not z. Single-process
-        # only (a z-FFT needs the whole z domain), 3D only, and never under the sharded
-        # "jax" backend. Recorded in params.json: snapshots are NOT cross-mode compatible,
-        # and the save() comparison is what stops a mixed-mode restart.
         self.z_spectral = bool(z_spectral)
         if self.z_spectral:
             if self.spatial_dimensions != 3:
@@ -251,17 +242,14 @@ class Parameters():
                           "stored but IGNORED. rmhd.LinearTerm is fixed at 4th-order centered "
                           "differences with d_z^4 hyperdissipation.", stacklevel=2)
         if self.z_spectral and self.rank==0 and z_diss != 0.25:
-            # every finite-difference-z knob is dead in spectral z: no stencil, no halo, no
-            # dz-based CFL term. kz dissipation is eqpars['z_diss_k'] instead.
             warnings.warn(f"z_spectral=True: z_diss={z_diss} is a finite-difference-z knob and "
-                          "is IGNORED; use eqpars['z_diss_k'] (-z_diss_k*kz^4) for kz "
+                          "is ignored; use eqpars['z_diss_k'] (-z_diss_k*kz^4) for kz "
                           "dissipation.", stacklevel=2)
 
     def save(self, snap_path, filename="params.json"):
         # record the constructor arguments (not derived attrs) to snap_path/filename, so a
         # run directory documents how it was made and from_snapshot can reproduce it.
-        # saving over an existing file with DIFFERENT contents is a hard error
-        # collective under MPI: rank 0 alone checks/writes and broadcasts the outcome
+        # saving over an existing file with different contents is a hard error
         path = os.path.join(str(snap_path), filename)
         err = None
         if self.rank == 0:
@@ -342,8 +330,7 @@ class Parameters():
         if unknown and rank0:
             warnings.warn(f"ignoring unknown parameters in {path}: {unknown}", stacklevel=2)
         args = {k: _lists_to_tuples(v) for k, v in rec.items() if k in known}
-        # transport, not physics: re-resolve on THIS machine unless the caller says otherwise
-        # (a Savio params.json recording "mpi4jax" must load on a laptop with no MPI)
+        # transport, not physics: re-resolve on this machine unless the caller says otherwise
         args.pop("comm_backend", None)
         args.update(overrides)
         return cls(**args)

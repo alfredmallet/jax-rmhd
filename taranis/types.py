@@ -12,6 +12,4 @@ class SimulationState(NamedTuple):
     forcing_scale: Optional[jnp.ndarray] = None
                                 # shape (n_ou,), real: per-step power-normalization scale,
                                 # updated once per full step in run.py when
-                                # params.forcing_norm_per_step. ALWAYS a concrete array
-                                # (zeros when unused) in states built by initialize /
-                                # load_snapshot; None default so error is loud
+                                # params.forcing_norm_per_step.

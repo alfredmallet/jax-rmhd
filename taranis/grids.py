@@ -6,19 +6,9 @@ from . import comms
 from . import propagators
 from . import _precision
 
-# DTYPE PINNING (plans/PRECISION_PLAN.md A2). jax_enable_x64 is unconditionally on, so a
-# bare fftfreq/arange/zeros/array is a STRONG float64 that poisons every field it touches.
-# setup_kgrids is the only sanctioned K_Grids constructor, so this file is the one choke
-# point for the wavenumber grids: every array below is created directly at _precision.ftype
-# (never built at float64 and cast afterwards -- a float64 intermediate rounded to float32
-# is not bit-for-bit the float32 computation for anything but a single +-*/ or sqrt).
-
-# nb the code is spectral in the perpendicular plane by default, so fourier stuff is 2D;
-# params.z_spectral (single process, dims==3) makes z spectral too -- see fft/ifft below.
-
 class K_Grids(NamedTuple):
     # pytree container for the wavenumber grids and every derived concrete array.
-    # setup_kgrids() is the ONLY sanctioned constructor (it precomputes everything);
+    # setup_kgrids() is the only sanctioned constructor (it precomputes everything);
     # computation cannot live here because jax rebuilds this NamedTuple constantly with
     # tracers / PartitionSpecs (kgrid_specs) / global arrays (_kgrid_to_global) as values.
     kx: jnp.ndarray
@@ -28,15 +18,14 @@ class K_Grids(NamedTuple):
     dealias: jnp.ndarray      # 2/3-rule elliptical mask ((nz,nkx,nky) when z_spectral)
     yfac: jnp.ndarray         # rfft2 y-doubling factor (1 at ky=0 and Nyquist, else 2)
     # parallel wavenumbers, shape (nz,1,1) so it broadcasts onto a (nz,nkx,nky) field.
-    # Only built when params.z_spectral (axis 1 of the fields is then kz, not z); None otherwise.
+    # built iff z_spectral=True
     kz: Optional[jnp.ndarray] = None
     # linear-propagator entries (taranis.propagators): the equation set's k-local linear
-    # operator L (dt f = L f + N(f)) and, for the putzer2 backend, its precomputed
-    # half-trace and discriminant. None when the recipe declares no linear_matrix_func.
+    # operator L and, for the putzer2 backend, its precomputed half-trace and discriminant.
     lin_L: Optional[jnp.ndarray] = None    # (nfields, nz-or-1, nkx, nky) or (2, 2, nz-or-1, nkx, nky)
     lin_m: Optional[jnp.ndarray] = None    # putzer2 only: tr L / 2
     lin_s2: Optional[jnp.ndarray] = None   # putzer2 only: (tr L/2)^2 - det L
-    # forcing-only entries: None when params.forcing is off
+    # forcing-only entries
     fmask: Optional[jnp.ndarray] = None
     z_envcos: Optional[jnp.ndarray] = None
     z_envsin: Optional[jnp.ndarray] = None
@@ -46,13 +35,7 @@ class K_Grids(NamedTuple):
     fidx_y: Optional[jnp.ndarray] = None
 
 def dealias_mask(params):
-    # 2/3-rule elliptical dealiasing mask, in mode-index space (Lx/Ly cancel out).
-    # z_spectral: the brackets are pointwise in z, so products alias in kz too — the perp
-    # ellipse then gets a plain 2/3 kz cut multiplied onto it, giving an (nz,nkx,nky) mask
-    # (a subset of the full 3D box rule, hence still a valid dealiasing).
-    # ftype (not the x64 default): the mask is boolean, but the comparison that builds it
-    # must be evaluated at FIELD precision so the cutoff lands on exactly the modes it did
-    # before x64 was turned on.
+    # 2/3-rule elliptical dealiasing mask, in mode-index space (Lx/Ly[/Lz] cancel out).
     ix = ft.fftfreq(params.nx, dtype=_precision.ftype) * params.nx
     iy = ft.rfftfreq(params.ny, dtype=_precision.ftype) * params.ny
     perp = ((ix.reshape(-1,1)/(params.nx/3.0))**2 +
@@ -67,9 +50,7 @@ def setup_kgrids(params):
     # concrete arrays (ksq, inv_ksq, dealias, the equation set's linear operator,
     # y-doubling factor, forcing shell mask/z-envelopes)
     # the scaling here respects jax.numpy's fourier transform conventions
-    # so that e.g. we can calculate derivatives correctly.
-    # dtype=ftype at the SOURCE (jnp.pi/params.* are weak python floats, so the whole
-    # expression stays at field precision) -- see the pinning note at the top of the file.
+    # so that e.g. we calculate derivatives correctly.
     kx = ft.fftfreq(params.nx, dtype=_precision.ftype) * params.nx * 2 * jnp.pi / params.Lx
     ky = ft.rfftfreq(params.ny, dtype=_precision.ftype) * params.ny * 2 * jnp.pi / params.Ly
     kx_grid = kx.reshape(-1, 1)
@@ -82,7 +63,6 @@ def setup_kgrids(params):
     nky = ky_grid.shape[-1]
     yfac = jnp.full((nky,), 2.0, dtype=_precision.ftype).at[0].set(1.0).at[-1].set(1.0)
 
-    # parallel wavenumbers, only meaningful when axis 1 of the fields is kz
     kz = None
     if params.z_spectral:
         kz = (ft.fftfreq(params.nz, dtype=_precision.ftype)
@@ -107,8 +87,6 @@ def setup_kgrids(params):
         if params.forcing_shell_noise:
             fidx_x, fidx_y = jnp.nonzero(fmask)
         if params.spatial_dimensions == 3 and not params.z_spectral:
-            # z_spectral: no real-space z envelope to precompute — reconstruct_envelope
-            # scatters (A -+ iB)*nz/2 onto the kz = +-2pi/Lz planes instead.
             z_local = local_z_coords(params)
             z_envcos = jnp.cos(2*jnp.pi*z_local/params.Lz)[:, None, None]
             z_envsin = jnp.sin(2*jnp.pi*z_local/params.Lz)[:, None, None]
@@ -122,32 +100,21 @@ def setup_kgrids(params):
     return kgrid
 
 def _attach_linear_operator(kgrid, params):
-    # builds the equation set's linear operator L (dt f = L f + N(f)) plus the propagator
-    # precomputes, from the partially built kgrid the recipe needs (ksq etc.). Still inside
-    # setup_kgrids, which stays the only K_Grids constructor.
+    # builds the linear operator L (dt f = L f + N(f)) plus the propagator precomputes
     from .physics import equation_registry   # local import: physics imports grids
     linear_matrix_func = equation_registry[params.eqtype].linear_matrix_func
     if linear_matrix_func is None:
         return kgrid
     L = linear_matrix_func(kgrid, params)
-    # Dtype backstop for lin_L/lin_m/lin_s2 (they multiply fields in every propagator call):
-    # a recipe that lets a strong float64 constant into L would otherwise upcast the whole
-    # step. Real L stays REAL (rmhd's finite-difference-z dissipation: the propagator takes a
-    # real exp of it) and complex L stays complex -- casting a real L to ctype would change
-    # exp() from a real to a complex kernel. Recipes are still expected to build L at field
-    # precision themselves (rmhd/gdi do); this only catches what they miss, and cannot repair
-    # a value already rounded through float64.
     dtype = _precision.ctype if jnp.iscomplexobj(L) else _precision.ftype
+    # sets lin_L, and lin_m, lin_s2 as appropriate
     return kgrid._replace(**propagators.linear_fields(L.astype(dtype), params))
 
 # K_Grids entries carrying a z axis (axis 0); everything else is perpendicular-only.
-# (kz and the z-extent lin_L/lin_m/lin_s2 of z_spectral mode never reach here: z_spectral is
-# single-process, and propagators.linear_fields rejects a z-extent operator under "jax".)
 _Z_KGRID_FIELDS = ("z_envcos", "z_envsin")
 
 def kgrid_specs(kgrid):
     # shard_map in_specs for a K_Grids: z-envelopes z-sharded, all other entries replicated
-    # (None entries stay None — JAX treats them as empty subtrees).
     return K_Grids(**{name: (None if val is None else
                              (P(comms.Z_AXIS) if name in _Z_KGRID_FIELDS else P()))
                       for name, val in zip(K_Grids._fields, kgrid)})
@@ -158,9 +125,7 @@ def _kgrid_to_global(kgrid, params):
                              comms.to_global(val, params, z_axis=0 if name in _Z_KGRID_FIELDS else None))
                       for name, val in zip(K_Grids._fields, kgrid)})
 
-# forward/inverse transforms, unnormalized. Default: rfft2 over the perpendicular plane
-# only (z stays real, finite-differenced). params.z_spectral: rfftn over (z,x,y) as well, so
-# axis -3 of a field is kz — the shapes are unchanged, only the meaning of that axis is.
+# forward/inverse transforms, unnormalized.
 def fft(f,params):
     if params.z_spectral:
         return ft.rfftn(f,axes=(-3,-2,-1))
@@ -173,12 +138,6 @@ def ifft(f,params):
 
 def local_z_coords(params):
     # z coords stored on local rank.
-    # ftype arange (params.dz is a weak python float, so the product stays at field
-    # precision): these coordinates are NOT diagnostic-only -- they feed setup_kgrids'
-    # z_envcos/z_envsin, which multiply the forcing envelope, and initialize()'s IC before
-    # its fft. A float64 z here would make cos/sin (and the IC's whole transform) float64,
-    # and a transcendental computed at float64 and rounded to float32 is not the float32
-    # result -- so it must be pinned at the source, not cast afterwards.
     nz_device = params.nz // params.size
     idx_device = params.rank * nz_device + jnp.arange(nz_device, dtype=_precision.ftype)
     return idx_device * params.dz

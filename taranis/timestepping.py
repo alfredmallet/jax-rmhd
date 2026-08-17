@@ -43,7 +43,7 @@ class LSRK_Scheme(NamedTuple):
     betas: Tuple[float,...]
     gammas: Tuple[float,...]
 
-# LSRK timestepper: includes an integrating factor for the dissipative terms.
+# LSRK timestepper: includes integrating factor for spectral linear terms
 # params.lsrk_scan=True: lax.scan (default); =False or (unrolled, could help on some GPU)
 def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
     init_rhs,grads = rhs(state,kgrid,params)
@@ -55,7 +55,7 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
         dt = params.dt
 
     # pre-scale the linear operator by dt once per step, so a stage's exponent is
-    # (L*dt)*gamma -- the op order the pre-P1 `exp(kgrid.hdiss*dt*gamma)` used
+    # (L*dt)*gamma
     prop = get_propagator(kgrid,params).scaled(dt)
 
     if params.lsrk_scan:
@@ -75,9 +75,6 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
 
 # used if params.lsrk_scan=True
 def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop):
-    # dtype=ftype: these are STRONG arrays (unlike the unrolled loop's python-float
-    # coefficients, which are weak and adopt the field dtype) and they multiply delta/fields
-    # inside the scan, so unpinned they would upcast the whole step under x64.
     alphas_arr = jnp.array(scheme.alphas, dtype=_precision.ftype)
     betas_arr = jnp.array(scheme.betas, dtype=_precision.ftype)
     gammas_arr = jnp.array(scheme.gammas, dtype=_precision.ftype)
@@ -104,20 +101,20 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop):
 
     return final_state
 
-# ---------------------------------------------------------------- CB-IMEX (plans/GDI_PLAN.md P3)
+# ---------------------------------------------------------------- CB-IMEX
 #
 # Low-storage IMEX-RK schemes of Cavaglieri & Bewley, JCP 286:172-193 (2015)
 # (http://robotics.ucsd.edu/pubs/CB15.pdf; coefficients from their eqs 24, 28a, 30, 32c).
-# ALL of the equation set's k-local linear operator L is treated IMPLICITLY here (dissipation
+# ALL of the equation set's k-local linear operator L is treated implicitly here (dissipation
 # included) -- no exponential anywhere in this path -- and the explicit part is exactly what
 # construct_rhs returns (nonlinear + forcing + any non-k-local linear term, e.g. RMHD's
 # finite-difference z derivatives). Each implicit stage is one propagator solve_shifted.
 #
 # Why these, and not the IF-LSRK production schemes: an integrating factor treats L exactly
-# but misweights the nonlinear forcing of a STIFFLY DAMPED mode when |L|*dt >~ 1, giving
+# but misweights the nonlinear forcing of a stiffly damped mode when |L|*dt >~ 1, giving
 # u ~ dt*N instead of the correct quasi-static balance u ~ N/|L|. Every scheme below has an
 # L-stable, stiffly accurate (a^IM_{s,i} = b_i) implicit part, which recovers that balance.
-# The flip side: an L-stable solve DAMPS oscillatory linear terms at |omega|*dt >~ 1, so
+# The flip side: an L-stable solve damps oscillatory linear terms at |omega|*dt >~ 1, so
 # never point these at a wave-dominated L (spectral-z RMHD's +-i*kz) at large dt.
 #
 # All four have b^IM = b^EX = b and c^IM = c^EX = c (that is the paper's design constraint
@@ -135,7 +132,7 @@ class IMEX_Scheme(NamedTuple):
 # low-storage subset (the sub-diagonal, the diagonal, b and c), and tests/test_imex.py
 # checks that the entries they ignore really are the b_j the [2R]/[3R] structure requires.
 def _scheme_entries(scheme):
-    # unpack + the one structural assumption both steppers bake in: an EXPLICIT first stage
+    # unpack + the one structural assumption both steppers bake in: an explicit first stage
     # (a^IM_{1,1} = 0), which is what makes stage 1's "solve" the identity
     if scheme.a_im[0][0] != 0.0:
         raise ValueError("the CB-IMEX steppers assume an explicit first implicit stage "
@@ -157,14 +154,8 @@ def _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override):
 # [2R] IMEX-RK, three-register implementation (Cavaglieri & Bewley eq. 19).
 # REGISTERS: 3 field-sized arrays live at once -- x (the solution accumulator, which is the
 # state's own fields buffer), y (the explicit stage derivative / partial stage sum) and z
-# (the implicit stage derivative). The paper's TWO-register variant (their eq. 20) is not
-# used: it trades the third register for two extra nonlinear evaluations and two extra L
-# products per stage, which their own footnote 4 rules out for spectral methods (every
-# nonlinear evaluation here is a batch of FFTs).
-# Scan (params.lsrk_scan=True, default) and unrolled stage loops, like lsrk_advance: the
-# structurally-different first stage (init_rhs, the skipped z_1) sits entirely BEFORE the
-# k = 1..s-1 loop, whose body is uniform -- so unlike _lsrk_scan_stages no lax.cond is
-# needed. The two loops agree to round-off, not bitwise (same XLA-fusion class as lsrk).
+# (the implicit stage derivative).
+# Scan (params.lsrk_scan=True, default) and unrolled stage loops, like lsrk_advance
 def imex2r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
     init_rhs, dt = _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override)
     prop = get_propagator(kgrid,params)
@@ -201,10 +192,8 @@ def imex2r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=
 # the per-stage coefficient 5-tuple. Carry is exactly the 3 registers (x, y, z).
 def _imex2r_scan_stages(state, kgrid, params, rhs, prop, scheme, dt, x, y, z):
     a_im, a_ex, b, c, s = _scheme_entries(scheme)
-    # dtype=ftype for the same reason as _lsrk_scan_stages: the SCANNED tableau entries are
-    # strong arrays that multiply fields. (The unrolled loop above reads the same tableaus as
-    # python floats -- weak, no pin needed, and the differences a_ex[k][k-1]-b[k-1] are still
-    # formed in python/float64 exactly as before, then rounded once on the way into ftype.)
+    # dtype=ftype for the same reason as _lsrk_scan_stages: the scanned tableau entries are
+    # strong arrays that multiply fields.
     ft_ = _precision.ftype
     stage_pars = (jnp.array([a_ex[k][k-1] - b[k-1] for k in range(1,s)], dtype=ft_),
                   jnp.array([a_im[k][k-1] - b[k-1] for k in range(1,s)], dtype=ft_),
@@ -227,7 +216,7 @@ def _imex2r_scan_stages(state, kgrid, params, rhs, prop, scheme, dt, x, y, z):
 
 # [3R] IMEX-RK, four-register implementation (Cavaglieri & Bewley eq. 21). Same contract as
 # imex2r_advance; the extra register buys stage order two for the implicit part.
-# UNROLLED ONLY (params.lsrk_scan not read here): the y-update needs the LOOKAHEAD
+# unrolled only (params.lsrk_scan not read here): the y-update needs the lookahead
 # coefficients a_(k+1,k-1) and skips the last stage, so a scan would need a cond -- not
 # worth it for the one [3R] scheme (imexcb3f).
 # REGISTERS: 4 -- x (accumulator), y (the pending next-stage combination), z_im, z_ex.
@@ -253,6 +242,8 @@ def imex3r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=
         z_ex = rhs(stage,kgrid,params)[0]
         x = x + (b[k]*dt)*z_im + (b[k]*dt)*z_ex
     return state._replace(t=state.t + dt, fields=x)
+
+#defining various schemes below
 
 def _cb3c():
     # IMEXRKCB3c (eq. 28a): (3,4)-stage, L-stable, SSP explicit part with the widest
@@ -295,7 +286,6 @@ def _cb3f():
                 (b[0], 231677526244/1085522130027, 3007879347537/683461566472, 0.0)),
         b = b, c = (0.0, c2, c3, 1.0), order = 3, structure = "3R", registers = 4)
 
-#Code to set up a couple of common lsrk schemes
 
 def _get_LSRK54_gammas():
     c2 = 1432997174477 / 9575080441755

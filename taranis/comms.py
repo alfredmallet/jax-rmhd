@@ -1,11 +1,10 @@
 # three comms backends:
 # "mpi4jax" (CPU production): mpi4py communicators + mpi4jax device ops, arrays stay process-local.
-# "jax": the CONTROL plane is still mpi4py (rank/size, params.save, orbax, index broadcasts)
+# "jax": control plane is still mpi4py (rank/size, params.save, orbax, index broadcasts)
 # only the three device ops become lax.ppermute/psum/pmax inside a shard_map over a 1D z mesh
-# state/kgrid arrays are then GLOBAL jax.Arrays sharded along z, and each device sees exactly
-# the same local shapes the mpi4jax ranks see.
-# "serial": no MPI at all (single process, size 1). Halos wrap onto self, allreduces are the
-# identity — the exact size-1 semantics, not an approximation.
+# state/kgrid arrays are global jax.Arrays sharded along z; each device sees exactly the same local
+# shapes mpi4jax ranks see.
+# "serial": no MPI at all (single process, size 1). halos wrap onto self, allreduce is identity
 import os
 import socket
 import jax
@@ -16,9 +15,9 @@ from ._mpi_compat import MPI, mpi4jax  # None when not installed; only the "seri
 
 from .types import SimulationState
 
-# Backends implemented here; Parameters.__init__ rejects anything else at construction.
+# backends implemented here; Parameters.__init__ rejects anything else at construction.
 COMM_BACKENDS = ("mpi4jax", "jax", "serial")
-# Mesh axis name for "jax" backend
+# mesh axis name for "jax" backend
 Z_AXIS = "z"
 
 _mesh = None
@@ -29,8 +28,7 @@ def _unknown_backend(params):
 
 def get_mesh():
     # 1D device mesh over z, ordered by (process_index, device id) so mesh position i is
-    # MPI rank i's device (one device per process in production) — the same ordering
-    # local_z_coords / the per-rank orbax dirs assume.
+    # MPI rank i's device (one device per process in production)
     global _mesh
     if _mesh is None:
         devs = sorted(jax.devices(), key=lambda d: (d.process_index, d.id))

@@ -14,8 +14,8 @@ def bracket(a,b):
 
 # gets the necessary z derivatives.
 def z_derivatives(f,params,halo=None):
-    # z axis is assumed to be axis 1. width must agree with rmhd.halo_start's
-    # pre-issued halo width -- the one coupling in this design (see comment there).
+    # z axis is axis 1. 
+    # width must agree with rmhd.halo_start's pre-issued halo width.
     dz=params.dz
     recv_left, recv_right = comms.halo_exchange(f,params,width=2) if halo is None else halo
     # pad width w is derived from the received slab
@@ -47,12 +47,6 @@ def _symmetrize_real_line(col):
     return (col + jnp.conj(col[..., mirror_idx])) / jnp.sqrt(2.0)
 
 def _draw_symmetrized_noise(key, shape, dtype, grid_norm):
-    # dtype=ftype on the draws is load-bearing, not cosmetic: with x64 unconditionally on, an
-    # unpinned jax.random.normal returns float64 AND a DIFFERENT bitstream from the float32
-    # draw, so pinning is what keeps the fp32 RNG stream identical to pre-x64 runs
-    # (plans/PRECISION_PLAN.md rule 3). The old trailing .astype(dtype) is gone with it --
-    # the arithmetic is now complex64/complex128 from the start. (jnp.sqrt(2.0) is a WEAK
-    # float64 scalar and adopts the array's precision, so it needs no pin.)
     key_real, key_imag = jax.random.split(key)
     ftype = _precision.ftype
     noise = (jax.random.normal(key_real, shape, dtype=ftype)
@@ -102,12 +96,7 @@ def reconstruct_envelope(forcing_state, kgrid, params):
         A = forcing_state[:, 0]  # (n_ou, nkx, nky)
         B = forcing_state[:, 1]
         if params.z_spectral:
-            # exact z-FFT of A*cos(2pi z/Lz) + B*sin(2pi z/Lz): the unnormalized transform
-            # puts (A-iB)*nz/2 on kz index +1 and (A+iB)*nz/2 on kz index -1 (== nz-1) and
-            # nothing anywhere else. `.add` rather than `.set` so the degenerate nz=2 case,
-            # where those two planes coincide, still sums to the right thing.
-            # This preserves reality for free: A/B are already kx-Hermitian on the ky=0 and
-            # Nyquist rows, and mirroring BOTH kx and kz there maps +1 <-> -1 and conjugates.
+            # (A-iB)*nz/2 on kz index +1 and (A+iB)*nz/2 on kz index -1 (== nz-1)
             half_nz = 0.5*params.nz
             out = jnp.zeros((forcing_state.shape[0], params.nz) + forcing_state.shape[2:],
                             dtype=forcing_state.dtype)
@@ -119,29 +108,22 @@ def reconstruct_envelope(forcing_state, kgrid, params):
         return forcing_state[:, 0][:, None, :, :]  # (n_ou, 1, nkx, nky)
 
 def perp_gradsq(field_a_k, field_b_k, kgrid):
-    # per-mode Re( grad(a)^* . grad(b) ), with the rfft2 ky-doubling applied
     return kgrid.ksq * jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
 
 def perp_reduce(integrand, params, axis=None):
-    # sum over `axis` (default: every axis), allreduce over z-ranks if applicable, and
-    # apply the normalization every energy-like quantity in the code shares.
-    # z_spectral: the z axis carries the UNNORMALIZED z-FFT, so Parseval turns the z-average
-    # (1/nz)*sum_z into (1/nz^2)*sum_kz -- one extra factor of nz, shared by every
-    # energy-like quantity (diagnostics.energy/perpspec, forcing power) so they stay
-    # comparable across the two modes.
+    # sum over `axis`, allreduce over z-ranks if applicable, and apply normalization
+    # z_spectral: the z axis carries unnormalized z-FFT, so extra factor nz
     P = comms.allreduce_sum(jnp.sum(integrand, axis=axis), params)  # no-op unless z-decomposed
     znorm = float(params.nz)**2 if params.z_spectral else float(params.nz)
     return P / (znorm * float(params.nx * params.ny)**2)
 
 def perp_inner_product(field_a_k, field_b_k, kgrid, params, batch=False):
-    # Re( sum_k grad(field_a_k)^* . grad(field_b_k) ), useful for e.g. energies and power
-    # inputs. batch=True keeps the leading axis (e.g. stacked z+/z-), giving one value per
-    # entry from a single stacked allreduce.
+    # useful for e.g. energies and power inputs. 
+    # batch=True keeps the leading axis (e.g. stacked z+/z-)
     integrand = perp_gradsq(field_a_k, field_b_k, kgrid)
     return perp_reduce(integrand, params, tuple(range(1, integrand.ndim)) if batch else None)
 
 def perp_mean_square(field_a_k, field_b_k, kgrid, params, batch=False):
-    # Re( sum_k field_a_k^* . field_b_k ), i.e. perp_inner_product without the k^2 weight
     # useful for anastrophy etc.
     integrand = jnp.real(jnp.conj(field_a_k) * field_b_k) * kgrid.yfac
     return perp_reduce(integrand, params, tuple(range(1, integrand.ndim)) if batch else None)
@@ -152,57 +134,24 @@ def safe_scale(target, P, scale_max=1.0):
     return jnp.clip(scale, -scale_max, scale_max)
 
 def selfnorm_scale(target, P, F2, dt, scale_max=1.0):
-    # Self-energy-aware power normalization (behaviour change 2026-08-08, see
-    # plans/FORCING_SPINUP_PLAN.md and docs/numerics.md "Cap the scale factor...").
-    #
-    # Over ONE step of length dt the force s*f_raw acting on the fields z injects
+    # over step of length dt the force s*f_raw acting on the fields z injects
     #     dE = s*P*dt + 0.5*s^2*F2*dt^2,
     # with P = <grad z . grad f_raw> (the linear cross term safe_scale normalizes) and
-    # F2 = <|grad f_raw|^2> (the SELF term safe_scale ignores). Requiring dE = target*dt
+    # F2 = <|grad f_raw|^2> (the self-term safe_scale ignores). Requiring dE = target*dt
     # exactly gives the quadratic
     #     0.5*F2*dt*s^2 + P*s - target = 0.
-    # safe_scale's s = target/P is its |P| -> large limit; from a quiescent start P = 0
-    # and safe_scale therefore pins at +-scale_max, injecting ~0.5*smax^2*F2*dt^2
-    # INDEPENDENTLY of target -- the spin-up kick this function removes. The same pinning
-    # recurs mid-run whenever P fluctuates through zero, so the fix has to be continuous
-    # in P rather than a special case for t = 0; the quadratic is.
-    #
-    # DECIDED 2026-08-08 (plan Decision 1): the POSITIVE root. safe_scale follows sign(P)
-    # and so flips the force under an adverse phase, rectifying the OU process; the
-    # positive root keeps s > 0 and lets the exact solve absorb an adverse linear term.
-    # Limits: F2*dt -> 0 (or |P| large) => s -> target/P, i.e. saturation is unchanged;
-    # P -> 0 => s -> sqrt(2*target/(F2*dt)), i.e. the first kick is target*dt on the nose.
-    #
-    # Nothing here floors P: the cap-not-floor invariant survives, and the +-scale_max clip
-    # below is now a last-resort safety. It engages if F2*dt underflows while P ~ 0, or
-    # under a strongly adverse P < 0 (there s ~ 2|P|/(F2*dt), and clipping means that step
-    # under-injects -- transiently, possibly even net-negative through the linear term;
-    # measured margins in developed runs are >10x away from the clip).
     F2dt = F2 * dt
     have_self = F2dt > 0.0
-    # safe denominator in the UNSELECTED branch: with F2dt == 0 the (r - P)/F2dt form below
-    # would be inf/NaN even though the jnp.where discards it (and NaN*0 = NaN under grad).
     F2dt_safe = jnp.where(have_self, F2dt, 1.0)
-    # discriminant. target >= 0 (it is an injection RATE) makes it >= P^2 >= 0, so the
-    # maximum() below is unreachable in practice; it is there purely so a hypothetical
-    # negative target -- for which no real s reaches the target at all -- returns a finite
-    # number rather than a NaN that would silently poison the whole field array.
     disc = P * P + 2.0 * F2dt * target
     r = jnp.sqrt(jnp.maximum(disc, 0.0))
-    # Two algebraically identical forms of the positive root, each chosen where it does NOT
+    # two algebraically identical forms of the positive root, each chosen where it does not
     # suffer catastrophic cancellation -- this matters precisely in the saturated regime
-    # (2*F2*dt*target << P^2), where r -> |P| and one of the two numerators cancels:
-    #   P >= 0: (-P + r)/(F2*dt) cancels  ->  use the conjugate form 2*target/(P + r).
-    #   P <  0: 2*target/(P + r) cancels  ->  use the direct form   (r - P)/(F2*dt).
-    # Both denominators are guarded so the UNSELECTED branch can never produce a NaN that a
-    # later grad would propagate through the jnp.where (same discipline as propagators'
-    # sinh(s*t)/s): P + r is > 0 for P >= 0 whenever target > 0, and the degenerate
-    # P = r = 0 case only arises when target == 0, which is short-circuited below.
+    # (2*F2*dt*target << P^2), where r -> |P| and one of the two numerators cancels
     den = P + r
     den_safe = jnp.where(den > 0.0, den, 1.0)
     scale = jnp.where(P >= 0.0, 2.0 * target / den_safe, (r - P) / F2dt_safe)
-    # F2*dt == 0 (no envelope yet, or dt == 0 at initialization): fall back to safe_scale,
-    # which is the exact same normalization minus the self term.
+    # F2*dt == 0 (no envelope yet, or dt == 0 at initialization): fall back to safe_scale
     scale = jnp.where(have_self, scale, safe_scale(target, P, scale_max))
     scale = jnp.where(target == 0.0, 0.0, scale)   # same convention as safe_scale
     return jnp.clip(scale, -scale_max, scale_max)

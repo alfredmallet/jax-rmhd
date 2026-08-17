@@ -17,10 +17,6 @@ def initialize(func,params):
     # func should be a function that sets ALL fields in the problem, in real space.
     @partial(jax.jit,static_argnums=(0,))
     def _init(f):
-        # x/y (and local_z_coords) are pinned to ftype so the user's IC function and its fft
-        # run at FIELD precision: x64 is unconditionally on, so unpinned linspaces would make
-        # the whole IC transform float64 and the .astype below a lossy afterthought rather
-        # than a no-op. See plans/PRECISION_PLAN.md A2.
         x = jnp.linspace(0, params.Lx, params.nx, endpoint=False,
                          dtype=_precision.ftype).reshape(1,-1,1)
         y = jnp.linspace(0, params.Ly, params.ny, endpoint=False,
@@ -30,20 +26,12 @@ def initialize(func,params):
             fields = fft(f(x,y,z_device),params) * dealias_mask(params)
         else:
             fields = fft(f(x,y),params) * dealias_mask(params)
-        # ONE cast, after the fft+mask: whatever dtype the caller's IC function returned
-        # (a bare jnp.zeros/jnp.array in an IC is float64 under x64), the state that leaves
-        # here is complex64/complex128 exactly as RMHD_PRECISION says.
         fields = fields.astype(_precision.ctype)
         nkx, nky = params.nx, params.ny//2 + 1
         forcing_state = jnp.zeros((params.n_ou, 2, nkx, nky), dtype=fields.dtype)
         forcing_key = jax.random.key(params.forcing_seed)
-        # forcing_scale is ALWAYS a concrete (n_ou,) array (zeros when unused) so every
-        # SimulationState — and therefore every checkpoint — has one uniform pytree
-        # structure regardless of forcing/forcing_norm_per_step settings.
         forcing_scale = jnp.zeros((params.n_ou,), dtype=_precision.ftype)
-        # t is DELIBERATELY float64 at every precision (PRECISION_PLAN.md): at fp32,
-        # t + dt stops advancing once t/dt > 1/eps32 ~ 1.7e7 steps. It must never re-enter
-        # field math without an explicit downcast -- see _advance_forcing below.
+        # t deliberately float64 at every precision
         return SimulationState(t=jnp.float64(0.0),fields=fields,forcing_state=forcing_state,
                                forcing_key=forcing_key,forcing_scale=forcing_scale)
     state = _init(func)
@@ -52,12 +40,8 @@ def initialize(func,params):
     return state
 
 def _advance_forcing(new_state, prev_t, kgrid, params):
-    # Per-full-step forcing update: OU advance plus, when forcing_norm_per_step, the
+    # Per-full-step forcing update: OU advance plus (if forcing_norm_per_step) the
     # power-normalization scale reused across all sub-stages of the next step.
-    # THE one place a t-difference re-enters field math (ou_update's decay/diffusion factors
-    # multiply the complex forcing_state). t is float64 at every precision, so the downcast
-    # is mandatory: without it the forcing state -- and then the fields -- silently upcast.
-    # Any future time-dependent term func must do the same before mixing t into field math.
     dt = (new_state.t - prev_t).astype(_precision.ftype)
     new_forcing_state, new_forcing_key = ou_update(
         new_state.forcing_state, new_state.forcing_key, dt, params, kgrid
@@ -65,11 +49,6 @@ def _advance_forcing(new_state, prev_t, kgrid, params):
     new_state = new_state._replace(forcing_state=new_forcing_state, forcing_key=new_forcing_key)
     if params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
-        # the SAME dt is handed to the scale: the normalization now solves for the injection
-        # over one step (self term included), so it needs a step length. This is the dt of
-        # the step just completed and the scale is used on the NEXT one -- the lagged-dt
-        # approximation documented in rmhd.forcing_scale (exact under cfl_every blocks,
-        # where dt is frozen).
         new_state = new_state._replace(forcing_scale=scale_func(new_state, kgrid, params, dt))
     return new_state
 
@@ -79,13 +58,8 @@ def _refresh_forcing_scale(state, kgrid, params):
     # zeros and hand-built states may be stale — so recomputes.
     if params.forcing and params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
-        # dt=0.0: there is no "step just completed" here, and none is needed. A state from
-        # initialize has forcing_state == 0 (so f_raw == 0 and the scale multiplies nothing
-        # on step 1 whatever it is), and a restored checkpoint gets a proper dt-aware scale
-        # from the first _advance_forcing. The F2*dt == 0 guard in selfnorm_scale turns this
-        # into plain safe_scale, i.e. exactly the pre-2026-08-08 refresh behaviour.
         if params.comm_backend == "jax":
-            # the psum inside needs a shard_map context (eager call, so jit it here)
+            # the psum inside needs a shard_map context
             f = comms.shard_call(lambda s,kg: scale_func(s,kg,params,0.0), params, kgrid, out_specs=P())
             state = state._replace(forcing_scale=jax.jit(f)(state, kgrid))
         else:
@@ -98,7 +72,7 @@ def estimate_good_nblock(state,kgrid,params,t_snap,t_end,t_last_snap=0,nblock_mi
     recipe = equation_registry[params.eqtype]
     set_timestep, grad = recipe.set_timestep_func, recipe.grad_func
     if params.comm_backend == "jax":
-        # the pmax inside set_timestep needs a shard_map context (eager call)
+        # the pmax inside set_timestep needs a shard_map context
         f = comms.shard_call(lambda s,kg: set_timestep(grad(s,kg,params),params), params, kgrid, out_specs=P())
         dt = jax.jit(f)(state,kgrid)
     else:
@@ -147,9 +121,6 @@ def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
         return new_state, None
     final_state,_ = jax.lax.scan(stepping,state,None,nblock)
     return final_state
-
-#currently an orbax checkpoint mngr must be set outside of the simulate function
-#this makes it a little easier to set up snapshots etc but could be changed
 
 def _write_snapshot(snap,state,params,mngr,save,label="snapshot"):
     # one snapshot write, drained before returning; returns the next free index
@@ -244,8 +215,7 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
     snap = _start_snapshots(state,params,mngr,save)
-    # every iteration ends on a snapshot and the loop only exits past t_end, so the
-    # returned state is always the last one written
+
     while state.t<t_end:
         state = sim_to_next_snap_jit(state,min(t_last_snapshot+t_snap,t_end))
         snap = _write_snapshot(snap,state,params,mngr,save)

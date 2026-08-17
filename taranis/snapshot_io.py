@@ -25,8 +25,6 @@ class _AncientCkptState(NamedTuple):
     fields: Any
 
 def get_precision_types():
-    # FIELD precision (RMHD_PRECISION), not the (now unconditionally-on)
-    # jax_enable_x64 flag -- a re-export of _precision.ftype/ctype.
     return _precision.ftype, _precision.ctype
 
 def get_key_dtype():
@@ -52,10 +50,7 @@ def _pin_array_handler():
 def snapshot_manager_setup(params,snap_path="data",nsnap=1000):
     # comm_backend="jax": ONE shared manager over ONE shared directory driven by every
     # process — orbax's native multihost mode. mpi4jax keeps the per-rank layout unchanged.
-    # refuse to write a layout into a directory already holding the other one: the manager
-    # enumerates numbered subdirs as steps, so a shared jax manager over a per-rank tree
-    # would read rank dirs as steps and let max_to_keep delete them. 
-    # reading across layouts (load_snapshot) is fine.
+    # refuse to write a layout into a directory already holding the other one
     _layout = snapshot_layout(snap_path)
     if _layout=="per_rank" and (params.comm_backend=="jax" or params.size==1):
         raise ValueError(
@@ -80,14 +75,12 @@ def snapshot_manager_setup(params,snap_path="data",nsnap=1000):
                                  options=ocp.CheckpointManagerOptions(max_to_keep=nsnap))
 
 def _wrap_key(k):
-    # orbax unwraps a typed PRNG key to its uint32 key_data and records the impl, then
-    # rewraps on restore, so this only has to rescue a leaf that came back as raw key_data.
     if jax.dtypes.issubdtype(k.dtype, jax.dtypes.prng_key):
         return k
     return jax.random.wrap_key_data(jnp.asarray(k))
 
 def _local_sharding():
-    # pin process-local restores to THIS process's device.
+    # pin process-local restores to this process's device.
     return jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
 
 def _is_global_array(x):
@@ -159,11 +152,6 @@ def get_saved_steps(snap_path, params=None):
 
 def _restore_step(snap_path, isnap, state_like):
     # PROCESS-LOCAL read: a bare StandardCheckpointHandler, never a CheckpointManager.
-    # CheckpointManager construction and Checkpointer.restore both call
-    # multihost.sync_global_processes (checkpoint_manager.py::_create_root_directory,
-    # _src/checkpointers/checkpointer.py::restore), which deadlocks the moment different
-    # ranks read different directories (the mpi4jax per-rank tree) or a different number of
-    # them (resharding). The handler itself is barrier-free.
     d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), _ITEM)
     if not os.path.isdir(d):
         raise FileNotFoundError(f"no snapshot {isnap} under {snap_path} (expected {d})")
@@ -174,25 +162,12 @@ def _restore_step(snap_path, isnap, state_like):
         getattr(handler, "close", lambda: None)()
 
 T_DTYPE = jnp.float64
-# SimulationState.t is float64 at BOTH field precisions (PRECISION_PLAN.md A2/A4: an
-# fp32 t stops advancing after ~1.7e7 steps), so every snapshot written since that
-# change stores a float64 t and every state handed back by load_snapshot carries one.
-# Snapshots written BEFORE it store a float32 t -- see _stored_t_dtype / the explicit
-# cast in load_snapshot, and docs/checkpointing.md.
-
 
 def _stored_t_dtype(snap_path, isnap, default=T_DTYPE):
     # dtype the `t` leaf was actually WRITTEN with, read from the checkpoint's own
     # metadata. Old (pre-fp64-t) snapshots say float32, current ones float64; the
     # restore template asks for whatever is on disk and load_snapshot then widens it
-    # to float64 in ONE explicit place, instead of leaning on an implicit cast inside
-    # orbax's type handler.
-    # Barrier-free like every other read here: a bare StandardCheckpointHandler, never
-    # a CheckpointManager (docs/checkpointing.md). An absent/unreadable metadata tree
-    # (older orbax, missing key) falls back to `default` -- orbax's own widening cast
-    # then handles it, which is what this code did before the fallback existed. The
-    # except list is deliberately NARROW: a wrong directory should surface at restore,
-    # not be silently absorbed into "float64" here.
+    # to float64
     d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), _ITEM)
     handler = ocp.StandardCheckpointHandler()
     try:
@@ -232,9 +207,6 @@ def _load_flat_global(isnap, snap_path, params):
                            fields_sharding=NamedSharding(mesh, P(None, comms.Z_AXIS)),
                            t_dtype=_stored_t_dtype(snap_path, isnap))
     st = _restore_or_advise(snap_path, isnap, tmpl)
-    # same explicit widening as the process-local path below: t is float64 in every
-    # state this module returns, whatever the snapshot stored. Unconditional, so every
-    # process runs it (the global arrays here are collectively operated on).
     return st._replace(t=jnp.asarray(st.t, dtype=T_DTYPE),
                        forcing_key=_wrap_key(st.forcing_key))
 
@@ -266,8 +238,6 @@ def load_snapshot(isnap,snap_path,params):
     z_end_l = (params.rank + 1) * nz_load
 
     # rank 0's dir is read below for the forcing leaves and is present in both layouts;
-    # every rank of one save was written by the same code, so its `t` dtype is the
-    # snapshot's t dtype (float32 for pre-A4 snapshots, float64 since).
     path_0 = os.path.join(snap_path, "0") if layout == "per_rank" else snap_path
 
     # Expected tree for one saved rank's file, pinned to this process's own device.
@@ -285,9 +255,8 @@ def load_snapshot(isnap,snap_path,params):
         g_end = min(z_end_l, z_end_s)
 
         if g_start < g_end:
-            #overlap exists: read that rank's file (its own dir in a per-rank tree). The
-            #subdir choice follows the LAYOUT, not p_save>1: a per-rank tree pruned down to
-            #a single rank dir is still snap_path/0/<step>.
+            # overlap exists: read that rank's file (its own dir in a per-rank tree). 
+            # the subdir choice follows the layout, not p_save>1
             path_s = os.path.join(snap_path, str(rank_s)) if layout == "per_rank" else snap_path
             state_s = _restore_or_advise(path_s, isnap, state_like_s)
 
@@ -303,11 +272,6 @@ def load_snapshot(isnap,snap_path,params):
     # forcing_state/forcing_key/forcing_scale: no z-axis, identical on all saved ranks by
     # construction -> restore once from rank 0
     state_0 = _restore_or_advise(path_0, isnap, state_like_s)
-    # t is float64 in every state this module hands back, whatever the snapshot stored:
-    # a pre-A4 snapshot restores as float32 (its stored dtype) and is WIDENED here --
-    # exactly, float32 values are a subset of float64 -- so a restarted run cannot
-    # inherit a time variable that freezes (PRECISION_PLAN.md A4). The same explicit
-    # cast, not an implicit orbax one, in _load_flat_global.
     restored = SimulationState(t=jnp.asarray(restored_t, dtype=T_DTYPE), fields=restored_fields,
                                forcing_state=jnp.asarray(state_0.forcing_state),
                                forcing_key=_wrap_key(state_0.forcing_key),
@@ -318,8 +282,6 @@ def load_snapshot(isnap,snap_path,params):
     return restored
 
 def _restore_or_advise(snap_path, isnap, state_like):
-    # restore, turning the cryptic orbax structure-mismatch error on old snapshots into a
-    # pointer at old_snapshot_repair.
     try:
         return _restore_step(snap_path, isnap, state_like)
     except ValueError as e:
@@ -367,7 +329,7 @@ def old_snapshot_repair(snap_path, params, ranks=None):
             p_save += 1
     nz_save = params.nz // p_save if params.spatial_dimensions == 3 else 1
 
-    # t_like's dtype is replaced per step by the STORED one (_stored_t_dtype): legacy
+    # t_like's dtype is replaced per step by the stored one (_stored_t_dtype): legacy
     # snapshots hold an fp32 or fp64 t depending on the precision they were written at,
     # and the repaired copy is written with the current float64 t (T_DTYPE) below.
     t_like = jax.ShapeDtypeStruct((), T_DTYPE)
