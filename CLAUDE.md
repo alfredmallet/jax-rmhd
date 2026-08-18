@@ -257,6 +257,43 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
   docs/numerics.md.
 
+### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A0/A1 landed 2026-08-18)
+
+Boris-pushed charged test particles that see the RMHD fields and never back-react.
+Derivation and conventions: docs/numerics.md "Test particles". Rules:
+
+- Conventions (from `NonlinearTerm`'s bracket signs): u = ẑ×∇φ, b_⊥ = ẑ×∇ψ, Φ = B₀φ,
+  A_z = −ψ, so E_⊥ = −B₀∇φ and **E_z = +∂ψ/∂t = −{φ,ψ} + L_ψψ + f_ψ** (2D and 3D; the
+  finite-difference-z filter is NOT represented — Phase B decides). B₀ = 1, q/m carries the
+  scale; no ε parameter. `assemble(pf, mask, B0)` is the ONLY place B₀ enters.
+- `particles/fields.py::particle_fields(state,kgrid,params,*,resistive,forcing)` builds the
+  piece-decomposed real-space `PFields` (RMHD-only assert). **`ez_ideal` is the DEALIASED
+  bracket** `ifft(dealias·fft(−{φ,ψ}))` — the raw pointwise bracket is not the ∂ψ/∂t the
+  discrete ψ obeys (gate 7 fails at O(1) with it). Resistive piece = ψ diagonal of
+  `rmhd.linear_matrix` (never `apply_L`: under `z_spectral` that carries the ±i·kz term).
+  Forcing piece = `ForcingTerm(...)[1]`. Per-ensemble mask over
+  `FIELD_PIECES = (bperp, eperp, ez_ideal, ez_resistive, ez_forcing)`; defaults
+  `ez_resistive = ez_forcing = False` (ideal-Ohm particle); `full_mask()` is the exact-∂ψ/∂t
+  ensemble. Mask logic is static python — never `lax.cond`.
+- Particle state is **fp64 always** (positions/velocities `(N,3)` float64 regardless of
+  TARANIS_PRECISION); `interp.gather` casts samples up. The z axis is carried in every
+  interface even though Phase A implements `nz_local == 1` only (assert). Positions are
+  left UNFOLDED; only the gather folds mod L. `interp.gather_spectral` is validation-only.
+- `boris.py`: `boris_kick`/`drift` are pure per-particle kernels (elementwise arithmetic
+  on length-3 vectors, no `Parameters` — WGSL-portable, plan §9); `push` is the KDK
+  driver (x, v synchronized at step boundaries, one gather per half-kick, fields frozen
+  over the step). Keep the kernel free of jnp-only idioms.
+- Gates: kernel gates 1–3 in `tests/test_particles_kernel.py` (both precisions), gate 7
+  in `tests/test_particles_coupled.py` (fp64). In RMHD b_⊥ fields the naive grad-B drift
+  is off by an O(1) factor (shear enters at O(ε), |B| at O(ε²)) — measured and derived
+  in the kernel test; do not "fix" it toward the textbook value.
+- **Gate-6 reference** (`tests/_gen_particles_gate6_reference.py`,
+  `tests/data/particles_gate6_reference_fp{64,32}.npz`, force-added — `tests/data` is
+  gitignored) was recorded on the pre-A2 tree: solver output with `params.particles=None`
+  must stay bitwise identical to it. Regenerate only on a tree that has no particle wiring.
+- Not yet (Phase A2+): `params.particles`, `ParticleState`, run.py carry tuple, checkpoint
+  item, `diagnostics/particles.py`. Do not pre-empt them ad hoc.
+
 ### Checkpointing
 
 **Read docs/checkpointing.md before touching `snapshot_io.py`** — layouts, restore rules,

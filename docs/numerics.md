@@ -396,6 +396,142 @@ bitwise, not approximately. Its only source in 2D is the `{φ, ψ}` bracket, whi
 identically when `ψ = 0`, and momentum forcing drives only `φ`. Use `forcing_mode="elsasser"`
 for actual 2D MHD from rest.
 
+## Test particles: fields seen by a particle
+
+The reference derivation for `taranis/particles/fields.py` (design and phasing:
+`plans/TESTPART_PLAN.md`). Charged test particles are pushed in Cartesian `(E, B)`, so the
+only question this section answers is what `(E, B)` the RMHD fields `(φ, ψ)` *mean*.
+
+**Conventions.** `shared_physics.bracket(a, b) = a_x b_y − a_y b_x = ẑ·(∇a × ∇b)`, and
+`rmhd.NonlinearTerm` builds `∂ₜω + {φ, ω} = {ψ, j_z}` with `ω = ∇²φ`, `j_z = ∇²ψ` — i.e.
+`∂ₜω + u·∇ω = b·∇j_z` — exactly when
+
+```
+u   = ẑ×∇φ = (−∂_yφ, ∂_xφ)
+b_⊥ = ẑ×∇ψ = (−∂_yψ, ∂_xψ)
+```
+
+Those two identifications fix the potentials: `b_⊥ = ∇×(A_z ẑ) = −ẑ×∇A_z`, so `A_z = −ψ`,
+and `u = E×B/B² = ẑ×∇(Φ/B₀)` gives `Φ = B₀φ`. Hence
+
+```
+B   = B₀ẑ + ẑ×∇ψ
+E_⊥ = −∇_⊥Φ           = −B₀∇φ
+E_z = −∂_zΦ − ∂_t A_z = −B₀∂_zφ + ∂ψ/∂t
+```
+
+**The parallel-gradient terms cancel.** The code's induction equation is
+`∂ψ/∂t = −{φ, ψ} + B₀∂_zφ + η∇²ψ (+ f_ψ)` — the `∂_zφ` piece being `rmhd.FDLinearTerm`'s
+z-stencil (or, under `z_spectral`, the `±i·kz` off-diagonal of `rmhd.linear_matrix`),
+absent in 2D. Substituting it into `E_z` above kills the `B₀∂_zφ` terms exactly:
+
+```
+E_z = −{φ, ψ} + η∇²ψ (+ f_ψ)        the physics terms, identical in 2D and 3D
+```
+
+so the field assembly is dimension-independent in the physics and Phase B inherits it
+unchanged. Note the sign: `E_z = +∂ψ/∂t`, because `A_z = −ψ` in this convention.
+
+**Caveat: the finite-difference-z filter is a fourth, unrepresented piece.** In 3D without
+`z_spectral`, `rmhd.FDLinearTerm` adds `−z_diss·(dz/2)⁴ ∂_z⁴ψ` to `∂ψ/∂t` alongside the
+Alfvén stencil (`physics/rmhd.py`, `FDLinearTerm`). It is a numerical filter, not a physics
+term, and it is in none of the three pieces above — so `E_z` (full mask) equals `∂ψ/∂t`
+*exactly* only in 2D and under `z_spectral` 3D. Under `z_spectral` the analogous
+`−z_diss_k·kz⁴` IS part of the ψ diagonal of `rmhd.linear_matrix` and therefore lands inside
+the resistive piece automatically. Whether the FD-z filter should be added to the particles'
+`E_z` (it is an artificial EMF, like the resistive piece, but unlike it not part of any
+`L`) is a Phase B decision; Phase A is 2D, where the question does not arise.
+
+**Cross-check against `E = −u×B`** (ideal Ohm, which is what the ideal piece must be):
+`(u×B)_z = u_x b_y − u_y b_x = (−∂_yφ)(∂_xψ) − (∂_xφ)(−∂_yψ) = {φ, ψ}`, so
+`−(u×B)_z = −{φ, ψ}`, the ideal `E_z` above; and `−u×B₀ẑ = −(ẑ×∇φ)×B₀ẑ = −B₀∇φ = E_⊥`.
+Running that backwards, the E×B drift of `(E_⊥, B₀ẑ)` is `ẑ×∇φ = u` — which is what kernel
+gate 2 pins numerically.
+
+**What pins which sign.** Kernel gate 2 (`tests/test_particles_kernel.py`) pins the
+*pusher's* Lorentz-force convention only: it drives uniform analytic `(E, B)` arrays, so it
+never touches the field assembly. The assembly's *relative* signs are pinned by the ideal-Ohm
+identity `E·B = 0`, which holds exactly for the raw (undealiased) ideal `E_z`
+(`E_x b_x + E_y b_y + B₀·(−{φ,ψ}) = 0` identically, since both terms are `B₀{φ,ψ}` with
+opposite signs) — asserted in `tests/test_particles_coupled.py`. That fixes `b_⊥` relative to
+`E_⊥` and `E_z`, and `B_z = +B₀`; it does not fix the overall sign of `b_⊥` and `E_z` against
+`ψ`, which is what gate 4's canonical `p_z = m v_z − qψ` invariant does in Phase A2.
+
+`E_∥ = E·b̂` differs from `E_z` by `b_⊥·E_⊥/B₀` corrections; the pusher is Cartesian and
+never needs it.
+
+### The pieces, and why `∂ψ/∂t` is dealiased
+
+`particle_fields` returns the piece decomposition rather than a summed `E`, because which
+pieces a particle sees is a per-ensemble choice (`FIELD_PIECES` /
+`FIELD_MASK_DEFAULTS`, assembled by `assemble`; all mask logic is static python):
+
+- **ideal**, `−{φ, ψ}`. On by default.
+- **resistive**, `L_ψ ψk` with `L_ψ` the ψ diagonal of `rmhd.linear_matrix` — `η j_z` at
+  `hyper=1`, its hyper-resistive analogue otherwise. Only the diagonal: under `z_spectral`
+  the full 2×2 `L` also carries the `±i·kz` off-diagonal, which is the `B₀∂_zφ` term that
+  has already cancelled out of `E_z`, so `propagators.apply_L` is the wrong tool here.
+  Off by default.
+- **forcing**, `f_ψ` (the scaled elsasser envelope's ψ half; identically zero in momentum
+  mode). Off by default.
+
+`PFields.ex/ey` hold `E_⊥/B₀ = −∇φ`, not `E_⊥` itself: `B₀` enters in exactly one place,
+`assemble(pf, mask, B0)`, which scales `(ex, ey)` by `B₀` and sets `B_z = B₀`. Physically
+`E_⊥ = −B₀∇φ` as derived above; storing it per unit `B₀` keeps a single knob.
+
+Defaults are the ideal-Ohm particle: for a collisionless test particle the resistive piece
+is a fluid-closure/numerical-regularization artifact and the forcing piece is a stirring
+EMF, so neither is physical `E` — but the three pieces together are exactly `∂ψ/∂t` (2D; see
+the FD-z caveat above), and an `ez_resistive = ez_forcing = True` ensemble run alongside a
+default one measures the resistive-acceleration difference on identical fields.
+
+**The ideal piece must be dealiased.** The discrete ψ obeys
+
+```
+∂ₜ ψk = dealias·NL_ψ,k + F_ψ,k + L_ψ ψk
+```
+
+(`rmhd.NonlinearTerm` applies `kgrid.dealias`; the propagator applies `L` unmasked). The
+raw pointwise bracket `−{φ, ψ}` has spectral content out to `2k_c` that *never enters ψ*,
+so the field a particle should see is
+
+```
+E_z,ideal = ifft(dealias · fft(−{φ, ψ}))
+```
+
+not the raw product. This is not cosmetic: with the raw bracket the gate-7 comparison
+against a centered difference of ψ across a step stalls at the (dt-independent) size of
+the discarded beyond-cutoff content instead of converging at O(dt²), and gate 4's exact
+2D invariant `p_z = m v_z − qψ` stops being exact. The cost is one extra `fft`+`ifft` pair,
+which is the whole reason to state it here rather than rediscover it.
+
+**Transform budget of `particle_fields`**: 4 `ifft`s for the `(∂_x, ∂_y)(φ, ψ)` gradients,
+`+2` for the dealiased ideal `E_z`, `+1` when the resistive piece is requested, `+1` when
+the forcing piece is — so ≤8 per step, against the ~30–36 of a 3-stage RHS.
+
+### Dimensionless groups
+
+`B₀ = 1` in code units and `q/m` carries the whole scale interpretation (no `ε`
+parameter anywhere): `Ω = q/m` and `ρ = v_⊥ m/q`. Three groups govern whether a
+test-particle run means anything:
+
+- `ρ/dx` — gyroradius against the grid, i.e. whether the fields the particle samples are
+  resolved. Baseline `ρ ≈ 2–4 dx`.
+- `Ω/ω_nl` — gyration against eddy turnover; the stochastic-heating parameter
+  `ξ = δu(ρ)/v_⊥` is the same statement locally.
+- `v_th/v_A` — thermal speed against the Alfvén speed.
+
+At 256² (`dx ≈ 0.0245`) the baseline is `q/m ≈ 10–20`, i.e. `Ω ≈ 10–20` and 60–120 solver
+steps per gyration: Boris at the solver `dt` is fully resolved with no substepping.
+
+**Guiding-centre formulas do not transfer naively.** Kernel gate 3
+(`tests/test_particles_kernel.py`, derivation in its header) measures the perpendicular drift
+in an RMHD `b_⊥ = ẑ×∇ψ` field and finds **2× the textbook `v_∇B`** (3× for a `v_z(0) = 0`
+launch): the field *direction* shears at `O(ε)` while `|B| = √(B₀² + b_⊥²)` varies only at
+`O(ε²)`, so shear terms enter the drift at the same order as the `|B|` gradient. Relevant
+wherever a guiding-centre expression is used on these fields — including the `μ = v_⊥²/2|B|`
+tracking of `plans/TESTPART_PLAN.md` §5.
+
 ## GDI (2D, `physics/gdi.py`)
 
 Normalization `ρₛ = cₛ = Ωᵢ = 1` (eqs 5.4-5.5 of docs/"GDI_nonlinear_equations (10).pdf"),

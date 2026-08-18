@@ -29,7 +29,7 @@ lint = ["ruff==0.16.1"]
 [tool.setuptools]
 # NB: taranis.physics must be listed -- an install without it ships a package
 # that cannot import its own equation registry (editable installs mask this).
-packages = ["taranis", "taranis.physics"]
+packages = ["taranis", "taranis.physics", "taranis.diagnostics", "taranis.particles"]
 
 [tool.ruff]
 # Rule scope is PINNED deliberately, and so is the ruff version (see the `lint`
