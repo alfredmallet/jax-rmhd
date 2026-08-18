@@ -10,6 +10,9 @@ authors:
   - family-names: Abraham
     given-names: Esrom
 repository-code: "https://github.com/alfredmallet/taranis"
+doi: 10.5281/zenodo.21987739
+version: 0.1.0
+date-released: 2026-08-18
 license: GPL-3.0-or-later
 abstract: >-
   Pseudospectral solver for nonlinear plasma models in JAX, currently
