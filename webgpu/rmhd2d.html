@@ -234,8 +234,12 @@ struct Cfg { dx: f32, dy: f32, cfl: f32, tau: f32, epsP: f32, epsM: f32, smax: f
   // (display mode 9), so its two display kernels know that mode; the 3D app does not.
   // `band` = the display k_perp filter's unit, the box k1 (ISO_PLAN D): present = prepDisp
   // emits the filter, absent = it emits the pre-filter text, byte for byte.
+  // `shift` = this app offers the per-card DISPLAY OFFSET, so prepDisp emits the translation
+  // phase and reads the two shift words (same gating pattern; the 3D app sets no `shift`,
+  // because an offset is a picture of a plane and the 3D card's picture may be the box).
   const C = { pre, hasZ: false, wgReal: 64, nDisp: "NR", arrow: arrowDims(nx, ny),
-              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc, sigR: true, band: g.kunit };
+              ns: g.shell.length, pm: g.pm, eqSrc: !!g.eqsrc, sigR: true, band: g.kunit,
+              shift: true };
 
   const S = {};
 
@@ -737,7 +741,12 @@ class Solver {
     // `o.band` is the card's DISPLAY-ONLY k_perp band (ISO_PLAN D). It rides every uniform
     // this chain preps a field through -- the card's own, the sigma mate and the two contour
     // potentials -- so one card shows one band, contours included, and nothing else moves.
-    const u = modeWords(D.mode, 0, cmap, o.band);
+    // `o.offset` is the card's display offset and rides them exactly the same way (so the
+    // contours and the sigma mate are rolled with the field, never against it), converted
+    // here from the card's box fractions into the lengths prepDisp's phase wants.
+    const off = o.offset || [0, 0];
+    const u = modeWords(D.mode, 0, cmap, o.band,
+                        [off[0] * this.p.Lx, off[1] * this.p.Ly]);
     this.device.queue.writeBuffer(D.buf.mode, 0, u);
     u[0] = dispSigmaMate(D.mode);           // the sigma second half, same colormap
                                             // (z- for sigma_c, b for sigma_r)
@@ -1576,6 +1585,7 @@ async function boot() {
     zslice: false,                  // no z axis in 2D
     nz: () => 1,
     zsliceOf: () => 0,
+    offset: true,                   // the periodic x/y display offset (buildShaders: `shift`)
     aspect: cardAspect,             // rectangular boxes get rectangular cards (J.2)
     onLayout: syncLabels
   });

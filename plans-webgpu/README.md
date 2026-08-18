@@ -42,6 +42,11 @@ disagree, the file is right.
 
 ## Executed — kept for provenance
 
+- **OFFSET_PLAN.md** — per-card `offset x` / `offset y` sliders on the 2D display cards: one
+  translation phase in `prepDisp`, so the picture rolls inside its frame (periodic box, exact
+  roll) while the run, the spectra and the cut chart stay on the real box coordinates. 2D
+  only, off is bitwise off, no preset key. `devtools/checkoff.js` is its gate; its
+  verification notes record which legs are still unrun for want of node.
 - **EIGF_PLAN.md** — ψ̂(x), φ̂(x) at fixed k_y as a 2D chart card: the tearing eigenmode's
   structure (the plot alone — a Δ′ legend readout was considered and dropped in review).
   Written, revised and executed 2026-08-14; `devtools/checkeigf.js` is its gate. One gather

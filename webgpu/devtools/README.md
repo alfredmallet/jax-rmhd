@@ -516,6 +516,25 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   decode: slicing an encoded query blind splits a percent-escape about one time in four.
   A text leg pins `contactBuild` being called before `chromeBuild`'s `if (!rail) return`,
   which no boot can reach. CI reports, never gates.
+- `checkoff.js [dir]` — the 2D DISPLAY OFFSET gate (the per-card x/y sliders that roll the
+  picture inside its frame). Four legs. EMISSION: `shift` is a pure insertion into the band
+  text — the struct's `bpad` -> `sh` rename plus one contiguous eight-line phase block, so a
+  constants object without it emits the pre-offset kernel — and across the whole page exactly
+  ONE emitted kernel mentions `md.sh`, `cutPrep` (the cut chart's line at the real x = Lx/2)
+  emphatically not among them. LAYOUT: `modeWords` writes the offset into words 6-7 and leaves
+  the mode / cmap / band words and `MODE_BYTES` alone. ARITHMETIC, by RUNNING the emitted
+  prepDisp (wgsl_reflect's interpreter, as checkiso runs the raymarch) against an fp64 mirror:
+  the factor is exactly e^{-i k.S}, it is a phase (every mode keeps its modulus), a whole-cell
+  offset really is a ROLL of the real-space picture in the direction the tooltip claims (a CPU
+  inverse transform in the app's own convention: +x -> +ix, rightward; +y -> +iy, downward),
+  a whole box is the identity, the vector modes' second output takes the same phase, and OFF
+  IS BITWISE OFF — at [0, 0] the output is bit-identical to the un-gated kernel's. Then the
+  PAGES, booted: 2D has both sliders, visible with no panel gate, centred, labelled and
+  travelling ±0.5 by 0.01; the words the page actually writes are the card's fractions times
+  the BOX on every mode buffer of its chain (the sigma mate and both contour potentials, which
+  is what rolls the contours WITH the field); a centred card writes exact zeros and captions
+  nothing; a second card is untouched; a value forced past either stop is clamped. 3D has no
+  sliders and no kernel that knows the word, its prepDisp still saying `bpad`.
 - `eqlinear.py [n]` — the linear reference for those rates: a 1D generalized eigenvalue
   solve of the linearized RMHD system on Fourier differentiation matrices at
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's

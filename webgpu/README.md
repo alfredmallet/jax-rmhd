@@ -189,7 +189,8 @@ programmatically; do not try to hand-edit a 180 kB line).
 ## Cards: displays and charts
 
 The UI is built from **cards**. A *display card* is one WebGPU canvas plus its own
-quantity selector, colormap, arrows checkbox, contour-overlay selectors and — in 3D — its
+quantity selector, colormap, arrows checkbox, contour-overlay selectors, in 2D its two
+periodic x/y offset sliders (below) and — in 3D — its
 own z slice / view select (manual slider, `track z⁺ / z⁻`, the same three with the
 cube-faces view, or the field-lines view). Card index *is* the solver's display-chain
 index, so N cards cost exactly N chains (scratch, bind groups, gather targets, textures),
@@ -280,6 +281,56 @@ Both apps: vorticity / current / phi / psi as signed fields (symmetric ±max), a
 perpendicular vector magnitudes "velocity |u|", "magnetic |b|" and the two Elsasser
 fields "|z⁺|", "|z⁻|" (z± = φ±ψ, displayed as |ẑ×∇z±|), each with an optional ≤32×32
 arrow overlay. Grid row y=0 is drawn at the top of the canvas.
+
+### The display offset (2D): sliding the picture, not the box
+
+Each 2D display card carries two sliders, `offset x` / `offset y`, in **box fractions** over
+±0.5 (which is every distinct offset there is: ±L/2 are the same picture). They exist so that
+a structure sitting across a box edge — a current sheet, an island, an arriving packet — can
+be brought to the middle of the card and looked at. `common.js: DisplayCard.offset()` reads
+them; the app multiplies by its own box and `modeWords` writes `[Sx, Sy]` in **length** units.
+
+It is one multiply in `prepDisp`, on the display chain's way out: the translation phase
+e<sup>−i k·S</sup>, so the card draws f(x − S). The ⊥ box is periodic and the display's
+inverse transform is the same one the state uses, so this is an **exact roll** of the same
+field at any offset — nothing is cropped, interpolated, or wrapped in from a neighbouring
+copy. The words ride in the two the k⊥ band left as padding (`MODE_SHIFT_STRUCT` renames
+`bpad` to `sh`; a `vec2<f32>` aligns to 8, so the offsets are unmoved and every Mode uniform
+is still `MODE_BYTES`), and they ride *every* uniform the chain preps a field through — the
+card's own, the sigma mate, both contour potentials — so the contours and the second σ half
+are rolled *with* the field and never against it. The arrow overlay needs nothing: it gathers
+the real-space buffer the shifted chain just wrote, at the same anchors. The colorbar range is
+unchanged by construction, a roll being a permutation of the same values.
+
+The phase is evaluated in fp32 at up to |k·S| ~ 1600 rad (512², both sliders at their stop),
+where the argument itself carries ~1e-4 rad of rounding. Measured against an exact roll that
+is 5e-5 on a field of rms 0.59 — a hundredth of one 8-bit colour step, so it is a rounding
+statement and not a visible one.
+
+**Off is bitwise off**, the band's rule: at `[0, 0]` the whole `if` is skipped, so the
+unshifted picture is unshifted bit for bit. And **only the picture moves**: the state, the
+time step, the energies, the spectra, the island / mode / eigenfunction cards and the cut
+trace all read the unshifted field — the cut still cuts the real x = L<sub>x</sub>/2 (which is
+what makes `e^{i k_x L_x/2} = (−1)^{ix}` in `cutPrep` true, and is where the resonant surface
+of the tearing and KH equilibria actually is). Saving or recording an offset card saves the
+offset picture, as with the filter. The caption says `offset: (+0.25, −0.10)L` while it is
+active, because a picture that no longer shares the box's origin must say so.
+
+Two deliberate absences. It is **2D only** — `cardsInit`'s `cfg.offset` builds the sliders and
+`buildShaders`'s `shift` emits the phase, and the 3D app sets neither: a 3D card's picture may
+be the whole box (cube faces, field lines, the volume march), and "slide the picture" is a
+statement about a plane. The 3D `prepDisp` is byte-identical to the pre-offset text, the `sigR`
+/ `band` gating pattern. And there is **no preset key** (`addDisplayCard`'s state bag has none):
+a preset author who wants the structure centred shifts the IC, which is free on a periodic box
+and moves everything — charts included — instead of only the picture.
+
+One reality caveat, for anyone who takes the phase somewhere else: at an offset that is not a
+whole number of cells, e<sup>−i k·S</sup> breaks the rfft2 reality constraint at the single
+self-conjugate points (k_x-Nyquist and k_y-Nyquist), which is why an offset field is only a
+real field to begin with because the 2/3 dealias holds those modes at *exactly* zero — the IC
+is masked (`run.py::initialize`) and so is every nonlinear term, so there is nothing there to
+misrepresent. A path that fed an unmasked field through this phase would need the mirrors
+handled explicitly.
 
 The **cut trace** chart card is self-contained: it plots its own selected pair of
 components along y at x = Lx/2 (of its own z plane in 3D — manual or tracked), and does

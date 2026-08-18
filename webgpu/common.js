@@ -2732,6 +2732,8 @@ function drawEigf(c, d, o) {
 //   zslice      true in 3D: build the per-card z-source select + slice slider
 //   cube        true in 3D: that select also offers the cube-faces and field-lines
 //               VIEWS (I2.1, K2.1) -- both meaningless on the cut card, hence one flag
+//   offset      true in 2D: give every display card the periodic x / y display-offset
+//               sliders (the app's own prepDisp must be emitted with `shift`)
 //   nz()        current nz, for the slider range
 //   zsliceOf(c) resolved plane index of card c (slider or tracked peak)
 //   arrowXform() 3D only: the cube top face's (u,v) -> canvas affine, for the arrows
@@ -3125,6 +3127,15 @@ const _contOpts = () => [{ v: "0", t: "no contours" }, { v: String(DISP_PSI), t:
                          { v: String(DISP_PHI), t: "&phi; contours" },
                          { v: "both", t: "&psi; + &phi;" }];
 const CONT_LEVELS = [8, 16, 32];
+// The per-card DISPLAY OFFSET (2D only -- cfg.offset): slide the picture along x / y, in
+// fractions of the box. The perpendicular box is periodic, so this is an exact roll of the
+// same field (prepDisp multiplies by a translation phase) and not a crop -- which is the
+// whole point: a structure sitting across the box edge can be brought to the middle to be
+// looked at, with nothing else about the run touched. Travel is half a box each way, which
+// covers every distinct offset there is (+-L/2 meet at the same picture), and 0 -- the
+// default, and where the arithmetic vanishes -- is the middle of the slider.
+const OFF_MAX = 0.5;                     // travel each way, in box fractions
+const OFF_STEP = 0.01;
 
 // ---------------------------------------------------------------------------
 // the per-card colorbar (FEEDBACK_2026-08-10 item 12)
@@ -3994,6 +4005,18 @@ class DisplayCard {
                         + "(left end = off; the top end is always the dealias cut). "
                         + "The simulation itself is NOT filtered.",
                         "filter k<sub>min</sub>");
+    // ... and the periodic display offset (2D only: cfg.offset), one slider per direction.
+    // Positive x moves the picture right, positive y DOWN -- the y index runs down the
+    // canvas, so saying "+y" here without saying which way it goes would be a guess.
+    if (cfg.offset) {
+      const oti = d => "display offset: slide the picture along " + d + " by this fraction of "
+        + "the box (periodic, so the field is rolled, not cropped). The run itself, the "
+        + "spectra and the cut chart are NOT offset.";
+      this.rOffX = _rngLab(head, "zslider", -OFF_MAX, OFF_MAX, OFF_STEP, 0,
+                           oti("x (right)"), "offset x");
+      this.rOffY = _rngLab(head, "zslider", -OFF_MAX, OFF_MAX, OFF_STEP, 0,
+                           oti("y (down)"), "offset y");
+    }
     this.selCont = _sel(head, _contOpts(), "in-plane field lines: psi -> B_perp, phi -> streamlines");
     this.selLev = _sel(head, CONT_LEVELS.map(n => ({ v: n, t: n + " levels" })), "contour level count");
     this.selBg = _sel(head, [{ v: "0", t: "field bg" }, { v: "1", t: "plain bg" }],
@@ -4079,6 +4102,7 @@ class DisplayCard {
     if (this.rSlice) this.rSlice.oninput = apply;
     if (this.rLevel) { this.rLevel.oninput = apply; this.rOpac.oninput = apply; }
     this.rBLo.oninput = apply;
+    if (this.rOffX) { this.rOffX.oninput = apply; this.rOffY.oninput = apply; }
     this.btnClose.onclick = () => cardClose(this);
     this.btnSave.onclick = () => this.saveShot();
     this.btnRec.onclick = () => this.recToggle();
@@ -4114,6 +4138,23 @@ class DisplayCard {
     const b = this.band();
     if (!(b[0] > 0 || b[1] > 0)) return "";
     return " &mdash; <i>filter</i>: k&perp; = " + b[0] + ":k<sub>max</sub>";
+  }
+  // the card's display offset as BOX FRACTIONS, [fx, fy]; [0, 0] where the app offers no
+  // offset at all, which is the pair that leaves prepDisp's phase unevaluated
+  offset() {
+    if (!this.rOffX) return [0, 0];
+    const f = r => Math.max(-OFF_MAX, Math.min(OFF_MAX, parseFloat(r.value) || 0));
+    return [f(this.rOffX), f(this.rOffY)];
+  }
+  offsetOn() { const o = this.offset(); return o[0] !== 0 || o[1] !== 0; }
+  // ... and, when it is on, the caption says so -- not because the field is any different
+  // (it is the same field, rolled) but because the picture no longer lines up with the box
+  // coordinates every other card and chart is quoted in
+  offsetCap() {
+    const o = this.offset();
+    if (!(o[0] !== 0 || o[1] !== 0)) return "";
+    const q = v => (v > 0 ? "+" : "&minus;") + Math.abs(v).toFixed(2);
+    return " &mdash; <i>offset</i>: (" + q(o[0]) + ", " + q(o[1]) + ")L";
   }
   // the field lines over the volume: the arrows checkbox, read in its vol state, and only
   // where a field is actually marched (the sigma modes fall back to the cube faces)
@@ -4175,6 +4216,7 @@ class DisplayCard {
     solver.setDisplayMode(this.ci, this.sel(), cfg.zsliceOf(this), this.cmap(),
                           { cube: this.cubeView(), lines: lines, vol: vol,
                             level: this.level(), opac: this.opac(), band: this.band(),
+                            offset: this.offset(),
                             cont: this.cont(), nlev: this.nlev(),
                             plain: lines || (this.contOn() && this.plainBg()) });
     // the slider drives the displayed plane in the slice view and the TOP face in the
@@ -4211,6 +4253,7 @@ class DisplayCard {
     this.cap.innerHTML = (o && !lines ? o.innerHTML : "")
       + (fr && fr.d ? ": " + fr.d : "")
       + this.bandCap()
+      + this.offsetCap()
       + (cfg.caption ? cfg.caption(this) : "");
     this.barSync();                       // ... and so may have retired / relabelled the bar
     this.overlay();                       // the quantity / view may have retired an overlay

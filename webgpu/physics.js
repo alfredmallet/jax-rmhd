@@ -57,14 +57,23 @@ const MODE_STRUCT = `struct Mode { mode: u32, zslice: u32, cmap: u32, pad: u32 }
 // may be longer than the struct a module declares.
 const MODE_BAND_STRUCT = MODE_STRUCT.replace("pad: u32 }",
   "pad: u32, klo: f32, khi: f32, bpad: vec2<f32> }");
+// ... and where the app offers the display OFFSET (`C.shift`, the 2D app) prepDisp reads the
+// two words the band left as PADDING as the shift vector instead. Same 32 bytes and the same
+// offsets: a vec2<f32> aligns to 8, so `sh` lands exactly where `bpad` did (words 6-7), and
+// an app without the offset emits the band text byte for byte.
+const MODE_SHIFT_STRUCT = MODE_STRUCT.replace("pad: u32 }",
+  "pad: u32, klo: f32, khi: f32, sh: vec2<f32> }");
 const MODE_BYTES = 32;                  // ... which is what every Mode uniform is allocated at
 // One Mode uniform's words, written by both apps through this one function so the layout
 // lives in one place. `band` is [k_lo, k_hi] in units of the box k1, 0 = that end is OFF
-// (see bandFac: an off end is not arithmetic the kernel does at all).
-function modeWords(mode, zslice, cmap, band) {
+// (see bandFac: an off end is not arithmetic the kernel does at all). `shift` is the display
+// offset [Sx, Sy] in LENGTH units -- the card speaks box fractions and the app multiplies by
+// its own box (see the translation phase in prepDisp) -- and [0, 0] is again no arithmetic.
+function modeWords(mode, zslice, cmap, band, shift) {
   const b = new ArrayBuffer(MODE_BYTES), u = new Uint32Array(b), f = new Float32Array(b);
   u[0] = mode | 0; u[1] = zslice | 0; u[2] = cmap | 0;
   f[4] = (band && band[0]) || 0; f[5] = (band && band[1]) || 0;
+  f[6] = (shift && shift[0]) || 0; f[7] = (shift && shift[1]) || 0;
   return u;
 }
 
@@ -563,8 +572,24 @@ function prepDispWGSL(C) {
   v = bf * v;
   v2 = bf * v2;
 ` : "";
+  // ... and so is the display-only x/y OFFSET (`C.shift`, the 2D app): a translation phase on
+  // the way out. The perpendicular box is periodic, so displaying f(x - S) is an exact ROLL
+  // of the picture -- nothing is cropped, wrapped in from elsewhere or interpolated, at any
+  // offset. It is a display shift and nothing else: the state, the spectra, the energies and
+  // the cut chart (which keeps cutting the REAL x = Lx/2) never see it. OFF IS BITWISE OFF
+  // the same way the band's ends are: at [0, 0] the `if` is skipped whole, so not one
+  // multiply happens and the unshifted picture is unshifted bit for bit.
+  const shiftMul = C.shift ? `  // the display offset, as the translation phase e^{-i k.S}
+  if (md.sh.x != 0.0 || md.sh.y != 0.0) {
+    let ph: f32 = gridA[${_mpName(C)}].x * md.sh.x + gridA[${_mpName(C)}].y * md.sh.y;
+    let co: f32 = cos(ph);
+    let si: f32 = sin(ph);
+    v  = vec2<f32>( v.x * co +  v.y * si,  v.y * co -  v.x * si);
+    v2 = vec2<f32>(v2.x * co + v2.y * si, v2.y * co - v2.x * si);
+  }
+` : "";
   return C.pre + `
-${C.band ? MODE_BAND_STRUCT : MODE_STRUCT}
+${C.shift ? MODE_SHIFT_STRUCT : (C.band ? MODE_BAND_STRUCT : MODE_STRUCT)}
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> outk: array<vec2<f32>>;
@@ -597,7 +622,7 @@ ${sigR}    else if (md.mode > 5u) { f = phi + psi; }
     v  = vec2<f32>( ky * f.y, -ky * f.x);   // -i*ky*f  =  -d_y f
     v2 = vec2<f32>(-kx * f.y,  kx * f.x);   // +i*kx*f  =  +d_x f
   }
-${bandMul}  outk[m] = v;
+${bandMul}${shiftMul}  outk[m] = v;
   outk2[m] = v2;
 }`;
 }
