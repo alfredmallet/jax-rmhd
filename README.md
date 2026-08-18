@@ -1,5 +1,6 @@
 # taranis
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21987739.svg)](https://doi.org/10.5281/zenodo.21987739)
+
 Code to solve nonlinear plasma models in jax.
 
 Requires jax (tested on 0.10.0), orbax-checkpoint (tested on 0.11.37), and python (tested on 3.11.5). You can get these with pip:
