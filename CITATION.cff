@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "taranis: a spectral solver for nonlinear plasma models in JAX"
+type: software
+authors:
+  - family-names: Mallet
+    given-names: Alfred
+    orcid: "https://orcid.org/0000-0001-9202-1340"
+    affiliation: "Space Sciences Laboratory, University of California, Berkeley"
+  - family-names: Abraham
+    given-names: Esrom
+repository-code: "https://github.com/alfredmallet/taranis"
+license: GPL-3.0-or-later
+abstract: >-
+  Pseudospectral solver for nonlinear plasma models in JAX, currently
+  implementing reduced MHD and the drift-GDI equations for ionospheric
+  turbulence. Runs fully spectrally or parallelized across devices with
+  finite differences in the z direction, with explicit (RK4, low-storage
+  RK3/RK5) and IMEX Runge-Kutta time integration. Includes a browser-based
+  WebGPU RMHD solver for demonstration and educational use.
+keywords:
+  - plasma turbulence
+  - reduced MHD
+  - magnetohydrodynamics
+  - ionospheric turbulence
+  - pseudospectral methods
+  - JAX
+  - GPU computing
