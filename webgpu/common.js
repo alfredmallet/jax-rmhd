@@ -10,7 +10,8 @@
 // What deliberately does NOT live here: the equation kernels and the display
 // chain (physics.js, which templates them over one 2D/3D constants object), the
 // per-app kernels physics.js lists as unshared (stage, forcingAdd/envExpand, the
-// spectra, sliceExtract/faceExtract/cube), makeGrid, and the Solver classes.
+// spectra, sliceExtract/faceExtract/cube), makeGrid, and the Solver classes (2D's
+// in solver2d.js, 3D's in rmhd3d.html).
 // What stays: the pieces that carry no equation -- the FFT template, the generic
 // reductions (tick, CFL, energy tail, max), device bring-up, charts, overlays,
 // the self-test harness and the frame loop.

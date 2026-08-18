@@ -5,7 +5,9 @@ GPU. Saved here so later phases (and fresh sandboxes) don't rebuild them. Safe t
 leave untracked or commit — they are dev-only, nothing in the apps loads them.
 
 - `stubenv.js` — the shared stub: a DOM + WebGPU stub good enough to run a real app
-  page (common.js + physics.js + its inline script) under node, plus `run()` to keep
+  page (the classic `<script src>` files the page's own markup names, in document order —
+  common.js + physics.js, plus solver2d.js on the 2D page — then its inline script) under
+  node, plus `run()` to keep
   evaluating in the page's context. `require("./stubenv")(dir, page, demo)`. Since
   Phase H.0 the control panel is BUILT from a spec, so every tool that needs to see a
   control has to boot the page — hence one stub, three consumers. Its `Path2D` stub
@@ -466,6 +468,28 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   legend while every cell still sits exactly where the frame's map puts it; and the two
   measured anisotropy curves are gone, strokes, labels and call site alike. CI reports,
   never gates.
+- `checksolver2d.js [dir]` — the GAME_PLAN Phase 0 gate: the 2D solver moved out of
+  `rmhd2d.html`'s inline script into the shared classic script `solver2d.js`, which
+  `game.html` will load beside it. Phase 0 is a PURE refactor, so most of the file asserts
+  that nothing moved. Eight legs. The discipline first — every emitted kernel of both pages
+  parses, `names.mjs` clean, and `dup.py` over the THREE shared files plus both inline
+  scripts showing no clone inside a file, none reaching into common.js/physics.js, and none
+  between `solver2d.js` and the page it came out of (a copy left behind). Then WGSL
+  byte-identity against the base commit: every kernel that existed there is unmoved, the
+  additions are EXACTLY nothing on BOTH pages, and each whole dump hashes the same. Then the
+  RNG reference (64 `Gauss(7)` draws, hashed — checkeigf's value, one reference, two gates).
+  Then the extraction's SHAPE: the three definitions gone from the inline script and the
+  only top-level ones in `solver2d.js`, exactly one `<script src="solver2d.js">` tag sitting
+  after physics.js's and before the page's own script, `rmhd3d.html` not loading it at all,
+  and no `type="module"` / `import` / `export` anywhere in the three js files or the two
+  inline scripts (Chrome blocks module scripts from `file://`). Then the move itself,
+  VERBATIM: each definition's text — located by its header line and its closing brace at
+  column 0 — byte for byte against `git show <base>:webgpu/rmhd2d.html`. Then reusability:
+  `names.mjs` resolves `solver2d.js` against common.js + physics.js + builtins ALONE, never
+  against `rmhd2d.html`'s inline script, which is what says a second page can load it. Then
+  `pages.yml` — solver2d.js in the MISSING list and in the cache-bust sed, and the
+  `game.html` prune pre-wired. Last, both pages booted through `bootstub.js` to the end of
+  the self-test path. CI reports, never gates.
 - `checkidle.js [dir]` — the RENDER GATE (audit of 2026-08-12), on both booted pages. It
   drives `renderCards(paused)`, the app's own per-frame display step (split out of `loop()`
   so it can be called at all — the stub's `requestAnimationFrame` is a no-op), and counts
@@ -540,8 +564,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's
   REF block quotes (regenerate it there from this output), then eta- and b0-survey
   tables. `n` = Fourier modes, default 384; 768 reproduces every printed digit.
-- `dup.py` — token-normalized >=10-line clone detector over common.js/physics.js +
-  extracted app scripts (the standing-rule duplication audit). Run it over the extracted
+- `dup.py` — token-normalized >=10-line clone detector over the shared core
+  (common.js/physics.js/solver2d.js) + extracted app scripts (the standing-rule
+  duplication audit); callers pass the file list explicitly. Run it over the extracted
   HTML *bodies* too: markup twins are what H.0 was about.
 - `layout.js [dir]` — control-row wrap audit at 360/768/1200 px, off the BUILT element
   tree of a booted page (controls + every card header, and since items 12/13 the display
@@ -554,7 +579,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   files, two slots, two rows) and measures the widest version of each (download + share +
   dismiss).
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
-  needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`).
+  needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`). The shared set is PER PAGE
+  (rmhd2d loads common + physics + solver2d, rmhd3d loads common + physics), and
+  `solver2d.js` is checked as a unit of its own against common + physics ALONE — which is
+  what says it can be loaded by a second page.
 - `cmapcheck.js` — colormap table vs emitted WGSL vs matplotlib reference.
 
 Conventions: run from any cwd with absolute paths; each phase captures a FRESH WGSL

@@ -4,7 +4,8 @@
 // 3D (rmhd3d.html) apps share, as templates over one constants object.
 //
 // Loaded as a classic <script src="physics.js"> BETWEEN common.js and each app's
-// inline script, so it may call common.js helpers (reduceTail) at emit time and
+// inline script (with solver2d.js, the 2D solver, next after it on the 2D page),
+// so it may call common.js helpers (reduceTail) at emit time and
 // its own top-level declarations are visible to the app (and must not be
 // redeclared there).
 //
@@ -24,7 +25,8 @@
 // (ou's block layout, scale's two-plane envelope sum, icFinish's dealias), the
 // branch text sits next to its twin here rather than in the app.
 //
-// NOT shared (per-app, by design): `stage` (a diagonal exponential in 2D, the
+// NOT shared (per-dimension, by design -- 2D's live in solver2d.js, 3D's in
+// rmhd3d.html): `stage` (a diagonal exponential in 2D, the
 // 2x2 Alfven propagator in 3D), `forcingAdd` / `envExpand` (dense shell vs the
 // two kz = +-2pi/Lz planes), `spectrum` / `specReduceZ` / `specPar`, and the
 // 3D-only `sliceExtract` / `faceExtract` / cube render path. The generic
@@ -32,7 +34,7 @@
 // FFT template stay in common.js: they carry no equation.
 //
 // ---------------------------------------------------------------------------
-// The constants object C (built once per Solver in each app's buildShaders)
+// The constants object C (built once per Solver, in each dimension's buildShaders)
 // ---------------------------------------------------------------------------
 //   pre         the app's WGSL constant block (NX, NY, [NZ,] NM, NR, INVN2, Cfg)
 //   hasZ        3D: a gridZ (kz) array exists -> the kz dealias factor, the kz^4

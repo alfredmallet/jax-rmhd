@@ -90,8 +90,9 @@ programmatically; do not try to hand-edit a 180 kB line).
   rules (`h2`, `ul.refs`, `.todo`) live in a `<style>` block in the file rather than in
   `style.css`, which stays owned by the apps.
 - `rmhd2d.html`, `rmhd3d.html` — the two apps. Each holds ONLY its inlined reference
-  vectors, its dimension-specific WGSL and `Solver`, and its UI layout and defaults, on
-  top of `<script src="common.js">` and `<script src="physics.js">` (in that order).
+  vectors and its UI layout and defaults, on top of `<script src="common.js">` and
+  `<script src="physics.js">` (in that order). 3D also holds its own dimension-specific
+  WGSL and `Solver`; 2D's are `solver2d.js`, which it loads third.
 - `common.js` — the shared pieces that carry no equation: RNG, reference-vector
   flatteners, the FFT kernel template and the **rfft row pair** (`fftRowPair`: the y
   forward/inverse kernels, which both pages emitted as byte-identical twins), the generic
@@ -173,8 +174,15 @@ programmatically; do not try to hand-edit a 180 kB line).
   so the apps hand over sizes, not code. Deliberately NOT shared, and still per-app:
   `stage` (diagonal exponential vs the 2×2 Alfvén propagator), `forcingAdd`/`envExpand`,
   the spectra, and the 3D `sliceExtract`/`faceExtract`/cube path — plus `makeGrid` and
-  the `Solver` classes. The refactor that moved this out of the apps was gated on the
+  the `Solver` classes, which are per-DIMENSION (2D's live in `solver2d.js`, 3D's in its
+  own page). The refactor that moved this out of the apps was gated on the
   generated WGSL staying byte-identical at every resolution preset in both apps.
+- `solver2d.js` — the 2D solver, loaded as a third classic script after `physics.js`:
+  `makeGrid` (the CPU-side k grids), `buildShaders` (the 2D-specific WGSL, on top of
+  physics.js's shared templates) and the 2D `Solver` class (buffers, pipelines, the
+  LSRK33 step, forcing, the diagnostic readbacks and the display chains). It is loadable by
+  a second page, so it may use common.js and physics.js and nothing
+  from a page's inline script — `devtools/names.mjs` checks that.
 - `style.css` — the shared dark theme.
 - `SPEC.md`, `SPEC3D.md` — the implementation contracts, extracted from the JAX source;
   read these before touching the math.

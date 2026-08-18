@@ -1,10 +1,12 @@
 # WebGPU 2D RMHD — implementation spec
 
 > **File layout note (2026-08-05):** the app was split into `webgpu/rmhd2d.html` (this
-> spec's app: UI, physics WGSL, Solver, inlined reference vectors) plus `webgpu/common.js`
-> (machinery shared with the 3D app) and `webgpu/style.css`; `webgpu/index.html` is now a
+> spec's app: UI, inlined reference vectors) plus `webgpu/common.js`
+> (machinery shared with the 3D app), `webgpu/physics.js` (the shared RMHD + display
+> WGSL templates), `webgpu/solver2d.js` (this spec's 2D WGSL and `Solver`) and
+> `webgpu/style.css`; `webgpu/index.html` is now a
 > landing page. Everything below is unchanged as a contract — read "index.html" as
-> "rmhd2d.html + common.js".
+> "rmhd2d.html + solver2d.js + physics.js + common.js".
 
 Target: a single self-contained `webgpu/index.html` (no build step, no server — must work
 from `file://`) implementing the 2D forced-RMHD solver of this repo (`taranis`) on

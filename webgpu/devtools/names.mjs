@@ -1,7 +1,10 @@
-// (1) two classic scripts share the global lexical scope: a top-level let/const/class/
-//     function declared in BOTH common.js|physics.js and an app is a load-time
-//     SyntaxError. (2) every identifier an app reads must be local, shared, or a
-//     standard/browser global -- catches typos across the shared-core boundary.
+// (1) classic scripts share the global lexical scope: a top-level let/const/class/
+//     function declared in BOTH a shared file (common.js|physics.js|solver2d.js) and an
+//     app is a load-time SyntaxError. (2) every identifier an app reads must be local,
+//     shared by the files THAT page loads, or a standard/browser global -- catches typos
+//     across the shared-core boundary. (3) solver2d.js is checked as a page of its own,
+//     against common.js + physics.js alone: it may never reach into rmhd2d.html's inline
+//     script, which is what makes it loadable by a second page.
 import fs from 'fs';
 import { createRequire } from 'module';
 // acorn from wherever it is installed (npm i acorn; ACORN=<path> overrides)
@@ -27,15 +30,25 @@ function topNames(src) {
 }
 const read = f => fs.readFileSync(f, 'utf8');
 const inline = f => { const t = read(f); return t.slice(t.indexOf('<script>') + 8, t.lastIndexOf('</script>')); };
-const common = topNames(read(DIR + '/common.js'));
-const phys = topNames(read(DIR + '/physics.js'));
-const shared = new Set([...common, ...phys]);
-const both = [...common].filter(n => phys.has(n));
-let bad = both.length;
-console.log('common.js: ' + common.size + ' top-level names, physics.js: ' + phys.size +
-            (both.length ? '  COLLIDE: ' + both.join(', ') : '  (no collision)'));
-for (const page of ['rmhd2d.html', 'rmhd3d.html']) {
-  const src = inline(DIR + '/' + page);
+// the shared classic scripts, and which of them each unit is loaded on top of. A page's
+// list is the one its markup carries; solver2d.js is a unit too, and its list is what
+// makes it reusable -- common.js and physics.js only, never a page's inline script.
+const SHARED = ['common.js', 'physics.js', 'solver2d.js'];
+const LOADS = { 'rmhd2d.html': ['common.js', 'physics.js', 'solver2d.js'],
+                'rmhd3d.html': ['common.js', 'physics.js'],
+                'solver2d.js': ['common.js', 'physics.js'] };
+const top = {};
+for (const f of SHARED) top[f] = topNames(read(DIR + '/' + f));
+let bad = 0;
+for (let a = 0; a < SHARED.length; a++) for (let b = a + 1; b < SHARED.length; b++) {
+  const hit = [...top[SHARED[a]]].filter(n => top[SHARED[b]].has(n));
+  bad += hit.length;
+  console.log(SHARED[a] + ': ' + top[SHARED[a]].size + ' top-level names, ' + SHARED[b] + ': ' +
+              top[SHARED[b]].size + (hit.length ? '  COLLIDE: ' + hit.join(', ') : '  (no collision)'));
+}
+for (const page of Object.keys(LOADS)) {
+  const src = page.endsWith('.html') ? inline(DIR + '/' + page) : read(DIR + '/' + page);
+  const shared = new Set(LOADS[page].flatMap(f => [...top[f]]));
   const local = topNames(src);
   const dup = [...local].filter(n => shared.has(n));
   if (dup.length) { console.log('  ' + page + ' REDECLARES: ' + dup.join(', ')); bad += dup.length; }

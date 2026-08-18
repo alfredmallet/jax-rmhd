@@ -1,6 +1,7 @@
 // Shared stub environment for the devtools: a DOM + WebGPU stub good enough to run a
-// real app page (common.js + physics.js + the page's inline script) under node, and to
-// keep exercising it afterwards.
+// real app page (every classic <script src> the page's markup names -- common.js +
+// physics.js, and solver2d.js on the 2D page -- then the page's inline script) under
+// node, and to keep exercising it afterwards.
 //
 // Extracted at Phase H from bootstub.js, which dumpwgsl2.js had copied wholesale; the
 // spec-driven control panel (REFINE_PLAN H.0) also means the controls no longer exist
@@ -25,6 +26,19 @@ const store = { getItem: k => (storeMap.has(k) ? storeMap.get(k) : null),
                 setItem: (k, v) => { storeMap.set(k, String(v)); },
                 removeItem: k => { storeMap.delete(k); },
                 clear: () => { storeMap.clear(); } };
+// The classic scripts a page loads, in document order: every `<script src="X">` whose X
+// is a bare local filename. An absolute or protocol-relative src (the analytics tag) is
+// not a file in this directory and is skipped.
+function srcScripts(html) {
+  const out = [], re = /<script[^>]*\ssrc=["']([^"']+)["']/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const s = m[1];
+    if (s.indexOf("//") >= 0 || /^https?:/.test(s)) continue;
+    out.push(s);
+  }
+  return out;
+}
 
 module.exports = function makeEnv(dir, page, demo, opts) {
   const noGpu = !!(opts && opts.noGpu);
@@ -647,7 +661,11 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  for (const f of ["common.js", "physics.js"]) vm.runInContext(fs.readFileSync(path.join(dir, f), "utf8"), sandbox, { filename: f });
+  // the page's OWN classic <script src> list, in document order: every bare local
+  // filename (skipping the analytics tag, whose src is absolute). Read off the markup
+  // rather than hardcoded, so a page that loads two shared files and one that loads
+  // three both boot -- and a page that gains a fourth needs nothing here.
+  for (const f of srcScripts(html)) vm.runInContext(fs.readFileSync(path.join(dir, f), "utf8"), sandbox, { filename: f });
   vm.runInContext(script, sandbox, { filename: page });   // boot() runs at the end
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
