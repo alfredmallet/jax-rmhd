@@ -253,16 +253,31 @@ class Parameters():
                 raise ValueError(f"particles must be a dict of particle configuration (e.g. "
                                  f"{{'n': 1024, 'ensembles': [{{'qm': 15.0, 'init': ...}}]}}), "
                                  f"got {particles!r}")
-            if self.eqtype != "RMHD" or self.spatial_dimensions != 2 or self.size != 1:
-                raise ValueError(f"test particles require eqtype='RMHD', dims=2 and a single "
-                                 f"process, got eqtype={self.eqtype!r}, dims="
-                                 f"{self.spatial_dimensions}, size={self.size}; 3D and "
-                                 f"multi-rank particles are Phase B "
-                                 f"(plans/TESTPART_PLAN.md)")
+            if self.eqtype != "RMHD" or self.size != 1 or self.comm_backend == "jax":
+                raise ValueError(f"test particles require eqtype='RMHD', a single process and "
+                                 f"a non-sharded backend (the gather needs the whole z domain "
+                                 f"on this rank), got eqtype={self.eqtype!r}, "
+                                 f"size={self.size}, comm_backend={self.comm_backend!r}; "
+                                 f"z-decomposed particles are unimplemented "
+                                 f"(plans/TESTPART_PLAN.md §4)")
             # imported here, not at module scope: config itself does not depend on the
             # particle package (nothing under particles/ imports config — no cycle)
             from .particles.state import normalize_config
             self.particles = normalize_config(particles)
+            if self.spatial_dimensions == 3:
+                bad = sorted({e["B0"] for e in self.particles["ensembles"] if e["B0"] != 1.0})
+                if bad:
+                    raise ValueError(
+                        f"particles: B0 must be 1.0 in 3D, got {bad}. E_z = -B0*d_z(phi) + "
+                        f"dpsi/dt collapses to the ideal -{{phi,psi}} only because the solver "
+                        f"supplies +d_z(phi) — with coefficient exactly 1 "
+                        f"(rmhd.linear_matrix's off-diagonal is 1j*kz, FDLinearTerm returns a "
+                        f"bare d_z), i.e. the guide field IS 1 in code units. Any other B0 "
+                        f"leaves (1-B0)*d_z(phi) in E_z, so E.B != 0 and the fields are no "
+                        f"longer ideal-Ohm. In 3D the amplitude parameter eps = rms|grad psi| "
+                        f"is set by the forcing amplitude and Lz instead (v_A = 1 on a box Lz "
+                        f"is the same system as v_A = B0 on a box B0*Lz); B0 stays the free "
+                        f"per-ensemble knob in 2D, which has no Alfven term")
             self.n_ens = len(self.particles["ensembles"])
             self._init_args["particles"] = copy.deepcopy(particles)  # decoupled from the caller's dict
 

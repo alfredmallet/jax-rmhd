@@ -2,8 +2,10 @@
 # per-ensemble mask can switch on and off.
 #   u = zhat x grad(phi), b_perp = zhat x grad(psi), Phi = B0*phi, A_z = -psi, so
 #   B = B0*zhat + b_perp,  E_perp = -B0*grad(phi),  E_z = +dpsi/dt
-#     = -{phi,psi} + L_psi psi + f_psi   (the B0*d_z(phi) terms cancel; the
-#   finite-difference-z filter is not represented -- see docs/numerics.md).
+#     = -{phi,psi} + L_psi psi + f_psi   (the d_z(phi) terms cancel, which needs B0 == 1
+#   in 3D: the solver's Alfven coefficient is 1 -- see docs/numerics.md).
+# The resistive piece is the FULL linear non-ideal EMF on psi: the psi diagonal of
+# rmhd.linear_matrix plus, for finite-difference z, FDLinearTerm's d4/dz4 filter.
 # B0 enters in ONE place, assemble_stacked(); particle_fields stores E_perp per unit B0.
 # Derivation and the dealiasing subtlety below: docs/numerics.md, "Test particles".
 from typing import NamedTuple, Optional
@@ -12,7 +14,7 @@ import jax.numpy as jnp
 
 from .. import grids
 from ..physics import rmhd
-from ..physics.shared_physics import bracket, gradk
+from ..physics.shared_physics import bracket, gradk, z_derivatives
 
 FIELD_PIECES = ("bperp", "eperp", "ez_ideal", "ez_resistive", "ez_forcing")
 FIELD_MASK_DEFAULTS = dict(bperp=True, eperp=True, ez_ideal=True,
@@ -40,25 +42,27 @@ class PFields(NamedTuple):
     ex: jnp.ndarray            # E_perp/B0 = -grad(phi); assembly applies B0
     ey: jnp.ndarray
     ez_ideal: jnp.ndarray      # ifft(dealias * fft(-{phi,psi}))
-    ez_resistive: Optional[jnp.ndarray] = None   # ifft(L_psi * psik); None unless requested
+    # ifft(L_psi*psik, + the FD-z filter in 3D); None unless requested
+    ez_resistive: Optional[jnp.ndarray] = None
     ez_forcing: Optional[jnp.ndarray] = None     # ifft(f_psi); None unless requested
 
 
 def particle_fields(state, kgrid, params, *, resistive=False, forcing=False):
     """The real-space field pieces at the collocation grid, with E_perp stored per unit
     B0 (the assembly applies B0). 4 iffts for the gradients, +2 for the dealiased ideal
-    E_z, +1 per optional piece."""
+    E_z, +1 per optional piece (the resistive piece's finite-difference-z filter is a
+    z-stencil, not a transform)."""
     assert params.eqtype == "RMHD", (
         f"particle_fields is RMHD-only (it assumes fields=(phi,psi) with u=zhat x grad(phi), "
         f"b_perp=zhat x grad(psi)); got eqtype={params.eqtype!r}")
-    psik = state.fields[1]
     # (2 fields, 2 components, nz, nx, ny): gradk stacks (d_x, d_y) on axis 1
     g = grids.ifft(gradk(state.fields[:2], kgrid), params)
     gphi, gpsi = g[0], g[1]
     # the discrete psi integrates dealias*NL_psi, so the ideal E_z the particle sees is the
     # dealiased bracket -- the raw product carries content out to 2*k_c that never enters psi
     ez_ideal = grids.ifft(kgrid.dealias * grids.fft(-bracket(gphi, gpsi), params), params)
-    ez_resistive = grids.ifft(_psi_linear_diagonal(kgrid, params) * psik, params) if resistive else None
+    ez_resistive = (grids.ifft(_psi_non_ideal(state.fields, kgrid, params), params)
+                    if resistive else None)
     ez_forcing = _forcing_ez(state, kgrid, params, ez_ideal) if forcing else None
     return PFields(ux=-gphi[1], uy=gphi[0],
                    bx=-gpsi[1], by=gpsi[0],
@@ -66,9 +70,21 @@ def particle_fields(state, kgrid, params, *, resistive=False, forcing=False):
                    ez_ideal=ez_ideal, ez_resistive=ez_resistive, ez_forcing=ez_forcing)
 
 
+def _psi_non_ideal(fields, kgrid, params):
+    # every linear non-ideal term the solver adds to dpsi/dt, in k space: the k-local
+    # diagonal below, plus the finite-difference-z filter, which lives outside L.
+    out = _psi_linear_diagonal(kgrid, params) * fields[1]
+    if params.spatial_dimensions == 3 and not params.z_spectral:
+        # FDLinearTerm's -z_diss*(dz/2)^4 d4psi/dz4; its Alfven stencil is the d_z(phi)
+        # term already cancelled out of E_z, so only the filter belongs here
+        _df_dz, d4f_dz4 = z_derivatives(fields, params)
+        out = out - params.z_diss * (params.dz / 2) ** 4 * d4f_dz4[1]
+    return out
+
+
 def _psi_linear_diagonal(kgrid, params):
     # the psi DIAGONAL of the equation set's k-local L. Under z_spectral L is the 2x2
-    # putzer2 operator whose off-diagonal is the B0*d_z(phi) Alfven term -- already
+    # putzer2 operator whose off-diagonal is the d_z(phi) Alfven term -- already
     # cancelled out of E_z -- so propagators.apply_L would be wrong here.
     L = rmhd.linear_matrix(kgrid, params)
     if L.ndim == 5:

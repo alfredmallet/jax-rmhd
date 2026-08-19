@@ -177,7 +177,7 @@ def test_substeps_split_the_step_exactly():
     """push(..., substeps=n) is exactly n consecutive push() calls at dt/n, on fields
     the gather actually has to interpolate."""
     params = _params(**_G1)
-    x, y = interp.grid_coords(params)
+    x, y, _z = interp.grid_coords(params)
     xg, yg = x.reshape(1, -1, 1), y.reshape(1, 1, -1)
     ones = jnp.ones((1, params.nx, params.ny))
     B3 = jnp.stack([0.1 * jnp.sin(yg) * ones, 0.1 * jnp.sin(xg) * ones,
@@ -242,7 +242,7 @@ _G3_QMS = (10.0, 20.0, 40.0)     # rho/L = 1/10, 1/20, 1/40 with L = Lx/2pi = 1
 
 def _g3_grid(params, vecs):
     # (3,1,nx,ny) field from three functions of x
-    x, _ = interp.grid_coords(params)
+    x, _y, _z = interp.grid_coords(params)
     cols = [jnp.broadcast_to(jnp.asarray(f(x)).reshape(1, -1, 1), (1, params.nx, params.ny))
             for f in vecs]
     return jnp.stack(cols).astype(_precision.ftype)
@@ -390,14 +390,14 @@ def _analytic(x, y):
 
 
 def _analytic_field(params):
-    x, y = interp.grid_coords(params)
+    x, y, _z = interp.grid_coords(params)
     return _analytic(x.reshape(1, -1, 1), y.reshape(1, 1, -1)).astype(_precision.ftype)
 
 
 def test_gather_exact_at_nodes_and_on_ramps():
     params = _params(**_GI)
     f = _analytic_field(params)
-    x, y = interp.grid_coords(params)
+    x, y, _z = interp.grid_coords(params)
     ii, jj = np.meshgrid(np.arange(params.nx), np.arange(params.ny), indexing="ij")
     pos = jnp.stack([x[ii.ravel()], y[jj.ravel()], jnp.zeros(ii.size)], axis=1)
     node_err = float(jnp.max(jnp.abs(interp.gather(f[None], pos, params)[:, 0]

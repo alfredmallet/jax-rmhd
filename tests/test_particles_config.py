@@ -134,11 +134,37 @@ def test_particles_config_validation():
             rejects(c, f"epar_project {label}",
                     {"n": 4, "ensembles": [dict(good_ens, epar_project=True, **over)]},
                     "epar_project")
-        # Phase-A scope: the message must point at the plan, not just fail
-        rejects(c, "dims=3", {"n": 4, "ensembles": [good_ens]}, "Phase B", dims=3, nz=4,
-                Lz=2 * np.pi, forcing=False)
         rejects(c, "eqtype != RMHD", {"n": 4, "ensembles": [good_ens]}, "RMHD",
                 eqtype="GDI", forcing=False)
+        # 3D: B0 != 1 would leave a spurious (1-B0)*d_z(phi) in E_z, because the solver's
+        # Alfven coefficient is 1. The message must say so, not just refuse.
+        for label, particles in (
+                ("top-level B0", {"n": 4, "B0": 10.0, "ensembles": [good_ens]}),
+                ("per-ensemble B0", {"n": 4, "ensembles": [dict(good_ens, B0=10.0)]})):
+            rejects(c, f"3D with {label} != 1", particles, "B0 must be 1.0 in 3D",
+                    dims=3, nz=4, Lz=2 * np.pi, forcing=False)
+
+
+def test_particles_3d_is_accepted_single_process():
+    """3D particles are legal single-process in both z modes -- and B0 = 1 is the only
+    amplitude 3D accepts, since the per-ensemble knob 2D enjoys would break the d_z(phi)
+    cancellation in E_z (the rejection itself is in the validation test above)."""
+    ens = {"qm": 5.0, "init": {"kind": "maxwellian", "vth": 1.0}}
+    cfg = {"n": 8, "ensembles": [ens, dict(ens, ez_resistive=True, ez_forcing=True)]}
+    kw = dict(dims=3, nz=8, Lz=2 * np.pi, forcing=False)
+    p_fd = _base(particles=cfg, **kw)
+    p_zs = _base(particles=cfg, z_spectral=True, **kw)
+    p_b0 = _base(particles={"n": 4, "B0": 1.0, "ensembles": [dict(ens, B0=1.0)]}, **kw)
+    with checks() as c:
+        c.check("dims=3 finite-difference z accepts particles",
+                p_fd.particles["ensembles"][1]["mask"]["ez_resistive"] is True
+                and p_fd.n_ens == 2)
+        c.check("dims=3 z_spectral accepts particles", p_zs.n_ens == 2 and p_zs.z_spectral)
+        c.check("an explicit B0 = 1.0 is fine in 3D",
+                [e["B0"] for e in p_b0.particles["ensembles"]] == [1.0])
+        c.check("a 2D config still takes any B0 > 0 (no Alfven term to break)",
+                _base(particles={"n": 4, "B0": 10.0,
+                                 "ensembles": [ens]}).particles["ensembles"][0]["B0"] == 10.0)
 
 
 def test_particles_config_normalization():
@@ -360,6 +386,32 @@ def test_init_particles_template_and_moments():
                 and not np.allclose(mom[:, MOMENTS.index("vparB2")],
                                     mom[:, MOMENTS.index("vz2")], rtol=1e-3, atol=0.0),
                 str(mom[:, [MOMENTS.index(k) for k in ("vperpB2", "vparB2")]]))
+
+
+def test_init_particles_3d_z_distribution():
+    """3D draws z uniform over the box. 2D draws only (x, y): the 2D stream must be
+    exactly what it was before z existed, or every existing 2D run's particles move."""
+    import jax
+    cfg = {"seed": 5, "n": 4096,
+           "ensembles": [{"qm": 1.0, "init": {"kind": "maxwellian", "vth": 1.0}}]}
+    p3 = _base(particles=cfg, dims=3, nz=8, Lz=3.0, forcing=False)
+    p2 = _base(particles=cfg)
+    x3 = np.asarray(init_particles(p3).x)
+    x2 = np.asarray(init_particles(p2).x)
+    kx = jax.random.split(jax.random.fold_in(jax.random.key(5), 0))[0]
+    u2 = np.asarray(jax.random.uniform(kx, (4096, 2), dtype=jnp.float64))
+    u3 = np.asarray(jax.random.uniform(kx, (4096, 3), dtype=jnp.float64))
+    with checks() as c:
+        c.check("2D positions are the (n,2) uniform draw exactly (unchanged stream)",
+                np.array_equal(x2[0, :, 0], u2[:, 0] * p2.Lx)
+                and np.array_equal(x2[0, :, 1], u2[:, 1] * p2.Ly)
+                and np.all(x2[..., 2] == 0.0))
+        c.check("3D positions are the (n,3) draw, z scaled by Lz",
+                np.array_equal(x3[0, :, 2], u3[:, 2] * p3.Lz))
+        c.check(f"3D z spans [0, Lz={p3.Lz}) and fills it "
+                f"(mean {x3[..., 2].mean():.3f} ~ Lz/2)",
+                x3[..., 2].min() >= 0.0 and x3[..., 2].max() < p3.Lz
+                and abs(x3[..., 2].mean()/p3.Lz - 0.5) < 0.02)
 
 
 # --------------------------------------------------------------- run.py pstate contract

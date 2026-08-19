@@ -421,26 +421,32 @@ E_z = −∂_zΦ − ∂_t A_z = −B₀∂_zφ + ∂ψ/∂t
 ```
 
 **The parallel-gradient terms cancel.** The code's induction equation is
-`∂ψ/∂t = −{φ, ψ} + B₀∂_zφ + η∇²ψ (+ f_ψ)` — the `∂_zφ` piece being `rmhd.FDLinearTerm`'s
+`∂ψ/∂t = −{φ, ψ} + ∂_zφ + η∇²ψ (+ f_ψ)` — the `∂_zφ` piece being `rmhd.FDLinearTerm`'s
 z-stencil (or, under `z_spectral`, the `±i·kz` off-diagonal of `rmhd.linear_matrix`),
-absent in 2D. Substituting it into `E_z` above kills the `B₀∂_zφ` terms exactly:
+absent in 2D. Its coefficient is exactly **1**, not `B₀`: taranis writes RMHD in units
+where the guide field (equivalently `v_A`) is 1, so the cancellation below needs `B₀ = 1`
+in 3D — see "`B₀` in 3D" at the end of this section. Substituting it into `E_z` above kills
+the `∂_zφ` terms exactly:
 
 ```
 E_z = −{φ, ψ} + η∇²ψ (+ f_ψ)        the physics terms, identical in 2D and 3D
 ```
 
-so the field assembly is dimension-independent in the physics and Phase B inherits it
-unchanged. Note the sign: `E_z = +∂ψ/∂t`, because `A_z = −ψ` in this convention.
+so the field assembly is dimension-independent in the physics: the same three pieces serve
+2D and 3D. Note the sign: `E_z = +∂ψ/∂t`, because `A_z = −ψ` in this convention.
 
-**Caveat: the finite-difference-z filter is a fourth, unrepresented piece.** In 3D without
+**The finite-difference-z filter is part of the resistive piece.** In 3D without
 `z_spectral`, `rmhd.FDLinearTerm` adds `−z_diss·(dz/2)⁴ ∂_z⁴ψ` to `∂ψ/∂t` alongside the
-Alfvén stencil (`physics/rmhd.py`, `FDLinearTerm`). It is a numerical filter, not a physics
-term, and it is in none of the three pieces above — so `E_z` (full mask) equals `∂ψ/∂t`
-*exactly* only in 2D and under `z_spectral` 3D. Under `z_spectral` the analogous
-`−z_diss_k·kz⁴` IS part of the ψ diagonal of `rmhd.linear_matrix` and therefore lands inside
-the resistive piece automatically. Whether the FD-z filter should be added to the particles'
-`E_z` (it is an artificial EMF, like the resistive piece, but unlike it not part of any
-`L`) is a Phase B decision; Phase A is 2D, where the question does not arise.
+Alfvén stencil (`physics/rmhd.py`, `FDLinearTerm`). Like the perpendicular hyperdissipation
+it is an artificial EMF rather than a physics term, and it is the *only* other linear
+non-ideal term acting on ψ — so `ez_resistive` is defined as the full linear non-ideal EMF:
+the ψ diagonal of `rmhd.linear_matrix` **plus** that filter whenever `dims == 3` and
+`z_spectral` is off (`fields._psi_non_ideal`; the Alfvén half of `FDLinearTerm` is the
+`∂_zφ` term that has already cancelled out of `E_z`, and stays out). Under `z_spectral` the
+analogous `−z_diss_k·kz⁴` is already in that diagonal. With the filter folded in, full-mask
+`E_z` equals the `∂ψ/∂t` the discrete ψ obeys, to round-off, in 2D and in **both** 3D modes;
+it stays one piece and one work column, so `FIELD_PIECES`, `WORK_PIECES` and the checkpoint
+layout are unchanged.
 
 **Cross-check against `E = −u×B`** (ideal Ohm, which is what the ideal piece must be):
 `(u×B)_z = u_x b_y − u_y b_x = (−∂_yφ)(∂_xψ) − (∂_xφ)(−∂_yψ) = {φ, ψ}`, so
@@ -477,6 +483,14 @@ cancellation, `O(dt²)` per step, so the accumulated drift over a fixed physical
 `O(dt)` — consistent with the KDK push being exact in space but first-order in how it
 samples the field's time dependence.
 
+The argument needs z ignorable, so **in 3D `p_z` is conserved only for z-independent
+fields** — an embedded-2D configuration (a 3D run whose φ, ψ have no z structure, in either
+z mode) is what carries gate 4 over, and it is also the sharpest test that the z axis of the
+gather and of the field assembly is wired correctly: the trilinear gather must reproduce the
+2D bilinear one exactly, and the `∂_zφ` cancellation must be exact rather than merely small.
+In a genuinely 3D field the drift of `p_z` is physics — that parallel energization is
+unbounded is precisely why Phase B exists (`plans/TESTPART_PLAN.md` §5).
+
 `E_∥ = E·b̂` differs from `E_z` by `b_⊥·E_⊥/B₀` corrections; the pusher is Cartesian and
 never needs it.
 
@@ -488,7 +502,8 @@ pieces a particle sees is a per-ensemble choice (`FIELD_PIECES` /
 form; all mask logic is static python):
 
 - **ideal**, `−{φ, ψ}`. On by default.
-- **resistive**, `L_ψ ψk` with `L_ψ` the ψ diagonal of `rmhd.linear_matrix` — `η j_z` at
+- **resistive**, `L_ψ ψk` with `L_ψ` the ψ diagonal of `rmhd.linear_matrix`, plus the
+  finite-difference-z `∂_z⁴` filter in FD-z 3D (above) — `η j_z` at
   `hyper=1`, its hyper-resistive analogue otherwise. Only the diagonal: under `z_spectral`
   the full 2×2 `L` also carries the `±i·kz` off-diagonal, which is the `B₀∂_zφ` term that
   has already cancelled out of `E_z`, so `propagators.apply_L` is the wrong tool here.
@@ -613,6 +628,23 @@ thing that does change is `β_i = v_⊥²/v_A² = v_th²/B₀²` (0.01 for `v_th
 `B₀` is therefore a PER-ENSEMBLE key (the top-level one is only its default), so one run
 can hold several amplitudes; with every field piece off it changes no orbit at all
 (gate 9's control).
+
+**`B₀` in 3D is pinned to 1.** In 2D nothing ties `B₀` to the solver: `∂_z ≡ 0`, so
+`E_z = ∂ψ/∂t` and `−(u×B)_z = −{φ,ψ}` hold for any `B₀`, and `E·B = 0` because both terms
+carry one factor of `B₀`. In 3D the induction equation ties it. The particle's
+`E_z = −B₀∂_zφ + ∂ψ/∂t` reduces to the ideal `−{φ,ψ}` only if the solver supplies `+B₀∂_zφ`
+— and taranis supplies `+1·∂_zφ` (`rmhd.linear_matrix`'s off-diagonal is `1j·kz`;
+`FDLinearTerm` returns a bare `df_dz`), i.e. the solver is written in units where the guide
+field, equivalently `v_A`, is 1. Any other `B₀` therefore leaves
+`(1 − B₀)∂_zφ` in `E_z`: `E·B ≠ 0`, the field is no longer ideal-Ohm, and no ensemble
+setting can repair it. `Parameters` rejects `B₀ ≠ 1` whenever `dims == 3`.
+
+Nothing is lost. The amplitude parameter in 3D is `ε = δb_⊥/B₀ = rms|∇ψ|` (with `B₀ = 1`),
+set by the run itself through the forcing amplitude and the box: RMHD at `v_A = 1` on a box
+`L_z` is, under `z → B₀z`, the same system as `v_A = B₀` on a box `B₀L_z`, so lowering `ε`
+means weakening the forcing and/or elongating the box — the RMHD ordering `L_z/L_⊥ ~ 1/ε`
+made explicit. `B₀` stays the free per-ensemble knob in 2D, where the run itself has no
+opinion about the guide-field strength.
 
 **Heating is measured in the local-B frame.** `MOMENTS` carries `vperpB2` and `vparB2` —
 `v_∥B² = (v·B)²/|B|²` and `v_⊥B² = |v|² − v_∥B²` with the pusher's own `B` sample — beside

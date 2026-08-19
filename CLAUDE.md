@@ -257,25 +257,33 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
   docs/numerics.md.
 
-### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A0/A1/A2 landed 2026-08-18)
+### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A landed 2026-08-18, Phase B (3D, single-process) 2026-08-19)
 
 Boris-pushed charged test particles that see the RMHD fields and never back-react.
 Derivation and conventions: docs/numerics.md "Test particles". Rules:
 
 - Conventions (from `NonlinearTerm`'s bracket signs): u = ẑ×∇φ, b_⊥ = ẑ×∇ψ, Φ = B₀φ,
-  A_z = −ψ, so E_⊥ = −B₀∇φ and **E_z = +∂ψ/∂t = −{φ,ψ} + L_ψψ + f_ψ** (2D and 3D; the
-  finite-difference-z filter is NOT represented — Phase B decides). `assemble_stacked(pf,
-  mask, B0)` is the ONLY place B₀ enters the fields the pusher sees (diagnostics read the
+  A_z = −ψ, so E_⊥ = −B₀∇φ and **E_z = +∂ψ/∂t = −{φ,ψ} + L_ψψ + f_ψ** (2D and 3D).
+  `assemble_stacked(pf, mask, B0)` is the ONLY place B₀ enters the fields the pusher sees (diagnostics read the
   same `ens["B0"]`; B_z is stored at FIELD precision, so the sidecar `mu` and `mu_of` are
   bit-consistent at fp64, and at fp32 only for an fp32-representable B₀). **B₀ IS the RMHD amplitude parameter, B₀ = 1/ε**
   (derivation: docs/numerics.md): B₀ = 1 means δB/B₀ ~ 1, production runs B₀ ~ 10 with q/m
   scaled by 1/B₀ so Ω = qm·B₀ — hence ρ, Ω·dt, ξ — is unchanged; β_i = v_th²/B₀². It is a
-  PER-ENSEMBLE key (top-level = default), so one run can hold several amplitudes.
+  PER-ENSEMBLE key (top-level = default), so one run can hold several amplitudes —
+  **in 2D only**. **`B₀` must be 1.0 for every ensemble when `dims==3`** (rejected in
+  `Parameters`): the solver's Alfvén coefficient is exactly 1 (`linear_matrix`'s
+  off-diagonal is `1j·kz`, `FDLinearTerm` a bare `df_dz`), so any other B₀ leaves
+  (1−B₀)∂_zφ in E_z and the field stops satisfying ideal Ohm. In 3D ε = rms|∇ψ| is set by
+  the forcing amplitude and Lz instead (v_A = 1 on Lz ≡ v_A = B₀ on B₀·Lz).
 - `particles/fields.py::particle_fields(state,kgrid,params,*,resistive,forcing)` builds the
   piece-decomposed real-space `PFields` (RMHD-only assert). **`ez_ideal` is the DEALIASED
   bracket** `ifft(dealias·fft(−{φ,ψ}))` — the raw pointwise bracket is not the ∂ψ/∂t the
-  discrete ψ obeys (gate 7 fails at O(1) with it). Resistive piece = ψ diagonal of
-  `rmhd.linear_matrix` (never `apply_L`: under `z_spectral` that carries the ±i·kz term).
+  discrete ψ obeys (gate 7 fails at O(1) with it). Resistive piece = the FULL linear
+  non-ideal EMF on ψ: the ψ diagonal of `rmhd.linear_matrix` (never `apply_L`: under
+  `z_spectral` that carries the ±i·kz term)
+  PLUS `FDLinearTerm`'s −z_diss·(dz/2)⁴∂_z⁴ψ filter when `dims==3 and not z_spectral`
+  (`_psi_non_ideal`; its Alfvén half is the ∂_zφ term already cancelled out of E_z, and
+  stays out). Still 5 `FIELD_PIECES`, 4 `WORK_PIECES` — the filter is not a new piece.
   Forcing piece = `ForcingTerm(...)[1]`. Per-ensemble mask over
   `FIELD_PIECES = (bperp, eperp, ez_ideal, ez_resistive, ez_forcing)`; defaults
   `ez_resistive = ez_forcing = False` (ideal-Ohm particle); `full_mask()` is the exact-∂ψ/∂t
@@ -287,9 +295,13 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   implementation. `WORK_PIECES = (eperp, ez_ideal, ez_resistive, ez_forcing)` (`NWORK = 4`)
   are the ELECTRIC pieces, in the order `ParticleState.w`'s last axis stores them.
 - Particle state is **fp64 always** (positions/velocities `(N,3)` float64 regardless of
-  TARANIS_PRECISION); `interp.gather` casts samples up. The z axis is carried in every
-  interface even though Phase A implements `nz_local == 1` only (assert). Positions are
-  left UNFOLDED; only the gather folds mod L. `interp.gather_spectral` is validation-only.
+  TARANIS_PRECISION); `interp.gather` casts samples up. Positions are
+  left UNFOLDED; only the gather folds mod L. `interp.gather` is periodic bilinear at
+  `nz == 1` (the 2D path, bitwise unchanged) and periodic **trilinear** when the grid has a
+  z axis; `init_particles` draws z uniform over Lz in 3D and exactly 0 in 2D (the 2D RNG
+  stream draws `(n,2)`, unchanged). `interp.gather_spectral` is validation-only and is
+  exact for what the representation is: fully spectral under `z_spectral`, perp-spectral
+  and linear-in-z (hence exact for a z-independent field) under finite-difference z.
 - `boris.py`: `boris_kick`/`drift`/`project_perp` are pure per-particle kernels (elementwise
   arithmetic on length-3 vectors, no `Parameters` — WGSL-portable, plan §9); `push_tracked` is the KDK
   driver (x, v synchronized at step boundaries, ONE gather of the stacked `F` per half-kick,
@@ -320,6 +332,14 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   In RMHD b_⊥ fields the naive grad-B drift
   is off by an O(1) factor (shear enters at O(ε), |B| at O(ε²)) — measured and derived
   in the kernel test; do not "fix" it toward the textbook value.
+- `tests/test_particles_3d.py` is the 3D gate set, every gate run in BOTH z modes: the
+  embedded-2D `p_z` invariant (z is ignorable only for z-independent fields — an unforced
+  z-independent 3D state stays z-independent exactly, the O-U z envelope is what breaks
+  it), gate 7 as E_z vs `Δψ/Δt − ∂_zφ` (the Alfvén term is NOT part of E_z), the FD-z
+  filter discriminator, the B₀ = 1 discriminator (grid `max|E·B|` = B₀|1−B₀|·max|∂_zφ|
+  exactly, and 2D stays at round-off for every B₀), and gates 5/6/8/9 in 3D. Kernel gates
+  1–3 have no 3D analogue (analytic fields, no z structure) and no new gate-6 reference
+  npz was recorded — the existing one is a 2D artifact of the A2 wiring.
 - **Gate-6 reference** (`tests/_gen_particles_gate6_reference.py`,
   `tests/data/particles_gate6_reference_fp{64,32}.npz`, force-added — `tests/data` is
   gitignored) was recorded on the pre-A2 tree and is what `tests/test_particles_coupled.py`
@@ -331,8 +351,10 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   cycle; `run.py` imports the package eagerly anyway) into `self.particles`;
   `self._init_args["particles"]` keeps the raw dict
   so `save()`/`from_snapshot()` round-trip it (list/tuple-tolerant, re-save is a no-op).
-  Requires `eqtype=="RMHD"`, `dims==2`, `size==1` (Phase A restriction — ValueError
-  otherwise, pointing at Phase B). Schema: `seed`/`substeps`/`B0`/`init_on_restart` plus a
+  Requires `eqtype=="RMHD"`, `size==1` and a non-sharded backend (`comm_backend!="jax"`);
+  `dims` 2 or 3, both z modes, with `B0 == 1.0` enforced in 3D (above). z-decomposed
+  particles are unimplemented — ValueError pointing at plans/TESTPART_PLAN.md §4, which
+  carries the design note. Schema: `seed`/`substeps`/`B0`/`init_on_restart` plus a
   non-empty `ensembles` tuple, each `{qm, init: {kind: "maxwellian"|"ring", ...}}` with the
   optional `B0` (> 0; the top-level one is its default and `ens["B0"]` is ALWAYS present
   after normalization — `push_ensembles`/`mu_of` read it, never `cfg["B0"]`) and
@@ -420,6 +442,12 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   gather per half-kick paying for the separately-gathered E_z pieces. docs/performance.md
   "Test particles overhead". `jnp.take`-style gather work and stage-1-grad reuse in
   `particle_fields` are still deferred, flagged in plans/TESTPART_PLAN.md §4.
+  In 3D (B2, 2026-08-19, 128²×16) `particle_fields` is 17.4%/22.9% of the solver step under
+  FD-z and 12.9%/14.4% under `z_spectral` (default mask / with the optional pieces): **FD-z
+  with the non-ideal pieces is the one configuration outside the ≤15–20% budget**, and the
+  1.86 ms ∂_z⁴ stencil + halo is the whole of the gap. `z_spectral` is cheaper only as a
+  share — its own solver step is ~1.8× more expensive. The trilinear gather roughly doubles
+  the O(N) push, as 8 corners against 4 predicts.
 - Science: `examples/test-particles-2D.ipynb` + `examples/particles_2d_run.py` (resumable
   `make_data`, ~44 min/0.7 GB on the M1 laptop, fp64) is the 2D production reference: hyper=3
   base turbulence, production ensembles at **B0 = 10 with `epar_project=True`**, Q_⊥ from the
@@ -433,7 +461,13 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   protocol/turbulence (plan §5). Do not quote a c₂ without its rule and frame. Open items
   (particle-paired init, longer windows at ξ ≲ 0.1, wider clean spectral band, a pass-1
   configuration under the pass-2 protocol) are in plans/TESTPART_PLAN.md §5.
-- Not yet: Phase B (3D).
+- 3D science: `examples/test-particles-3D.ipynb` + `examples/particles_3d_run.py`
+  (`TARANIS_P3D_PROFILE` = smoke/mvp/full) is designed and smoke-tested, NOT run — the
+  production campaign, its cost estimate and the Xia-comparison table are plan §11. In 3D
+  β_i = v_th² is tied to ξ through the pinned B₀ (§11.2), so the reachable ξ band comes with
+  its β band; quote both.
+- Not yet: the 3D production run, and z-decomposed (multi-rank) particles — designs for the
+  latter are in plans/TESTPART_PLAN.md §4, neither is built.
 
 ### Checkpointing
 

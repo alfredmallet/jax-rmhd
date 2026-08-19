@@ -1,8 +1,8 @@
 # Particle carry state, its configuration schema and the per-step ensemble push.
 #
 # ParticleState rides NEXT TO SimulationState as a run.py carry tuple; it is fp64 at every
-# TARANIS_PRECISION and its positions are UNFOLDED (interp.gather folds them mod L). The z
-# axis is carried everywhere; Phase A implements nz_local == 1 only.
+# TARANIS_PRECISION and its positions are UNFOLDED (interp.gather folds them mod L). 2D and
+# 3D both run, single-process: the whole z domain must be on this rank.
 #
 # Besides x and v it carries w, the per-field-piece work accumulator the pusher credits
 # (boris.push_tracked), so the heating attribution is measured rather than inferred.
@@ -203,13 +203,16 @@ def init_particles(params):
     stream: positions uniform over the box (z = 0 in 2D), velocities per ensemble init."""
     cfg = params.particles
     n = cfg["n"]
+    dims = params.spatial_dimensions
     key = jax.random.key(cfg["seed"])
     xs, vs = [], []
     for e, ens in enumerate(cfg["ensembles"]):
         kx, kv = jax.random.split(jax.random.fold_in(key, e))
-        u = jax.random.uniform(kx, (n, 2), dtype=jnp.float64)
-        xs.append(jnp.stack([u[:, 0] * params.Lx, u[:, 1] * params.Ly,
-                             jnp.zeros((n,), dtype=jnp.float64)], axis=1))
+        # 2D draws two coordinates, not three: the z column is exactly 0 and the stream
+        # stays what it was
+        u = jax.random.uniform(kx, (n, dims), dtype=jnp.float64)
+        z = u[:, 2] * params.Lz if dims == 3 else jnp.zeros((n,), dtype=jnp.float64)
+        xs.append(jnp.stack([u[:, 0] * params.Lx, u[:, 1] * params.Ly, z], axis=1))
         init = ens["init"]
         if init["kind"] == "maxwellian":
             # vth is the 1-D thermal speed: each component ~ N(0, vth^2)

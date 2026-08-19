@@ -84,6 +84,23 @@ changes it.) The three dimensionless groups that matter are documented with the 
 (A3b, 2026-08-18: superseded — B₀ IS ε, or rather 1/ε, and it is a per-ensemble knob
 production does change: see §10 and docs/numerics.md. Ω = qm·B₀ and ρ = v_⊥/(qm·B₀), so
 everything below holds with q/m read as qm·B₀.)
+(B1, 2026-08-19: two 3D corrections to this section. (i) The induction equation above is
+written with a B₀ coefficient on ∂_zφ; the SOLVER's coefficient is exactly **1**
+(`rmhd.linear_matrix`'s off-diagonal is `1j·kz`, `FDLinearTerm` returns a bare `df_dz`),
+i.e. taranis writes RMHD in units where the guide field/v_A is 1. The cancellation that makes
+E_z dimension-independent therefore holds only at **B₀ = 1**, and `Parameters` now rejects
+any other B₀ when `dims == 3` — in 2D there is no Alfvén term and B₀ stays the free
+per-ensemble amplitude knob of A3b. The 3D amplitude parameter ε = rms|∇ψ| is set by the run
+(forcing amplitude and Lz: v_A = 1 on Lz is the same system as v_A = B₀ on B₀·Lz).
+(ii) The **finite-difference-z filter is folded into the resistive piece**: `ez_resistive`
+is redefined as the full linear non-ideal EMF on ψ — the ψ diagonal of `rmhd.linear_matrix`
+plus `−z_diss·(dz/2)⁴∂_z⁴ψ` when `dims==3 and not z_spectral` (`fields._psi_non_ideal`; the
+Alfvén half of `FDLinearTerm` stays out, being the ∂_zφ term already cancelled). It is NOT a
+new piece: `FIELD_PIECES` stays 5 long, `WORK_PIECES` 4, `ParticleState.w`, `MOMENTS` and the
+checkpoint layout unchanged. Measured on a 16²×8 state, full-mask E_z against the solver's own
+`dψ/dt − ∂_zφ`: 7.9e-16 relative in both z modes, with the filter contributing rms 5.4e-4
+against the k-local diagonal's 1.1e-3 — omitting it would be a visible O(z_diss) defect, not a
+rounding detail. Both derivations are in docs/numerics.md.)
 With B₀ = 1: Ω = q/m and ρ = v_⊥·m/q. Baseline: ρ ≈ 2–4 dx ⇒ at 256² (dx ≈ 0.0245),
 q/m ≈ 10–20, Ω ≈ 10–20, i.e. 60–120 solver steps per gyration — Boris at solver dt is
 fully resolved with no substepping (a `substeps` hook is kept for large-q/m sweeps;
@@ -153,6 +170,13 @@ docs/numerics.md), so a run may need several. Both round-trip through params.jso
 raw dict and leave `normalize_config` idempotent. `MOMENTS` widened 9 → 11 with the
 local-B `vperpB2`/`vparB2`; gate 9 in `tests/test_particles_coupled.py`.)
 
+(B1, 2026-08-19: `ez_resistive` now means the full linear non-ideal EMF on ψ — the k-local ψ
+diagonal plus the finite-difference-z ∂_z⁴ filter in FD-z 3D (§2). The bit's meaning is
+otherwise unchanged, it is still off by default, and the "full-∂ψ/∂t ensemble" configuration
+below is now exact in 3D as well as 2D. The per-ensemble `B0` is restricted to 1.0 when
+`dims == 3` (§2, §10); every other key is dimension-independent. `normalize_config` stays
+dimension-agnostic — the B₀ rule is enforced in `Parameters`, which is where `dims` lives.)
+
 ## 4. Design (taranis core)
 
 - **Co-stepped, never snapshot-interpolated**: particles advance inside the run at the
@@ -220,12 +244,32 @@ local-B `vperpB2`/`vparB2`; gate 9 in `tests/test_particles_coupled.py`.)
   indices, cast samples not grids; (ii) reuse the stepper's stage-1 gradients here
   (removes 4 of the 6 fixed transforms) — the bigger lever, deferred because it changes
   the stepper contract.)
+  (B2, 2026-08-19: **the budget is exceeded in one 3D configuration.** At 128²×16,
+  `particle_fields` is 17.4% of the solver step under finite-difference z with the default
+  mask and **22.9% with the non-ideal pieces on** — outside the ≤15–20% above; under
+  `z_spectral` it is 12.9%/14.4%, but only as a share, that solver step being ~1.8× more
+  expensive in absolute terms. The excess is one item: the ∂_z⁴ filter's z-stencil and its
+  halo exchange, timed for the first time at 1.86 ms ≈ 4.4% of the step (the resistive piece
+  costs 1.50 ms as the k-local ψ diagonal alone, 3.36 ms with the filter). It buys exactness
+  — without it gate 7 stops converging (§6) — so it is a priced feature, not a regression.
+  Optimization (i) below is the lever if the price ever needs paying down; the trilinear
+  gather also roughly doubles the O(N) push, as 8 corners against 4 predicts.
+  docs/performance.md "Test particles overhead in 3D".)
 - **Interpolation** (`particles/interp.py`): periodic bilinear gather from the
   collocation grid, positions folded mod L. Spectral (exact) evaluation kept as a
   validation-only path — too expensive per particle in production, but it pins the
   interpolation error and gives gate 4 its exact variant. Known limitation, stated
   up front: independently interpolated b_⊥ is not exactly ẑ×∇(interpolated ψ);
   gates 4–5 measure the consequence rather than pretending it away.
+  (B1, 2026-08-19: `gather` is periodic **trilinear** when the grid carries a z axis and
+  stays exactly the previous bilinear code path at `nz == 1`, so no 2D result moves; the fold
+  gained the z coordinate (mod Lz, cell from `params.dz`, wrap at the top cell) and positions
+  stay unfolded. `grid_coords` returns `(x, y, z)`, z being the single plane 0 in 2D. The
+  validation path is exact for what the representation actually IS, which differs by mode:
+  under `z_spectral` the stored arrays are rfftn over (z,x,y), so `gather_spectral` is
+  spectral in all three directions; under finite-difference z they are one rfft2 per z plane,
+  so it is perp-spectral and linear in z — exact for a z-independent field, which is what the
+  embedded-2D gate needs.)
 - **Ensembles**: N ~ 1e4–1e5 total is negligible next to the FFTs (1e5 × O(10²) flops
   ≪ one 256² transform); the gathers are the only memory-irregular op.
 - **No back-reaction**, ever, in this plan.
@@ -252,6 +296,37 @@ local-B `vperpB2`/`vparB2`; gate 9 in `tests/test_particles_coupled.py`.)
   runs need particle migration between z-ranks or replicated fields — that design is
   Phase B's first task, not constrained here beyond keeping `ParticleState` free of any
   rank-local assumption.
+
+  (B1, 2026-08-19: 3D landed **single-process only** — `size == 1` and
+  `comm_backend != "jax"`, a ValueError otherwise pointing here; `ParticleState` and every
+  interface stayed rank-agnostic, so nothing below is foreclosed. **Neither design is
+  implemented.** The two candidates:
+
+  1. **Replicated fields (allgather).** Every rank gathers the full z domain of the ~8
+     real-space particle arrays and pushes a replicated copy of every particle, then keeps
+     only its own slice of the answer (or all ranks push all particles and agree bitwise).
+     Cost: one allgather of `8 · nz · nx · ny` floats per step — at 512³ fp64 that is ~8 GB
+     per rank per step, i.e. hopeless at production size, but at modest nz it is a few
+     percent and the code change is confined to `particle_fields`/`gather`. No migration, no
+     load imbalance, no change to the checkpoint layout, and the push stays bitwise
+     reproducible against a serial run.
+  2. **Rank-owned particles + padded all-to-all migration.** Each rank owns the particles
+     currently inside its z slab and gathers from its own planes plus a 1-plane halo (the
+     trilinear stencil needs exactly one neighbour plane, and `comms.halo_exchange` already
+     provides it). After the drift, particles that crossed a slab boundary are packed into a
+     fixed-size per-neighbour buffer and exchanged; fixed size is what keeps the whole thing
+     jittable, so the buffer must be capacity-checked (a `psum` of the overflow count, raised
+     as a run-time error rather than silently dropping particles). Cost: O(particles that
+     crossed) per step, which at `v_z·dt ≪ dz` is a few percent of N — the only design that
+     scales. Costs elsewhere: `ParticleState` leaves become rank-local with a varying
+     occupancy mask, so every moment becomes an allreduce, the checkpoint item has to record
+     ownership (or be gathered to a canonical order on write), and per-particle bitwise
+     reproducibility across decompositions is lost.
+
+  **Build (1) first** if 3D multi-rank is ever wanted: it is a day's work, it is exactly
+  right for the small-nz, many-perp-modes runs Phase B actually needs, and it validates the
+  physics before (2)'s bookkeeping is worth paying for. (2) is the production answer and
+  should not be attempted until a measured field-allgather cost says so.)
 
 ## 5. Diagnostics (`diagnostics/particles.py`)
 
@@ -335,6 +410,45 @@ widens the clean band; (iv) a third forcing host helps design (b) more than anyt
 particle-level conditioning; (vi) rerunning one pass-1 configuration under the pass-2
 protocol would separate protocol from turbulence in the pass-1 null.)
 
+(B3, 2026-08-19: what the 3D campaign (§11) adds or changes on the diagnostics side.
+`diagnostics/particles.py` needed **no** change for 3D — `read_moments`, `heating_rate`,
+`mu_diffusion`, `mu_of`, `jz_at`, `kinetic_spectrum`/`delta_u`/`xi`/`chandran_fit`,
+`increment_*`, `work_split`, `energy_budget` all work unchanged against a `dims=3` run
+(`perpspec` is z-averaged, which is exactly the spectrum `delta_u(rho)` wants, and
+`mu_of`/`jz_at` gather through B1's trilinear path). Three additions live in
+`examples/test-particles-3D.ipynb` rather than in the module, and are promotion candidates:
+
+- **Xia et al.'s `delta_u`** — `delta_u² = ∫E_u dk` over one e-fold centred on `k_ρ` (their
+  eq. 6) — computed beside taranis's `sqrt(2 k E_kin)`. They agree to a few percent on a
+  `k^{-3/2}` spectrum but the measured ratio is **0.66–0.91** on the smoke profile's steep one,
+  so the ratio is reported per run and `c₂` is fitted both ways in the sensitivity table.
+- **the control ensembles run through the same window machinery**, so the numerical floor is
+  quoted as a RATE next to the measurements instead of only as a `|v|²` drift; the notebook
+  prints smallest-fitted-`Q_⊥` over largest-control-`|Q_⊥|` and calls anything under ~10× a
+  measurement of the pipeline. Recommended for the 2D notebook too.
+- **`parspec`** (size==1 only, which every particle run is) becomes a *particle* diagnostic in
+  3D: the parallel-resolution check with no 2D analogue.
+
+`p_z = v_z − qm·ψ` stops being an invariant in 3D, so the new statistic is the RATIO of its
+full-mask drift to the same quantity in a matched 2D twin run, where it is pure discretization
+error — 1.65 vs 0.043 of `(q/m)ψ_rms`, a factor 38, already at 32²×16.
+
+Measured while designing, and worth stating because it reads on gate 5: **the E = 0 control is
+blind to `TARANIS_PRECISION`.** Its mask makes `E` exactly zero, so the push is a pure fp64
+rotation whatever the field precision, and its floor is the same to four digits at fp32 and
+fp64 fields (`7.105e-15`). Gate 5 bounds the PUSHER, not the interpolation noise an fp32
+*field* run introduces; §9's reading of it — an fp32 particle STATE on GPU — is unaffected, but
+an fp32 field run has to be validated statistically instead (§11.6).
+
+New open items, beside (i)–(vi) above which all still stand: (vii) `β_i` and `ξ` are **locked**
+in 3D because `B₀` is pinned — Xia's per-cohort `(v_A, L_∥)` rescaling is exactly the
+per-ensemble `B₀` the solver forbids there — so unlocking it means per-ensemble `(B₀, L_z)`
+pairs, a `Parameters`/`fields.py` change rather than a campaign change; (viii) promote the band
+`delta_u` and the control-as-a-rate helper into `diagnostics/particles.py` once §11's notebook
+has settled; (ix) item (i)'s per-particle paired init blocks the 3D projected/unprojected
+comparison exactly as it blocked the 2D one, and at 32768 particles per ensemble it still
+would.)
+
 ## 6. Validation gates
 
 Kernel gates (no solver; analytic fields through the same interp+push code path):
@@ -410,21 +524,92 @@ Coupled gates (live solver):
    difference across two RAW stepper calls with the forcing state frozen, so ψ(t) is smooth;
    it converges at O(dt²), order 1.94 measured.)
 
+(B2, 2026-08-19: the 3D coupled gates landed in `tests/test_particles_3d.py`, single-process,
+**every one of them run in both z modes**. What changed, gate by gate, and what was measured:
+
+- **Gate 4 becomes the EMBEDDED-2D gate.** In 3D z is ignorable only where the fields have
+  no z structure, so the carrier is a 3D box (nz = 8) started z-independent with forcing OFF —
+  the O-U z envelope is the thing that would break z-independence. Both halves are measured
+  rather than assumed (`test_z_independent_fields_stay_z_independent_unless_forced`): an
+  unforced z-independent state stays z-independent to **0.0 exactly** after 50 steps in both
+  modes, while 20 forced steps give a z spread of 1.39 on fields of order 1. The four 2D
+  variants then port unchanged. Frozen fields + trilinear gather at ρ/dx = 0.51/1.02/2.04:
+  **order 2.11** (drifts 3.98e-2 → 2.14e-3 over T = 2.5). Frozen + `gather_spectral`:
+  **order 2.00**. Sign discrimination v_z − qmψ vs v_z + qmψ: ratio **1056**. Live (unforced,
+  evolving) fields at 64²×8, `diss=0.3`: full mask **order 0.84**, drift 1.6e-3 of qm·rms(ψ);
+  ideal-only order −0.00 and **271×** the full-mask drift. The particles carry v_z and their
+  positions are left unfolded, so they cross the z boundary 1.4–1.7 box lengths per run — the
+  z fold and the z blend are live throughout even though a z-independent field makes the blend
+  exact. Both z modes agree to the printed digit on every one of these numbers, which is itself
+  the statement that an embedded-2D 3D run is the 2D system.
+- **Gate 7 in 3D compares against `Δψ/Δt − ∂_zφ`**, the Alfvén term being the solver's, not the
+  particle's. `∂_zφ` is formed the solver's way in each mode (`1j·kz·φk` with the kz-Nyquist
+  plane zeroed; the `shared_physics` 4th-order stencil). Converges at **order 1.995 (FD-z) /
+  2.000 (z_spectral)**, residual 2.49e-4 of max|E_z| at dt = 0.01, against a max|∂_zφ| that is
+  24% of max|E_z| — the subtraction is not cosmetic. **The FD-z filter discriminator**: taking
+  the ∂_z⁴ filter back out of `ez_resistive` stops the convergence dead (order 0.033) at a floor
+  of 5.98e-3 = 1.25e-3 of max|E_z|, **80×** the filtered residual at the finest dt. B1's fold is
+  load-bearing, not a rounding detail.
+- **B₀ = 1 in 3D is physics, shown two ways** (`test_B0_must_be_one_in_3d`). (a) On the grid,
+  the E_z the derivation demands (`−B₀∂_zφ + ∂ψ/∂t`, ideal + Alfvén part `−{φ,ψ} + ∂_zφ`, raw
+  bracket) gives `max|E·B| = B₀|1−B₀|·max|∂_zφ|` to 1e-10 relative at B₀ = 1.5, 2, 10 and
+  exactly 0 at B₀ = 1 — while the SAME sweep in 2D stays at 1.7e-16 relative for every B₀,
+  which is why B₀ remains a free per-ensemble knob there. (b) Gate 7's residual at B₀ ≠ 1 is
+  the dropped `(1−B₀)∂_zφ` to within 1% (0.576/1.15/10.4 vs the B₀ = 1 residual 1.19e-3).
+- **Gates 5, 8 and 9** run off one live FORCED, genuinely 3D turbulent run (32²×8, five
+  ensembles from one draw, so the ideal/full and projected/unprojected pairs are
+  particle-paired). Gate 5: E = 0 control floor **3.1e-15 (FD-z) / 3.7e-15 (z_spectral)**
+  per-particle |v|² relative drift, against 1.04–1.68 mean |v|² growth in the four E-carrying
+  ensembles. Gate 8: closure **≤ 3.9e-14 of KE₀** at fp64 and **≤ 1.9e-14** at fp32, and every
+  piece an ensemble's mask omits exactly zero — so the non-ideal energization between the
+  particle-paired ideal and full ensembles is carried entirely by `w_ez_resistive` and
+  `w_ez_forcing`, which stay identically zero in the ideal-only twin.
+  Gate 9: projected `rms(E'·B)/rms(|E||B|)` **3.5e-17/4.4e-17**, unprojected **4.9e-2/1.14e-1**
+  (much larger than 2D's 1.4e-3 — this grid is coarse and strongly forced), orbits separating
+  by 5.3e-2 from the same draw, and the work closure surviving the projection.
+- **Gate 6 in 3D**: particles-on vs particles-off bitwise in the same session (fields, forcing
+  state/scale/key, t), the state item's leaf list and `<step>/default/` tree untouched, a
+  `particles/` item at every written step, a sidecar with a whole number of (step, ensemble)
+  rows, and a restart that continues fields, trajectories and `w` bitwise — both z modes, with
+  `forcing_norm_per_step=False` for the same pre-existing reason as the 2D gate 6c. **No new
+  reference npz**: the committed one records pre-A2 2D main and is about the carry wiring,
+  which 3D does not touch (`run.py` needed no edit for B1).
+- **z-specific interpolation checks**: the trilinear gather reproduces every collocation value
+  exactly (0.0), blends the top z cell with plane 0, folds positions 5–7 box lengths outside
+  [0, Lz) to the same sample (1.0e-14), converges at **order 1.90 in dz** on a smooth field of z
+  alone, matches `gather_spectral` to 3.0e-15 under `z_spectral` (where the trilinear gather is
+  off by 0.62), and equals its own bilinear self on a z-independent field to 1.1e-16.
+
+No gate was invented where 3D has no analogue: kernel gates 1–3 drive analytic fields through
+the pusher with no solver and no z structure, so the 2D file already exercises the identical
+code, and gate 6a's reference npz is 2D by construction. Both statements are in the new file's
+module comment. 3D overhead is in docs/performance.md.)
+
 ## 7. Module layout
 
     taranis/particles/state.py     ParticleState, init (maxwellian/ring), checkpoint item helpers
     taranis/particles/boris.py     pure per-particle kernel (the WGSL-portable core)
     taranis/particles/fields.py    particle_fields: piece-decomposed real-space arrays (RMHD-only assert)
-    taranis/particles/interp.py    periodic bilinear gather; spectral validation path
+    taranis/particles/interp.py    periodic bi/trilinear gather; spectral validation path
     taranis/diagnostics/particles.py
     tests/test_particles_kernel.py    gates 1–3 (no solver)
-    tests/test_particles_coupled.py   gates 4–7 (fp64 marker; bootstrap + script_main per convention)
+    tests/test_particles_coupled.py   gates 4–9, 2D (fp64 marker; bootstrap + script_main per convention)
     tests/test_particles_config.py    config validation/normalization, params.json round trip,
                                        init/template/moments, run.py pstate contract, sidecar (A2)
+    tests/test_particles_3d.py        the same gates in 3D, both z modes, plus the B₀ = 1
+                                       discriminator and the z interpolation checks (B2)
 
 `run.py` changes are confined to the carry tuple, `_advance_particles` (the
 `_advance_forcing` mirror), scan-ys plumbing, and the snapshot item — all statically
 gated on `params.particles`.
+
+(B1, 2026-08-19: the layout survived 3D unchanged — `run.py` needed **no** edit at all
+(`_advance_particles` is already dimension-agnostic), and neither did `boris.py`,
+`snapshot_io.py` or `diagnostics/particles.py`'s numerics. The 3D work landed in `interp.py`
+(trilinear gather, z in `grid_coords`, the two exactness modes of `gather_spectral`),
+`fields.py` (`_psi_non_ideal`), `state.py` (the z draw in `init_particles`) and `config.py`
+(the relaxed gate and the B₀ = 1 rule). 3D config validation, the 3D z draw and the B₀
+rejection are in `tests/test_particles_config.py`; the 3D physics gates are B2's.)
 
 ## 8. Phases
 
@@ -457,6 +642,15 @@ gated on `params.particles`.
   gates in 3D — §2's field assembly carries over unchanged — then the 3D science
   notebook in `examples/` (the 2D-vs-3D parallel-energization comparison is the point:
   gate 4's qΔψ/m bound does not constrain 3D).
+  (B1 landed 2026-08-19: 3D machinery, single-process, both z modes. Trilinear gather, the
+  FD-z filter folded into `ez_resistive`, uniform-in-z init, the relaxed `Parameters` gate
+  and the B₀ = 1-in-3D rule (§2, §3, §10); `run.py` unchanged. The distributed design was
+  WRITTEN, not built — §4's MPI bullet carries both candidates and the recommendation;
+  multi-rank stays a ValueError. Verified end to end in both z modes: full-mask E_z matches
+  the solver's own `dψ/dt − ∂_zφ` to 7.9e-16 relative, and the 2D reference gates
+  (6/6b/6c, 7, 8, 9) stay bitwise green. Still to come: B2, the 3D gates — the embedded-2D
+  p_z gate (z ignorable only for z-independent fields, docs/numerics.md), gate 7 in 3D, the
+  E = 0 floor and the E∥ projection at 3D — and B3, the 3D science notebook.)
 - **C — WebGPU port** (FUTURE, after B): see §9.
 
 Execution per the standing flow: sonnet/opus implement per phase against this plan,
@@ -473,6 +667,12 @@ cheap, and which must not be broken meanwhile:
 - taranis can dump short recorded trajectory sets (fields + particle states at fixed
   dt) for future refvector-style validation; gates 1, 4, 5 are the on-GPU reruns, and
   gate 5's fp32 floor defines what the port may claim.
+  (B3/review, 2026-08-19: read that last clause narrowly. Gate 5's control masks E to
+  exactly zero, so its push is a pure fp64 rotation whose floor is blind to FIELD precision
+  — measured identical in both precisions (§5). It bounds pusher arithmetic; it never
+  bounded interpolation noise. The port puts the PARTICLE state in fp32 too, where the
+  control does move, so the sentence holds there — but even then it bounds the pusher, and
+  the interpolation error needs the statistical check of §11.6.)
 
 ## 10. Decisions (Alfred, 2026-08-18 — formerly open questions)
 
@@ -497,6 +697,17 @@ cheap, and which must not be broken meanwhile:
   ordering supports; production runs B₀ ~ 10 with q/m scaled by 1/B₀, keeping Ω = qm·B₀ and
   therefore ρ, Ω·dt and ξ fixed while β_i = v_th²/B₀². Derivation in docs/numerics.md
   ("E∥ projection and the amplitude parameter"). B₀ is per ensemble.
+- **B₀ = 1 in 3D, and only in 3D** (B1, 2026-08-19): the solver's Alfvén coefficient is
+  exactly 1, so `E_z = −B₀∂_zφ + ∂ψ/∂t` collapses to the ideal `−{φ,ψ}` only at B₀ = 1; any
+  other value leaves `(1−B₀)∂_zφ`, i.e. `E·B ≠ 0` and fields that are not ideal-Ohm.
+  `Parameters` rejects it. This does NOT retract the A3b decision above: in 2D there is no
+  Alfvén term and B₀ stays the per-ensemble amplitude knob. In 3D the amplitude parameter is
+  the run's own ε = rms|∇ψ|, tuned through the forcing amplitude and Lz (v_A = 1 on Lz ≡
+  v_A = B₀ on B₀·Lz), which is the RMHD ordering L_z/L_⊥ ~ 1/ε made explicit. Derivation in
+  docs/numerics.md, "E∥ projection and the amplitude parameter".
+- **The FD-z filter is part of `ez_resistive`** (B1, 2026-08-19): the particles' non-ideal
+  E_z piece is the full linear non-ideal EMF on ψ, not just the k-local diagonal (§2, §3), so
+  full-mask E_z is exactly ∂ψ/∂t in both 3D z modes. No new field piece, no new work column.
 - **Heating is measured in the local-B frame** (A3b, 2026-08-18; Xia et al. §4.1): the
   `vperpB2`/`vparB2` moment columns, not the ẑ-referred `vperp2`/`vz2` — the field
   direction tilts at O(ε), so the ẑ split mixes ⊥ and ∥ at first order.
@@ -506,3 +717,402 @@ cheap, and which must not be broken meanwhile:
 - **Phase B (3D) before Phase C (WebGPU)** (§8).
 - **Science notebooks (2D, 3D) live in `examples/`** (§8), following the existing
   notebook conventions there.
+
+## 11. 3D science campaign (phase B3)
+
+Written 2026-08-19 on the B1 tree (B2's gates landing in parallel). Deliverables:
+`examples/particles_3d_run.py` (resumable `make_data`, three size profiles selected by
+`TARANIS_P3D_PROFILE`) and `examples/test-particles-3D.ipynb`. **Designed and smoke-tested
+here; the production run is a Kaggle job, not a laptop job** — §11.6. The 2D campaign (§5,
+A3b) is the reference this is written against, and the protocol is deliberately identical so
+the two are comparable line for line.
+
+### 11.1 The headline questions, in priority order
+
+**Q1 — Is the Chandran stochastic-heating exponential there in 3D, and at what `c₂`?**
+This is a *literature check*, not an extension: Xia, Perez, Chandran & Quataert 2013
+(ApJ 776, 90) measured exactly this in 3D RMHD. The 2D campaign got `c₂ = 0.40 ± 0.13` (lab
+`v_⊥`, local-B `Q_⊥`, 2σ upper-limit rule) against their resolution-dependent 0.15–0.44 —
+which was worth recording and not over-reading, because 2D has no parallel decorrelation.
+3D removes that caveat, so the comparison becomes like for like.
+**Null:** `c₂` within 1σ of zero over a ξ lever ≥ 3, with every fitted `Q_⊥` an order of
+magnitude above the in-situ E = 0 control's rate. That is a result only if the lever and the
+floor are both shown, which is why both are printed next to the fit.
+
+**Q2 — What does 3D's freed parallel channel actually buy?** In 2D `p_z = v_z − (q/m)ψ` is an
+*exact* invariant of the full-mask dynamics (docs/numerics.md), so parallel energization is
+bounded by `(q/m)Δψ` and cannot be secular. In 3D neither step of that argument survives.
+Three measurements: the `p_z` drift of the full-mask ensemble normalized by `(q/m)ψ_rms`, in
+3D and in a **matched 2D twin run** (§11.3) where the same number is pure discretization
+error; `⟨v_∥B²⟩(t)` on a common eddy-time axis, secular vs bounded; and `Q_∥/Q_⊥` against
+`β_i`, directly comparable to Xia's Fig. 7.
+**Null:** both curves bounded and `Q_∥/Q_⊥` the same in 2D and 3D. That is *also* a result —
+it says the 2D invariant was never the binding constraint and that the parallel channel is
+suppressed by the amplitude (`E_z/E_⊥ ~ ε` in code units), which is what the 2D `B₀` twins
+already concluded. Do not write the campaign so that only a positive answer is publishable.
+
+**Q3 — Can a disagreement be attributed?** Three things differ between the 2D result and a 3D
+one: dimensionality, the dissipation model (`hyper=3` in 2D, Laplacian here) and the
+amplitude. The matched 2D twin holds dimensionality as the only variable; the `hyper=3` twin
+(one host, `full` profile only) holds the dissipation model as the only variable; the
+sensitivity table prices the protocol. Anything left over is dimensionality.
+
+**Q4 — Do the two ξ-scan designs agree in 3D as §10 asks?** Design (a) (Ω sweep at fixed
+turbulence) and design (b) (forcing sweep at fixed particle numerics) probe different
+numerics; agreement is evidence the exponential is physics. In 2D design (a)'s ξ lever was too
+short (×2.0) to constrain `c₂` and its two hosts disagreed. 3D's Laplacian dissipation gives a
+steeper, better-behaved `δu(ρ)` and design (b)'s ladder is ×6 in `u_rms`, so the lever should
+be longer — measured, not assumed.
+
+### 11.2 What 3D takes away, and what it gives
+
+Derived while designing this; every item is a real constraint on the matrix.
+
+- **`B₀` is pinned to 1** (§2, §10, B1). The per-ensemble amplitude knob that made
+  `ε = 1/B₀` free in 2D is gone: `ε = u_rms/v_A = u_rms` and `δB/B₀ = b_rms` are properties of
+  the RUN, set by the forcing power and the box. **An amplitude contrast is a different run,
+  not a different ensemble**, so unlike 2D the fields are not shared between the twins.
+- **`β_i` and ξ are locked.** `β_i = v_⊥i²/v_A² = v_⊥i²` in code units, so choosing `v_⊥`
+  fixes both `β_i` and `ξ = δu(ρ)/v_⊥`: `β_i = (δu/ξ)²`. Xia et al. break this with RMHD's
+  invariance under `(v_A, L_∥) → (ξ v_A, ξ L_∥)`, which lets one run serve six `β_i` cohorts —
+  and that rescaling **is** taranis's per-ensemble `B₀`, which 3D forbids (the solver's Alfvén
+  coefficient is 1 and `L_z` is not a per-ensemble quantity). Consequence: at
+  `ε = 0.2` and `ρ ≈ 2–8 dx`, reaching `ξ ≲ 0.3` forces `β_i ≈ 0.01–0.9` — Xia's *mid-to-high*
+  β corner (their B2/B3/C3, `c₂ = 0.37–0.42`), not their `β_i = 0.006` headline. Every `β_i`
+  statement in the 3D notebook is entangled with ξ and must say so.
+- **`p_z` is no longer an invariant** — Q2. Its 2D value is the pipeline's error floor and its
+  3D value is physics, which is why the 2D twin is run rather than remembered.
+- **Particles stream in z.** At `v_∥ ~ v_th` and a window of 6 outer times, the parallel
+  excursion is `v_th·6L_⊥/u_rms ≈ 6L_⊥·(v_th/u_rms)`, comparable to `L_z = 6L_⊥` — so a
+  particle does traverse the box, and the field it samples decorrelates by streaming as well
+  as by the Alfvénic evolution at `L_z/v_A` (one outer time, by critical balance). Both are
+  absent in 2D. The notebook prints the excursion so a "null" in Q2 can be checked against it
+  rather than assumed away.
+- **`parspec` becomes a resolution check** with no 2D analogue: whether `n_z` resolves the
+  critically-balanced parallel structure at the perpendicular scales the particles sample.
+
+### 11.3 The run matrix
+
+**Base turbulence.** `dims=3`, single process (B1's restriction), **finite-difference z**, box
+`L_⊥ = 2π`, `L_z = 6L_⊥` (Xia's aspect), elsasser O-U forcing in the perpendicular shell
+`1 ≤ |k|/dk < 3` with the `k_z = ±2π/L_z` envelope, `forcing_tau = 1`, adaptive dt
+(`cfl_safety = 0.5`, `cfl_every = 1`), `lsrk33`, fp64.
+
+*Why finite-difference z and not `z_spectral`.* Measured, not assumed: at 256²×64 on this
+laptop `z_spectral` costs **1.73×** the FD-z step (1310 vs 759 ms; 1.72× at 128²×64), because
+the rfftn over (z,x,y) plus the 2×2 putzer propagator is more work than one rfft2 per plane
+plus a z-stencil. Against that, B1 measured full-mask `E_z` against the solver's own
+`dψ/dt − ∂_zφ` at 7.9e-16 relative in **both** modes, so exactness buys nothing here, and the
+`∂_z⁴` filter FD-z adds lives entirely inside `ez_resistive`, which the production ensembles
+do not see. The FD-z parallel CFL (`dt ≤ cfl·dz`) is not binding at this aspect: `1/dz = 1.7`
+against a perpendicular `max|∇|/dx ≈ 57` at 256². A `z_spectral` twin at reduced size stays
+available as an attribution control if the z discretization is ever suspected.
+Scheme: `lsrk33` is integrating-factor, the wave path — **never an IMEX scheme** on a
+wave-dominated `L` (CLAUDE.md); with FD-z the Alfvén term is an RHS term anyway.
+
+*Why Laplacian dissipation, against §10's `hyper = 3` decision for 2D.* Xia's `c₂` is
+*Reynolds-number dependent* (0.44 at Re 2400, 0.41 at 6000, 0.29 at 15000, 0.20–0.25 at
+38000). A `hyper = 3` run has no Reynolds number and cannot be placed on that trend, so the 3D
+literature check runs `hyper = 1` with `ν = η = 0.2·L_⊥/Re`, `Re = 6000` at 256²
+(`Re ∝ N_⊥^{4/3}` holds `k_d/k_max` fixed as the profile shrinks). The `hyper = 3` twin at the
+reference host is the bridge back to the 2D campaign. Side effect worth noting but *not* a
+headline: at `hyper = 1` the resistive `E_z` piece is `η j_z` rather than a numerical
+regularization, so the full-mask-vs-ideal difference is a resistive acceleration — still a
+fluid closure, not the kinetic `E_∥` a collisionless plasma has, so it stays out of the
+physics claims (§1's caveat is unchanged).
+
+*Amplitude.* `EPS_LADDER` is a ladder of **target `u_rms`**; the forcing power is
+`P = FORCE_C·u_target³/L_⊥` (constant flux) and the achieved `u_rms`, `b_rms` and
+`χ = k_⊥u_rms/(k_z v_A)` are **measured in the notebook**, never assumed. `L_z` is held fixed
+across the ladder, so `χ` moves with `ε` (0.3 at `ε = 0.05` to 1.8 at 0.3) and only the
+`ε = 0.2` host is critically balanced the way Xia's runs are; the alternative — rescaling
+`L_z ∝ 1/ε` per host — keeps `χ ≈ 1` everywhere but changes the box, and therefore `δu` at a
+fixed physical `ρ`, between hosts. Fixed box was chosen so the design-(b) `δu(ρ)` comparison
+is clean; the trade is recorded here so it is not rediscovered.
+
+**Ensembles** (13 per design-(a) run; `n` is per ensemble):
+
+| group | what | mask / flags |
+|---|---|---|
+| (a) Ω sweep, 5 | `ρ/dx ∈ {2,3,4,6,8}` at fixed `v_th` (fixed `β_i`) | ideal-Ohm, `epar_project=True` |
+| (c) rings, 4 | `ρ/dx = 3` fixed at insertion, `v_⊥ ∈ {0.5,1,2,4}×v_⊥,rms` | ideal-Ohm, `epar_project=True` |
+| unprojected twin | the `ρ/dx = 4` ensemble without the projection | ideal-Ohm, no projection |
+| full-`∂ψ/∂t` | the exactness / `p_z` ensemble | all five pieces |
+| E = 0 control | the numerical-heating floor | `bperp` only |
+| δb = 0 control | pure gyration about `B₀ẑ` | nothing |
+
+Design (b) is the `ρ/dx = 4` ideal ensemble alone, repeated at every forcing power in its own
+run. There is **no `B₀` contrast cohort** — in 3D that is the forcing ladder itself.
+
+**The matched 2D twin.** One 2D run per `TWIN_HOSTS` entry, carrying the same 13 ensembles.
+The 2D solver has no Alfvén term, so `B₀` is free there and the mapping is exact — divide
+every 3D velocity by `ε` and keep lengths:
+
+    B₀ = 1/ε,  q/m = Ω_3D,  v_th,2D = v_th,3D/ε,  u_rms,2D = 1,  t_2D = ε·t_3D,  ν_2D = ν_3D/ε
+
+which leaves `Ω`, `ρ`, `ξ` and `β_i` identical between the twins. What is **not** matched is
+the turbulence: 2D RMHD inverse-cascades `⟨ψ²⟩` to the box scale and 3D does not, so
+`b_rms/u_rms` differs and every twin comparison is made at matched ξ, not at matched forcing.
+Cost is negligible (2D 256² is ~1/40 of a 3D 256²×64 step), so the twin is not an optional
+extra.
+
+**Profiles** (`examples/particles_3d_run.py::PROFILES`, selected by `TARANIS_P3D_PROFILE`):
+
+| | grid | n/ens | hosts | spin-up + window | 2D twins | hyper=3 twin |
+|---|---|---|---|---|---|---|
+| `smoke` | 32²×16 | 256 | `u_rms` 0.2, 0.3 | 1.5 + 1.5 turnovers | 1 | no |
+| `mvp` | 128²×32 | 4096 | 0.1, 0.2, 0.3 | 4 + 5 | 1 | no |
+| `full` | 256²×64 | 32768 | 0.05, 0.1, 0.2, 0.3 | 4 + 6 | 2 | yes |
+
+`n_z/n_x = 0.25` matches Xia's 1024²×256 aspect and the anisotropy estimate
+`n_z/n_x ~ (k_⊥max/k_0)^{-1/3}`; Xia used 1.0 at 256³, so **parallel resolution is the
+standing risk** and `parspec` is the check that fires.
+
+### 11.4 Measurement protocol
+
+Identical to the 2D campaign's, which follows Xia et al. §4.1, so the two are comparable:
+
+- heating in the **local-B frame** (`vperpB2`, `vparB2`), with the ẑ-referred pair reported
+  beside it;
+- window from `t₀ = 10/Ω` (skipping the E×B pickup) to the first step where the smoothed
+  `⟨v_⊥B²⟩` exceeds `1.2×` its `t₀` value, or the run end, never shorter than 400 solver steps
+  (`ext` flags where the floor bound it);
+- `ρ` and `ξ` from `v_⊥` **at `t₀`**, `δu(ρ)` from the run's own kinetic spectrum averaged over
+  the snapshots inside the window;
+- **the 2σ upper-limit rule**: a rate not 2σ above zero is a limit, starred, drawn as an arrow,
+  held out of every fit. Xia et al. quote **no error bars and no limit rule** — every cohort
+  enters their fit — so the sensitivity table carries an explicit **Xia-comparable row** that
+  admits every point. In 2D those two differed by 0.2 in `c₂`, which is larger than the gap
+  between Xia's coarsest and finest runs; quoting only one of them would be a false comparison.
+- the near-zero-point sensitivity table the 2D analysis prints, extended with one new row:
+  **`δu` convention**. Xia's `δu² = ∫_{k₋}^{k₊}E_u dk` over one e-fold at `k_ρ` versus
+  taranis's `δu = √(2kE_kin)` differ by a few percent on a k^{-3/2} spectrum but by 10–35% on a
+  steep one; the notebook computes the band integral (host-side, numpy) and reports the
+  measured ratio and a `c₂` fitted with it.
+- **the floor is quoted as a rate.** New in 3D and better than the 2D practice: the E = 0 and
+  δb = 0 controls are run through the *same* `heating_points` window machinery, so the table
+  carries their `Q_⊥` next to the measurements and prints the ratio of the smallest fitted
+  `Q_⊥` to the largest control `|Q_⊥|`. Under ~10× means the pipeline was measured, not the
+  plasma.
+
+**Q_∥, and what the 2D bound does not constrain.** `Q_∥` is the same OLS slope on `vparB2`
+(halved, like every velocity-square column) over the *same* window as `Q_⊥`, quoted per
+ensemble alongside `w_ez_ideal/w_tot` from the exact work accumulators. Three things the 2D
+`p_z` bound says nothing about, and which are therefore the 3D-only content: (i) whether
+`⟨v_∥B²⟩` grows *secularly* rather than oscillating — 2D forbids the former, 3D does not;
+(ii) whether `Q_∥/Q_⊥` rises with `β_i` as Xia find (their Fig. 7: `Q_∥ ≪ Q_⊥` at `β_i ≪ 1`,
+`Q_∥ > Q_⊥` possible at `β ~ 1`, `ξ ≲ 0.1`), which needs the parallel resonance broadening
+that only z-dependence provides; (iii) the size of the `p_z` drift itself, which in 2D is
+bounded by construction and in 3D is not. Conversely the bound says nothing about the
+*magnitude* of `E_z`: in code units `E_z/E_⊥ ~ ε` in both dimensions, so a small `Q_∥` in 3D
+is evidence about the amplitude, not about the invariant. Both readings are written into the
+notebook's "reading the parallel channel" section so the answer is attributable either way.
+
+### 11.5 How this differs from Xia et al. 2013
+
+Checked against the paper, not against memory. Differences that could move `c₂`, and why each
+was accepted:
+
+| | Xia et al. | this campaign (`full`) |
+|---|---|---|
+| grid | 128³ … 1024²×256 | 256²×64 (`n_z/n_x` = their D-run aspect, not their 256³ aspect) |
+| box | `L_∥/L_⊥ = 6` | 6 |
+| dissipation | Laplacian, `ν = η`, Re 2400–38000 | Laplacian, `ν = η`, Re ≈ 6000 at `u_rms = 0.2` |
+| forcing | body force on `k_⊥, k_∥ ∈ [1,2]` box modes, Gaussian, refreshed 5×/eddy with cubic interpolation, balanced | O-U elsasser, `k_⊥ ∈ [1,2]` shell, `k_z = ±1`, `τ = 1`, balanced |
+| amplitude | `u_rms ≈ v_A/5`, `χ ≈ 1` | ladder 0.05–0.3 at fixed `L_z`, so `χ = 0.3–1.8`; the 0.2 host is theirs |
+| `δB_rms/B₀` | ≤ 0.47 (per-cohort, via the rescaling) | `= b_rms`, one value per run, 0.07–0.42 |
+| particles | ~1e5 per cohort; 5% rate error at 5.12e4 | 32768 per ensemble → ~2× that finite-N error |
+| interpolation | TSC in 4D (three space + **time**) | trilinear in space, fields **frozen** over a solver step |
+| substepping | particle dt ≈ RMHD dt / 4 | `substeps = 2`, and the ensemble table prints steps/gyration |
+| `E_∥` | their eq. 21 | `epar_project`, algebraically the same operation |
+| frame, window | local B; `t₀ = 10/Ω` to 1.2× | same (+ a 400-step floor) |
+| limits | none; every cohort is fitted | 2σ rule **and** a Xia-comparable no-limit row |
+| `δu` | e-fold band integral at `k_ρ` | `√(2kE_kin)`; band version also computed, ratio reported |
+| `β_i` | 0.006–1, **decoupled** from ξ | `= v_⊥²`, **locked** to ξ; ~0.014–0.93 |
+| `c₂` | 0.44 / 0.41 / 0.29 / 0.20–0.25 by Re; `c₁` 0.6–1.1 (low β) to 3.6 (β = 1) | the comparison is to the row at *this* run's Re, not to their headline 0.21 |
+
+The three that most plausibly matter: **finite-N** (they resolve 5% at 5e4, we will not do
+better than ~10%, which is why the upper-limit rule earns its keep); **frozen fields plus
+linear interpolation** where they use TSC in space *and* time (the `p_z` drift of the 2D twin
+is the in-situ measurement of what that costs); and **the locked `β_i`**, which means a `c₂`
+measured here at `ξ ≈ 0.1` is a `β_i ≈ 1` measurement in their terms and belongs against their
+C4/B4 rows, where `c₁ ≈ 3.6`.
+
+### 11.6 Cost, measured
+
+**Measurements** (Apple M1, macOS 14 / Darwin 23.6.0, jax 0.10.0, CPU backend, fp64,
+`jax.jit(block_of_steps)` with fixed dt, `lsrk33`, elsasser forcing; median of 9 repetitions;
+machine not perfectly quiet, run-to-run spread ~±10%, which is why 4-ensemble and 10-ensemble
+columns sometimes cross):
+
+| grid (FD-z) | particles off | 4 ens × 4096 | 10 ens × 4096 |
+|---|---|---|---|
+| 128²×32 | 96.4 ms/step | 105.0 | 116.8 |
+| 128²×64 | 199.7 | 255.3 | 260.0 |
+| 192²×48 | 375.9 | 454.8 | 378.3 |
+| **256²×64** | **759.3** | **958.6** | **888.9** |
+
+(the 256²×64 row is superseded by the alternating re-measurement below, 707.5 ms particles
+off; the 4- and 10-ensemble columns crossing at 192² and 256² is the ±10% run-to-run spread,
+not a real effect.)
+
+`z_spectral`, particles off: 344.1 ms at 128²×64 and 1309.7 at 256²×64 — **1.72–1.73× FD-z**,
+which is what settles §11.3's z-mode choice.
+
+Particle-count scan at 128²×64, 10 ensembles: 1024 → 205 ms, 4096 → 260, 16384 → 257 —
+i.e. flat up to 1.6e5 particles, which is what docs/performance.md predicts (the fixed
+`particle_fields` transforms dominate, the O(N) gather does not). **That flatness does not
+extend to the production loading**, and assuming it would have been wrong. Alternating
+off/on/on at the production size, 7 repetitions, so thermal drift cancels:
+
+| 256²×64, FD-z | ms/step | vs off | IQR |
+|---|---|---|---|
+| particles off | 707.5 | — | 40 ms |
+| 13 ensembles × 8192 (1.1e5 particles) | 906.6 | **+28%** | 103 |
+| 13 ensembles × 32768 (4.3e5 particles) | 1220.8 | **+73%** | 67 |
+
+So the gather turns back on somewhere above 1e5 particles: 0.5 ns per particle per step
+between the 128²×32 pair (41k particles, +21%) and ~1.0 ns between the two production-size
+points, i.e. the rate itself rises with occupancy and is not safe to extrapolate far. The two
+profiles' particle counts were each chosen from a measured point, not from the model: 4096 per
+ensemble at `mvp` (+21% measured) and 32768 at `full` (+73% measured). The trade is worth taking: 4× the particles is 2× better finite-N statistics
+(Xia et al. resolve 5% at 5.12e4 per cohort) for **+25% of the campaign's wall clock**, and
+finite-N is what limits the *upper limits*, which are the discriminating points. `full`
+therefore runs 32768 per ensemble, and the cost table below uses the measured 1220.8 ms for
+the 13-ensemble runs, 870 ms for the 1-ensemble design-(b) runs and 707.5 ms particles-off.
+
+Per grid point the solver is **0.181–0.190 µs/point/step** (fp64, particles off), flat over a
+factor 8 in problem size — so the extrapolation below is interpolation, not a guess.
+
+**Steps.** `dt = cfl·dx/max(|∂_xφ|+|∂_xψ|)`, so steps per outer turnover `= κ·N_⊥/cfl` with
+`κ = max|∇|/u_rms`, independent of the amplitude (this is why every host on the ladder costs
+the same). Measured on the smoke run: `κ = 5.5` at 32² (median `dt = 7.16e-2`,
+`u_rms = 0.251`); the 2D campaign implies `κ ≈ 9` at 256², where the gradients are better
+resolved. **Planning `κ = 7 ± 2`** → 3584 steps/turnover at 256², 1792 at 128².
+
+**Two options.**
+
+*Minimum viable (`mvp`, 128²×32).* 3 hosts × 4 turnovers of particle-free spin-up + 1
+design-(a) × 5 + 3 design-(b) × 5 = 32 turnover-units, 57k steps →
+**≈ 1.7 h on this laptop**, ~1.1 GB. What it buys: the whole pipeline, the 2D-vs-3D parallel
+comparison (Q2, which needs contrast and not resolution), design (b)'s ×6 forcing lever, and
+a `c₂` with a ξ lever of maybe ×2 and a nearly absent inertial range. What it does **not**
+buy: a `c₂` placeable on Xia's Re trend, or a `δu(ρ)` worth the name. Run this first; it is
+the thing that finds the protocol bugs.
+
+*Full (`full`, 256²×64, 32768 per ensemble).* Priced per phase at the measured rates:
+
+| phase | turnover-units | ms/step | wall |
+|---|---|---|---|
+| 4 base spin-ups, particles off | 16 | 707.5 | 11.3 h |
+| 2 design-(a) runs, 13 ensembles | 12 | 1220.8 | 14.6 h |
+| 4 design-(b) runs, 1 ensemble | 24 | ~870 | 20.8 h |
+| hyper=3 twin (spin-up + particles) | 4 + 6 | 707.5 / 1220.8 | 10.1 h |
+| 2 matched 2D twins at 256² | — | ~25 | ~1 h |
+| **total** | **62** (≈ 222k steps) | | **≈ 58 h** |
+
+Disk ≈ **12.4 GB**: 161 field snapshots at 67.6 MB, 1.4 GB of particle items, ~0.2 GB of
+moment sidecars.
+
+**Kaggle target.** Assume a **P100** (what `examples/kaggle_forced_turbulence_256cubed.ipynb`
+targets), fp64. The extrapolation is a chain and should be treated as **±2×**: P100 fp64 peak
+is 4.7 TFLOP/s at 732 GB/s HBM2; taranis's step is FFT/bandwidth-bound, and the closest
+measured anchor in docs/performance.md is 1×A5000 at fp32, 294 ms/step for 512²×128
+(8.8 ns/point). Halving throughput for fp64's doubled word gives ~17.6 ns/point on a P100
+against **185 ns/point measured on this M1 CPU — a factor ≈ 10**. So:
+
+| | steps | M1 CPU fp64 | P100 fp64 (assumed 10×, ±2×) | disk |
+|---|---|---|---|---|
+| `mvp` 128²×32 | 57k | 1.7 h | ~10 min | 1.1 GB |
+| `full` 256²×64 | 222k | 58 h | **≈ 6 h (3–12 h)** | 12.4 GB |
+
+That fits a Kaggle session only if the fast end holds, so **the resumability of `make_data` is
+load-bearing, not a convenience** — the campaign is expected to span 2–3 sessions against the
+~30 GPU-h/week quota. Memory is not a constraint: the `full` state is 67.6 MB, the real-space
+working set ~0.5 GB, peak well under 2 GB on a 16 GB card — there is headroom for 384²×96 if
+the GPU turns out to be at the fast end. Disk *is* a constraint on Kaggle: run under
+`/kaggle/tmp` and archive only the sidecars, `params.json` and a subset of snapshots
+(~0.5 GB), never the whole 12.4 GB tree — `/kaggle/working` caps at 20 GiB **and ~500 files**,
+and orbax writes many small files per snapshot.
+
+**Is fp32 admissible?** It roughly halves both time and disk and would put `full` inside one
+Kaggle session. The particle state, the pusher and the work accumulators are fp64 whatever
+`TARANIS_PRECISION` says (§4), so gate 8's closure is precision-independent — measured on the
+smoke run at `6.2e-16` (fp32) and `6.8e-16` (fp64).
+
+That has a consequence which had to be measured rather than assumed: **the E = 0 control is
+blind to field precision.** Its mask makes `E` exactly zero, so the push is a pure fp64
+rotation and the floor does not move — measured at `7.105e-15` max per-particle `|v|²` drift
+in *both* precisions, agreeing to four digits, with `w` bitwise zero in both. So gate 5's
+floor bounds the *pusher*, not the interpolation noise fp32 fields would introduce, and it
+cannot be the fp32 criterion for a field-precision change. (§9's reading of gate 5 — a WebGPU
+port whose particle STATE is also fp32 — is unaffected; there the control does move.)
+
+The criterion is therefore statistical, and there is only one honest form of it: fp32 fields
+make the turbulence a different realization within a few eddy times, so **rerun one design-(a)
+host at fp32 and require its per-ensemble `Q_⊥`, and the `c₂` it yields, to agree with the
+fp64 twin inside the fit error.** Smoke-scale precedent (32²×16, one host, the reference ideal
+ensemble): `Q_⊥ = 2.20e-3 ± 2.9e-4` at fp64 against `3.20e-3 ± 1.3e-3` at fp32 — consistent,
+but only because the fp32 error bar is 4× wider, which is exactly the kind of "agreement" the
+production test must not accept. Until that test is green at the production window length,
+**production is fp64**. The prize is real (≈6 h → ≈3 h on a P100, 12.4 → 6.2 GB, two Kaggle
+sessions → one), so run the test; do not assume the answer.
+
+### 11.7 Smoke run (2026-08-19, verified)
+
+`TARANIS_P3D_PROFILE=smoke`, 32²×16, `L_z = 6L_⊥`, `Re = 375`, 13 ensembles × 256 particles,
+two 3D hosts + the 2D twin + the high-cadence tail: **46 s of wall clock, 10 MiB**, and the
+notebook executes end to end with **zero errors**. What it verified (the numbers are a
+pipeline check, not physics — this profile has no inertial range):
+
+- **work closure** `6.8e-16`, i.e. `2.9e-15` of the initial kinetic energy, over the 11
+  ensembles that do work; a piece an ensemble's mask omits is bitwise zero;
+- **E = 0 floor** max per-particle `|v|²` drift `7.1e-15` (δb = 0 control `6.3e-15`) against
+  ideal-ensemble `|v|²` changes of order 3.7;
+- **nonzero `Q_⊥`**: best point `7.8e-3 ± 2e-3`, with 4 measurements and 7 upper limits out of
+  11 points, so the limit rule fires and `chandran_fit` returns finite numbers on both the
+  2σ and the Xia-comparable branch (the fitted `c₂` is meaningless on 4 points and the
+  notebook says so);
+- **the floor-as-a-rate check works and correctly complains**: largest control `|Q_⊥|`
+  `1.8e-4` against a smallest fitted `Q_⊥` of `1.6e-3` — a factor 8.7, i.e. *below* the ~10×
+  the notebook demands. At smoke size that is the expected answer and it is the sign the check
+  has teeth;
+- **`mu_of` vs the sidecar `mu` column** agree to `7.5e-4`; the high-cadence tail's pair
+  estimator of `D_μ` is 6–10× the sidecar's variance-slope value on the maxwellian ensembles,
+  reproducing the 2D campaign's finding that the pair estimator is an upper bound;
+- **snapshots and restart**: a second `make_data` call recognizes every run as already at its
+  target and does nothing; the moments sidecar is appended without duplicate times
+  (`read_moments`' repeated-`(t, ensemble)` check passes);
+- **the amplitude is measured, not assumed**: at `FORCE_C = 2.0` the runs reached
+  `u_rms/u_target = 0.83, 0.84`, so the constant was retuned to `3.4` and now reaches
+  `0.94, 0.96`. The calibration loop the notebook prints works; the constant must still be
+  re-checked at production Reynolds number;
+- **`p_z`, already visible at smoke size**: the full-mask ensemble's drift is `0.043` of its
+  `(q/m)ψ_rms` scale in the 2D twin (pure discretization error) and `1.65` in 3D — a factor
+  **38**. This is the Q2 signature, and finding it at 32²×16 says the production run is
+  measuring something rather than hunting for it. Note the flip side, which the smoke also
+  shows: `⟨v_∥B²⟩` grew by 0.49 in 3D and 0.60 in the 2D twin over their windows, so the
+  *magnitude* of the parallel channel is not obviously different — consistent with the
+  `E_z/E_⊥ ~ ε` expectation of §11.4, and exactly the "null" the production run must be able
+  to state cleanly;
+- **fp32 fields** (a second smoke pass at `TARANIS_PRECISION=32`, `data/test-particles-3D-fp32`):
+  closure `6.2e-16`, E = 0 floor `7.105e-15` — identical to fp64 to four digits, which is the
+  measurement behind §11.6's fp32 criterion.
+
+### 11.8 Open risks
+
+- **Parallel resolution.** `n_z/n_x = 0.25` follows Xia's largest runs but they used 1.0 at
+  256³. If `parspec` shows power piling at the `k_z` cutoff, `n_z = 128` doubles the cost of
+  the whole campaign; there is no cheaper fix.
+- **Finite N.** 32768 per ensemble gives ~10% rate error against Xia's 5% at 5.12e4. This
+  bites the *limits* hardest, which are the points that discriminate exponential from power
+  law (§5's open item (ii)).
+- **The locked `β_i`.** §11.2. Nothing in the current solver can unlock it; the honest fix
+  would be per-ensemble `(B₀, L_z)` pairs, i.e. running the same fields against several box
+  interpretations — cheap in principle (the fields do not change), but it is a `Parameters`
+  and `fields.py` change, not a campaign change, and it is not proposed here.
+- **Frozen fields.** Xia interpolate in time as well as space. The 2D twin's `p_z` residual
+  measures the cost in situ, but if it is not ≪ the 3D drift the Q2 comparison is bounded
+  rather than measured.
+- **The GPU factor.** ±2× on a chain of inferences from a different card at a different
+  precision. The first production session should time 20 steps and re-plan before committing.

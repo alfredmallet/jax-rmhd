@@ -143,7 +143,9 @@ Recorded so they are not re-investigated.
   that matters most for scaling, jax multi-node, where it costs 38%.
 - **shard_map on CPU** — measured slow, which is why `mpi4jax` remains the CPU backend.
 
-## Test particles overhead (2D, laptop, 2026-08-18)
+## Test particles overhead (laptop)
+
+### 2D (A2/A3, 2026-08-18)
 
 `bench/particles_overhead.py`: `jax.jit(block_of_steps)` at 256², `Lx=Ly=2π`, fp64,
 lsrk33, fixed `dt=1e-3` (`adaptive_timestep=False`, for determinism), elsasser forcing
@@ -200,6 +202,56 @@ computation across E and B — done in A3, see above, no measurable win; `jnp.ta
 indices, cast samples not grids — still open); (ii)
 reuse the stepper's stage-1 gradients in `particle_fields` (removes 4 of the 6 fixed
 transforms) — the bigger lever, but changes the stepper contract, so not Phase A.
+
+### Test particles overhead in 3D (B2, 2026-08-19)
+
+Same script and machine (`bench/particles_overhead.py`, now taking a case argument:
+`2d` | `3dfd` | `3dspec`; Apple M1, macOS 14 (Darwin 23.6.0), jax 0.10.0, CPU backend,
+fp64, quiet machine, `nblock=20`, `nrep=12`). 3D runs **128²×16** — a smaller perpendicular
+grid than the 2D case so one configuration fits a laptop — with everything else identical
+(`dt=1e-3` fixed, lsrk33, elsasser forcing, `eqpars={"diss":(1e-4,1e-4),"hyper":2}`,
+`n=32768` particles per ensemble, `qm=15`, `vth=1`). What transfers between grids is the
+RATIO to the solver step, not the ms.
+
+| case | finite-difference z, ms/step | z_spectral, ms/step |
+|---|---|---|
+| off | 42.2 | 75.8 |
+| on, 1 ensemble (default mask) | 53.9 (**+27.7%**) | 97.9 (**+29.1%**) |
+| on, 3 ensembles (ideal, full ∂ψ/∂t, E=0 control) | 74.3 (**+76.2%**) | 125.0 (**+65.0%**) |
+
+Isolated jitted `particle_fields` at the same grid:
+
+| mask | finite-difference z | z_spectral |
+|---|---|---|
+| default (4 gradient iffts + the dealiased-E_z fft/ifft pair) | 7.36 ms = **17.4%** of the solver step | 9.76 ms = **12.9%** |
+| + resistive and forcing pieces | 9.66 ms = **22.9%** | 10.94 ms = **14.4%** |
+
+**The finite-difference-z filter, timed for the first time** (B1 folded `−z_diss·(dz/2)⁴∂_z⁴ψ`
+into `ez_resistive`; it costs a 4th-order z stencil and a `comms.halo_exchange`, which no
+earlier measurement covered). Isolated at 128²×16 in a separate timing session, so compare
+these two with each other and not with the table above: the resistive piece as the k-local ψ
+diagonal alone is **1.50 ms**, and `fields._psi_non_ideal` with the filter is **3.36 ms** — the
+stencil plus halo is **1.86 ms**, about **4.4%** of the 42.2 ms solver step. That is the whole
+gap between the FD-z and z_spectral "+ resistive and forcing" rows, and it is why FD-z with the
+optional pieces on is the one configuration that leaves the plan's ≤15–20% budget
+(plans/TESTPART_PLAN.md §4) at 22.9%. It buys exactness: without it, full-mask E_z misses
+∂ψ/∂t by 1.2e-3 of max|E_z| and gate 7 stops converging (`tests/test_particles_3d.py`).
+
+Two more observations:
+
+- **z_spectral looks cheaper only because its solver step is nearly twice as expensive**
+  (rfftn/irfftn over (z,x,y) against one rfft2 per plane): `particle_fields` costs about the
+  same absolute time in both modes, so its *share* halves. Nothing about the particle path is
+  faster there.
+- **The trilinear gather roughly doubles the O(N) push cost per particle**, as its 8 corners
+  against 4 predict: subtracting `particle_fields` from the one-ensemble overhead gives ≈1.9 ms
+  in 2D at 32768 particles and ≈4.3 ms in 3D. It is still the part that exceeds the budget at
+  this dense loading (0.5 particles per grid point in 2D, 0.125 in 3D); at production 3D sizes
+  with ~1e5 particles it is a few percent, and only the fixed transform part matters.
+
+(2D re-measured in the same session for comparability: off 12.65, on1 16.35 (+29.2%), on3 22.64
+(+79.0%) ms/step; `particle_fields` 1.80 ms = 14.2% and 2.10 ms = 16.6% — the A3 numbers within
+run-to-run scatter.)
 
 ## Known, not done
 

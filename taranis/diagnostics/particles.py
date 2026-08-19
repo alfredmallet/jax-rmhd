@@ -152,7 +152,10 @@ def gyrofrequency(qm, B0=1.0):
 
 def kinetic_spectrum(state, kgrid, params, bin_factor=1.0):
     """(k, Ekin) from diagnostics.rmhd.perpspec's phi column: Ekin(k) is 0.5|grad_perp phi|^2
-    per unit k, i.e. the kinetic energy per unit k with 0.5<u^2> = integral Ekin dk."""
+    per unit k, i.e. the kinetic energy per unit k with 0.5<u^2> = integral Ekin dk.
+
+    perpspec is z-averaged, so in 3D this is the perpendicular spectrum of the whole box --
+    which is the one delta_u(rho) wants, rho being a perpendicular scale."""
     k, ekin, _emag = perpspec(state, kgrid, params, bin_factor=bin_factor)
     return np.asarray(k, dtype=np.float64), np.asarray(ekin, dtype=np.float64)
 
@@ -212,7 +215,7 @@ def mu_of(pstate, state, kgrid, params):
     """Per-particle magnetic moment per unit mass about the LOCAL B -> (n_ens, n) float64.
 
     mu = v_perpB^2/(2|B|) with v_perpB^2 = |v|^2 - (v.B)^2/|B|^2 and B = (b_perp, B0)
-    bilinearly gathered at pstate.x -- the snapshot-cadence counterpart of the sidecar's
+    gathered at pstate.x (bilinear in 2D, trilinear in 3D) -- the snapshot-cadence counterpart of the sidecar's
     "mu" column, and the same formula. B0 is the ensemble's own, as the push uses. An
     ensemble with `bperp` off sees B = B0 zhat, as its particles do."""
     cfg = params.particles
@@ -236,7 +239,7 @@ def _mu(v, B):
 
 
 def jz_at(pstate, state, kgrid, params):
-    """j_z = laplacian(psi) = ifft(-ksq psik), bilinearly gathered at the particle
+    """j_z = laplacian(psi) = ifft(-ksq psik), gathered at the particle (bilinear in 2D, trilinear in 3D)
     positions -> (n_ens, n) float64. The conditioning variable for current-sheet
     acceleration statistics."""
     jz = grids.ifft(-kgrid.ksq*state.fields[1], params)[None]
