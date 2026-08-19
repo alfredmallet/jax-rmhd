@@ -49,14 +49,15 @@ _kick = jax.vmap(boris_kick, in_axes=(0, 0, 0, None, None))
 _drift = jax.vmap(drift, in_axes=(0, 0, None))
 
 
-def push(x, v, E3, B3, qm, dt, params, substeps=1):
+def push(x, v, E3, B3, qm, dt, params, substeps=1, gather=interp.gather):
     # advance particles (x, v) both (N,3) float64 by dt, with the fields frozen at the
     # grid arrays E3, B3 (each (3, nz, nx, ny)); both half-kicks gather from the same
     # arrays. substeps (static) splits dt into equal pieces. Positions are left UNFOLDED —
-    # interp.gather folds them mod L.
+    # gather folds them mod L. `gather(fields, pos, params) -> (N, ncomp)` is swappable:
+    # interp.gather_spectral drives the same push from rfft2 arrays.
     h = dt / substeps
     for _ in range(substeps):
-        v = _kick(v, interp.gather(E3, x, params), interp.gather(B3, x, params), qm, 0.5 * h)
+        v = _kick(v, gather(E3, x, params), gather(B3, x, params), qm, 0.5 * h)
         x = _drift(x, v, h)
-        v = _kick(v, interp.gather(E3, x, params), interp.gather(B3, x, params), qm, 0.5 * h)
+        v = _kick(v, gather(E3, x, params), gather(B3, x, params), qm, 0.5 * h)
     return x, v

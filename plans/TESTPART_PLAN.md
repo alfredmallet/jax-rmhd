@@ -1,14 +1,13 @@
 # TESTPART_PLAN — charged test particles in taranis
 
-Status: PLAN, 2026-08-18, rev 2 (fleshed out same day from the sketch; rev 2 folds in
-Alfred's answers to the open questions — now recorded as decisions in §10, the headline
-one being that particles see the IDEAL E_z only by default). Two scope decisions since
-the sketch: (1) the resistive contribution to E_z is switchable for the particles
-independently of the solver — it is one bit of a general per-ensemble field mask (§3);
-(2) the WebGPU port is deferred to Phase C, after Phase B — §9 keeps only the
-portability constraints Phases A/B must not break. Sequenced before the webgpu game
-(`plans-webgpu/GAME_PLAN.md` eventually consumes the Phase-C kernel); nothing here
-blocks on the game or vice versa.
+Status: PLAN, 2026-08-18, rev 3 (rev 2 folded in Alfred's answers to the open questions,
+§10; rev 3 records Phase A0/A1/A2 landing the same day — see the dated parentheticals in
+§2–§8). Two scope decisions since the sketch: (1) the resistive contribution to E_z is
+switchable for the particles independently of the solver — it is one bit of a general
+per-ensemble field mask (§3); (2) the WebGPU port is deferred to Phase C, after Phase B —
+§9 keeps only the portability constraints Phases A/B must not break. Sequenced before the
+webgpu game (`plans-webgpu/GAME_PLAN.md` eventually consumes the Phase-C kernel); nothing
+here blocks on the game or vice versa.
 
 ## 1. Motivation and scope
 
@@ -131,6 +130,15 @@ Init kinds: `maxwellian` (per-ensemble v_th) and `ring` (fixed v_⊥, uniform gy
 optional v_z) — ring init is what a clean ξ-resolved heating measurement wants.
 Positions uniform over the box.
 
+(A2, 2026-08-18: landed as `particles/state.py::normalize_config`. `n` is the particle
+count PER ENSEMBLE, not the total. Each ensemble's raw per-piece mask keys — e.g.
+`ez_resistive=True` inline, as sketched above — are consumed and resolved through
+`fields.resolve_mask` into a single `ens["mask"]` dict carrying all five `FIELD_PIECES`;
+nothing reads the raw keys after normalization. Added `init_on_restart` (top-level bool,
+default False): whether `snapshot_io.load_particles` may fall back to a fresh
+`init_particles` draw when a snapshot has no particle checkpoint item, instead of
+hard-erroring — not in the original sketch, needed once checkpoint/restart was wired.)
+
 ## 4. Design (taranis core)
 
 - **Co-stepped, never snapshot-interpolated**: particles advance inside the run at the
@@ -145,6 +153,15 @@ Positions uniform over the box.
   migration), and the stepper/physics never see particles — the field→particle one-way
   dependency is enforced structurally. When `params.particles is None` every code path
   is statically identical to today's (gate 6).
+  (A2, 2026-08-18: landed as specified — `ParticleState` carries only `x`/`v` in A2,
+  diagnostic accumulators stay A3. `block_of_steps`/`_cfl_block` on the particles-on
+  carry additionally return scan `ys = (t, moments)` — post-step time and
+  `state.py::moments`'s per-ensemble (v_x²+v_y², v_z², v_z) means — which
+  `simulate_scan` appends to the sidecar `particle_moments.txt` (the diagnostics-cadence
+  bullet below). `simulate`/`simulate_scan` return `(state, pstate)` when particles are
+  on, plain `state` when off — same rule as the carry. The particles-off branch in every
+  touched function is a static `if params.particles is not None:` at the top, not a
+  restructuring of the existing body.)
 - **Step placement**: mirror `_advance_forcing`. After the stepper returns `new_state`,
   push with dt = new_state.t − state.t (exact, adaptive-safe) and fields assembled from
   the PRE-step `state` — fields frozen at t_n over the step, first-order in the field
@@ -162,6 +179,14 @@ Positions uniform over the box.
   measured in A2. (A0, 2026-08-18: revised to ≤8 — 4 gradient iffts, +2 for the dealiased
   ideal E_z, +1 resistive, +1 forcing.) (Reusing the stepper's stage-1 grads would shave most of this but
   invasively changes the stepper contract — noted as a later optimization, not Phase A.)
+  (A2, 2026-08-18: measured at 256² CPU fp64 — `particle_fields` itself costs 2.24 ms,
+  17% of the solver step, inside budget (docs/performance.md "Test particles overhead");
+  the observed +26%/+74% total overhead is the O(N) `boris.push` gather, not this
+  function. Two optimizations flagged here, not Phase A: (i) gather-side reorganization
+  in `interp.gather` — share cell/weight computation across E and B, `jnp.take` on flat
+  indices, cast samples not grids; (ii) reuse the stepper's stage-1 gradients here
+  (removes 4 of the 6 fixed transforms) — the bigger lever, deferred because it changes
+  the stepper contract.)
 - **Interpolation** (`particles/interp.py`): periodic bilinear gather from the
   collocation grid, positions folded mod L. Spectral (exact) evaluation kept as a
   validation-only path — too expensive per particle in production, but it pins the
@@ -186,6 +211,10 @@ Positions uniform over the box.
   while_loop-based `simulate` supports particles but only snapshot-cadence diagnostics —
   production heating runs use `simulate_scan`. Full particle state rides every snapshot;
   optional short high-cadence trajectory dumps exist for §9's future refvectors.
+  (A2, 2026-08-18: sidecar is `<mngr.directory>/particle_moments.txt`, written only when
+  `simulate_scan(..., save=True)`; off-signature is the plain `final_state`, not a `None`
+  ys — block_of_steps returns `(carry, ys)` only on the particles-on branch, so there is
+  no ys value to thread through the off path at all.)
 - **MPI**: Phase A is `dims=2`, single-process (already the 2D rule). 3D z-decomposed
   runs need particle migration between z-ranks or replicated fields — that design is
   Phase B's first task, not constrained here beyond keeping `ParticleState` free of any
@@ -247,12 +276,41 @@ Coupled gates (live solver):
    full mask is no longer the default). For the DEFAULT ideal-only ensembles p_z is
    deliberately NOT conserved — its drift IS the omitted resistive(+forcing)
    acceleration, a free cross-check on §5's work integrals.
+   (A2, 2026-08-18: `tests/test_particles_coupled.py` implements four variants. Frozen
+   fields, bilinear gather, E_z off (frozen ⇒ ∂ₜψ=0, so the invariant needs E_z=0 by
+   construction — leaving `ez_ideal` on is the recorded discriminator, would-be order
+   ~0): converges O(dx²), order 2.08 measured. Frozen fields, spectral gather
+   (`boris.push(gather=interp.gather_spectral)`): converges O(dt²), order 2.00. Sign
+   discrimination, v_z − qmψ (conserved) vs v_z + qmψ (not): ratio ~6000. Live
+   (evolving) fields: full-∂ψ/∂t mask converges O(dt), order 0.95; the default
+   ideal-only mask does not converge, order −0.02, ratio ~300 at the finest dt — the
+   omitted resistive+forcing acceleration. docs/numerics.md's "Test particles" section
+   carries the p_z derivation the tests check against.)
 5. **E = 0 in-situ floor**: the §3 control ensemble in a live turbulent run — KE drift
    defines the numerical-heating floor; every heating claim quotes it. (A future fp32
    port reruns exactly this to learn what it may claim.)
+   (A2, 2026-08-18: `test_e_zero_ensemble_is_the_heating_floor` in
+   `tests/test_particles_coupled.py` — the E=0 control ensemble's per-particle |v|²
+   drift in the same live run, floor 6.6e-15, against order-unity growth in the two
+   E-carrying ensembles.)
 6. **Solver untouched**: fields bitwise-identical with particles on vs off, and with
    `params.particles=None` vs current main; restart continues trajectories bitwise.
    The reference run is recorded BEFORE A2 wiring begins (standing RNG-adjacent rule).
+   (A2, 2026-08-18: three tests in `tests/test_particles_coupled.py`. (a)
+   `test_solver_output_matches_the_pre_a2_reference` — `params.particles=None` output
+   bitwise against the pre-wiring npz (recorded by
+   `tests/_gen_particles_gate6_reference.py` into
+   `tests/data/particles_gate6_reference_fp{64,32}.npz` before the carry-tuple wiring
+   landed, per the standing rule), with a host-match (hostname/jax/backend/python)
+   soft-skip on the npz comparison. (b)
+   `test_particles_on_leaves_the_solver_bitwise_identical` — particles-on vs
+   particles-off bitwise in the same session, the `default/` snapshot tree
+   byte-structurally unchanged, and a `particles/` item written every step. (c)
+   `test_restart_continues_fields_and_trajectories_bitwise` — restart reproduces fields
+   and x/v bitwise, run with `forcing_norm_per_step=False`: the default per-step
+   normalization's driver-entry `_refresh_forcing_scale` recompute at dt=0 makes even a
+   particle-free forced restart non-bitwise, a pre-existing solver issue filed
+   separately, not an A2 regression.)
 7. **E_z assembly consistency**: all pieces on, assembled E_z vs centered finite
    difference of ψ across a step — agreement at the stepper's order. Catches any sign
    or piece-bookkeeping error in §2 directly. (A0, 2026-08-18: implemented as a centered
@@ -268,6 +326,8 @@ Coupled gates (live solver):
     taranis/diagnostics/particles.py
     tests/test_particles_kernel.py    gates 1–3 (no solver)
     tests/test_particles_coupled.py   gates 4–7 (fp64 marker; bootstrap + script_main per convention)
+    tests/test_particles_config.py    config validation/normalization, params.json round trip,
+                                       init/template/moments, run.py pstate contract, sidecar (A2)
 
 `run.py` changes are confined to the carry tuple, `_advance_particles` (the
 `_advance_forcing` mirror), scan-ys plumbing, and the snapshot item — all statically
@@ -281,6 +341,13 @@ gated on `params.particles`.
 - **A1 — kernel.** `boris.py` + `interp.py` + gates 1–3. No solver coupling.
 - **A2 — co-stepping.** Carry tuple, `_advance_particles`, RNG stream, checkpoint item,
   diagnostics ys; gates 4–6 (reference recorded first); overhead measured.
+  (Landed 2026-08-18: core wiring + docs + gates 4–6 all done. Overhead measured at
+  256², CPU, fp64, quiet machine: `particle_fields`'s fixed transform cost is 17% of
+  the solver step — inside the §4 ≤15–20% budget; the O(N) `boris.push` gather, at the
+  dense 0.5-particles-per-grid-point loading used here, pushes the observed total to
+  +26% (1 default-mask ensemble/32768) / +74% (3 ensembles/32768 each), see
+  docs/performance.md "Test particles overhead". Gather optimization and stage-1-grad
+  reuse are deferred, flagged in §4.)
 - **A3 — physics production.** `diagnostics/particles.py`, paired resistive-split
   ensembles, both ξ-scan designs (§10), the two headline plots, 2D science notebook in
   `examples/`.

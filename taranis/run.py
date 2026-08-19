@@ -1,5 +1,7 @@
+import os
 import jax
 import jax.numpy as jnp
+import numpy as np
 from functools import partial
 from jax.sharding import PartitionSpec as P
 from .timestepping import get_scheme
@@ -7,6 +9,7 @@ from .snapshot_io import save_snapshot, get_saved_steps
 from time import perf_counter
 from .physics import equation_registry, construct_rhs
 from .physics.shared_physics import ou_update
+from .particles.state import MOMENTS, moments, push_ensembles
 from .types import SimulationState
 from .grids import fft, local_z_coords, dealias_mask
 from . import comms
@@ -52,10 +55,25 @@ def _advance_forcing(new_state, prev_t, kgrid, params):
         new_state = new_state._replace(forcing_scale=scale_func(new_state, kgrid, params, dt))
     return new_state
 
+def _advance_particles(pstate, prev_state, new_state, kgrid, params):
+    # One particle push per full step, mirroring _advance_forcing's placement: dt is the
+    # step just taken, the fields are assembled from the PRE-step state (frozen at t_n).
+    dt = (new_state.t - prev_state.t).astype(jnp.float64)
+    return push_ensembles(pstate, prev_state, kgrid, params, dt)
+
+def _carry_state(carry, params):
+    # the run carry is (state, pstate) with particles on, the bare SimulationState off
+    return carry[0] if params.particles is not None else carry
+
+def _carry_pstate(carry, params):
+    return carry[1] if params.particles is not None else None
+
 def _refresh_forcing_scale(state, kgrid, params):
-    # recompute the per-step scale for the initial state. Checkpoints do store
-    # forcing_scale (recomputing is then a no-op), but repaired legacy snapshots carry
-    # zeros and hand-built states may be stale — so recomputes.
+    # recompute the per-step scale for the initial state at dt = 0 (repaired legacy
+    # snapshots carry zeros and hand-built states may be stale). Since selfnorm_scale
+    # (2026-08-08) the dt=0 guard returns the safe_scale value, not the stored dt>0 one,
+    # so this OVERWRITES a checkpoint's forcing_scale: a forced restart at the default
+    # forcing_norm_per_step=True is not bitwise (fix filed separately).
     if params.forcing and params.forcing_norm_per_step:
         scale_func = equation_registry[params.eqtype].forcing_scale_func
         if params.comm_backend == "jax":
@@ -94,6 +112,8 @@ def _block_dt(state,kgrid,params):
 
 def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
     # params.cfl_every full steps sharing one dt; forcing still advances every step.
+    if params.particles is not None:
+        return _cfl_block_particles(state,kgrid,params,rhs,set_timestep,scheme,stepper)
     dt = _block_dt(state,kgrid,params)
     def stepping(state,_):
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt)
@@ -103,10 +123,41 @@ def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
     final_state,_ = jax.lax.scan(stepping,state,None,params.cfl_every)
     return final_state
 
+def _cfl_block_particles(carry,kgrid,params,rhs,set_timestep,scheme,stepper):
+    # _cfl_block on the (state, pstate) carry; ys = (post-step t, per-ensemble moments).
+    dt = _block_dt(carry[0],kgrid,params)
+    def stepping(carry,_):
+        state,pstate = carry
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt)
+        if params.forcing:
+            new_state = _advance_forcing(new_state, state.t, kgrid, params)
+        pstate = _advance_particles(pstate, state, new_state, kgrid, params)
+        return (new_state,pstate), (new_state.t, moments(pstate))
+    return jax.lax.scan(stepping,carry,None,params.cfl_every)
+
+def _block_of_steps_particles(carry,kgrid,params,nblock,scheme,stepper,rhs,set_timestep):
+    # block_of_steps on the (state, pstate) carry; ys stacked over every full step.
+    if _use_cfl_blocks(params):
+        def block(carry,_):
+            return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)
+        carry,ys = jax.lax.scan(block,carry,None,-(-nblock//params.cfl_every))
+        # (nblocks, cfl_every, ...) -> (nsteps, ...)
+        return carry, tuple(y.reshape((-1,)+y.shape[2:]) for y in ys)
+    def stepping(carry,_):
+        state,pstate = carry
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
+        if params.forcing:
+            new_state = _advance_forcing(new_state, state.t, kgrid, params)
+        pstate = _advance_particles(pstate, state, new_state, kgrid, params)
+        return (new_state,pstate), (new_state.t, moments(pstate))
+    return jax.lax.scan(stepping,carry,None,nblock)
+
 def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
     recipe = equation_registry[params.eqtype]
     set_timestep = recipe.set_timestep_func
     rhs = construct_rhs(recipe)
+    if params.particles is not None:
+        return _block_of_steps_particles(state,kgrid,params,nblock,scheme,stepper,rhs,set_timestep)
     if _use_cfl_blocks(params):
         # nblock rounded up to a whole multiple of cfl_every: dt frozen per block.
         def block(state,_):
@@ -122,23 +173,52 @@ def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
     final_state,_ = jax.lax.scan(stepping,state,None,nblock)
     return final_state
 
-def _write_snapshot(snap,state,params,mngr,save,label="snapshot"):
+def _write_snapshot(snap,state,params,mngr,save,label="snapshot",pstate=None):
     # one snapshot write, drained before returning; returns the next free index
     if not save:
         return snap
     if params.rank==0:
         print(f"Saving {label} as snapshot {snap} at t = {float(state.t)}")
-    save_snapshot(snap,state,mngr,params)
+    save_snapshot(snap,state,mngr,params,pstate)
     mngr.wait_until_finished()
     return snap+1
 
-def _start_snapshots(state,params,mngr,save):
+def _start_snapshots(state,params,mngr,save,pstate=None):
     # next free index, enumerated from disk and broadcast from rank 0, with the initial
     # state written as the first snapshot
     snap=max(get_saved_steps(mngr.directory), default=-1)+1
     if params.size>1:
         snap = params.comm.bcast(snap, root=0)
-    return _write_snapshot(snap,state,params,mngr,save,"initial state")
+    return _write_snapshot(snap,state,params,mngr,save,"initial state",pstate)
+
+_MOMENTS_FILE = "particle_moments.txt"
+
+def _append_moments(directory,ys):
+    # one row per (step, ensemble) appended to the snapshot dir's sidecar; the header is
+    # written when the file is created, so a restart just appends.
+    path = os.path.join(str(directory),_MOMENTS_FILE)
+    t,mom = np.asarray(ys[0]),np.asarray(ys[1])
+    header = not os.path.exists(path)
+    with open(path,"a") as f:
+        if header:
+            f.write("# t ensemble "+" ".join(MOMENTS)+"\n")
+        for i in range(t.shape[0]):
+            for e in range(mom.shape[1]):
+                f.write(" ".join(["%.17g" % t[i],str(e)]+["%.17g" % m for m in mom[i,e]])+"\n")
+
+def _truncate_moments(directory,t):
+    # restart housekeeping: drop the rows past the restart time (the run about to start
+    # rewrites them), keeping the header. A clean restart's last row has t == state.t, so
+    # nothing is dropped there.
+    path = os.path.join(str(directory),_MOMENTS_FILE)
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        lines = f.read().splitlines()
+    kept = [ln for ln in lines if not ln.strip() or ln.startswith("#") or float(ln.split()[0]) <= t]
+    if len(kept) != len(lines):
+        with open(path,"w") as f:
+            f.write("".join(ln+"\n" for ln in kept))
 
 def _finish(state,params,t_start):
     mngr_time = perf_counter()-t_start
@@ -146,12 +226,22 @@ def _finish(state,params,t_start):
         print("Ending simulation at t = "+str(state.t)+". It took "+str(mngr_time)+"s")
     return state
 
-def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33',save=True,print_every=1):
+def _check_pstate(params,pstate):
+    # a particle carry is required exactly when params.particles is set
+    if params.particles is not None and pstate is None:
+        raise ValueError("params.particles is set, so this driver needs a particle carry: "
+                         "pass pstate=particles.state.init_particles(params) or "
+                         "snapshot_io.load_particles(isnap,snap_path,params).")
+    if params.particles is None and pstate is not None:
+        raise ValueError("pstate was passed but params.particles is None (particles are off).")
+
+def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33',save=True,print_every=1,pstate=None):
     # this simulates repeated fixed number of timesteps
     # for automatic differentiation sometime in the future
     # we should set nblock using the helper function estimate_good_nblock
     t_start = perf_counter()
     stepper,scheme = get_scheme(schemestr)
+    _check_pstate(params,pstate)
     state = _refresh_forcing_scale(state, kgrid, params)
     # donate_argnums=(0,): caller's input `state` buffer is consumed/reused for the output, since we always reassign `state` from the return value below.
     if params.comm_backend == "jax":
@@ -163,29 +253,44 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
     else:
         block_of_steps_jit = jax.jit(block_of_steps,static_argnums=(2,3,4,5),donate_argnums=(0,))
         advance = lambda s: block_of_steps_jit(s,kgrid,params,nblock,scheme,stepper)
+    if params.particles is not None:
+        if save:
+            _truncate_moments(mngr.directory,float(state.t))
+        # the jitted block carries (state, pstate) and emits per-step moments; the whole
+        # tuple is donated
+        _block = advance
+        def advance(carry):
+            carry,ys = _block(carry)
+            if save:
+                _append_moments(mngr.directory,ys)
+            return carry
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    snap = _start_snapshots(state,params,mngr,save)
+    carry = state if params.particles is None else (state,pstate)
+    snap = _start_snapshots(state,params,mngr,save,pstate)
     block_count=0
     saved_current=True
     while state.t<t_end:
-        state = advance(state)
+        carry = advance(carry)
+        state,pstate = _carry_state(carry,params),_carry_pstate(carry,params)
         block_count+=1
         saved_current=False
         if params.rank==0 and block_count%print_every==0:
             print(state.t) #this doesnt affect performance; state.t already on host from while
         if state.t - t_last_snapshot > t_snap:
-            snap = _write_snapshot(snap,state,params,mngr,save)
+            snap = _write_snapshot(snap,state,params,mngr,save,"snapshot",pstate)
             t_last_snapshot=float(state.t)
             saved_current=True
     if not saved_current:
-        snap = _write_snapshot(snap,state,params,mngr,save,"final state")
+        snap = _write_snapshot(snap,state,params,mngr,save,"final state",pstate)
     mngr.wait_until_finished()
-    return _finish(state,params,t_start)
+    state = _finish(state,params,t_start)
+    return state if params.particles is None else (state,pstate)
 
-def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',save=True,print_every=1):
+def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',save=True,print_every=1,pstate=None):
     t_start = perf_counter()
     stepper,scheme = get_scheme(schemestr)
+    _check_pstate(params,pstate)
     set_timestep = equation_registry[params.eqtype].set_timestep_func
     rhs = construct_rhs(equation_registry[params.eqtype])
     # kgrid is an explicit argument (not a closure) so the jax backend can hand it to
@@ -197,29 +302,50 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
         return new_state
     def block_wrapped(state,kgrid):
         return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper)
+    # particle variants of the two loop bodies: same step, on the (state, pstate) carry.
+    # The while_loop cannot emit ys, so `simulate` has snapshot-cadence diagnostics only.
+    def stepper_particles(carry,kgrid):
+        state,pstate = carry
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
+        if params.forcing:
+            new_state = _advance_forcing(new_state, state.t, kgrid, params)
+        return new_state,_advance_particles(pstate, state, new_state, kgrid, params)
+    def block_particles(carry,kgrid):
+        return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)[0]
     # cfl_every>1: the while_loop iterates over whole blocks, so it can overshoot the
     # snapshot target by up to cfl_every-1 extra steps (on top of the usual one-step overshoot)
-    loop_body = block_wrapped if _use_cfl_blocks(params) else stepper_wrapped
+    if params.particles is None:
+        loop_body = block_wrapped if _use_cfl_blocks(params) else stepper_wrapped
+    else:
+        loop_body = block_particles if _use_cfl_blocks(params) else stepper_particles
     def sim_to_next_snap(state,kgrid,target_t):
         def snap_cond(state):
             return state.t<target_t
         return jax.lax.while_loop(snap_cond,lambda s: loop_body(s,kgrid),state)
+    def sim_to_next_snap_particles(carry,kgrid,target_t):
+        def snap_cond(carry):
+            return carry[0].t<target_t
+        return jax.lax.while_loop(snap_cond,lambda c: loop_body(c,kgrid),carry)
+    driver = sim_to_next_snap if params.particles is None else sim_to_next_snap_particles
     # donate_argnums=(0,): caller's input `state` buffer is consumed/reused for the output, since we always reassign `state` from the return value below.
     if params.comm_backend == "jax":
-        _jit = jax.jit(comms.shard_call(sim_to_next_snap,params,kgrid,nextra=1),donate_argnums=(0,))
+        _jit = jax.jit(comms.shard_call(driver,params,kgrid,nextra=1),donate_argnums=(0,))
         sim_to_next_snap_jit = lambda s,target_t: _jit(s,kgrid,target_t)
     else:
-        sim_to_next_snap_jit = jax.jit(lambda state,target_t: sim_to_next_snap(state,kgrid,target_t),
+        sim_to_next_snap_jit = jax.jit(lambda state,target_t: driver(state,kgrid,target_t),
                                        donate_argnums=(0,))
     state=_refresh_forcing_scale(initial_state, kgrid, params)
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    snap = _start_snapshots(state,params,mngr,save)
+    carry = state if params.particles is None else (state,pstate)
+    snap = _start_snapshots(state,params,mngr,save,pstate)
 
     while state.t<t_end:
-        state = sim_to_next_snap_jit(state,min(t_last_snapshot+t_snap,t_end))
-        snap = _write_snapshot(snap,state,params,mngr,save)
+        carry = sim_to_next_snap_jit(carry,min(t_last_snapshot+t_snap,t_end))
+        state,pstate = _carry_state(carry,params),_carry_pstate(carry,params)
+        snap = _write_snapshot(snap,state,params,mngr,save,"snapshot",pstate)
         t_last_snapshot=float(state.t)
     mngr.wait_until_finished()
-    return _finish(state,params,t_start)
+    state = _finish(state,params,t_start)
+    return state if params.particles is None else (state,pstate)
 

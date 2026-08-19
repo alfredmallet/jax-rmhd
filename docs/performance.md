@@ -143,6 +143,41 @@ Recorded so they are not re-investigated.
   that matters most for scaling, jax multi-node, where it costs 38%.
 - **shard_map on CPU** — measured slow, which is why `mpi4jax` remains the CPU backend.
 
+## Test particles overhead (2D, laptop, 2026-08-18)
+
+`bench/particles_overhead.py`: `jax.jit(block_of_steps)` at 256², `Lx=Ly=2π`, fp64,
+lsrk33, fixed `dt=1e-3` (`adaptive_timestep=False`, for determinism), elsasser forcing
+(`forcing_power_elsasser=(1,1)`, `eqpars={"diss":(1e-4,1e-4),"hyper":2}`). Particles:
+`n=32768` per ensemble, `qm=15`, `vth=1` (plan §2 baseline). Apple M1, macOS 14 (Darwin
+23.6.0), jax 0.10.0, CPU backend, quiet machine.
+
+| case | ms/step | overhead vs off |
+|---|---|---|
+| off | 13.2 | — |
+| on, 1 ensemble (default mask), 32768 particles | 16.65 | +26% |
+| on, 3 ensembles (ideal, full ∂ψ/∂t, E=0 control), 32768 each | 22.9 | +74% |
+
+Breakdown, fixed (transforms) vs O(N) (gather/push):
+
+| part | cost | share of solver step | scaling |
+|---|---|---|---|
+| `particle_fields` (4 gradient iffts + fft/ifft pair for the dealiased ideal E_z; optional resistive/forcing iffts add ~nothing measurable) | 2.24 ms | 17% | grid-like, same as the solver's own transforms |
+| `boris.push` per ensemble of 32768 (4 bilinear gathers + 2 kicks) | 1–2.5 ms | — | O(N), resolution-independent per particle |
+
+Verdict: the fixed part (`particle_fields`) lands INSIDE the plan's ≤15–20% budget
+(plans/TESTPART_PLAN.md §4) — that budget was an FFT-count estimate of exactly this
+piece. The O(N) push is what exceeds it: at 256² with 32768/ensemble the loading is 0.5
+particles per grid point, dense, and XLA's CPU gather is a scalar loop. In 3D at
+production sizes (e.g. 256²×128 with ~1e5 particles) the push is ~1% and only the fixed
+transform part matters; on GPU the gather is cheap.
+
+Deferred (Alfred, 2026-08-18): gather optimization would attack only the O(N) part
+(est. 1.5–2×) — revisit if A3's 2D science runs at 3×32768 particles feel slow. Two
+items flagged: (i) gather-side reorganization (`interp.gather`: share cell/weight
+computation across E and B, `jnp.take` on flat indices, cast samples not grids); (ii)
+reuse the stepper's stage-1 gradients in `particle_fields` (removes 4 of the 6 fixed
+transforms) — the bigger lever, but changes the stepper contract, so not Phase A.
+
 ## Known, not done
 
 `run.py` calls `mngr.wait_until_finished()` immediately after every `save_snapshot`, which

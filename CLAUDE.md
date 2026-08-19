@@ -257,7 +257,7 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
   docs/numerics.md.
 
-### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A0/A1 landed 2026-08-18)
+### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A0/A1/A2 landed 2026-08-18)
 
 Boris-pushed charged test particles that see the RMHD fields and never back-react.
 Derivation and conventions: docs/numerics.md "Test particles". Rules:
@@ -289,10 +289,76 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   in the kernel test; do not "fix" it toward the textbook value.
 - **Gate-6 reference** (`tests/_gen_particles_gate6_reference.py`,
   `tests/data/particles_gate6_reference_fp{64,32}.npz`, force-added — `tests/data` is
-  gitignored) was recorded on the pre-A2 tree: solver output with `params.particles=None`
-  must stay bitwise identical to it. Regenerate only on a tree that has no particle wiring.
-- Not yet (Phase A2+): `params.particles`, `ParticleState`, run.py carry tuple, checkpoint
-  item, `diagnostics/particles.py`. Do not pre-empt them ad hoc.
+  gitignored) was recorded on the pre-A2 tree and is what `tests/test_particles_coupled.py`
+  compares against: solver output with `params.particles=None` must stay bitwise identical
+  to it. Regenerate only on a tree that has no particle wiring.
+- `params.particles` (default `None` = off): a plain-JSON dict like `eqpars`, normalized
+  by `taranis.particles.state.normalize_config` (imported inside the ctor, not at module
+  scope, so `config` itself does not depend on the particle package — there is NO import
+  cycle; `run.py` imports the package eagerly anyway) into `self.particles`;
+  `self._init_args["particles"]` keeps the raw dict
+  so `save()`/`from_snapshot()` round-trip it (list/tuple-tolerant, re-save is a no-op).
+  Requires `eqtype=="RMHD"`, `dims==2`, `size==1` (Phase A restriction — ValueError
+  otherwise, pointing at Phase B). Schema: `seed`/`substeps`/`B0`/`init_on_restart` plus a
+  non-empty `ensembles` tuple, each `{qm, init: {kind: "maxwellian"|"ring", ...}}`; `n` is
+  the particle count PER ENSEMBLE, not the total. Each ensemble's raw `FIELD_PIECES` keys
+  (bperp/eperp/ez_ideal/ez_resistive/ez_forcing) are resolved through `fields.resolve_mask`
+  into `ens["mask"]` — the raw per-piece keys are consumed, not kept alongside it, and an
+  already-normalized `"mask"` is accepted back (`normalize_config` is IDEMPOTENT; a piece
+  given both inline and in `"mask"` must agree or it is a ValueError).
+  `params.n_ens = len(params.particles["ensembles"])` is absent when particles are off —
+  guard access like the z attributes.
+- `ParticleState` (`particles/state.py`; `x`/`v` each `(n_ens, n, 3)` fp64) rides as a
+  CARRY TUPLE `(state, pstate)` next to `SimulationState` — never a `SimulationState`
+  field, so the on-disk state layout and every particles-off code path stay untouched
+  (gate 6). `simulate`/`simulate_scan(..., pstate=)` is REQUIRED iff `params.particles` is
+  set (a pstate with particles off is also a ValueError); both return `(state, pstate)`
+  when on, plain `state` when off. `block_of_steps`/`_cfl_block` return `((state,
+  pstate), ys)` with `ys = (t, moments)` (`moments`: per-ensemble mean of v_x²+v_y², v_z²,
+  v_z — `state.py::MOMENTS`) when on, the unchanged `final_state` when off; the off branch
+  is a static `if params.particles is not None:` at the top of each function, never
+  restructured "for symmetry".
+- `_advance_particles(pstate, prev_state, new_state, kgrid, params)` mirrors
+  `_advance_forcing`'s placement: runs after the stepper and after `_advance_forcing`
+  (whose result it does not read), with fields assembled from the PRE-step state (frozen
+  at t_n) and `dt = new_state.t - prev_state.t`.
+- `simulate_scan(..., save=True)` appends each `advance()` call's `ys` to a sidecar
+  `<mngr.directory>/particle_moments.txt` (header `# t ensemble vperp2 vz2 vz`, one row per
+  step per ensemble, `%.17g`, append mode — a restart just continues the file; rows with
+  `t > t_restart` are dropped on entry, so a restart from an older snapshot never leaves
+  duplicate times). `simulate`'s
+  while_loop carries the tuple too but the while_loop can't emit scan ys, so it only gets
+  snapshot-cadence particle diagnostics — production heating runs use `simulate_scan`.
+- Checkpoint: `pstate` rides the same snapshot step as a SEPARATE orbax item
+  (`snapshot_io.PARTICLES_ITEM = "particles"`, `ocp.args.Composite` save); the state item
+  `_ITEM = "default"` stays STRUCTURALLY identical (same subtree, keys, array metadata and
+  values — what gate 6b tests), not byte-for-byte (ocdbt data-file names are hashed per
+  write, and the step's `_CHECKPOINT_METADATA` lists the extra item handler).
+  `load_particles(isnap, snap_path, params)` reads
+  it under the same bare-`StandardCheckpointHandler` rule as `load_snapshot`. A snapshot
+  missing the `particles` item hard-errors (`FileNotFoundError` naming `init_on_restart`)
+  UNLESS `params.particles["init_on_restart"]` is set, in which case it prints a notice and
+  returns `init_particles(params)` — never a silent re-init; a missing STEP is a
+  `FileNotFoundError` either way (the flag covers a missing ITEM only).
+- RNG: `jax.random.key(params.particles["seed"])` is used ONLY in `init_particles`
+  (`jax.random.fold_in(key, ensemble_index)`, then split for x/v) — the push itself is
+  deterministic, so the forcing RNG stream is untouched by construction.
+- `boris.push(..., gather=interp.gather)` is swappable: validation drives the identical
+  push through `interp.gather_spectral` on rfft2 arrays.
+- Restart is bitwise ONLY with `forcing_norm_per_step=False` or `forcing=False` — this is
+  pre-existing (`_refresh_forcing_scale` recomputes the forcing scale at dt=0 on
+  `simulate`/`simulate_scan` entry, not particle-specific), but it also bounds when a
+  particle restart reproduces the uninterrupted trajectory bitwise.
+- `ctx()` (`tests/_rmhd_testing.py`) caches on `tuple(sorted(kwargs.items()))`, so it
+  CANNOT take `particles=` (a dict is unhashable) — use `fresh_params(particles=...)`.
+- Overhead (A2, 2026-08-18, 256² CPU fp64, quiet machine): `particle_fields`'s fixed
+  transform cost is 17% of the solver step, inside the ≤15–20% budget; the O(N)
+  `boris.push` gather at the dense 2D loading used here pushes the observed total to
+  +26%/+74% (1/3 ensembles × 32768) — docs/performance.md "Test particles overhead".
+  Gather reorganization and stage-1-grad reuse in `particle_fields` are deferred,
+  flagged in plans/TESTPART_PLAN.md §4.
+- Not yet (Phase A3): `diagnostics/particles.py`, diagnostic accumulators, the paired
+  resistive-split production ensembles, the two headline plots.
 
 ### Checkpointing
 

@@ -32,6 +32,9 @@ def get_key_dtype():
 
 # orbax's default item subdirectory inside a step dir (snap_path/<step>/default/...)
 _ITEM = "default"
+# the particle carry rides the same step as a SEPARATE item (snap_path/<step>/particles/...),
+# so the state item's on-disk tree is identical with and without particles
+PARTICLES_ITEM = "particles"
 
 _array_handler_pinned = False
 
@@ -125,7 +128,7 @@ def snapshot_layout(snap_path):
         return "flat"
     return "per_rank"
 
-def save_snapshot(isnap,state,mngr,params=None):
+def save_snapshot(isnap,state,mngr,params=None,pstate=None):
     # saves the full SimulationState
     # snapshots written before forcing_scale existed must use old_snapshot_repair.
     # comm_backend="jax" states: GLOBAL z-sharded jax.Arrays and are handed to orbax as
@@ -141,7 +144,11 @@ def save_snapshot(isnap,state,mngr,params=None):
                          "concrete (n_ou,) array so all snapshots share one tree structure. "
                          "Build states via run.initialize / load_snapshot, or use "
                          "state._replace(forcing_scale=jnp.zeros((params.n_ou,))).")
-    return mngr.save(isnap,args=ocp.args.StandardSave(state))
+    if pstate is None:
+        return mngr.save(isnap,args=ocp.args.StandardSave(state))
+    # composite write: the state keeps the _ITEM subdir it has without particles
+    return mngr.save(isnap,args=ocp.args.Composite(**{_ITEM: ocp.args.StandardSave(state),
+                                                      PARTICLES_ITEM: ocp.args.StandardSave(pstate)}))
 
 def get_saved_steps(snap_path, params=None):
     # plain directory scan (params accepted for API compatibility, unused)
@@ -150,9 +157,9 @@ def get_saved_steps(snap_path, params=None):
         return _step_dirs(os.path.join(snap_path, "0"))
     return _step_dirs(snap_path)
 
-def _restore_step(snap_path, isnap, state_like):
+def _restore_step(snap_path, isnap, state_like, item=_ITEM):
     # PROCESS-LOCAL read: a bare StandardCheckpointHandler, never a CheckpointManager.
-    d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), _ITEM)
+    d = os.path.join(os.path.abspath(str(snap_path)), str(isnap), item)
     if not os.path.isdir(d):
         raise FileNotFoundError(f"no snapshot {isnap} under {snap_path} (expected {d})")
     handler = ocp.StandardCheckpointHandler()
@@ -280,6 +287,35 @@ def load_snapshot(isnap,snap_path,params):
         from . import comms
         restored = comms.state_to_global(restored, params)  # local shards -> global z-sharded arrays
     return restored
+
+def load_particles(isnap,snap_path,params):
+    # the particle carry from snapshot isnap's separate PARTICLES_ITEM. Phase A is
+    # single-process, so a per-rank tree is read from rank 0's dir.
+    from .particles.state import init_particles, template
+    if params.particles is None:
+        raise ValueError("load_particles needs params.particles set (this run has particles "
+                         "off, so there is nothing to restore into).")
+    snap_path = str(snap_path)
+    root = os.path.join(snap_path, "0") if snapshot_layout(snap_path) == "per_rank" else snap_path
+    state_d = os.path.join(os.path.abspath(root), str(isnap), _ITEM)
+    if not os.path.isdir(state_d):
+        # the step itself is absent: init_on_restart covers a missing particles ITEM only,
+        # never a missing snapshot (which load_snapshot would refuse too)
+        raise FileNotFoundError(f"no snapshot {isnap} under {snap_path} (expected {state_d})")
+    d = os.path.join(os.path.abspath(root), str(isnap), PARTICLES_ITEM)
+    if not os.path.isdir(d):
+        if params.particles["init_on_restart"]:
+            print(f"snapshot {isnap} under {snap_path} has no {PARTICLES_ITEM!r} item: "
+                  f"initializing a fresh ensemble from the seed (init_on_restart)")
+            return init_particles(params)
+        raise FileNotFoundError(
+            f"snapshot {isnap} under {snap_path} has no {PARTICLES_ITEM!r} item (expected "
+            f"{d}); it was written by a run without particles. Set "
+            f"particles['init_on_restart']=True to start a fresh ensemble from the seed "
+            f"instead of continuing trajectories.")
+    pstate = _restore_step(root, isnap, template(params), item=PARTICLES_ITEM)
+    return pstate._replace(x=jnp.asarray(pstate.x, dtype=jnp.float64),
+                           v=jnp.asarray(pstate.v, dtype=jnp.float64))
 
 def _restore_or_advise(snap_path, isnap, state_like):
     try:

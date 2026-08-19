@@ -66,6 +66,16 @@ JOBS = [
     # ALL PASS). Single-process: snapshot tmp dirs + a size==1 z_spectral kgrid.
     dict(name="precision_dtypes", tier="cpu", script="tests/test_precision_dtypes.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
+    # test particles: 2D single-process by construction (Phase A). The kernel and config
+    # files run entirely in both sessions; the coupled file's convergence gates are
+    # fp64-marked (they print [SKIP] in the 32 session, which still counts as ALL PASS)
+    # while gate 6 runs in both.
+    dict(name="particles_kernel", tier="cpu", script="tests/test_particles_kernel.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
+    dict(name="particles_coupled", tier="cpu", script="tests/test_particles_coupled.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
+    dict(name="particles_config", tier="cpu", script="tests/test_particles_config.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
     # multidev tests need >=4 XLA devices; under real MPI there is 1 CPU device per
     # process, so this file prints [SKIP] everywhere on Savio -- kept for the banner
     # (its real coverage is local fake-device pytest + the gpu tier below).

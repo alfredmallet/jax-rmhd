@@ -455,7 +455,27 @@ identity `E·B = 0`, which holds exactly for the raw (undealiased) ideal `E_z`
 (`E_x b_x + E_y b_y + B₀·(−{φ,ψ}) = 0` identically, since both terms are `B₀{φ,ψ}` with
 opposite signs) — asserted in `tests/test_particles_coupled.py`. That fixes `b_⊥` relative to
 `E_⊥` and `E_z`, and `B_z = +B₀`; it does not fix the overall sign of `b_⊥` and `E_z` against
-`ψ`, which is what gate 4's canonical `p_z = m v_z − qψ` invariant does in Phase A2.
+`ψ`, which is what gate 4's canonical `p_z = m v_z − qψ` invariant does.
+
+**The canonical p_z invariant.** In 2D, z is ignorable (∂_z = 0 on every field), so the
+canonical momentum conjugate to z, `p_z = m v_z + qA_z = m v_z − qψ` (using `A_z = −ψ`), is
+conserved exactly along a particle orbit — for ANY time-dependent `(φ, ψ)`, not just frozen
+fields. Newton's law gives `m dv_z/dt = q(E_z + (v×B)_z)`. `B_⊥ = ∇×(A_zẑ)` with `A_z`
+z-independent makes `(v×B)_z = v_xB_y − v_yB_x = −(v_x∂_xA_z + v_y∂_yA_z) = −v·∇A_z`
+identically (algebra alone, no dynamics), and `E_z = −∂_zΦ − ∂_tA_z = −∂_tA_z` since
+`Φ = B₀φ` has no z-dependence either. So `m dv_z/dt = q(−∂_tA_z − v·∇A_z) = −q·dA_z/dt`
+(the total derivative of `A_z(x(t),y(t),t)` along the orbit), i.e. `d/dt(m v_z + qA_z) = 0`
+— the standard ignorable-coordinate argument, specialized to 2D. This holds **only with the
+FULL mask** (`ez_resistive=ez_forcing=True`): `E_z` must equal the true `∂ψ/∂t` the discrete
+ψ obeys, piece for piece, or the cancellation is incomplete and `p_z` drifts by exactly the
+omitted acceleration (the default ideal-only ensembles are the worked example — see the
+plan's gate 4). Because the invariant needs both `b_⊥` (through `(v×B)_z`) and `E_z` at
+their correct relative AND absolute sign against `ψ`, it is the gate that pins the absolute
+sign left open above (gate 4). With fields frozen over a step (the run.py push convention),
+the per-step defect in the identity is the time-discretization error of an otherwise-exact
+cancellation, `O(dt²)` per step, so the accumulated drift over a fixed physical time is
+`O(dt)` — consistent with the KDK push being exact in space but first-order in how it
+samples the field's time dependence.
 
 `E_∥ = E·b̂` differs from `E_z` by `b_⊥·E_⊥/B₀` corrections; the pusher is Cartesian and
 never needs it.

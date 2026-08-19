@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 from . import comms
 from . import _precision
 from ._mpi_compat import HAVE_MPI4JAX, HAVE_MPI4PY, MPI, _NullComm, launcher_world_size
@@ -103,7 +104,7 @@ class Parameters():
     def __init__(self,nx,ny,Lx,Ly,cfl_safety,eqpars=None,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0e4,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
-                 cfl_every=1,z_spectral=False):
+                 cfl_every=1,z_spectral=False,particles=None):
         # capture the constructor arguments (before any normalization below) so
         # save()/from_snapshot() can reproduce this object exactly via __init__
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
@@ -245,6 +246,25 @@ class Parameters():
             warnings.warn(f"z_spectral=True: z_diss={z_diss} is a finite-difference-z knob and "
                           "is ignored; use eqpars['z_diss_k'] (-z_diss_k*kz^4) for kz "
                           "dissipation.", stacklevel=2)
+        #test particles (plans/TESTPART_PLAN.md); None = off, no particle code runs
+        self.particles = None
+        if particles is not None:
+            if not isinstance(particles, dict):
+                raise ValueError(f"particles must be a dict of particle configuration (e.g. "
+                                 f"{{'n': 1024, 'ensembles': [{{'qm': 15.0, 'init': ...}}]}}), "
+                                 f"got {particles!r}")
+            if self.eqtype != "RMHD" or self.spatial_dimensions != 2 or self.size != 1:
+                raise ValueError(f"test particles require eqtype='RMHD', dims=2 and a single "
+                                 f"process, got eqtype={self.eqtype!r}, dims="
+                                 f"{self.spatial_dimensions}, size={self.size}; 3D and "
+                                 f"multi-rank particles are Phase B "
+                                 f"(plans/TESTPART_PLAN.md)")
+            # imported here, not at module scope: config itself does not depend on the
+            # particle package (nothing under particles/ imports config — no cycle)
+            from .particles.state import normalize_config
+            self.particles = normalize_config(particles)
+            self.n_ens = len(self.particles["ensembles"])
+            self._init_args["particles"] = copy.deepcopy(particles)  # decoupled from the caller's dict
 
     def save(self, snap_path, filename="params.json"):
         # record the constructor arguments (not derived attrs) to snap_path/filename, so a

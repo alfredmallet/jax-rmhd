@@ -39,6 +39,30 @@ the dir is flat. Each backend can restart from either layout.
   first decoupling orbax's buffer from the next donating stepper call —
   `donate_argnums=(0,)` invalidates it.
 
+## Particles item
+
+`params.particles` set (plans/TESTPART_PLAN.md) adds a particle carry `pstate` alongside
+`state` at the same snapshot step, as a SEPARATE orbax item rather than a `SimulationState`
+field — old snapshots simply lack it, and the state item's on-disk tree is unaffected
+either way. `save_snapshot(isnap,state,mngr,params,pstate)`: `pstate is None` keeps the
+plain `mngr.save(isnap,args=ocp.args.StandardSave(state))`; given a `pstate` it writes a
+composite (`ocp.args.Composite(default=StandardSave(state), particles=StandardSave(pstate))`,
+`snapshot_io.PARTICLES_ITEM = "particles"`), landing at `<step>/default/` and
+`<step>/particles/` — the `default` subdir is STRUCTURALLY identical to what a
+particles-off run writes (same subtree, same keys, same array metadata and values), not
+byte-for-byte: ocdbt data-file names are hashed per write even between two particles-off
+runs, and the step-level `_CHECKPOINT_METADATA` lists the extra item handler.
+`load_particles(isnap,snap_path,params)` follows the same read rule as
+`load_snapshot`: a bare `StandardCheckpointHandler` (never a `CheckpointManager`) on
+`<step>/particles/`, restored against the `ShapeDtypeStruct` template from
+`particles.state.template(params)`. Missing-item policy: no `<step>/particles/` dir is a
+hard `FileNotFoundError` naming `init_on_restart` UNLESS `params.particles["init_on_restart"]`
+is set, in which case it prints a notice and returns a fresh `init_particles(params)` —
+restoring a particle-less snapshot into a particles-on run is never a silent re-init. A
+missing STEP (no `<step>/default/`) is always a `FileNotFoundError`, `init_on_restart` or
+not: that flag covers a snapshot lacking the particles item, never a snapshot that isn't
+there.
+
 ## Resharding (restore onto a different rank count)
 
 `load_snapshot` unions overlapping z-slices per field across the saved ranks (`p_save` vs
