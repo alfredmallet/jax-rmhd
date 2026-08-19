@@ -24,6 +24,11 @@ were corrected on the way out (see below).
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
 - **CODE_REVIEW_2026-07-31.md** — full-codebase review. Sections 2–5 are done; section 6
   (repo hygiene) is partly open.
+- **MEMORY_PERF_PLAN.md** — memory and step-time reduction for FD-z (F1–F4) and z_spectral
+  (Z1–Z3), with the GPU assessment (Kaggle P100 via lugus, Savio GTX 2080Ti). Supersedes
+  the two measurement hand-offs it cites, **TARANIS_MEMORY_HANDOFF.md** (XLA buffer audit)
+  and **ZSPECTRAL_PROPAGATOR_NOTES.md** (step-time profile, hoisted propagators), which
+  stay as the record until the plan's docs sweep moves them to `old/`.
 
 ## Finished
 
