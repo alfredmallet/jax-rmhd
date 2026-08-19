@@ -4,7 +4,7 @@
 #   B = B0*zhat + b_perp,  E_perp = -B0*grad(phi),  E_z = +dpsi/dt
 #     = -{phi,psi} + L_psi psi + f_psi   (the B0*d_z(phi) terms cancel; the
 #   finite-difference-z filter is not represented -- see docs/numerics.md).
-# B0 enters in ONE place, assemble(); particle_fields stores E_perp per unit B0.
+# B0 enters in ONE place, assemble_stacked(); particle_fields stores E_perp per unit B0.
 # Derivation and the dealiasing subtlety below: docs/numerics.md, "Test particles".
 from typing import NamedTuple, Optional
 
@@ -17,9 +17,16 @@ from ..physics.shared_physics import bracket, gradk
 FIELD_PIECES = ("bperp", "eperp", "ez_ideal", "ez_resistive", "ez_forcing")
 FIELD_MASK_DEFAULTS = dict(bperp=True, eperp=True, ez_ideal=True,
                            ez_resistive=False, ez_forcing=False)
+# the only mask the E_parallel projection (boris.project_perp) is defined for: b_perp and
+# E_perp live, E_z the ideal piece alone
+EPAR_PROJECT_MASK = dict(FIELD_MASK_DEFAULTS)
 
 # the E_z pieces, in assembly order; each maps to a PFields entry of the same name
 _EZ_PIECES = ("ez_ideal", "ez_resistive", "ez_forcing")
+# the ELECTRIC pieces, in the order the per-particle work accumulator stores them
+# (ParticleState.w's last axis)
+WORK_PIECES = ("eperp",) + _EZ_PIECES
+NWORK = len(WORK_PIECES)
 # particle_fields kwarg that produces each optional piece (used in the error message)
 _EZ_KWARG = dict(ez_resistive="resistive", ez_forcing="forcing")
 
@@ -30,7 +37,7 @@ class PFields(NamedTuple):
     uy: jnp.ndarray
     bx: jnp.ndarray            # b_perp = zhat x grad(psi) = (-d_y psi, d_x psi)
     by: jnp.ndarray
-    ex: jnp.ndarray            # E_perp/B0 = -grad(phi); assemble() applies B0
+    ex: jnp.ndarray            # E_perp/B0 = -grad(phi); assembly applies B0
     ey: jnp.ndarray
     ez_ideal: jnp.ndarray      # ifft(dealias * fft(-{phi,psi}))
     ez_resistive: Optional[jnp.ndarray] = None   # ifft(L_psi * psik); None unless requested
@@ -39,7 +46,7 @@ class PFields(NamedTuple):
 
 def particle_fields(state, kgrid, params, *, resistive=False, forcing=False):
     """The real-space field pieces at the collocation grid, with E_perp stored per unit
-    B0 (assemble() applies B0). 4 iffts for the gradients, +2 for the dealiased ideal
+    B0 (the assembly applies B0). 4 iffts for the gradients, +2 for the dealiased ideal
     E_z, +1 per optional piece."""
     assert params.eqtype == "RMHD", (
         f"particle_fields is RMHD-only (it assumes fields=(phi,psi) with u=zhat x grad(phi), "
@@ -95,13 +102,17 @@ def resolve_mask(mask):
     return m
 
 
-def assemble(pf, mask, B0=1.0):
-    """(E, B), each (3, nz_local, nx, ny), from the pieces the mask selects. The ONLY
-    place B0 enters: E_perp = B0*(pf.ex, pf.ey) and B_z = B0. Static python throughout:
-    the mask is compile-time config, never a traced condition."""
+def assemble_stacked(pf, mask, B0=1.0):
+    """(F, ez_on): one stacked (ncomp, nz_local, nx, ny) array holding, in order,
+    [B0*ex, B0*ey, the E_z pieces the mask selects (in _EZ_PIECES order), bx, by, B0],
+    and the tuple of included E_z piece names (so ncomp = 2 + len(ez_on) + 3). Pieces the
+    mask switches off are zero arrays, never dropped. One array means the pusher gathers
+    E and B in a single call, and keeping the E_z pieces separate lets it attribute the
+    work each one does. The ONLY place B0 enters. Static python throughout: the mask is
+    compile-time config, never a traced condition."""
     m = resolve_mask(mask)
     zero = jnp.zeros_like(pf.ex)
-    ez = None
+    ez_on, ez = [], []
     for name in _EZ_PIECES:
         if not m[name]:
             continue
@@ -109,9 +120,18 @@ def assemble(pf, mask, B0=1.0):
         if piece is None:
             raise ValueError(f"field mask requests {name}, but PFields.{name} is None -- "
                              f"call particle_fields(..., {_EZ_KWARG[name]}=True)")
-        ez = piece if ez is None else ez + piece
-    if ez is None:
-        ez = zero
+        ez_on.append(name)
+        ez.append(piece)
     ex, ey = (B0 * pf.ex, B0 * pf.ey) if m["eperp"] else (zero, zero)
     bx, by = (pf.bx, pf.by) if m["bperp"] else (jnp.zeros_like(pf.bx), jnp.zeros_like(pf.by))
-    return jnp.stack([ex, ey, ez]), jnp.stack([bx, by, jnp.full_like(pf.bx, B0)])
+    return (jnp.stack([ex, ey] + ez + [bx, by, jnp.full_like(pf.bx, B0)]), tuple(ez_on))
+
+
+def assemble(pf, mask, B0=1.0):
+    """(E, B), each (3, nz_local, nx, ny), from the pieces the mask selects: the summed
+    form of assemble_stacked, for callers that do not track work per piece."""
+    F, ez_on = assemble_stacked(pf, mask, B0)
+    ez = jnp.zeros_like(F[0])
+    for i in range(len(ez_on)):
+        ez = F[2 + i] if i == 0 else ez + F[2 + i]
+    return jnp.stack([F[0], F[1], ez]), F[-3:]

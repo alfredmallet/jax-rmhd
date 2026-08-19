@@ -23,11 +23,23 @@
 #                      f_psi with the ideal piece DEALIASED (the discrete psi integrates
 #                      dealias*NL_psi). A sign error, a missing piece or an undealiased
 #                      bracket all show up as a failure to converge at O(dt^2).
+#   8. Work closure    the per-piece work accumulator w: summed over pieces it equals the
+#                      per-particle kinetic-energy change to round-off (exact Boris
+#                      algebra), a piece an ensemble's mask omits stays exactly zero, and
+#                      w_ez_resistive alone separates the paired resistive-split
+#                      ensembles. Plus: boris.push is bitwise its push_tracked wrapper.
+#   9. E_par projection  `epar_project` replaces each gathered E sample by its component
+#                      perpendicular to the gathered B, so the numerical E_parallel that
+#                      independent bilinear interpolation of E and B leaves at the particle
+#                      is removed exactly, closure included. Plus the per-ensemble B0
+#                      (= 1/epsilon): at fixed Omega = qm*B0 it changes no orbit.
 #
 # Plus the field-assembly sign/mask checks that gate 7 rests on.
 #
-# 2D, single-process; gates 4/5/7 are fp64 (convergence), gate 6 runs in both sessions
-# (the reference npz exists for both). Script: `python tests/test_particles_coupled.py`.
+# 2D, single-process; gates 4/5/7 are fp64 (convergence), gates 6, 8 and 9 run in both
+# sessions (the reference npz exists for both; the particle state, the work arithmetic and
+# the gathered samples are fp64 whatever the field precision).
+# Script: `python tests/test_particles_coupled.py`.
 from _rmhd_testing import (bootstrap, checks, fit_order, fresh_params, make_state,
                            managed_manager, snap_dir)
 
@@ -45,8 +57,8 @@ import pytest
 import taranis as jr
 from taranis import grids, run
 from taranis.particles import boris, interp
-from taranis.particles.fields import (FIELD_MASK_DEFAULTS, assemble, full_mask,
-                                      particle_fields)
+from taranis.particles.fields import (FIELD_MASK_DEFAULTS, WORK_PIECES, assemble,
+                                      assemble_stacked, full_mask, particle_fields)
 from taranis.particles.state import ParticleState, init_particles
 from taranis.physics import construct_rhs, equation_registry
 from taranis.physics.shared_physics import bracket, gradk
@@ -522,6 +534,295 @@ def test_e_zero_ensemble_is_the_heating_floor():
                 all(v > 0.1 for v in others), f"{others}")
 
 
+# --------------------------------------------- gate 8: per-piece work closure
+#
+# The Boris rotation is norm-exact, so each half-kick's kinetic-energy change is exactly
+# h*E.(v_in + v_new) with h = qm*dt_k/2 (docs/numerics.md, "Work bookkeeping"). Splitting
+# that expression by E component is what ParticleState.w accumulates, so summing w over
+# the pieces must reproduce 1/2|v|^2 - 1/2|v0|^2 per particle to round-off -- through the
+# whole co-stepped run, whatever the mask. That closure is what makes the heating
+# attribution a measurement rather than an inference.
+
+_CLOSE_DT = 0.005
+_CLOSE_STEPS = 100
+# the three standard ensembles plus one with b_perp off (E_perp and the ideal E_z live,
+# B = B0 zhat): four different (nez, eperp, bperp) combinations through the same
+# accumulator
+_CLOSE_ENSEMBLES = _LIVE_ENSEMBLES + [
+    {"qm": _LIVE_QM, "init": {"kind": "ring", "vperp": _LIVE_VPERP}, "bperp": False},
+]
+_CLOSE_LABELS = _LIVE_LABELS + ("b_perp = 0",)
+
+
+@functools.lru_cache(maxsize=None)
+def _closure_run():
+    """A short co-stepped run of the four gate-8 ensembles. Returns host arrays: the
+    per-particle work split w, the kinetic-energy change, and the initial energy scale."""
+    warm_params = _live_params(_LIVE_DTS[0])
+    s0 = _warm_state(warm_params, jr.setup_kgrids(warm_params))
+    params = _live_params(_CLOSE_DT, particles={"seed": 0, "n": _LIVE_NPART,
+                                                "ensembles": _CLOSE_ENSEMBLES})
+    kgrid = jr.setup_kgrids(params)
+    p0 = init_particles(params)
+    v0 = np.asarray(p0.v)
+    stepper, scheme = get_scheme("lsrk33")
+    step = jax.jit(run.block_of_steps, static_argnums=(2, 3, 4, 5))
+    (_sT, pT), _ys = step((s0, p0), kgrid, params, _CLOSE_STEPS, scheme, stepper)
+    return {"w": np.asarray(pT.w),
+            "dke": 0.5 * np.sum(np.asarray(pT.v) ** 2, axis=2) - 0.5 * np.sum(v0 ** 2, axis=2),
+            "ke0": float(np.mean(0.5 * np.sum(v0 ** 2, axis=2))),
+            "masks": [e["mask"] for e in params.particles["ensembles"]]}
+
+
+def test_work_split_closes_against_the_kinetic_energy():
+    """Gate 8: per particle, the accumulated per-piece work sums to the kinetic-energy
+    change -- exact Boris algebra, so the residual is round-off however the fields are
+    interpolated and whatever TARANIS_PRECISION is (w and the push arithmetic are fp64
+    always). A residual above round-off would mean the work is being credited with a
+    different E than the kick used, which would silently bias every heating
+    attribution."""
+    res = _closure_run()
+    w, dke, ke0 = res["w"], res["dke"], res["ke0"]
+    resid = np.max(np.abs(np.sum(w, axis=2) - dke), axis=1) / ke0
+    for lbl, r, m in zip(_CLOSE_LABELS, resid, np.mean(np.abs(dke), axis=1) / ke0):
+        print(f"gate 8 [{lbl}]: max|sum w - dKE|/KE0 = {r:.2e}, mean|dKE|/KE0 = {m:.2e}")
+    with checks() as c:
+        c.check(f"the work split closes to {np.max(resid):.2e} of KE0 for every ensemble "
+                f"(<= 1e-12)", np.max(resid) <= 1e-12, str(resid))
+        c.check("... on a run where the E-carrying ensembles actually gained energy, so "
+                "the closure is not trivial",
+                np.mean(np.abs(dke[0])) > 0.01 * ke0, str(np.mean(np.abs(dke), axis=1)))
+
+
+def test_work_pieces_track_the_mask():
+    """Gate 8's discriminator: a piece an ensemble does not see contributes EXACTLY zero
+    work forever, so the paired resistive-split ensembles (identical fields, identical
+    draw) are separated by w_ez_resistive alone -- the direct measurement plans/
+    TESTPART_PLAN.md §1 asks for. The E = 0 control's w is identically zero, the same
+    statement as gate 5's |v| conservation read through the accumulator."""
+    res = _closure_run()
+    w, masks = res["w"], res["masks"]
+    off_leak = {}
+    for e, mask in enumerate(masks):
+        for i, piece in enumerate(WORK_PIECES):
+            if not mask[piece]:
+                off_leak[(_CLOSE_LABELS[e], piece)] = float(np.max(np.abs(w[e, :, i])))
+    ir = WORK_PIECES.index("ez_resistive")
+    full_res = float(np.mean(np.abs(w[0, :, ir])))
+    ideal_res = float(np.max(np.abs(w[1, :, ir])))
+    print(f"gate 8: full-mask mean|w_ez_resistive| = {full_res:.3e}, ideal-only = "
+          f"{ideal_res:.1e}; E=0 max|w| = {float(np.max(np.abs(w[2]))):.1e}")
+    with checks() as c:
+        c.check("every piece an ensemble's mask switches off carries exactly zero work",
+                all(v == 0.0 for v in off_leak.values()),
+                str({k: v for k, v in off_leak.items() if v != 0.0}))
+        c.check("the E = 0 control ensemble's w is identically zero",
+                bool(np.all(w[2] == 0.0)), str(np.max(np.abs(w[2]))))
+        c.check(f"the resistive split separates the paired ensembles: full-mask "
+                f"mean|w_ez_resistive| = {full_res:.2e} > 0, ideal-only exactly 0",
+                full_res > 0.0 and ideal_res == 0.0)
+        c.check("the ideal piece is live in both paired ensembles (they differ only by "
+                "the non-ideal pieces)",
+                float(np.mean(np.abs(w[0, :, WORK_PIECES.index("ez_ideal")]))) > 0.0
+                and float(np.mean(np.abs(w[1, :, WORK_PIECES.index("ez_ideal")]))) > 0.0)
+
+
+def test_push_wrapper_matches_push_tracked():
+    """boris.push is a thin wrapper over push_tracked (one E_z piece, E and B
+    concatenated), so the kernel gates that drive push and the production path that drives
+    push_tracked must be the SAME arithmetic, bit for bit."""
+    params = _froz_params(64)
+    kgrid = jr.setup_kgrids(params)
+    state = jr.initialize(_froz_ic, params)
+    pf = particle_fields(state, kgrid, params)
+    E, B = assemble(pf, dict(FIELD_MASK_DEFAULTS), B0=_FROZ_B0)
+    F, ez_on = assemble_stacked(pf, dict(FIELD_MASK_DEFAULTS), B0=_FROZ_B0)
+    x0, v0 = _froz_seeds()
+    xa, va = boris.push(x0, v0, E, B, _FROZ_QM, _FROZ_DT, params, substeps=2)
+    xb, vb, dw, bs = boris.push_tracked(x0, v0, F, len(ez_on), _FROZ_QM, _FROZ_DT, params,
+                                        substeps=2)
+    with checks() as c:
+        c.check("a default-mask assemble_stacked is exactly [E, B] concatenated",
+                ez_on == ("ez_ideal",)
+                and bool(jnp.all(F == jnp.concatenate([E, B]))))
+        c.check("push and push_tracked agree bitwise on x and v",
+                np.array_equal(np.asarray(xa), np.asarray(xb))
+                and np.array_equal(np.asarray(va), np.asarray(vb)))
+        c.check("push_tracked's extra outputs have the documented shapes and dtypes",
+                dw.shape == (v0.shape[0], 2) and bs.shape == v0.shape
+                and dw.dtype == jnp.float64 and bs.dtype == jnp.float64,
+                f"{dw.shape} {bs.shape}")
+        c.check("bsample is B at the RETURNED position (the last half-kick's gather)",
+                np.allclose(np.asarray(bs), np.asarray(interp.gather(B, xb, params)),
+                            rtol=0.0, atol=0.0))
+
+
+# ------------------------------------------- gate 9: the E_parallel projection
+#
+# On the grid the ideal fields satisfy E.B = 0 exactly, but bilinear interpolation samples
+# E and B independently, so what the particle sees carries a numerical E_parallel.
+# `epar_project` removes it: at every half-kick the gathered E is replaced by
+# E - (E.B)/(B.B) B, so the sample the kick uses is exactly perpendicular to the sampled B.
+# It is defined only for the ideal-Ohm mask (with the resistive/forcing pieces on it would
+# delete a REAL parallel field) -- that validation is in tests/test_particles_config.py.
+
+_PROJ_DT = 0.005
+_PROJ_STEPS = 100
+# the default ideal-Ohm particle, the same ensemble with the projection on, and the full
+# dpsi/dt ensemble (which must not be projected)
+_PROJ_ENSEMBLES = [
+    {"qm": _LIVE_QM, "init": {"kind": "ring", "vperp": _LIVE_VPERP}},
+    {"qm": _LIVE_QM, "init": {"kind": "ring", "vperp": _LIVE_VPERP}, "epar_project": True},
+    {"qm": _LIVE_QM, "init": {"kind": "ring", "vperp": _LIVE_VPERP},
+     "ez_resistive": True, "ez_forcing": True},
+]
+
+
+@functools.lru_cache(maxsize=None)
+def _proj_run():
+    """A short co-stepped run of the gate-9 ensembles, all three started from ONE draw so
+    the projected and unprojected ideal ensembles differ by the projection alone. Returns
+    host arrays: E.B at the particles before and after projecting the sample, its |E||B|
+    scale, the work/kinetic-energy pair for the closure, and the two trajectories."""
+    warm_params = _live_params(_LIVE_DTS[0])
+    s0 = _warm_state(warm_params, jr.setup_kgrids(warm_params))
+    params = _live_params(_PROJ_DT, particles={"seed": 0, "n": _LIVE_NPART,
+                                               "ensembles": _PROJ_ENSEMBLES})
+    kgrid = jr.setup_kgrids(params)
+    p0 = init_particles(params)
+    p0 = p0._replace(x=jnp.stack([p0.x[0]] * 3), v=jnp.stack([p0.v[0]] * 3))
+    v0 = np.asarray(p0.v)
+    stepper, scheme = get_scheme("lsrk33")
+    step = jax.jit(run.block_of_steps, static_argnums=(2, 3, 4, 5))
+    (sT, pT), _ys = step((s0, p0), kgrid, params, _PROJ_STEPS, scheme, stepper)
+    # the ideal-Ohm (E, B) the two paired ensembles ride, sampled at their end positions
+    F, _ez_on = assemble_stacked(particle_fields(sT, kgrid, params),
+                                 dict(FIELD_MASK_DEFAULTS),
+                                 B0=params.particles["ensembles"][0]["B0"])
+    project = jax.vmap(boris.project_perp, in_axes=(0, 0))
+    dots = {}
+    for e in (0, 1):
+        s = interp.gather(F, pT.x[e], params)
+        E, B = s[:, :3], s[:, -3:]
+        Ep = project(E, B)
+        E, B, Ep = np.asarray(E), np.asarray(B), np.asarray(Ep)
+        dots[e] = {"eb": np.sum(E * B, axis=1), "eb_proj": np.sum(Ep * B, axis=1),
+                   "scale": np.linalg.norm(E, axis=1) * np.linalg.norm(B, axis=1)}
+    return {"dots": dots, "w": np.asarray(pT.w),
+            "dke": 0.5 * np.sum(np.asarray(pT.v) ** 2, axis=2) - 0.5 * np.sum(v0 ** 2, axis=2),
+            "ke0": float(np.mean(0.5 * np.sum(v0 ** 2, axis=2))),
+            "x": np.asarray(pT.x), "v": np.asarray(pT.v)}
+
+
+def test_epar_projection_removes_the_numerical_parallel_field():
+    """Gate 9: at the particle, the projected sample's E'.B is round-off, while the
+    unprojected one carries an O(interpolation error) parallel field -- the numerical
+    E_parallel the projection exists to remove. The two paired ensembles start from the
+    same draw, so their trajectories separating is the projection acting, and the work
+    closure still holds for the projected one (the work columns credit the PROJECTED
+    field, so the exact half-kick identity is unaffected)."""
+    res = _proj_run()
+    raw, proj = res["dots"][0], res["dots"][1]
+    rms = lambda a: float(np.sqrt(np.mean(a ** 2)))
+    rel_raw = rms(raw["eb"]) / rms(raw["scale"])
+    rel_proj = rms(proj["eb_proj"]) / rms(proj["scale"])
+    resid = np.max(np.abs(np.sum(res["w"], axis=2) - res["dke"]), axis=1) / res["ke0"]
+    sep = float(np.max(np.abs(res["x"][1] - res["x"][0])))
+    print(f"gate 9: unprojected rms(E.B)/rms(|E||B|) = {rel_raw:.3e}, projected "
+          f"{rel_proj:.3e}; max|x_proj - x_raw| = {sep:.3e}")
+    with checks() as c:
+        c.check(f"the projected sample is exactly perpendicular to B: "
+                f"rms(E'.B)/rms(|E||B|) = {rel_proj:.2e} (<= 1e-15)", rel_proj <= 1e-15,
+                f"max|E'.B| = {np.max(np.abs(proj['eb_proj'])):.3e}")
+        c.check(f"... while the unprojected gather leaves a numerical E_parallel: "
+                f"rms(E.B)/rms(|E||B|) = {rel_raw:.2e} (>= 1e-6)", rel_raw >= 1e-6,
+                f"rel_raw={rel_raw}")
+        c.check(f"the projection changes the orbits (same draw, max|dx| = {sep:.2e})",
+                sep > 1e-6, f"sep={sep}")
+        c.check(f"the work closure survives the projection for every ensemble "
+                f"(max residual {np.max(resid):.2e} of KE0 <= 1e-12)",
+                np.max(resid) <= 1e-12, str(resid))
+        c.check("... on a run where the ensembles actually gained energy",
+                np.mean(np.abs(res["dke"][1])) > 0.01 * res["ke0"],
+                str(np.mean(np.abs(res["dke"]), axis=1)))
+
+
+def test_projection_flag_matches_projecting_the_gathered_sample():
+    """The `project` flag is applied to EVERY half-kick's sample, not once per step: the
+    pushed trajectory is bitwise the one obtained by projecting the gather's output
+    instead. Frozen analytic fields, so the comparison is pure pusher arithmetic."""
+    params = _froz_params(64)
+    kgrid = jr.setup_kgrids(params)
+    state = jr.initialize(_froz_ic, params)
+    F, ez_on = assemble_stacked(particle_fields(state, kgrid, params),
+                                dict(FIELD_MASK_DEFAULTS), B0=_FROZ_B0)
+    project = jax.vmap(boris.project_perp, in_axes=(0, 0))
+
+    def proj_gather(fields, pos, prm):
+        s = interp.gather(fields, pos, prm)
+        return jnp.concatenate([project(s[:, :3], s[:, -3:]), s[:, -3:]], axis=1)
+
+    x0, v0 = _froz_seeds()
+    args = (x0, v0, F, len(ez_on), _FROZ_QM, _FROZ_DT, params)
+    xa, va, dwa, _ba = boris.push_tracked(*args, substeps=2, project=True)
+    xb, vb, dwb, _bb = boris.push_tracked(*args, substeps=2, gather=proj_gather)
+    xc, vc, _dwc, _bc = boris.push_tracked(*args, substeps=2)
+    try:
+        boris.push_tracked(x0, v0, jnp.concatenate([F[:2], F[2:3], F[2:3], F[-3:]]), 2,
+                           _FROZ_QM, _FROZ_DT, params, project=True)
+        nez_msg = "no AssertionError"
+    except AssertionError as e:
+        nez_msg = str(e)
+    with checks() as c:
+        c.check("project=True is bitwise a per-sample projection of the gather",
+                np.array_equal(np.asarray(xa), np.asarray(xb))
+                and np.array_equal(np.asarray(va), np.asarray(vb))
+                and np.array_equal(np.asarray(dwa), np.asarray(dwb)),
+                str(np.max(np.abs(np.asarray(va) - np.asarray(vb)))))
+        c.check("... and it is not a no-op (the unprojected push differs)",
+                not np.array_equal(np.asarray(vc), np.asarray(va)),
+                str(np.max(np.abs(np.asarray(vc) - np.asarray(va)))))
+        c.check("project=True with more than one E_z piece is an AssertionError naming nez",
+                "nez" in nez_msg, nez_msg)
+
+
+def test_per_ensemble_B0_is_the_amplitude_parameter():
+    """B0 is per ensemble (B0 = 1/epsilon), so one run can hold several amplitudes. With
+    q/m scaled to keep Omega = qm*B0 fixed, the gyroradius rho = v_perp/(qm*B0) is
+    unchanged -- and for the delta_b = 0 gyration control (every field piece off, so the
+    particle sees only B0 zhat and E = 0) the two ensembles' orbits are bitwise the same
+    trajectory, which is the statement that B0 alone carries no dynamics."""
+    off = dict(bperp=False, eperp=False, ez_ideal=False)
+    ensembles = [dict(off, qm=10.0, B0=1.0, init={"kind": "ring", "vperp": _LIVE_VPERP}),
+                 dict(off, qm=1.0, B0=10.0, init={"kind": "ring", "vperp": _LIVE_VPERP})]
+    params = _live_params(_PROJ_DT, particles={"seed": 0, "n": 64, "ensembles": ensembles})
+    kgrid = jr.setup_kgrids(params)
+    warm_params = _live_params(_LIVE_DTS[0])
+    s0 = _warm_state(warm_params, jr.setup_kgrids(warm_params))
+    p0 = init_particles(params)
+    p0 = p0._replace(x=jnp.stack([p0.x[0]] * 2), v=jnp.stack([p0.v[0]] * 2))
+    stepper, scheme = get_scheme("lsrk33")
+    step = jax.jit(run.block_of_steps, static_argnums=(2, 3, 4, 5))
+    (_sT, pT), _ys = step((s0, p0), kgrid, params, _PROJ_STEPS, scheme, stepper)
+    x, v = np.asarray(pT.x), np.asarray(pT.v)
+    v0 = np.asarray(p0.v)
+    rho = [np.hypot(v0[e, :, 0], v0[e, :, 1]) / abs(ens["qm"] * ens["B0"])
+           for e, ens in enumerate(params.particles["ensembles"])]
+    vsq_rel = np.abs(np.sum(v ** 2, axis=2) / np.sum(v0 ** 2, axis=2) - 1.0)
+    with checks() as c:
+        c.check("each ensemble's B0 is stored on the ensemble, the top-level one is the "
+                "default",
+                [e["B0"] for e in params.particles["ensembles"]] == [1.0, 10.0]
+                and params.particles["B0"] == 1.0)
+        c.check("Omega = qm*B0 equal => identical gyroradius rho = v_perp/(qm*B0)",
+                np.array_equal(rho[0], rho[1]), str(np.max(np.abs(rho[0] - rho[1]))))
+        c.check("the delta_b = 0 control orbits are bitwise identical at B0 = 1 and 10",
+                np.array_equal(x[0], x[1]) and np.array_equal(v[0], v[1]),
+                f"max|dx| = {np.max(np.abs(x[0] - x[1])):.3e}")
+        c.check(f"... and the control conserves |v|^2 (max rel drift "
+                f"{float(np.max(vsq_rel)):.2e} <= 1e-12)", float(np.max(vsq_rel)) <= 1e-12)
+
+
 # ---------------------------------------------------- gate 6: the solver is untouched
 
 _CONFIG_BY_NAME = {name: (kwargs, driver) for name, kwargs, driver in CONFIGS}
@@ -705,7 +1006,8 @@ def test_restart_continues_fields_and_trajectories_bitwise():
         end, pend = jr.simulate_scan(make_state(params, ic=_gate6_ic), kgrid, params,
                                      NBLOCK_SCAN, _RESTART_T_SNAP, T_END, mngr, save=True,
                                      pstate=init_particles(params))
-        ref = (np.asarray(end.fields), np.asarray(pend.x), np.asarray(pend.v), float(end.t))
+        ref = (np.asarray(end.fields), np.asarray(pend.x), np.asarray(pend.v), float(end.t),
+               np.asarray(pend.w))
         steps = get_saved_steps(d1)
         mid = steps[len(steps) // 2]
         state_mid = load_snapshot(mid, d1, params)
@@ -716,7 +1018,7 @@ def test_restart_continues_fields_and_trajectories_bitwise():
                                            _RESTART_T_SNAP, T_END, mngr2, save=True,
                                            pstate=pstate_mid)
             got = (np.asarray(end2.fields), np.asarray(pend2.x), np.asarray(pend2.v),
-                   float(end2.t))
+                   float(end2.t), np.asarray(pend2.w))
 
     # a snapshot written by a particle-free run: the missing-item policy
     off_params, off_kgrid = config_ctx(_CONFIG_BY_NAME["scan_fixed"][0])
@@ -749,6 +1051,9 @@ def test_restart_continues_fields_and_trajectories_bitwise():
                 np.array_equal(got[1], ref[1]))
         c.check("restarted particle velocities are bitwise identical",
                 np.array_equal(got[2], ref[2]))
+        c.check("restarted work accumulators are bitwise identical (w rides the same "
+                "checkpoint item, so the heating attribution survives a restart)",
+                np.array_equal(got[4], ref[4]))
         c.check("a mid-run snapshot really was mid-run (not the final state)",
                 0.0 < t_mid < ref[3], f"t_mid={t_mid}, t_end={ref[3]}")
         c.check("restoring a particle-less snapshot raises FileNotFoundError naming "
@@ -762,7 +1067,8 @@ def test_restart_continues_fields_and_trajectories_bitwise():
                 and np.array_equal(np.asarray(reinit.v), np.asarray(fresh.v)))
         c.check("the restored carry is a ParticleState of fp64 leaves",
                 isinstance(pstate_mid, ParticleState)
-                and pstate_mid.x.dtype == jnp.float64 and pstate_mid.v.dtype == jnp.float64)
+                and pstate_mid.x.dtype == jnp.float64 and pstate_mid.v.dtype == jnp.float64
+                and pstate_mid.w.dtype == jnp.float64)
 
 
 if __name__ == "__main__":

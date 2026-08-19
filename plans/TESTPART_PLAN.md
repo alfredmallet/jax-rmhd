@@ -1,8 +1,8 @@
 # TESTPART_PLAN — charged test particles in taranis
 
-Status: PLAN, 2026-08-18, rev 3 (rev 2 folded in Alfred's answers to the open questions,
-§10; rev 3 records Phase A0/A1/A2 landing the same day — see the dated parentheticals in
-§2–§8). Two scope decisions since the sketch: (1) the resistive contribution to E_z is
+Status: PLAN, 2026-08-18, rev 4 (rev 2 folded in Alfred's answers to the open questions,
+§10; rev 3 records Phase A0/A1/A2 landing the same day, rev 4 Phase A3 — see the dated
+parentheticals in §2–§8; Phase A is complete, Phase B next). Two scope decisions since the sketch: (1) the resistive contribution to E_z is
 switchable for the particles independently of the solver — it is one bit of a general
 per-ensemble field mask (§3); (2) the WebGPU port is deferred to Phase C, after Phase B —
 §9 keeps only the portability constraints Phases A/B must not break. Sequenced before the
@@ -81,6 +81,9 @@ interpretation — no ε parameter anywhere in the module. (`B0` stays an explic
 defaulting to 1.0 because the kernel gates want uniform-field cases; production never
 changes it.) The three dimensionless groups that matter are documented with the module:
 ρ/dx (gyroradius vs grid), Ω/ω_nl (gyration vs eddy turnover), v_th/v_A.
+(A3b, 2026-08-18: superseded — B₀ IS ε, or rather 1/ε, and it is a per-ensemble knob
+production does change: see §10 and docs/numerics.md. Ω = qm·B₀ and ρ = v_⊥/(qm·B₀), so
+everything below holds with q/m read as qm·B₀.)
 With B₀ = 1: Ω = q/m and ρ = v_⊥·m/q. Baseline: ρ ≈ 2–4 dx ⇒ at 256² (dx ≈ 0.0245),
 q/m ≈ 10–20, Ω ≈ 10–20, i.e. 60–120 solver steps per gyration — Boris at solver dt is
 fully resolved with no substepping (a `substeps` hook is kept for large-q/m sweeps;
@@ -139,6 +142,17 @@ default False): whether `snapshot_io.load_particles` may fall back to a fresh
 `init_particles` draw when a snapshot has no particle checkpoint item, instead of
 hard-erroring — not in the original sketch, needed once checkpoint/restart was wired.)
 
+(A3b, 2026-08-18: two per-ensemble keys added. `epar_project` (bool, default False)
+projects the numerical E∥ out of the gathered sample — `Ẽ = Ē − (Ē·B̄)B̄/|B̄|²` at every
+half-kick, `boris.project_perp` — and REQUIRES the exact ideal-Ohm mask, since with the
+resistive/forcing pieces on some of E∥ is real and would be deleted (ValueError otherwise;
+`push_tracked` also asserts `nez == 1` statically). `B0` (float > 0) overrides the
+top-level value for one ensemble and is ALWAYS present after normalization, the top-level
+key keeping its meaning as the default — B₀ is the amplitude parameter 1/ε (§10,
+docs/numerics.md), so a run may need several. Both round-trip through params.json with the
+raw dict and leave `normalize_config` idempotent. `MOMENTS` widened 9 → 11 with the
+local-B `vperpB2`/`vparB2`; gate 9 in `tests/test_particles_coupled.py`.)
+
 ## 4. Design (taranis core)
 
 - **Co-stepped, never snapshot-interpolated**: particles advance inside the run at the
@@ -162,6 +176,25 @@ hard-erroring — not in the original sketch, needed once checkpoint/restart was
   on, plain `state` when off — same rule as the carry. The particles-off branch in every
   touched function is a static `if params.particles is not None:` at the top, not a
   restructuring of the existing body.)
+  (A3, 2026-08-18: the accumulators landed as a third leaf `w` `(n_ens, n, NWORK)` fp64 —
+  cumulative work per unit mass split by `fields.WORK_PIECES = (eperp, ez_ideal,
+  ez_resistive, ez_forcing)`, the electric members of `FIELD_PIECES`. It is credited inside
+  the pusher from the exact half-kick identity `Δ(½|v|²) = h·E·(v_in + v_new)`, not
+  integrated separately, so summing the pieces closes against ½|v|² to round-off (~5e-14 of
+  KE₀) in BOTH precisions — `w` and the push arithmetic are fp64 whatever the field
+  precision is. A piece an ensemble's mask omits stays exactly zero, which is what makes the
+  paired resistive-split ensembles differ by `w_ez_resistive` alone. `MOMENTS` widened 3 → 9:
+  the three velocity means plus `mu`/`mu2` about the LOCAL B (from the pusher's own last B
+  sample — no extra gather) and the four per-piece work means; `push_ensembles` now returns
+  `(pstate, mom)` and the run bodies just emit it. Field assembly gained
+  `assemble_stacked` — one array `[E_⊥, the live ez pieces, B]` — so a half-kick is ONE
+  gather instead of two (the deferred gather-side optimization below, in the form the work
+  split needed anyway); `assemble` is its summed `(E, B)` form and `boris.push` a thin
+  bitwise wrapper over `push_tracked`. A2 particle checkpoint items (x, v only) are NOT
+  restorable by A3 and there is no migration — same-day change, no production data existed.
+  Overhead re-measured: unchanged within noise (+30%/+76% for 1/3 ensembles × 32768) — the
+  shared cell/weight work bought back what gathering the E_z pieces separately costs, so
+  optimization (i) below is now spent without a win; docs/performance.md.)
 - **Step placement**: mirror `_advance_forcing`. After the stepper returns `new_state`,
   push with dt = new_state.t − state.t (exact, adaptive-safe) and fields assembled from
   the PRE-step `state` — fields frozen at t_n over the step, first-order in the field
@@ -241,6 +274,66 @@ diagnostics → particles, never back.
 - Energy bookkeeping: per-ensemble work integrals ∫q E·v dt split by field piece
   (ideal/resistive/forcing E_z, E_⊥), so the heating attribution is measured, not
   inferred. Quoted against the E = 0 control ensemble's floor.
+
+(A3, 2026-08-18: landed as `taranis/diagnostics/particles.py` — `read_moments`,
+`heating_rate`, `mu_diffusion`, `gyroradius`/`gyrofrequency`, `kinetic_spectrum`,
+`delta_u`/`xi`/`chandran_fit`, `mu_of`, `jz_at`, `conditional_stats`, `increment_histogram`,
+`increment_diffusion`, `work_split`, `energy_budget`; conventions in CLAUDE.md, tests in
+`tests/test_particles_diagnostics.py`. The energy bookkeeping is exact rather than
+integrated: `ParticleState.w` is credited inside the pusher (§4).
+
+The 2D science run went through TWO passes the same day. Pass 1 (B0 = 1, Q_⊥ about ẑ, no
+E∥ projection, hyper=1, rate windows spanning the whole particle run with no upper-limit
+handling) found no Chandran exponential (c₂ = 0.02 ± 0.02 over ξ = 0.05–0.43) and argued that
+in 2D the parallel channel must dominate because (q/m)ψ_rms/v_⊥ = ψ_rms/ρ ≥ 4 for every
+resolved gyroradius. Against Xia, Perez, Chandran & Quataert 2013 (ApJ 776:90) that pass had
+three confounds: B0 = 1 is δB/B₀ ~ 1 (Xia cap at 0.47 and flag it — B0 is the RMHD ε,
+docs/numerics.md), Q_⊥ was measured about ẑ rather than the local B, and the ideal ensemble
+carried a numerical E∥ (dealiased bracket + independent bilinear E and B). Pass 2 (A3b:
+B0 = 10, β_i = 0.01, b_rms/B0 = 0.18; `epar_project=True` on every ideal ensemble; Q_⊥ from
+`vperpB2`; hyper=3, ν=η=1e-10; Xia's window rule t₀ = 10/Ω, end at 1.2× ⟨v_⊥B²⟩, Q_⊥ ≤ 2σ
+treated as an upper limit and held out of every fit; 44 min, 0.69 GB) is what
+`examples/test-particles-2D.ipynb` now shows, per §5 bullet: (1) the sidecar carries the 11
+moments; D_μ 2–3e-3 for the B0 = 10 ensembles (μ ∝ 1/B0), −6e-7 ± 6e-6 for the E=0 control;
+the snapshot-pair estimator is 9–41× larger at Δt ≈ 2 gyroperiods (reversible μ oscillation —
+it is an upper bound). (2) **The exponential is there**: 16 measurements + 6 upper limits over
+the fitted range ξ = 0.124–0.39 give **c₂ = 0.40 ± 0.13, c₁ ≈ 1.0** (lab-frame δu, local-B Q_⊥;
+drift-corrected δu 0.46 ± 0.09) — Chandran 2010 (0.75, 0.34), Xia 2013 (c₂ 0.44 → 0.20 with
+resolution, c₁ 0.7–1.1). Sensitivity, all printed in the notebook: including the ≤2σ points
+0.32 ± 0.11; ẑ frame same points 0.395; without design (a) 0.31 ± 0.17; design (b) alone
+0.34 ± 0.10 (gyro); B0 = 1 cohort under the same protocol 0.33 ± 0.22; NO limit handling
+(every Q > 0) 0.59 ± 0.07 — the fit is sensitive to the treatment of the near-zero points,
+not to the frame (worth 0.001). The three ring limits at ξ = 0.065/0.125/0.147 require
+c₂ ≥ 0.34/0.57/0.78; a plain power law Q ∝ δu^4.5 ρ^−0.45 scores slightly better on the 16
+points (R² 0.92 vs 0.88) but overshoots those limits 6–49× where the exponential misses ≤14×.
+Design (a) has almost no ξ lever here (δu ∝ ρ^0.18) and its per-host ρ-scaling at fixed
+turbulence (+0.67 at eps=0.03, −1.08 at eps=0.3, vs the normalization's −0.46) brackets the
+1/ρ of the model — a real statement about the ρ-scaling, not about c₂; design (c) (Xia's:
+fixed ρ AT INSERTION only — E×B pickup moves ρ/dx by 1.7–3.7× before t₀) is what reaches
+ξ ≤ 0.15 and supplies the limits. What B0 = ε demonstrably controls is the
+parallel/perpendicular split, not c₂: the ε = 1 vs ε = 0.1 twins (same Ω, ρ, ξ, fields)
+give w_ez/w_tot 0.89–0.95 vs 0.03–0.15 and Q_∥/Q_⊥ 0.5–0.6 vs 0.02 — the pass-1 "2D
+structural" argument used ψ_rms/ρ where the correct ratio is ψ_rms/(B0·ρ). The pass-1 null
+c₂ is therefore attributable to its measurement protocol (pickup inside the window, no
+limit rule; worth up to +0.2 here) and/or its hyper=1 turbulence — the notebook cannot
+separate the two and says so; it is a corrected measurement, not a diagnosis. (3) E_z:
+numerical-E∥ energization is not resolvable at B0 = 10 (projected vs unprojected Δ⟨KE⟩ =
++2.3%, 1.2σ, independent draws; the sampled E·B before projection is 1.6e-3 of |E||B|);
+full-mask p_z drift 0.5% of (q/m)ψ_rms vs ~120% for the ideal ensembles; the |j_z|
+conditioning is a NEGATIVE — ⟨Δv_z²⟩ rises 1.8× across quantiles but the E = 0 control's
+rises 1.7×, so it is the v×b_⊥ rotation locating small-scale structure, not sheet
+acceleration. The physical "resistive acceleration" headline is dropped (hyper=3 makes the
+piece a numerical regularization; the full-mask ensemble stays as the exactness check).
+Closure 4e-14 of KE₀, controls at 6e-14. Open items: (i) an opt-in shared init draw
+(per-ensemble `init_seed`) so projected/unprojected and ideal/full pairs are particle-paired
+— the projection comparison would go from 1.2σ to a number at zero cost; (ii) separating
+exponential from power law needs a measurable positive Q_⊥ at ξ ≲ 0.1, i.e. much longer
+windows on the suppressed rings — the natural next run; (iii) dissipation onset landed at
+k ≈ 29 rather than >40 (ν = 3e-11 piles up at the grid scale) — 512² or a longer average
+widens the clean band; (iv) a third forcing host helps design (b) more than anything else;
+(v) the short high-cadence trajectory dumps §4 anticipates remain wanted for any
+particle-level conditioning; (vi) rerunning one pass-1 configuration under the pass-2
+protocol would separate protocol from turbulence in the pass-1 null.)
 
 ## 6. Validation gates
 
@@ -351,6 +444,14 @@ gated on `params.particles`.
 - **A3 — physics production.** `diagnostics/particles.py`, paired resistive-split
   ensembles, both ξ-scan designs (§10), the two headline plots, 2D science notebook in
   `examples/`.
+  (Landed 2026-08-18 in two passes, A3 then A3b: accumulators + diagnostics module +
+  `examples/test-particles-2D.ipynb` with `particles_2d_run.py` (~44 min, ~0.7 GB, M1 laptop,
+  fp64). Both headline plots exist. Headline 1 finds the Chandran exponential once the run is
+  done Xia-style (B0 = 10, local-B frame, E∥ projected, upper-limit rule): c₂ = 0.40 ± 0.13,
+  c₁ ≈ 1.0. The first pass's null result is attributed to its measurement protocol and/or
+  base turbulence, NOT to 2D and not to the amplitude alone (§5 A3 note); the amplitude is
+  what sets the parallel/perpendicular split. Headline 2 is the E∥/p_z consistency set; the
+  resistive-acceleration framing is dropped. Open items in §5.)
 - **B — 3D.** Scheduled BEFORE the WebGPU port (§10 decision). First task is the
   distributed-particle design (z-rank migration vs replicated fields), then the same
   gates in 3D — §2's field assembly carries over unchanged — then the 3D science
@@ -385,6 +486,23 @@ cheap, and which must not be broken meanwhile:
 - **Particle E_z defaults to the ideal piece only**; resistive and forcing pieces are
   toggleable ON per ensemble. They are not physical E for the collisionless use case
   (§1, §3).
+- **Particles see only the ideal E, and its numerical E∥ is projected out** (A3b,
+  2026-08-18, after Xia, Perez, Chandran & Quataert 2013, ApJ 776, 90): independently
+  interpolated E and B leave `Ē·B̄ ≈ 1.4·10⁻³|E||B|` at the particle even though the grid
+  fields are exactly orthogonal, so the ideal production ensembles run with
+  `epar_project = True` (their eq. 21). Ensembles carrying the non-ideal E_z pieces must
+  NOT be projected — that E∥ is the thing they measure.
+- **B₀ is the amplitude parameter, B₀ = 1/ε** (A3b, 2026-08-18 — this supersedes the
+  "B₀ = 1, interpret q/m" bookkeeping decision above): B₀ = 1 is δB/B₀ ~ 1, which no RMHD
+  ordering supports; production runs B₀ ~ 10 with q/m scaled by 1/B₀, keeping Ω = qm·B₀ and
+  therefore ρ, Ω·dt and ξ fixed while β_i = v_th²/B₀². Derivation in docs/numerics.md
+  ("E∥ projection and the amplitude parameter"). B₀ is per ensemble.
+- **Heating is measured in the local-B frame** (A3b, 2026-08-18; Xia et al. §4.1): the
+  `vperpB2`/`vparB2` moment columns, not the ẑ-referred `vperp2`/`vz2` — the field
+  direction tilts at O(ε), so the ẑ split mixes ⊥ and ∥ at first order.
+- **Base turbulence at `hyper = 3`** for the science run (A3b, 2026-08-18): the inertial
+  range is what the ξ-scan needs, and the resistive E_z piece is no longer a physics target
+  — only the ∂ψ/∂t-exactness check (gates 4 full-mask variant, 7) still uses it.
 - **Phase B (3D) before Phase C (WebGPU)** (§8).
 - **Science notebooks (2D, 3D) live in `examples/`** (§8), following the existing
   notebook conventions there.

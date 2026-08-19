@@ -484,7 +484,8 @@ never needs it.
 
 `particle_fields` returns the piece decomposition rather than a summed `E`, because which
 pieces a particle sees is a per-ensemble choice (`FIELD_PIECES` /
-`FIELD_MASK_DEFAULTS`, assembled by `assemble`; all mask logic is static python):
+`FIELD_MASK_DEFAULTS`, assembled by `assemble_stacked` — `assemble` is its summed `(E, B)`
+form; all mask logic is static python):
 
 - **ideal**, `−{φ, ψ}`. On by default.
 - **resistive**, `L_ψ ψk` with `L_ψ` the ψ diagonal of `rmhd.linear_matrix` — `η j_z` at
@@ -496,7 +497,7 @@ pieces a particle sees is a per-ensemble choice (`FIELD_PIECES` /
   mode). Off by default.
 
 `PFields.ex/ey` hold `E_⊥/B₀ = −∇φ`, not `E_⊥` itself: `B₀` enters in exactly one place,
-`assemble(pf, mask, B0)`, which scales `(ex, ey)` by `B₀` and sets `B_z = B₀`. Physically
+`assemble_stacked(pf, mask, B0)`, which scales `(ex, ey)` by `B₀` and sets `B_z = B₀`. Physically
 `E_⊥ = −B₀∇φ` as derived above; storing it per unit `B₀` keeps a single knob.
 
 Defaults are the ideal-Ohm particle: for a collisionless test particle the resistive piece
@@ -529,10 +530,102 @@ which is the whole reason to state it here rather than rediscover it.
 `+2` for the dealiased ideal `E_z`, `+1` when the resistive piece is requested, `+1` when
 the forcing piece is — so ≤8 per step, against the ~30–36 of a 3-stage RHS.
 
+### Work bookkeeping
+
+Heating attribution is *measured*, not inferred: `ParticleState.w` carries, per particle,
+the cumulative work per unit mass done by each electric piece
+(`fields.WORK_PIECES = (eperp, ez_ideal, ez_resistive, ez_forcing)`, the electric members
+of `FIELD_PIECES`). The split is exact, not a quadrature.
+
+Write one Boris half-kick with `h = q·dt_k/(2m)`: `v⁻ = v + hE`, a rotation `v⁻ → v⁺` with
+`|v⁺| = |v⁻|`, then `v_new = v⁺ + hE`. Then
+
+```
+½|v_new|² = ½|v⁺|² + h E·v⁺ + ½h²|E|²
+½|v|²     = ½|v⁻|² − h E·v⁻ + ½h²|E|²
+```
+
+and `|v⁺| = |v⁻|`, so subtracting gives `½|v_new|² − ½|v|² = h E·(v⁺ + v⁻) = h E·(v_new + v)`
+— the rotation drops out identically, no small-`dt_k` expansion. `boris.push_tracked`
+accumulates exactly that expression restricted to each E component (`E_⊥` → the `x,y`
+terms, each `E_z` piece → the `z` term with its own piece's sampled value), so summing the
+columns of `w` reproduces `½|v|² − ½|v₀|²` per particle to round-off, over any number of
+steps and substeps and whatever the mask. A piece an ensemble does not see contributes
+exactly zero, forever. Gate 8 (`tests/test_particles_coupled.py`) asserts both, measured
+at `~5e-14` of `KE₀` in *both* precisions — `w` and the push are fp64 whatever the field
+precision is, so the closure does not degrade at fp32.
+
+Two consequences worth stating: the work is credited with the *same* field sample the kick
+used (any other choice would leave an `O(dt)` residual in the closure), and the piece
+columns are attributions of the *pusher's* energy change, so `w_ez_*` is not by itself the
+parallel heating — the rotation exchanges ⊥ and ∥ energy within a step.
+
+**The magnetic moment uses the local field.** `state.moments`'s `mu` is
+`μ = v_⊥B²/(2|B|)` with
+`v_⊥B² = |v|² − (v·B)²/|B|²` and `B = B₀ẑ + b_⊥` *sampled at the particle*, not
+`v_x²+v_y²/(2B₀)`. In RMHD `|B|` differs from `B₀` only at `O(ε²)` while the field
+*direction* tilts at `O(ε)`, so the ẑ-referred perpendicular energy and the true one differ
+at first order in `b_⊥/B₀` — the same effect that makes the naive grad-B drift wrong by an
+O(1) factor (below). `push_tracked` returns the B sample of its last half-kick precisely so
+`μ` costs no extra gather.
+
+### E∥ projection and the amplitude parameter
+
+**The gathered field has a numerical E∥.** On the grid the ideal pieces are exactly
+orthogonal: `E_⊥·b_⊥ + B₀·(−{φ,ψ}) = 0` identically (above). At the particle they are not.
+`interp.gather` interpolates each component of `E` and `B` independently, and the bilinear
+interpolant of a product is not the product of the interpolants, so the sampled
+`Ē·B̄ = O(dx²)·|E||B|` — a parallel electric field of purely numerical origin, which
+accelerates particles along `B` and contaminates exactly the quantity a heating run
+measures. Measured on a developed 64² state: `rms(Ē·B̄)/rms(|Ē||B̄|) ≈ 1.4·10⁻³`
+(gate 9, `tests/test_particles_coupled.py`).
+
+The per-ensemble flag `epar_project` removes it the way Xia, Perez, Chandran & Quataert
+2013 (ApJ 776, 90, their eq. 21) do, at every half-kick, per particle:
+
+```
+Ẽ = Ē − (Ē·B̄) B̄/|B̄|²        so  Ẽ·B̄ = 0 exactly (4·10⁻¹⁷ of |E||B| measured)
+```
+
+`boris.project_perp` is the kernel; `push_tracked(..., project=True)` applies it to the
+sample *before* the kick and before the work columns are formed, so `w` credits the
+projected field and the closure identity above stays exact. The projection is defined only
+for the exact ideal-Ohm mask (`bperp = eperp = ez_ideal = True`, the non-ideal `E_z` pieces
+off) and any other mask is a config error: with `ez_resistive`/`ez_forcing` on, `E∥` is
+partly *real* (that is the whole point of the paired resistive-split ensembles) and
+projecting would delete it; without the three ideal pieces there is nothing to project. It
+also mixes the `E_z` pieces, which is the second reason it needs a single one.
+
+**`B₀` is the RMHD amplitude parameter, `B₀ = 1/ε`.** Nondimensionalize the real particle
+equation in RMHD units — `u = ε v_A ũ`, `ψ = ε B₀ L ψ̃`, `t = L t̃/(ε v_A)`, velocities in
+flow units `ε v_A`:
+
+```
+dv̂/dt̃ = Ω̂ [ −∇φ̃ + ε(∂_t ψ̃) ẑ + v̂ × (ẑ + ε b̃_⊥) ],      Ω̂ = ΩL/(ε v_A)
+```
+
+while the code pushes `qm·B₀·[ −∇φ + (1/B₀)(∂_tψ) ẑ + v × (ẑ + b_⊥/B₀) ]`. The two are
+identical with `qm·B₀ = Ω̂` and `B₀ = 1/ε`. So `B₀` is not a free unit: `B₀ = 1` means
+`δB/B₀ ~ 1`, an amplitude no RMHD ordering supports (Xia et al. cap their runs at
+`δB_rms/B₀ ≤ 0.47` and flag even that). Production runs `B₀ ~ 10` with `q/m` scaled by
+`1/B₀` so that `qm·B₀` — hence `ρ = v_⊥/(qm·B₀)`, `Ω·dt` and `ξ` — is unchanged; the one
+thing that does change is `β_i = v_⊥²/v_A² = v_th²/B₀²` (0.01 for `v_th = 1`, `B₀ = 10`).
+`B₀` is therefore a PER-ENSEMBLE key (the top-level one is only its default), so one run
+can hold several amplitudes; with every field piece off it changes no orbit at all
+(gate 9's control).
+
+**Heating is measured in the local-B frame.** `MOMENTS` carries `vperpB2` and `vparB2` —
+`v_∥B² = (v·B)²/|B|²` and `v_⊥B² = |v|² − v_∥B²` with the pusher's own `B` sample — beside
+the ẑ-referred `vperp2`/`vz2`, and `diagnostics.particles.heating_rate` halves all four.
+Perpendicular heating is the local-B one (Xia et al. §4.1): the field direction tilts at
+`O(ε)` while `|B|` varies only at `O(ε²)`, so the ẑ-referred split mixes ⊥ and ∥ energy at
+first order in `b_⊥/B₀` — the same effect as the `μ` and grad-B remarks above.
+
 ### Dimensionless groups
 
-`B₀ = 1` in code units and `q/m` carries the whole scale interpretation (no `ε`
-parameter anywhere): `Ω = q/m` and `ρ = v_⊥ m/q`. Three groups govern whether a
+`q/m` carries the scale interpretation of the gyration: `Ω = qm·B₀` and
+`ρ = v_⊥/(qm·B₀)`, so at `B₀ = 1` (the default) `Ω = q/m` and `ρ = v_⊥ m/q`. `B₀` itself is
+the amplitude parameter `1/ε` (above), not a unit choice. Three groups govern whether a
 test-particle run means anything:
 
 - `ρ/dx` — gyroradius against the grid, i.e. whether the fields the particle samples are
@@ -541,8 +634,9 @@ test-particle run means anything:
   `ξ = δu(ρ)/v_⊥` is the same statement locally.
 - `v_th/v_A` — thermal speed against the Alfvén speed.
 
-At 256² (`dx ≈ 0.0245`) the baseline is `q/m ≈ 10–20`, i.e. `Ω ≈ 10–20` and 60–120 solver
-steps per gyration: Boris at the solver `dt` is fully resolved with no substepping.
+At 256² (`dx ≈ 0.0245`) the baseline is `Ω = qm·B₀ ≈ 10–20`, i.e. 60–120 solver steps per
+gyration: Boris at the solver `dt` is fully resolved with no substepping. `v_th/v_A` is
+`v_th/B₀`.
 
 **Guiding-centre formulas do not transfer naively.** Kernel gate 3
 (`tests/test_particles_kernel.py`, derivation in its header) measures the perpendicular drift

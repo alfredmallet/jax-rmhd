@@ -264,8 +264,13 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
 
 - Conventions (from `NonlinearTerm`'s bracket signs): u = ẑ×∇φ, b_⊥ = ẑ×∇ψ, Φ = B₀φ,
   A_z = −ψ, so E_⊥ = −B₀∇φ and **E_z = +∂ψ/∂t = −{φ,ψ} + L_ψψ + f_ψ** (2D and 3D; the
-  finite-difference-z filter is NOT represented — Phase B decides). B₀ = 1, q/m carries the
-  scale; no ε parameter. `assemble(pf, mask, B0)` is the ONLY place B₀ enters.
+  finite-difference-z filter is NOT represented — Phase B decides). `assemble_stacked(pf,
+  mask, B0)` is the ONLY place B₀ enters the fields the pusher sees (diagnostics read the
+  same `ens["B0"]`; B_z is stored at FIELD precision, so the sidecar `mu` and `mu_of` are
+  bit-consistent at fp64, and at fp32 only for an fp32-representable B₀). **B₀ IS the RMHD amplitude parameter, B₀ = 1/ε**
+  (derivation: docs/numerics.md): B₀ = 1 means δB/B₀ ~ 1, production runs B₀ ~ 10 with q/m
+  scaled by 1/B₀ so Ω = qm·B₀ — hence ρ, Ω·dt, ξ — is unchanged; β_i = v_th²/B₀². It is a
+  PER-ENSEMBLE key (top-level = default), so one run can hold several amplitudes.
 - `particles/fields.py::particle_fields(state,kgrid,params,*,resistive,forcing)` builds the
   piece-decomposed real-space `PFields` (RMHD-only assert). **`ez_ideal` is the DEALIASED
   bracket** `ifft(dealias·fft(−{φ,ψ}))` — the raw pointwise bracket is not the ∂ψ/∂t the
@@ -275,16 +280,44 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   `FIELD_PIECES = (bperp, eperp, ez_ideal, ez_resistive, ez_forcing)`; defaults
   `ez_resistive = ez_forcing = False` (ideal-Ohm particle); `full_mask()` is the exact-∂ψ/∂t
   ensemble. Mask logic is static python — never `lax.cond`.
+- `assemble_stacked(pf, mask, B0) -> (F, ez_on)` is the production assembly: ONE array
+  `[B0·ex, B0·ey, <the ez pieces the mask keeps, in order>, bx, by, B0]` plus the static
+  tuple of kept piece names, so the pusher gathers E and B in one call and can attribute
+  the work per piece. `assemble` is its summed `(E, B)` form — same code path, no second
+  implementation. `WORK_PIECES = (eperp, ez_ideal, ez_resistive, ez_forcing)` (`NWORK = 4`)
+  are the ELECTRIC pieces, in the order `ParticleState.w`'s last axis stores them.
 - Particle state is **fp64 always** (positions/velocities `(N,3)` float64 regardless of
   TARANIS_PRECISION); `interp.gather` casts samples up. The z axis is carried in every
   interface even though Phase A implements `nz_local == 1` only (assert). Positions are
   left UNFOLDED; only the gather folds mod L. `interp.gather_spectral` is validation-only.
-- `boris.py`: `boris_kick`/`drift` are pure per-particle kernels (elementwise arithmetic
-  on length-3 vectors, no `Parameters` — WGSL-portable, plan §9); `push` is the KDK
-  driver (x, v synchronized at step boundaries, one gather per half-kick, fields frozen
-  over the step). Keep the kernel free of jnp-only idioms.
+- `boris.py`: `boris_kick`/`drift`/`project_perp` are pure per-particle kernels (elementwise
+  arithmetic on length-3 vectors, no `Parameters` — WGSL-portable, plan §9); `push_tracked` is the KDK
+  driver (x, v synchronized at step boundaries, ONE gather of the stacked `F` per half-kick,
+  fields frozen over the step), and `push(x,v,E3,B3,...)` is a thin bitwise wrapper over it
+  (`nez=1`, E and B concatenated) that the kernel gates use. Keep the kernel free of
+  jnp-only idioms.
+- `push_tracked` also returns `(dw, bsample)`: `dw` `(N, 1+nez)` fp64 is the work per unit
+  mass over the call, column 0 by E_⊥ and column 1+i by ez piece i, accumulated per
+  half-kick as `h·E·(v_in + v_new)` with `h = qm·dt_k/2`. That is EXACT Boris algebra (the
+  rotation is norm-exact), so `sum(dw) == ½|v_out|² − ½|v_in|²` to round-off — gate 8.
+  `bsample` `(N,3)` is the last half-kick's B sample, i.e. B at the returned position, so
+  the local-B μ costs no extra gather. Derivation: docs/numerics.md "Work bookkeeping".
+- **E∥ projection** (`boris.project_perp`, `push_tracked(..., project=True)`, static flag):
+  replaces each gathered sample by `E − (E·B)/(B·B)·B` BEFORE the kick and before the work
+  columns are formed, so the particle sees E·B = 0 exactly and the closure stays exact. It
+  removes the numerical E∥ that independent bilinear interpolation of E and B leaves
+  (measured 1.4e-3 of |E||B| at 64², down to 4e-17 — gate 9). Per-ensemble
+  `epar_project` (default False) REQUIRES the exact ideal-Ohm mask
+  (`bperp=eperp=ez_ideal=True`, non-ideal ez off) — anything else is a ValueError naming the
+  ensemble, and `nez == 1` is a static assert in `push_tracked`: with the resistive/forcing
+  pieces on, E∥ is partly real and projecting would delete it.
 - Gates: kernel gates 1–3 in `tests/test_particles_kernel.py` (both precisions), gate 7
-  in `tests/test_particles_coupled.py` (fp64). In RMHD b_⊥ fields the naive grad-B drift
+  in `tests/test_particles_coupled.py` (fp64), gate 8 (work closure, off pieces exactly
+  zero, the resistive-split discriminator, `push` vs `push_tracked` bitwise) and gate 9
+  (E∥ projection: E'·B round-off at the particles, unprojected NOT zero, closure and orbits
+  still right; per-ensemble B0 leaves the δb=0 control bitwise) there too, in
+  both precisions — the closure holds at fp32 fields because `w` and the push are fp64.
+  In RMHD b_⊥ fields the naive grad-B drift
   is off by an O(1) factor (shear enters at O(ε), |B| at O(ε²)) — measured and derived
   in the kernel test; do not "fix" it toward the textbook value.
 - **Gate-6 reference** (`tests/_gen_particles_gate6_reference.py`,
@@ -300,7 +333,10 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   so `save()`/`from_snapshot()` round-trip it (list/tuple-tolerant, re-save is a no-op).
   Requires `eqtype=="RMHD"`, `dims==2`, `size==1` (Phase A restriction — ValueError
   otherwise, pointing at Phase B). Schema: `seed`/`substeps`/`B0`/`init_on_restart` plus a
-  non-empty `ensembles` tuple, each `{qm, init: {kind: "maxwellian"|"ring", ...}}`; `n` is
+  non-empty `ensembles` tuple, each `{qm, init: {kind: "maxwellian"|"ring", ...}}` with the
+  optional `B0` (> 0; the top-level one is its default and `ens["B0"]` is ALWAYS present
+  after normalization — `push_ensembles`/`mu_of` read it, never `cfg["B0"]`) and
+  `epar_project`; `n` is
   the particle count PER ENSEMBLE, not the total. Each ensemble's raw `FIELD_PIECES` keys
   (bperp/eperp/ez_ideal/ez_resistive/ez_forcing) are resolved through `fields.resolve_mask`
   into `ens["mask"]` — the raw per-piece keys are consumed, not kept alongside it, and an
@@ -308,22 +344,30 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   given both inline and in `"mask"` must agree or it is a ValueError).
   `params.n_ens = len(params.particles["ensembles"])` is absent when particles are off —
   guard access like the z attributes.
-- `ParticleState` (`particles/state.py`; `x`/`v` each `(n_ens, n, 3)` fp64) rides as a
+- `ParticleState` (`particles/state.py`; `x`/`v` each `(n_ens, n, 3)` fp64, `w`
+  `(n_ens, n, NWORK)` fp64 = cumulative work per unit mass per piece since init, zero from
+  `init_particles` and EXACTLY zero forever for a piece the ensemble's mask omits) rides as a
   CARRY TUPLE `(state, pstate)` next to `SimulationState` — never a `SimulationState`
   field, so the on-disk state layout and every particles-off code path stay untouched
   (gate 6). `simulate`/`simulate_scan(..., pstate=)` is REQUIRED iff `params.particles` is
   set (a pstate with particles off is also a ValueError); both return `(state, pstate)`
   when on, plain `state` when off. `block_of_steps`/`_cfl_block` return `((state,
-  pstate), ys)` with `ys = (t, moments)` (`moments`: per-ensemble mean of v_x²+v_y², v_z²,
-  v_z — `state.py::MOMENTS`) when on, the unchanged `final_state` when off; the off branch
-  is a static `if params.particles is not None:` at the top of each function, never
+  pstate), ys)` with `ys = (t, mom)` when on, the unchanged `final_state` when off; the off
+  branch is a static `if params.particles is not None:` at the top of each function, never
   restructured "for symmetry".
+- `push_ensembles(...) -> (pstate, mom)` and `moments(pstate, bsample) -> (n_ens, NMOM)`:
+  `MOMENTS = (vperp2, vz2, vz, vperpB2, vparB2, mu, mu2, w_eperp, w_ez_ideal,
+  w_ez_resistive, w_ez_forcing)` (`NMOM = 11`), per-ensemble means. `vparB2 = (v·B)²/|B|²`,
+  `vperpB2 = |v|² − vparB2` and `mu = v_⊥B²/(2|B|)` all use the LOCAL B from the push's
+  `bsample`, not v_z²/v_x²+v_y² about ẑ — **heating is measured in the local-B frame**
+  (docs/numerics.md); `w_<piece>` is the mean of `w[..., i]`.
+  Only `push_ensembles` computes moments — the run bodies just emit what it returns.
 - `_advance_particles(pstate, prev_state, new_state, kgrid, params)` mirrors
   `_advance_forcing`'s placement: runs after the stepper and after `_advance_forcing`
   (whose result it does not read), with fields assembled from the PRE-step state (frozen
   at t_n) and `dt = new_state.t - prev_state.t`.
 - `simulate_scan(..., save=True)` appends each `advance()` call's `ys` to a sidecar
-  `<mngr.directory>/particle_moments.txt` (header `# t ensemble vperp2 vz2 vz`, one row per
+  `<mngr.directory>/particle_moments.txt` (header `# t ensemble ` + `MOMENTS`, one row per
   step per ensemble, `%.17g`, append mode — a restart just continues the file; rows with
   `t > t_restart` are dropped on entry, so a restart from an older snapshot never leaves
   duplicate times). `simulate`'s
@@ -339,26 +383,57 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   missing the `particles` item hard-errors (`FileNotFoundError` naming `init_on_restart`)
   UNLESS `params.particles["init_on_restart"]` is set, in which case it prints a notice and
   returns `init_particles(params)` — never a silent re-init; a missing STEP is a
-  `FileNotFoundError` either way (the flag covers a missing ITEM only).
+  `FileNotFoundError` either way (the flag covers a missing ITEM only). Particle items
+  written by the A2 tree (x, v only) are NOT restorable — `template()` now carries `w` and
+  there is no migration.
 - RNG: `jax.random.key(params.particles["seed"])` is used ONLY in `init_particles`
   (`jax.random.fold_in(key, ensemble_index)`, then split for x/v) — the push itself is
   deterministic, so the forcing RNG stream is untouched by construction.
-- `boris.push(..., gather=interp.gather)` is swappable: validation drives the identical
-  push through `interp.gather_spectral` on rfft2 arrays.
+- `boris.push_tracked/push(..., gather=interp.gather)` is swappable: validation drives the
+  identical push through `interp.gather_spectral` on rfft2 arrays.
 - Restart is bitwise ONLY with `forcing_norm_per_step=False` or `forcing=False` — this is
   pre-existing (`_refresh_forcing_scale` recomputes the forcing scale at dt=0 on
   `simulate`/`simulate_scan` entry, not particle-specific), but it also bounds when a
   particle restart reproduces the uninterrupted trajectory bitwise.
 - `ctx()` (`tests/_rmhd_testing.py`) caches on `tuple(sorted(kwargs.items()))`, so it
   CANNOT take `particles=` (a dict is unhashable) — use `fresh_params(particles=...)`.
-- Overhead (A2, 2026-08-18, 256² CPU fp64, quiet machine): `particle_fields`'s fixed
-  transform cost is 17% of the solver step, inside the ≤15–20% budget; the O(N)
-  `boris.push` gather at the dense 2D loading used here pushes the observed total to
-  +26%/+74% (1/3 ensembles × 32768) — docs/performance.md "Test particles overhead".
-  Gather reorganization and stage-1-grad reuse in `particle_fields` are deferred,
-  flagged in plans/TESTPART_PLAN.md §4.
-- Not yet (Phase A3): `diagnostics/particles.py`, diagnostic accumulators, the paired
-  resistive-split production ensembles, the two headline plots.
+- `diagnostics/particles.py` is the read-only observer side (plain imports, dependency runs
+  diagnostics → particles, never back; listed in `diagnostics/__init__.py`'s `__all__` with
+  NO name re-exports). Host numpy; `jnp` only where a gather/fft is needed (`mu_of`,
+  `jz_at`, `kinetic_spectrum`). Conventions to keep: `read_moments` parses the sidecar BY
+  HEADER NAME (widening `MOMENTS` never breaks old files; a repeated `(t, ensemble)` row is
+  a ValueError; the file name is duplicated there, not imported from `run.py`);
+  `heating_rate` halves ONLY the velocity-square columns (`vperp2`, `vz2`, `vperpB2`,
+  `vparB2`) and its `err` is
+  the block-slope scatter, never the OLS residual error; `kinetic_spectrum` is `perpspec`'s
+  phi column so `0.5⟨u²⟩ = ∫E_kin dk` and `delta_u(rho) = sqrt(2 k E_kin(k))` at `k = 1/rho`
+  — any new velocity-at-a-scale estimator keeps that factor 2; `gyroradius` uses `|q/m|`;
+  `mu_of` is the snapshot-cadence counterpart of the sidecar `mu` column and honours each
+  ensemble's `bperp` bit and its own `B0` (a `bperp=False` ensemble sees `B = B₀ẑ`, as its particles do —
+  `tests/test_particles_diagnostics.py` pins it against `push_ensembles`' moment);
+  `energy_budget`'s `closure = dke − total_work` is round-off by construction — nonzero
+  means a piece is doing work outside the accumulators.
+- Overhead (re-measured A3, 2026-08-18, 256² CPU fp64, quiet machine): `particle_fields`'s
+  fixed transform cost is 17% of the solver step (19% with the optional pieces), inside the
+  ≤15–20% budget; the O(N) push gather at the dense 2D loading used here pushes the observed
+  total to +30%/+76% (1/3 ensembles × 32768) — unchanged from A2 within noise, the single
+  gather per half-kick paying for the separately-gathered E_z pieces. docs/performance.md
+  "Test particles overhead". `jnp.take`-style gather work and stage-1-grad reuse in
+  `particle_fields` are still deferred, flagged in plans/TESTPART_PLAN.md §4.
+- Science: `examples/test-particles-2D.ipynb` + `examples/particles_2d_run.py` (resumable
+  `make_data`, ~44 min/0.7 GB on the M1 laptop, fp64) is the 2D production reference: hyper=3
+  base turbulence, production ensembles at **B0 = 10 with `epar_project=True`**, Q_⊥ from the
+  local-B `vperpB2` with Xia's window rule (skip 10/Ω of E×B pickup, stop at 1.2×, Q_⊥ ≤ 2σ is
+  an upper limit and stays out of the fit), designs (a) q/m sweep, (b) forcing sweep, (c) Xia's
+  fixed-ρ-at-insertion v_⊥ sweep, plus B0 = 1 contrast twins and the controls. Result:
+  c₂ = 0.40 ± 0.13, c₁ ≈ 1.0 (Chandran 0.34/0.75, Xia 0.2–0.44), with the sensitivity table
+  printed — the number moves with the near-zero-point rule (0.32–0.59), not with the frame.
+  The SAME analysis at B0 = 1 gives c₂ = 0.33 ± 0.22: amplitude sets the parallel/perpendicular
+  split (E_z work 0.9 → 0.03–0.15 of the total), NOT c₂; the first pass's c₂ ≈ 0 was its
+  protocol/turbulence (plan §5). Do not quote a c₂ without its rule and frame. Open items
+  (particle-paired init, longer windows at ξ ≲ 0.1, wider clean spectral band, a pass-1
+  configuration under the pass-2 protocol) are in plans/TESTPART_PLAN.md §5.
+- Not yet: Phase B (3D).
 
 ### Checkpointing
 

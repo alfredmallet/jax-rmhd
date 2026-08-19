@@ -27,7 +27,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import taranis as jr
-from taranis.particles.fields import FIELD_MASK_DEFAULTS, FIELD_PIECES
+from taranis.particles.fields import FIELD_MASK_DEFAULTS, FIELD_PIECES, NWORK, WORK_PIECES
 from taranis.particles.state import (MOMENTS, NMOM, ParticleState, init_particles, moments,
                                      normalize_config, template)
 from taranis.snapshot_io import get_saved_steps, load_particles, load_snapshot
@@ -114,6 +114,26 @@ def test_particles_config_validation():
                                             mask={"ez_forcing": False})]}, "ez_forcing")
         rejects(c, "unknown key inside 'mask'",
                 {"n": 4, "ensembles": [dict(good_ens, mask={"ez_ohmic": True})]}, "ez_ohmic")
+        # per-ensemble B0 (the amplitude parameter 1/epsilon) and the E_parallel projection
+        rejects(c, "non-float per-ensemble B0",
+                {"n": 4, "ensembles": [dict(good_ens, B0="ten")]}, "B0")
+        rejects(c, "per-ensemble B0 = 0",
+                {"n": 4, "ensembles": [dict(good_ens, B0=0.0)]}, "> 0")
+        rejects(c, "negative per-ensemble B0",
+                {"n": 4, "ensembles": [dict(good_ens, B0=-2.0)]}, "> 0")
+        rejects(c, "top-level B0 <= 0 reaches the ensembles",
+                {"n": 4, "B0": -1.0, "ensembles": [good_ens]}, "> 0")
+        rejects(c, "non-bool epar_project",
+                {"n": 4, "ensembles": [dict(good_ens, epar_project="yes")]}, "epar_project")
+        # the projection is defined only for the exact ideal-Ohm mask
+        for label, over in (("with ez_resistive on", {"ez_resistive": True}),
+                            ("with ez_forcing on", {"ez_forcing": True}),
+                            ("with ez_ideal off", {"ez_ideal": False}),
+                            ("with eperp off", {"eperp": False}),
+                            ("with bperp off", {"bperp": False})):
+            rejects(c, f"epar_project {label}",
+                    {"n": 4, "ensembles": [dict(good_ens, epar_project=True, **over)]},
+                    "epar_project")
         # Phase-A scope: the message must point at the plan, not just fail
         rejects(c, "dims=3", {"n": 4, "ensembles": [good_ens]}, "Phase B", dims=3, nz=4,
                 Lz=2 * np.pi, forcing=False)
@@ -138,6 +158,11 @@ def test_particles_config_normalization():
     decoupled = _base(particles=raw)
     raw["n"] = 999
     raw["ensembles"][0]["qm"] = 999.0
+    # per-ensemble B0 overriding the top-level default, and the E_parallel projection
+    b0_cfg = _base(particles={"n": 4, "B0": 10.0, "ensembles": [
+        {"qm": 1.5, "init": {"kind": "maxwellian", "vth": 1.0}, "epar_project": True},
+        {"qm": 15.0, "init": {"kind": "maxwellian", "vth": 1.0}, "B0": 1.0},
+    ]}).particles
     with checks() as c:
         c.check("defaults filled: seed/substeps/B0/init_on_restart",
                 (cfg["seed"], cfg["substeps"], cfg["B0"], cfg["init_on_restart"])
@@ -151,6 +176,19 @@ def test_particles_config_normalization():
         c.check("ensemble 1's per-piece keys are consumed into a full 5-key mask",
                 set(ens[1]["mask"]) == set(FIELD_PIECES) and all(ens[1]["mask"].values())
                 and not any(k in ens[1] for k in FIELD_PIECES), str(ens[1]))
+        c.check("every ensemble carries its own B0 and epar_project after normalization",
+                all("B0" in e and "epar_project" in e for e in ens)
+                and [e["B0"] for e in ens] == [1.0, 1.0]
+                and [e["epar_project"] for e in ens] == [False, False], str(ens))
+        c.check("a per-ensemble B0 overrides the top-level one, which stays the default "
+                "for the ensembles that do not set it",
+                (b0_cfg["B0"], b0_cfg["ensembles"][0]["B0"], b0_cfg["ensembles"][1]["B0"])
+                == (10.0, 10.0, 1.0), str(b0_cfg))
+        c.check("epar_project is accepted with the ideal-Ohm mask",
+                b0_cfg["ensembles"][0]["epar_project"] is True
+                and b0_cfg["ensembles"][0]["mask"] == FIELD_MASK_DEFAULTS)
+        c.check("a config with per-ensemble B0/epar_project normalizes idempotently",
+                normalize_config(b0_cfg) == b0_cfg, str(normalize_config(b0_cfg)))
         c.check("ring init's vz defaults to 0.0 and vperp survives",
                 ens[1]["init"] == {"kind": "ring", "vperp": 1.0, "vz": 0.5}, str(ens[1]["init"]))
         c.check("qm stored as float (sign preserved)",
@@ -186,6 +224,21 @@ def test_params_json_roundtrip_with_particles():
     from_snapshot-built Parameters must still compare equal (no-op), not raise."""
     params = _base(particles=PARTICLES)
     off = _base()
+    # the A3b keys ride the same raw-dict round trip
+    projected = {"n": 8, "B0": 10.0, "ensembles": [
+        {"qm": 1.5, "init": {"kind": "ring", "vperp": 1.0}, "epar_project": True},
+        {"qm": 15.0, "init": {"kind": "ring", "vperp": 1.0}, "B0": 1.0},
+    ]}
+    with snap_dir() as d_p:
+        pp = _base(particles=projected)
+        pp.save(d_p)
+        rec_p = json.load(open(os.path.join(d_p, "params.json")))
+        back_p = jr.Parameters.from_snapshot(d_p)
+        try:
+            back_p.save(d_p)
+            resave_p = None
+        except ValueError as e:
+            resave_p = str(e)
     with snap_dir() as d, snap_dir() as d_off:
         params.save(d)
         rec = json.load(open(os.path.join(d, "params.json")))
@@ -223,6 +276,13 @@ def test_params_json_roundtrip_with_particles():
                     backfilled["particles"] is None, str(backfilled.get("particles")))
             c.check("a differing particles record is a hard error naming particles",
                     "particles" in differs, differs)
+            c.check("epar_project and per-ensemble B0 round-trip through params.json",
+                    rec_p["particles"] == projected
+                    and [e["B0"] for e in back_p.particles["ensembles"]] == [10.0, 1.0]
+                    and [e["epar_project"] for e in back_p.particles["ensembles"]]
+                    == [True, False], str(rec_p["particles"]))
+            c.check("... and re-saving the from_snapshot copy is still a no-op",
+                    resave_p is None, str(resave_p))
 
 
 # ------------------------------------------------------------- init / template / moments
@@ -230,7 +290,8 @@ def test_params_json_roundtrip_with_particles():
 def test_init_particles_template_and_moments():
     """The particle RNG stream: fp64 state whatever TARANIS_PRECISION is, positions
     uniform over the box, ring/maxwellian drawn as documented, deterministic in the seed
-    and independent between ensembles (fold_in). moments() is the sidecar's payload."""
+    and independent between ensembles (fold_in). moments(pstate, bsample) is the sidecar's
+    payload -- including mu about the LOCAL B, which is why it needs the B sample."""
     cfg = {"seed": 3, "n": 4096, "ensembles": [
         {"qm": 1.0, "init": {"kind": "maxwellian", "vth": 0.5}},
         {"qm": 1.0, "init": {"kind": "ring", "vperp": 2.0, "vz": -0.25}},
@@ -239,19 +300,37 @@ def test_init_particles_template_and_moments():
     ps = init_particles(params)
     same = init_particles(params)
     other = init_particles(_base(particles=dict(cfg, seed=4)))
-    x, v = np.asarray(ps.x), np.asarray(ps.v)
+    x, v, w = np.asarray(ps.x), np.asarray(ps.v), np.asarray(ps.w)
     tm = template(params)
     vperp = np.hypot(v[1, :, 0], v[1, :, 1])
-    mom = np.asarray(moments(ps))
+    # a tilted, non-uniform B so mu is not just v_perp^2/2B0, and a nonzero w to average
+    rng = np.random.default_rng(7)
+    b = 1.0 + 0.3 * rng.standard_normal(v.shape)
+    b[..., 2] += 2.0
+    ps_w = ps._replace(w=jnp.asarray(rng.standard_normal(w.shape)))
+    mom = np.asarray(moments(ps_w, jnp.asarray(b)))
+    bsq = np.sum(b * b, axis=2)
+    vparb2 = np.sum(v * b, axis=2) ** 2 / bsq
+    vperpb2 = np.sum(v * v, axis=2) - vparb2
+    mu = vperpb2 / (2.0 * np.sqrt(bsq))
     ref = np.stack([np.mean(v[:, :, 0] ** 2 + v[:, :, 1] ** 2, axis=1),
-                    np.mean(v[:, :, 2] ** 2, axis=1), np.mean(v[:, :, 2], axis=1)], axis=1)
+                    np.mean(v[:, :, 2] ** 2, axis=1), np.mean(v[:, :, 2], axis=1),
+                    np.mean(vperpb2, axis=1), np.mean(vparb2, axis=1),
+                    np.mean(mu, axis=1), np.mean(mu ** 2, axis=1)]
+                   + [np.mean(np.asarray(ps_w.w)[:, :, i], axis=1) for i in range(NWORK)],
+                   axis=1)
     with checks() as c:
         c.check("ParticleState leaves are (n_ens, n, 3) float64 at every precision",
                 ps.x.shape == (2, 4096, 3) and ps.x.dtype == jnp.float64
                 and ps.v.dtype == jnp.float64, f"{ps.x.shape} {ps.x.dtype} {ps.v.dtype}")
+        c.check(f"w is (n_ens, n, NWORK={NWORK}) float64 and starts at exactly zero "
+                f"(pieces {WORK_PIECES})",
+                ps.w.shape == (2, 4096, NWORK) and ps.w.dtype == jnp.float64
+                and np.all(w == 0.0), f"{ps.w.shape} {ps.w.dtype}")
         c.check("template matches init_particles' shapes/dtypes (the restore tree)",
                 tm.x.shape == ps.x.shape and tm.v.shape == ps.v.shape
-                and tm.x.dtype == jnp.float64 and isinstance(tm, ParticleState))
+                and tm.w.shape == ps.w.shape and tm.x.dtype == jnp.float64
+                and tm.w.dtype == jnp.float64 and isinstance(tm, ParticleState))
         c.check("positions uniform over [0,Lx) x [0,Ly), z = 0 in 2D",
                 x[..., 0].min() >= 0.0 and x[..., 0].max() < params.Lx
                 and x[..., 1].min() >= 0.0 and x[..., 1].max() < params.Ly
@@ -270,8 +349,17 @@ def test_init_particles_template_and_moments():
                 not np.array_equal(np.asarray(other.x), x))
         c.check("ensembles are drawn independently (fold_in per ensemble)",
                 not np.array_equal(x[0], x[1]))
-        c.check(f"MOMENTS = {MOMENTS} and moments() is (n_ens, {NMOM}) matching numpy",
-                mom.shape == (2, NMOM) and np.allclose(mom, ref, rtol=1e-14, atol=0.0))
+        c.check(f"MOMENTS = {MOMENTS} and moments() is (n_ens, {NMOM}) matching numpy "
+                f"(vperpB2/vparB2/mu about the local B, w means per piece)",
+                mom.shape == (2, NMOM) and np.allclose(mom, ref, rtol=1e-13, atol=0.0),
+                str(mom - ref))
+        c.check("the local-B split is a partition of |v|^2 and differs from the "
+                "zhat-referred one (the B sample is tilted)",
+                np.allclose(mom[:, MOMENTS.index("vperpB2")] + mom[:, MOMENTS.index("vparB2")],
+                            np.mean(np.sum(v * v, axis=2), axis=1), rtol=1e-13, atol=0.0)
+                and not np.allclose(mom[:, MOMENTS.index("vparB2")],
+                                    mom[:, MOMENTS.index("vz2")], rtol=1e-3, atol=0.0),
+                str(mom[:, [MOMENTS.index(k) for k in ("vperpB2", "vparB2")]]))
 
 
 # --------------------------------------------------------------- run.py pstate contract
@@ -353,8 +441,14 @@ def test_moments_sidecar():
     with snap_dir() as d, managed_manager(on, d, nsnap=10) as mngr:
         end, pend = _run(on, kg, mngr, pstate=init_particles(on), t_end=0.2)
         lines = _sidecar(d)
-        # read everything off the carry BEFORE the restart call donates it
-        mom_end = np.asarray(moments(pend))
+        # read everything off the carry BEFORE the restart call donates it. mu/mu2 need
+        # the push's own B sample, which the carry does not keep, so the final-row check
+        # below covers the columns computable from pstate alone.
+        v_end, w_end = np.asarray(pend.v), np.asarray(pend.w)
+        mom_end = np.stack([np.mean(v_end[:, :, 0] ** 2 + v_end[:, :, 1] ** 2, axis=1),
+                            np.mean(v_end[:, :, 2] ** 2, axis=1),
+                            np.mean(v_end[:, :, 2], axis=1)]
+                           + [np.mean(w_end[:, :, i], axis=1) for i in range(NWORK)], axis=1)
         t_end1 = float(end.t)
         # restart into the SAME directory: the sidecar is appended to, header not repeated
         end2, _ = jr.simulate_scan(end, kg, on, 5, 100.0, 0.3, mngr, save=True, pstate=pend)
@@ -394,17 +488,24 @@ def test_moments_sidecar():
                 lines[0] == "# t ensemble " + " ".join(MOMENTS), lines[0])
         c.check(f"one row per (step, ensemble): {len(rows)} == {nsteps} steps * {n_ens}",
                 len(rows) == nsteps * n_ens, f"{len(rows)} rows, nsteps={nsteps}")
-        c.check("five whitespace-separated columns per row",
-                all(len(r) == 5 for r in rows))
+        c.check(f"t, ensemble and {NMOM} moment columns per row",
+                all(len(r) == 2 + NMOM for r in rows))
         c.check("the ensemble column cycles 0..n_ens-1 within each step",
                 np.array_equal(ens, np.tile(np.arange(n_ens), len(rows) // n_ens)))
         c.check("t strictly increasing over the flattened scan ys",
                 np.all(np.diff(t[::n_ens]) > 0), str(t[::n_ens][:6]))
         c.check(f"last row's t is the returned state's t ({t[-1]!r} vs {t_end1!r})",
                 abs(t[-1] - t_end1) < 1e-14)
-        c.check("the final rows equal moments(pstate) of the returned carry",
-                np.allclose(vals[-n_ens:], mom_end, rtol=1e-13, atol=0.0),
-                str(vals[-n_ens:] - mom_end))
+        cols = [MOMENTS.index(k) for k in ("vperp2", "vz2", "vz")
+                + tuple("w_" + p for p in WORK_PIECES)]
+        c.check("the final rows' velocity and work moments are those of the returned carry",
+                np.allclose(vals[-n_ens:][:, cols], mom_end, rtol=1e-13, atol=1e-300),
+                str(vals[-n_ens:][:, cols] - mom_end))
+        c.check("the mu columns are finite and positive (mu = v_perpB^2/2|B| about the "
+                "local B)",
+                np.all(np.isfinite(vals[:, MOMENTS.index("mu")]))
+                and np.all(vals[:, MOMENTS.index("mu")] > 0.0)
+                and np.all(vals[:, MOMENTS.index("mu2")] > 0.0))
         c.check("a restart appends without a second header",
                 sum(1 for ln in lines2 if ln.startswith("#")) == 1
                 and len(lines2) == 1 + int(round(t_end2 / dt)) * n_ens,

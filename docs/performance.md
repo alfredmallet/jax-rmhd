@@ -171,10 +171,33 @@ particles per grid point, dense, and XLA's CPU gather is a scalar loop. In 3D at
 production sizes (e.g. 256²×128 with ~1e5 particles) the push is ~1% and only the fixed
 transform part matters; on GPU the gather is cheap.
 
+**Re-measured after A3 (2026-08-18, same machine and script, `nrep=25`).** A3 replaced the
+two gathers per half-kick (E, then B) with a single gather of `assemble_stacked`'s combined
+array, and added the per-piece work accumulation. Net effect on the total: nothing
+measurable.
+
+| case | ms/step (A2) | ms/step (A3) | overhead vs off |
+|---|---|---|---|
+| off | 13.2 | 12.9 | — |
+| on, 1 ensemble (default mask), 32768 particles | 16.65 | 16.8 | +30% |
+| on, 3 ensembles (ideal, full ∂ψ/∂t, E=0 control), 32768 each | 22.9 | 22.8 | +76% |
+
+(The A2-vs-A3 overhead percentages differ mostly because `off` benchmarked ~2% faster in
+the A3 run; the particle-on absolute times are unchanged within the run-to-run IQR, ~1–2
+ms/step.) Isolated jitted pieces at the same size: `particle_fields` 2.16 ms with the
+default mask, 2.50 ms with the resistive and forcing pieces on (17% / 19% of the solver
+step, still inside the plan's budget); `boris.push_tracked` for one 32768-particle ensemble
+2.30 ms at the default mask (6 gathered components) and 5.23 ms at the full mask (8
+components — the three E_z pieces are gathered separately so their work can be attributed,
+where A2 gathered one pre-summed E_z). So sharing the cell/weight work across E and B
+bought back roughly what keeping the E_z pieces separate costs, and the O(N) push remains
+the part that exceeds the budget at this 2D loading.
+
 Deferred (Alfred, 2026-08-18): gather optimization would attack only the O(N) part
 (est. 1.5–2×) — revisit if A3's 2D science runs at 3×32768 particles feel slow. Two
 items flagged: (i) gather-side reorganization (`interp.gather`: share cell/weight
-computation across E and B, `jnp.take` on flat indices, cast samples not grids); (ii)
+computation across E and B — done in A3, see above, no measurable win; `jnp.take` on flat
+indices, cast samples not grids — still open); (ii)
 reuse the stepper's stage-1 gradients in `particle_fields` (removes 4 of the 6 fixed
 transforms) — the bigger lever, but changes the stepper contract, so not Phase A.
 

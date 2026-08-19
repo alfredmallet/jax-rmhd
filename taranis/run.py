@@ -9,7 +9,7 @@ from .snapshot_io import save_snapshot, get_saved_steps
 from time import perf_counter
 from .physics import equation_registry, construct_rhs
 from .physics.shared_physics import ou_update
-from .particles.state import MOMENTS, moments, push_ensembles
+from .particles.state import MOMENTS, push_ensembles
 from .types import SimulationState
 from .grids import fft, local_z_coords, dealias_mask
 from . import comms
@@ -58,6 +58,7 @@ def _advance_forcing(new_state, prev_t, kgrid, params):
 def _advance_particles(pstate, prev_state, new_state, kgrid, params):
     # One particle push per full step, mirroring _advance_forcing's placement: dt is the
     # step just taken, the fields are assembled from the PRE-step state (frozen at t_n).
+    # Returns (pstate, per-ensemble moments).
     dt = (new_state.t - prev_state.t).astype(jnp.float64)
     return push_ensembles(pstate, prev_state, kgrid, params, dt)
 
@@ -131,8 +132,8 @@ def _cfl_block_particles(carry,kgrid,params,rhs,set_timestep,scheme,stepper):
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt)
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        pstate = _advance_particles(pstate, state, new_state, kgrid, params)
-        return (new_state,pstate), (new_state.t, moments(pstate))
+        pstate,mom = _advance_particles(pstate, state, new_state, kgrid, params)
+        return (new_state,pstate), (new_state.t, mom)
     return jax.lax.scan(stepping,carry,None,params.cfl_every)
 
 def _block_of_steps_particles(carry,kgrid,params,nblock,scheme,stepper,rhs,set_timestep):
@@ -148,8 +149,8 @@ def _block_of_steps_particles(carry,kgrid,params,nblock,scheme,stepper,rhs,set_t
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        pstate = _advance_particles(pstate, state, new_state, kgrid, params)
-        return (new_state,pstate), (new_state.t, moments(pstate))
+        pstate,mom = _advance_particles(pstate, state, new_state, kgrid, params)
+        return (new_state,pstate), (new_state.t, mom)
     return jax.lax.scan(stepping,carry,None,nblock)
 
 def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
@@ -309,7 +310,9 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
         new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        return new_state,_advance_particles(pstate, state, new_state, kgrid, params)
+        # the while_loop cannot emit ys, so the moments are dropped here
+        pstate,_mom = _advance_particles(pstate, state, new_state, kgrid, params)
+        return new_state,pstate
     def block_particles(carry,kgrid):
         return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)[0]
     # cfl_every>1: the while_loop iterates over whole blocks, so it can overshoot the
