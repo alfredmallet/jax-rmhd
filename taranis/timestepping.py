@@ -1,14 +1,40 @@
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple,Tuple
-from .propagators import get_propagator
+from .propagators import get_propagator, stack_exp_ops
 from . import _precision
+
+# Hoisted exp(L*tau): every IF stepper takes exp_ops=None. When run.py knows dt is frozen
+# over a block (fixed dt, or a cfl_every block) it calls stage_exp_ops ONCE per block and
+# passes the result through; the stepper then applies the precomputed ExpOps instead of
+# evaluating the propagator inside every stage of every step (propagators.py header).
+# exp_ops=None is the unhoisted path (adaptive dt with cfl_every=1, or
+# params.hoist_propagator=False). IMEX steppers accept the kwarg and ignore it -- their
+# solves are rational and per-step cheap; stage_exp_ops returns None for them.
+
+def stage_exp_ops(kgrid, params, scheme, stepper, dt):
+    # the exp(L*tau) ops one step of `stepper` applies at timestep dt, in stage order, or
+    # None when there is nothing to hoist. dt may be a python float (fixed) or a traced
+    # block-constant scalar (cfl_every): either way the caller must evaluate this OUTSIDE
+    # the step scan, which is the whole point.
+    if not params.hoist_propagator:
+        return None
+    prop = get_propagator(kgrid, params)
+    if not prop.hoistable:    # diagonal / identity: nothing to gain (propagators.py header)
+        return None
+    if stepper is lsrk_advance:
+        # same arithmetic as the unhoisted stage: (L*dt)*gamma
+        p = prop.scaled(dt)
+        return tuple(p.exp_op(g) for g in scheme.gammas)
+    if stepper is rk_advance:
+        return (prop.exp_op(dt/2), prop.exp_op(dt))
+    return None
 
 # Standard RK4 with integrating factor.
 # Problem is it uses a lot of memory on k1-k4.
 # I think it is always better to use the LSRK schemes
 
-def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None):
+def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None,exp_ops=None):
     #RK4 substep 1
     k1, grads = rhs(state,kgrid,params)
     # dt_override: dt already computed for a whole cfl_every block by run.py
@@ -19,21 +45,26 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None)
     else:
         dt = params.dt
     # exact linear propagator (dissipation for RMHD); exp(L*tau) composes over sub-stages
-    # since the same fixed L commutes with itself
-    prop = get_propagator(kgrid,params)
-    f1 = prop.apply_exp(state.fields + 0.5 * dt * k1, dt/2)
+    # since the same fixed L commutes with itself. exp_ops: (exp(L*dt/2), exp(L*dt))
+    # precomputed per block by run.py (stage_exp_ops), else formed here
+    if exp_ops is None:
+        prop = get_propagator(kgrid,params)
+        e_half, e_full = prop.exp_op(dt/2), prop.exp_op(dt)
+    else:
+        e_half, e_full = exp_ops
+    f1 = e_half.apply(state.fields + 0.5 * dt * k1)
     #RK4 substep 2
     # NB: forcing_state/forcing_key are threaded through unchanged at every sub-stage via
     # _replace (they're only updated once per full step, in run.block_of_steps).
     k2,_ = rhs(state._replace(t=state.t+dt/2.0,fields=f1),kgrid,params)
-    f2 = prop.apply_exp(state.fields,dt/2) + 0.5*dt*k2
+    f2 = e_half.apply(state.fields) + 0.5*dt*k2
     #RK4 substep 3
     k3,_ = rhs(state._replace(t=state.t+dt/2.0,fields=f2),kgrid,params)
-    f3 = prop.apply_exp(state.fields,dt) + dt*prop.apply_exp(k3,dt/2)
+    f3 = e_full.apply(state.fields) + dt*e_half.apply(k3)
     #RK4 final step
     k4,_ = rhs(state._replace(t=state.t+dt,fields=f3),kgrid,params)
-    f_end = prop.apply_exp(state.fields,dt) + (dt/6.0) * (prop.apply_exp(k1,dt)
-            + 2.0*prop.apply_exp(k2,dt/2) + 2.0*prop.apply_exp(k3,dt/2) + k4)
+    f_end = e_full.apply(state.fields) + (dt/6.0) * (e_full.apply(k1)
+            + 2.0*e_half.apply(k2) + 2.0*e_half.apply(k3) + k4)
     return state._replace(t=state.t + dt, fields=f_end)
 
 # object defining low-storage Runge-Kutta (lsrk) schemes
@@ -44,7 +75,7 @@ class LSRK_Scheme(NamedTuple):
 
 # LSRK timestepper: includes integrating factor for spectral linear terms
 # params.lsrk_scan=True: lax.scan (default); =False or (unrolled, could help on some GPU)
-def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
+def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None, exp_ops=None):
     init_rhs,grads = rhs(state,kgrid,params)
     if dt_override is not None:
         dt = dt_override
@@ -53,27 +84,31 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
     else:
         dt = params.dt
 
-    # pre-scale the linear operator by dt once per step, so a stage's exponent is
-    # (L*dt)*gamma
-    prop = get_propagator(kgrid,params).scaled(dt)
+    # a stage's exponent is (L*dt)*gamma. exp_ops (hoisted by run.py, once per frozen-dt
+    # block) holds the per-stage exp already formed; otherwise the dt-scaled propagator
+    # forms it inside each stage -- with lsrk_scan that is inside the stage scan, where
+    # gamma is a scanned value, i.e. the memory-light legacy graph XLA cannot hoist
+    # (run.py relies on this for hoist_propagator=False, the knob for memory-bound grids).
+    prop = None if exp_ops is not None else get_propagator(kgrid,params).scaled(dt)
 
     if params.lsrk_scan:
-        return _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop)
+        return _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop, exp_ops)
 
     current_state = state
     delta = None
     for istage in range(len(scheme.alphas)):
         alpha, beta, gamma = scheme.alphas[istage], scheme.betas[istage], scheme.gammas[istage]
+        e = exp_ops[istage] if exp_ops is not None else prop.exp_op(gamma)
         # stage 0 reuses init_rhs (also used for dt above); alphas[0]=0 so delta starts at dt*rhs
         stage_rhs = init_rhs if istage == 0 else rhs(current_state,kgrid,params)[0]
-        delta = prop.apply_exp(dt*stage_rhs if istage == 0 else alpha*delta + dt*stage_rhs, gamma)
+        delta = e.apply(dt*stage_rhs if istage == 0 else alpha*delta + dt*stage_rhs)
         # forcing fields threaded through unchanged via _replace (see rk_advance comment above).
         current_state = current_state._replace(t=current_state.t + gamma*dt,
-                                               fields=prop.apply_exp(current_state.fields,gamma) + beta*delta)
+                                               fields=e.apply(current_state.fields) + beta*delta)
     return current_state
 
 # used if params.lsrk_scan=True
-def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop):
+def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop, exp_ops):
     alphas_arr = jnp.array(scheme.alphas, dtype=_precision.ftype)
     betas_arr = jnp.array(scheme.betas, dtype=_precision.ftype)
     gammas_arr = jnp.array(scheme.gammas, dtype=_precision.ftype)
@@ -82,16 +117,20 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop):
     init_carry = (state,init_delta)
 
     stage_pars = (alphas_arr, betas_arr, gammas_arr, jnp.arange(len(scheme.alphas)))
+    if exp_ops is not None:
+        # hoisted: the per-stage ExpOps ride along as scan xs (leading axis = stage)
+        stage_pars = stage_pars + (stack_exp_ops(exp_ops),)
 
     def scan_stage_func(carry,stage_vals):
         current_state, delta = carry
-        alpha, beta, gamma, istage = stage_vals
+        alpha, beta, gamma, istage = stage_vals[:4]
+        e = stage_vals[4] if exp_ops is not None else prop.exp_op(gamma)
 
         stage_rhs = jax.lax.cond(istage == 0,lambda: init_rhs,
                                  lambda: rhs(current_state,kgrid,params)[0])
 
-        next_delta = prop.apply_exp(alpha * delta + dt * stage_rhs, gamma)
-        next_fields = prop.apply_exp(current_state.fields, gamma) + beta*next_delta
+        next_delta = e.apply(alpha * delta + dt * stage_rhs)
+        next_fields = e.apply(current_state.fields) + beta*next_delta
         next_t = current_state.t + gamma*dt
         # forcing_state/forcing_key threaded through unchanged
         return (current_state._replace(t=next_t,fields=next_fields),next_delta), None
@@ -155,7 +194,8 @@ def _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override):
 # state's own fields buffer), y (the explicit stage derivative / partial stage sum) and z
 # (the implicit stage derivative).
 # Scan (params.lsrk_scan=True, default) and unrolled stage loops, like lsrk_advance
-def imex2r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
+def imex2r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None, exp_ops=None):
+    # exp_ops: accepted for the one-contract stepper signature, unused (no exponential here)
     init_rhs, dt = _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override)
     prop = get_propagator(kgrid,params)
     a_im, a_ex, b, c, s = _scheme_entries(scheme)
@@ -222,7 +262,8 @@ def _imex2r_scan_stages(state, kgrid, params, rhs, prop, scheme, dt, x, y, z):
 # NB the (z_ex - y)/a^EX_{k,k-1} below is the paper's trick for recovering dt*g_{k-1} without
 # a fifth register; it is a cancellation, so it costs ~eps*|y|/a^EX_{k,k-1} of accuracy in
 # that one term (a few ulp for the coefficients used here).
-def imex3r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None):
+def imex3r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None, exp_ops=None):
+    # exp_ops: accepted for the one-contract stepper signature, unused (no exponential here)
     init_rhs, dt = _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override)
     prop = get_propagator(kgrid,params)
     a_im, a_ex, b, c, s = _scheme_entries(scheme)

@@ -33,10 +33,16 @@
 #                      independent bilinear interpolation of E and B leaves at the particle
 #                      is removed exactly, closure included. Plus the per-ensemble B0
 #                      (= 1/epsilon): at fixed Omega = qm*B0 it changes no orbit.
+#  11. varying dt     gate 4's live invariant with adaptive_timestep=True, which is what
+#                      production runs and no other gate here does. The drift still
+#                      converges as cfl_safety is halved, with the same O(dt) constant as
+#                      the fixed-dt run at comparable mean dt. Its kernel half -- |v|,
+#                      orbit order and the E x B drift under a jittered dt sequence -- is
+#                      in tests/test_particles_kernel.py.
 #
 # Plus the field-assembly sign/mask checks that gate 7 rests on.
 #
-# 2D, single-process; gates 4/5/7 are fp64 (convergence), gates 6, 8 and 9 run in both
+# 2D, single-process; gates 4/5/7/11 are fp64 (convergence), gates 6, 8 and 9 run in both
 # sessions (the reference npz exists for both; the particle state, the work arithmetic and
 # the gathered samples are fp64 whatever the field precision).
 # Script: `python tests/test_particles_coupled.py`.
@@ -441,10 +447,10 @@ _LIVE_ENSEMBLES = [
 _LIVE_LABELS = ("full dpsi/dt", "ideal-only (default)", "E = 0 control")
 
 
-def _live_params(dt, particles=None):
+def _live_params(dt, particles=None, cfl_safety=0.5, adaptive=False):
     return fresh_params(dims=2, nx=_LIVE_NX, ny=_LIVE_NX, Lx=2 * np.pi, Ly=2 * np.pi, dt=dt,
-                        adaptive_timestep=False, diss=_LIVE_DISS, hyper=1, cfl_safety=0.5,
-                        forcing=True, forcing_mode="elsasser",
+                        adaptive_timestep=adaptive, diss=_LIVE_DISS, hyper=1,
+                        cfl_safety=cfl_safety, forcing=True, forcing_mode="elsasser",
                         forcing_power_elsasser=(0.5, 0.5), forcing_tau=1.0, fshell=(1, 3),
                         particles=particles)
 
@@ -532,6 +538,112 @@ def test_e_zero_ensemble_is_the_heating_floor():
         c.check("... while the E-carrying ensembles heat by order unity, so the floor is "
                 "not a trivially static run",
                 all(v > 0.1 for v in others), f"{others}")
+
+
+# ------------------------- gate 11 (coupled): gate 4 live under an adaptive timestep
+#
+# Every gate above runs adaptive_timestep=False; production runs adaptive dt. The push is
+# kick-drift-kick precisely because that is well defined when dt changes from step to step
+# (x and v are synchronized at step boundaries), and run._advance_particles pushes with the
+# step's own dt = new_state.t - state.t -- so gate 4's invariant must hold just as well on
+# the adaptive path. Its kernel counterpart, on analytic fields, is gate 11 in
+# tests/test_particles_kernel.py.
+#
+# The convergence knob here is cfl_safety, not dt: halving it halves every step of the run.
+# block_of_steps takes a step COUNT and cannot stop at an exact time, so each run takes
+# ceil(_LIVE_T/dt(t_0)) steps -- dt(t_0) is the largest dt of the run, so the three runs
+# land at the same fraction of _LIVE_T -- and everything below is quoted per unit time
+# against each run's own elapsed time and its own mean dt.
+_ADAPT_CFLS = (0.5, 0.25, 0.125)
+
+
+@functools.lru_cache(maxsize=None)
+def _adaptive_run(cfl):
+    """One co-stepped run of the gate-4 ensembles with adaptive_timestep=True at
+    cfl_safety=cfl, from the same warm state as _live_run. Host arrays only: the rms p_z
+    drift per ensemble, the realized step lengths, and the elapsed time."""
+    warm_params = _live_params(_LIVE_DTS[0])
+    s0 = _warm_state(warm_params, jr.setup_kgrids(warm_params))
+    t0 = float(s0.t)
+    params = _live_params(_LIVE_DTS[0], particles={"seed": 0, "n": _LIVE_NPART,
+                                                   "ensembles": _LIVE_ENSEMBLES},
+                          cfl_safety=cfl, adaptive=True)
+    kgrid = jr.setup_kgrids(params)
+    # nblock from the CFL dt of the starting state, which is the largest step of these
+    # runs, so every cfl_safety lands at the same fraction of _LIVE_T -- the test asserts
+    # the realized elapsed times agree rather than assuming it
+    nblock = int(np.ceil(_LIVE_T / float(run._block_dt(s0, kgrid, params))))
+    p0 = init_particles(params)
+    stepper, scheme = get_scheme("lsrk33")
+    step = jax.jit(run.block_of_steps, static_argnums=(2, 3, 4, 5))
+    (sT, pT), ys = step((s0, p0), kgrid, params, nblock, scheme, stepper)
+    ts = np.asarray(ys[0])
+    a = _pz_per_ensemble(s0, p0, params)
+    b = _pz_per_ensemble(sT, pT, params)
+    return {
+        "drift": np.array([float(np.sqrt(np.mean((y - x) ** 2))) for x, y in zip(a, b)]),
+        "dts": np.diff(np.concatenate([[t0], ts])),
+        "elapsed": float(ts[-1]) - t0,
+        "nblock": nblock,
+        "pz_scale": _LIVE_QM * float(jnp.sqrt(jnp.mean(grids.ifft(s0.fields[1],
+                                                                 params) ** 2))),
+    }
+
+
+@pytest.mark.fp64
+def test_pz_live_holds_under_an_adaptive_timestep():
+    """Gate 11, coupled: gate 4's live p_z invariant with adaptive_timestep=True. The
+    full-dpsi/dt ensemble's drift per unit time still converges at O(dt) as cfl_safety is
+    halved, the default ideal-only ensemble still does not converge at all, and the
+    proportionality constant is the fixed-dt gate's -- so a varying dt costs the pusher
+    nothing beyond the dt it actually took. A KDK driver that mis-handled a changing step
+    (fields or half-kicks credited with the wrong dt) would show up as a floor in the first
+    statement or a shifted constant in the last."""
+    res = [_adaptive_run(cfl) for cfl in _ADAPT_CFLS]
+    means = [float(r["dts"].mean()) for r in res]
+    full = [r["drift"][0] / r["elapsed"] for r in res]
+    ideal = [r["drift"][1] / r["elapsed"] for r in res]
+    o_full, o_ideal = fit_order(means, full), fit_order(means, ideal)
+    spreads = [float(r["dts"].max() / r["dts"].min()) for r in res]
+    elapsed = [r["elapsed"] for r in res]
+    # drift per unit time per unit dt: the O(dt) constant, adaptive against fixed dt
+    slope = [f / m for f, m in zip(full, means)]
+    fixed = [_live_run(dt)["drift"][0] / _LIVE_T / dt for dt in _LIVE_DTS]
+    for cfl, r, m, s in zip(_ADAPT_CFLS, res, means, spreads):
+        print(f"gate 11 live [cfl_safety={cfl}]: {r['nblock']} steps to t = "
+              f"{r['elapsed']:.4f}, dt mean {m:.5f} min {r['dts'].min():.5f} max "
+              f"{r['dts'].max():.5f} (max/min {s:.2f}); rms|dp_z|/t "
+              f"{['%.3e' % v for v in r['drift'] / r['elapsed']]}")
+    print(f"gate 11 live: orders in mean dt -- full {o_full:.3f}, ideal-only "
+          f"{o_ideal:.3f}; drift/(t*dt) adaptive {['%.2f' % s for s in slope]} vs fixed dt "
+          f"{['%.2f' % s for s in fixed]}")
+    with checks() as c:
+        c.check(f"dt really varies inside each run (max/min "
+                f"{['%.2f' % s for s in spreads]}, all >= 1.2), so this is a varying-dt "
+                f"push and not a fixed one in disguise", min(spreads) >= 1.2,
+                f"spreads={spreads}")
+        c.check(f"halving cfl_safety halves the mean dt ({['%.5f' % m for m in means]})",
+                all(1.9 < a / b < 2.1 for a, b in zip(means, means[1:])), f"means={means}")
+        c.check(f"the three runs cover the same elapsed time to "
+                f"{max(elapsed) / min(elapsed) - 1.0:.1%} (< 5%), so their drifts per unit "
+                f"time are comparable", max(elapsed) / min(elapsed) - 1.0 < 0.05,
+                f"elapsed={elapsed}")
+        c.check(f"full-mask p_z drift converges at order {o_full:.2f} in the mean dt "
+                f"(>= 0.8), the same O(dt) as the fixed-dt gate", o_full >= 0.8,
+                f"full={['%.3e' % v for v in full]}")
+        c.check(f"... and is small next to the p_z scale qm*rms(psi) = "
+                f"{res[-1]['pz_scale']:.2f} ({full[-1] * elapsed[-1] / res[-1]['pz_scale']:.2e} "
+                f"of it)", full[-1] * elapsed[-1] < 0.02 * res[-1]["pz_scale"])
+        c.check(f"ideal-only p_z drift does NOT converge under adaptive dt either (order "
+                f"{o_ideal:.2f} < 0.3)", o_ideal < 0.3,
+                f"ideal={['%.3e' % v for v in ideal]}")
+        c.check(f"... and is {ideal[-1] / full[-1]:.0f}x the full-mask drift at "
+                f"cfl_safety = {_ADAPT_CFLS[-1]} (>= 50)", ideal[-1] >= 50.0 * full[-1],
+                f"ideal={ideal[-1]} full={full[-1]}")
+        rel = abs(np.mean(slope) / np.mean(fixed) - 1.0)
+        c.check(f"the O(dt) constant is the fixed-dt gate's to {rel:.1%} (< 30%): a "
+                f"varying dt costs the invariant nothing beyond the dt taken",
+                rel < 0.3, f"adaptive={slope} fixed={fixed}")
 
 
 # --------------------------------------------- gate 8: per-piece work closure

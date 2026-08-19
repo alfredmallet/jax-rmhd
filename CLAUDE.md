@@ -157,7 +157,7 @@ machine/jax-version dependent — held where first measured, does NOT hold under
 Per-machine perf knob.
 
 Two scheme families in `_scheme_registry`, one contract
-(`stepper(state,kgrid,params,rhs,set_timestep,scheme,dt_override=None)`):
+(`stepper(state,kgrid,params,rhs,set_timestep,scheme,dt_override=None,exp_ops=None)`):
 
 - **IF (integrating-factor)** — `rk44`, `lsrk33`, `lsrk54` (RMHD production). L applied
   exactly via `apply_exp`; treats the linear physics exactly but misweights the nonlinear
@@ -179,6 +179,31 @@ Two scheme families in `_scheme_registry`, one contract
   L-stability conditions rebuilt from the stored values in test_imex.py — any edit to a
   tableau must keep that test green (history: a transcribed lsrk54 coefficient was wrong
   for years).
+
+**Hoisted stage propagators** (`params.hoist_propagator`, default True): whenever dt is frozen
+over a block — fixed dt, or one `cfl_every` block — `run.py` forms every IF stage's
+`exp(L·tau)` ONCE per block (`timestepping.stage_exp_ops(kgrid, params, scheme, stepper, dt)`
+→ a tuple of `propagators.ExpOp` pytrees: `Putzer2Exp`/`DiagonalExp`/`IdentityExp`, each with
+`.apply(arr)`) and passes it to the stepper's `exp_ops=` kwarg (every stepper in the registry
+takes it; IMEX ignores it and `stage_exp_ops` returns None for them). **Only the putzer2
+backend is hoisted** (`prop.hoistable`): the diagonal backend is one real exp per mode per
+stage, z-broadcast for FD-z — nothing to gain — and leaving it in the stage keeps the FD-z/2D
+fixed-dt graph byte-identical to the pre-hoist solver (gate 6's reference: with a literal
+`gamma` XLA folds `(L·dt)·gamma` differently, 15 elements at 1e-23 in the 64² gate-6 config).
+The ExpOps are exactly the arrays `apply_exp` forms, in the same op order — `apply_exp(arr,
+tau)` IS `exp_op(tau).apply(arr)` — so hoisted and unhoisted agree bitwise at fp64 on the test
+grids (`tests/test_hoist_propagator.py`; fp32 has one 1-ulp fusion cell). `exp_ops=None` is
+the legacy graph: the exponent evaluated inside each stage — under `lsrk_scan` inside the
+stage scan, where `gamma` is a scanned value — which is what keeps `hoist_propagator=False`
+memory-light (XLA's own loop-invariant code motion would otherwise hoist ops formed outside
+the stage scan with static `gamma`; do not "simplify" the unhoisted branch into that form).
+Cost of True: 4 complex arrays of L's full shape per stage — the knob to turn off on a
+memory-bound z_spectral grid. Win: z_spectral RMHD 0.62× the step at fixed dt / `cfl_every>1`
+(the putzer2 complex sqrt/cosh/sinh per stage were ~34 of the 38 ms z_spectral premium;
+docs/performance.md "Where the z_spectral step's extra time goes"); nothing on adaptive
+`cfl_every=1` (nothing is frozen). Every `run.py` block function computes the ops OUTSIDE its
+step scan (`_hoisted_exp_ops` after `_block_dt`, or from `_fixed_dt(params)`) — keep it
+there, that placement is the whole point.
 
 `params.cfl_every` (default 1) recomputes the adaptive dt (and its CFL allreduce) once
 per N-step block: `run._cfl_block` computes dt from the block's start state and passes
@@ -332,6 +357,21 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   In RMHD b_⊥ fields the naive grad-B drift
   is off by an O(1) factor (shear enters at O(ε), |B| at O(ε²)) — measured and derived
   in the kernel test; do not "fix" it toward the textbook value.
+- **Gate 10 (mirror force, `tests/test_particles_kernel.py`, both precisions)** is the only
+  parallel-dynamics gate: static analytic `B = B₀ẑ + ẑ×∇ψ(x,z)` on a 3D grid, E = 0, launched
+  in the well at z = Lz/4 where the field is exactly B₀ẑ. It pins the reflection point against
+  `|B|_turn = |B|₀·|v|²/v_⊥0²` over a v_∥0 sweep. **μ's violation is asserted by its SCALING,
+  never as a fixed number**: a bouncing orbit shows the REVERSIBLE finite-Larmor excursion,
+  first order in ρ·k_z (0.19·ρk_z, flat over an 8× sweep), NOT the exponentially small secular
+  drift — which the gate separates by gyrophase-averaging back at the launch plane (1e-5, 230×
+  below the excursion). The gap is 3D-only: in a static z-independent field the exact `|v|` and
+  `p_z` already fix the parallel/perpendicular split from the perpendicular position, which the
+  gate's z-independent control measures.
+- **Gate 11 (varying dt)** is the pusher's only adaptive-dt coverage: kernel half a
+  ±60%-jittered dt sequence at fixed total time (|v| exact, orbit O(max dt²), E×B exact),
+  coupled half gate 4 live under `adaptive_timestep=True` (order 0.978 in `cfl_safety` against
+  the fixed-dt gate's 0.948). Drift is quoted PER UNIT TIME — `block_of_steps` takes a step
+  count, so runs at different `cfl_safety` end at different t.
 - `tests/test_particles_3d.py` is the 3D gate set, every gate run in BOTH z modes: the
   embedded-2D `p_z` invariant (z is ignorable only for z-independent fields — an unforced
   z-independent 3D state stays z-independent exactly, the O-U z envelope is what breaks

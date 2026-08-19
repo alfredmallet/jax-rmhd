@@ -239,10 +239,11 @@ optional pieces on is the one configuration that leaves the plan's ≤15–20% b
 
 Two more observations:
 
-- **z_spectral looks cheaper only because its solver step is nearly twice as expensive**
-  (rfftn/irfftn over (z,x,y) against one rfft2 per plane): `particle_fields` costs about the
-  same absolute time in both modes, so its *share* halves. Nothing about the particle path is
-  faster there.
+- **z_spectral looks cheaper only because its solver step is nearly twice as expensive**:
+  `particle_fields` costs about the same absolute time in both modes, so its *share* halves.
+  Nothing about the particle path is faster there. (The parenthetical this bullet first
+  carried — "rfftn/irfftn over (z,x,y) against one rfft2 per plane" — was a guess, and the
+  profile below shows it is wrong: the transforms account for ~3 ms of the ~38 ms gap.)
 - **The trilinear gather roughly doubles the O(N) push cost per particle**, as its 8 corners
   against 4 predict: subtracting `particle_fields` from the one-ensemble overhead gives ≈1.9 ms
   in 2D at 32768 particles and ≈4.3 ms in 3D. It is still the part that exceeds the budget at
@@ -252,6 +253,120 @@ Two more observations:
 (2D re-measured in the same session for comparability: off 12.65, on1 16.35 (+29.2%), on3 22.64
 (+79.0%) ms/step; `particle_fields` 1.80 ms = 14.2% and 2.10 ms = 16.6% — the A3 numbers within
 run-to-run scatter.)
+
+## Where the z_spectral step's extra time goes (2026-08-19)
+
+`bench/zspectral_profile.py`, same machine as the particle benchmarks (Apple M1, macOS 14,
+jax 0.10.0, CPU, fp64, quiet machine), RMHD at **128²×16**, lsrk33, fixed `dt=1e-3`,
+elsasser forcing, `nblock=20`, `nrep=10`. The whole gap is the **linear propagator**, not
+the transforms.
+
+| | finite-difference z | z_spectral | ratio |
+|---|---|---|---|
+| ms/step | 42.9 | 81.6 | 1.90 |
+| GFLOP/step (XLA cost analysis) | 0.065 | 0.255 | 3.91 |
+
+Ablation ladder inside the real (scanned, fused) z_spectral step — each row drops one piece
+of `Putzer2Propagator` and re-times; every variant is numerically wrong on purpose:
+
+| variant | ms/step | that piece costs |
+|---|---|---|
+| baseline (production) | 79.8 | — |
+| − the complex `sqrt`/`cosh`/`sinh` in `_coeffs` | 51.9 | **27.9** |
+| − `exp(m·tau)` as well | 48.1 | 3.8 |
+| − the 2×2 apply as well (propagator = identity) | 45.9 | 2.2 |
+| finite-difference-z step, for comparison | 42.9 | — |
+
+So of the +37 ms, **33.9 ms is the putzer2 matrix exponential** (27.9 of that the complex
+transcendentals alone, evaluated per stage on a complex (nz,nkx,nky) grid) and the remaining
+3.0 ms is everything else — the (z,x,y) transforms net of the finite-difference-z stencil the
+spectral mode does not run. The isolated pieces say the same: the whole RHS times 14.8 ms (FD)
+against 15.8 ms (spectral), and the `ifft` of the gradient stack 4.17 vs 4.25 ms, while FD
+alone pays 1.3 ms for `FDLinearTerm`. An independent check swapping only the operator on a fixed grid agrees:
+with L forced to the diagonal backend, fd 42.4 vs spec 47.1 ms/step; with L forced to a 2×2
+putzer2 operator of the same z extent in both modes, fd 82.8 vs spec 88.6.
+
+**Isolated timings mislead here, in both directions.** `apply_exp` timed on its own with the
+kgrid *closed over* reports 0.3 ms because XLA constant-folds `exp(L·tau)` away entirely; with
+the kgrid passed as an argument it reports 19.6 ms, which then over-counts because the fused
+step shares work across the two `apply_exp` calls of a stage. The ablation ladder is the number
+to trust. Monkeypatching for an ablation needs `jax.clear_caches()` — the jaxpr trace cache is
+keyed on the function and avals, so without it every variant silently re-reports the baseline
+(this bit the first run of this profile).
+
+Scaling with nz at nx=128 (ms/step, fd → spec): nz=4 11.4 → 18.1 (1.59×), nz=8 22.3 → 40.5
+(1.82×), nz=16 42.9 → 88.5 (2.06×), nz=32 88.6 → 180.1 (2.03×). Both sides are linear in nz;
+the ratio saturates near 2 once the propagator's per-mode cost dominates the fixed overheads.
+
+**Why the complex transcendentals cost what they do** (optimized HLO, `jax.jit(...).compile()
+.as_text()`, XLA CPU): `cosh(z)` on complex128 lowers to `(exp(z) + exp(−z))/2` with each
+complex `exp` expanded as `exp(x)·(cos y + i sin y)` plus overflow guards — 4 real `exp`, 2
+`cos`, 2 `sin`, 6 selects; `sinh` the same again with nothing shared (XLA does not recognise
+`exp(−z)` as `1/exp(z)`, nor `cos(−y)` as `cos(y)`); complex `sqrt` is 7 real `sqrt`, 9
+divides, 18 selects (branch-cut and overflow handling); complex `exp` is 2 `exp` + `cos` +
+`sin`. So one putzer2 `_coeffs` + `exp(m·tau)` evaluates **10 exp + 5 cos + 5 sin + 7 sqrt + 9
+div per mode**, where the mathematics needs 2 complex exps (4 exp + 2 cos + 2 sin) — or, for an
+L whose `m` is real and `s²` real and one-signed, 1 real exp + 1 cos + 1 sin. And on XLA CPU
+each real transcendental is 3–6 ns/element (`exp` is a vectorised polynomial, `sin`/`cos` are
+slower library-class calls), so 20-odd of them per mode per stage over 133k modes is the
+~10 ms per `apply_exp` the ablation found. The same operator shape and mode count occurs for
+2D GDI at 512² on an IF scheme (putzer2 on (2,2,1,nkx,nky) = 131k modes), so the IF path
+there pays it too; the IMEX path (GDI production) is rational — `solve_shifted` has no
+transcendentals — and is unaffected.
+
+**Done: hoisted stage propagators (2026-08-19, `params.hoist_propagator`, default True).**
+The exponent depends on `tau = gamma_s·dt` only, so whenever dt is frozen over a block — fixed
+dt, or one `cfl_every` block — `run.py` forms every stage's `exp(L·tau)` ONCE per block
+(`timestepping.stage_exp_ops` → `propagators.ExpOp` pytrees, stacked as the stage scan's xs)
+and each stage only applies it. Same arrays in the same op order, so **hoisted == unhoisted
+bitwise** at fp64 in every cell of `tests/test_hoist_propagator.py` (2D/FD-z/z_spectral ×
+lsrk33/lsrk54/rk44 × fixed/cfl_every=2/adaptive × scan/unrolled; at fp32 one cell is 1 ulp
+off from a fusion difference). Re-measured
+(same session, loaded machine, so compare within the row):
+
+| z_spectral 128²×16 | unhoisted ms/step | hoisted | |
+|---|---|---|---|
+| fixed dt, lsrk33 | 78.7 | **48.7** | 0.62× |
+| fixed dt, lsrk54 | 146.2 | **81.5** | 0.56× |
+| fixed dt, rk44 | 64.9 | 62.1 | 0.96× (rk44's two taus were already shared) |
+| adaptive, `cfl_every=4` | 90.0 | **54.5** | 0.61× |
+| adaptive, `cfl_every=1` | 89.6 | 91.2 | nothing frozen, nothing to hoist |
+| FD-z, fixed dt, lsrk33 | 44.5 | 44.0 | diagonal L is z-broadcast: nothing to gain — and not hoisted |
+
+The remaining gap to the FD-z step (48.7 vs 44) is the (z,x,y) transforms plus the 2×2 apply
+itself. Verified in the optimized HLO (`bench`-style count of `exponential`/`cosine`/`sine`/
+`sqrt` per while body): with hoisting, zero transcendentals in the step loop for fixed dt and
+all of them in the outer cfl-block loop for `cfl_every>1`; with `hoist_propagator=False` the
+legacy graph (33 per stage, inside the stage scan, where `gamma` is a scanned value XLA cannot
+hoist past). That knob exists for memory: one `ExpOp` per stage — for putzer2 4 complex
+arrays of L's full shape, i.e. 4·nstage·nz·nkx·nky·16 B at fp64 (128²×16, lsrk33: 16 MB;
+256²×64, lsrk54: 0.7 GB; 512²×128 fp32 lsrk54: 2.7 GB). Note XLA's own loop-invariant code
+motion would hoist these too once they are formed outside the stage scan with static `gamma`
+(observed in the HLO) — which is why the unhoisted path deliberately keeps the exponent
+inside the stage scan: `False` must mean memory-light, not "hoisted by XLA instead".
+Only the putzer2 backend is hoisted: the diagonal backend's exp is one real exp per mode per
+stage and z-broadcast for FD-z, so there is nothing to gain, and a first version that hoisted
+it too broke gate 6's bitwise reference on the 2D fixed-dt `simulate_scan` configs by 15
+elements at 1e-23 absolute (with a literal `gamma`, XLA folds `(L·dt)·gamma` differently) —
+the hoisted/unhoisted bitwise agreement is an op-order statement, not a guarantee against
+constant folding, so expect round-off-level differences on other grids/versions and never
+pin a hoisted putzer2 run bitwise against an unhoisted one across jax versions.
+
+**Available, not done — the adaptive `cfl_every=1` path.** Nothing is frozen there, so the
+per-stage evaluation stays and only a cheaper evaluation helps. Generic, no memory, any L:
+store `s = sqrt(s2)` at setup (kills the complex sqrt — its 7 sqrt/9 div/18 selects per mode —
+from the step; `tau > 0` so the branch is immaterial and cosh/sinh·z are even anyway) and form
+`w = exp(s·tau)` once, `cosh = (w + 1/w)/2`, `sinh/s = (w − 1/w)/(2s)` with the small-|z|
+Taylor branch kept: 2 complex exps instead of 10 exp/5 cos/5 sin/7 sqrt. Structure-aware, when
+`m` is real and `s2` real one-signed (RMHD: `m = −νk^{2h}`, `s2 = −kz²` — concrete at setup):
+1 real exp + cos + sin — measured **0.75×** the step; and the Elsasser-separable form
+(`e^{dτ}` on (nkx,nky) ⊗ `e^{±ikzτ}` on (nz,), no change of state variables) **0.62×** — the
+same ratio as hoisting, but for every step including adaptive `cfl_every=1`, at no memory.
+Both change round-off on the putzer2 paths (no bitwise gate pins them; the FD diagonal path is
+untouched). A naive real-trig version that evaluates both `cosh`/`cos` branches under a `where`
+and casts back to complex measured *slower* (114.8 ms/step). The full per-mode
+eigendecomposition (V, V⁻¹, λ stored) was measured at 0.69× and rejected: 10 full-grid arrays
+for less than the separable form gives.
 
 ## Known, not done
 
@@ -267,6 +382,12 @@ at the end of the run — was planned and never implemented. It needs care aroun
 ≥128 ranks from developed states.
 
 **Savio GPU:** `comm_backend="jax"`, fp32 workloads, sizes per the cost table above.
+
+**z_spectral (single process):** run with `cfl_every > 1` or a fixed dt so the hoisted
+propagators (`hoist_propagator`, default on) apply — at adaptive `cfl_every=1` the step pays
+the full putzer2 coefficient cost every stage (~1.9× the FD-z step at 128²×16 on CPU); budget
+4·nstage complex full-grid arrays for the hoisted ops, or turn the knob off on a memory-bound
+grid.
 
 **fp64 GPU production** needs full-rate-fp64 hardware. Verified candidates as of
 2026-07-27: NASA HECC Cabeus (A100 NVLink, plus GH200 nodes), NSF ACCESS DeltaAI, TACC

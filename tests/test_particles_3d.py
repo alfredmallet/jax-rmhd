@@ -42,9 +42,12 @@
 # Plus the z-specific interpolation checks (nodes, O(dz^2), wrapping far outside [0,Lz),
 # agreement with gather_spectral where that path is exact).
 #
-# Gates 1-3 have no 3D analogue to add: they drive analytic uniform/1-D fields through the
-# pusher with no solver and no z structure, so the 2D file already exercises the identical
-# code. Gate 6a (the pre-A2 reference npz) is 2D-only by construction.
+# Gates 1-3 have no 3D analogue to add HERE: they drive analytic uniform/1-D fields through
+# the pusher with no solver, so the kernel file exercises the identical code. The one
+# kernel gate that does need a z axis -- gate 10, the mirror force, whose parallel dynamics
+# exists only in a field that varies along z -- lives with them in
+# tests/test_particles_kernel.py, since no solver is in its loop. Gate 6a (the pre-A2
+# reference npz) is 2D-only by construction.
 #
 # Convergence gates are fp64; gates 5, 6, 8, 9 run in both sessions (the particle state,
 # the work arithmetic and the gathered samples are fp64 whatever the field precision).

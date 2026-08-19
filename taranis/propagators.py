@@ -5,13 +5,28 @@
 #   apply_exp(arr, tau)     multiply by exp(L*tau)        (integrating-factor schemes)
 #   solve_shifted(arr, a)   apply (I - a*L)^-1            (IMEX schemes)
 #   apply_L(arr)            multiply by L                 (IMEX schemes)
-# plus scaled(factor), which returns the propagator of factor*L (see LSRK note below).
+# plus scaled(factor), which returns the propagator of factor*L (see LSRK note below), and
+#   exp_op(tau)             the precomputed exp(L*tau) as an ExpOp pytree with .apply(arr)
+# for the hoisted path: when dt is frozen over a block (fixed dt, or a cfl_every block)
+# run.py builds every stage's ExpOp ONCE per block (timestepping.stage_exp_ops) instead of
+# re-evaluating the matrix exponential inside every stage of every step. The ExpOps hold
+# exactly the arrays apply_exp would form, in the same op order, so the hoisted and unhoisted
+# paths compute the same numbers. Only the putzer2 backend is hoisted (`hoistable`): its
+# coefficients are complex sqrt/cosh/sinh/exp per mode per stage (docs/performance.md "Where
+# the z_spectral step's extra time goes") and it costs 4 complex full-grid arrays per stage
+# of memory (params.hoist_propagator turns it off). The diagonal backend is NOT: one real exp
+# per mode per stage, z-broadcast for FD-z, so there is nothing to gain -- and leaving its
+# exponent inside the stage keeps the FD-z/2D fixed-dt solver graph byte-identical to the
+# pre-hoist one (gate 6's reference npz: with a literal gamma XLA folds (L*dt)*gamma
+# differently, measured as 15 elements at 1e-23 absolute in the 64^2 gate-6 config).
 #
 # Backends are selected by the shape of L (built once in grids.setup_kgrids):
 #   diagonal  L.ndim == 4: (nfields-or-1, nz-or-1, nkx, nky)   elementwise
 #   putzer2   L.ndim == 5: (2, 2, nz-or-1, nkx, nky)           closed-form 2x2 exponential
+import jax
 import jax.numpy as jnp
 import numpy as np
+from typing import NamedTuple
 
 from . import _precision
 
@@ -23,10 +38,40 @@ def _tol_z2():
     # precision-dependent Taylor cutoff
     return _TOL_Z2_FP64 if _precision.precision == "64" else _TOL_Z2_FP32
 
+# ---------------------------------------------------------------- precomputed exp(L*tau)
+# Pytrees (NamedTuples of arrays) so a per-stage stack of them can ride through a lax.scan
+# as xs (timestepping._lsrk_scan_stages) and index back to one op per stage.
+
+class IdentityExp(NamedTuple):
+    def apply(self, arr):
+        return arr
+
+class DiagonalExp(NamedTuple):
+    e: jnp.ndarray          # exp(L*tau), elementwise
+    def apply(self, arr):
+        return self.e*arr
+
+class Putzer2Exp(NamedTuple):
+    m00: jnp.ndarray        # the four entries of exp(L*tau), as Putzer2Propagator.apply_exp
+    m01: jnp.ndarray        # forms them
+    m10: jnp.ndarray
+    m11: jnp.ndarray
+    def apply(self, arr):
+        return jnp.stack([self.m00*arr[0] + self.m01*arr[1], self.m10*arr[0] + self.m11*arr[1]])
+
+def stack_exp_ops(ops):
+    # tuple of same-kind ExpOps -> one ExpOp with a leading stage axis (scan xs)
+    return jax.tree.map(lambda *xs: jnp.stack(xs), *ops)
+
 class IdentityPropagator:
     # L = 0
+    hoistable = False
+
     def scaled(self, factor):
         return self
+
+    def exp_op(self, tau):
+        return IdentityExp()
 
     def apply_exp(self, arr, tau):
         return arr
@@ -39,6 +84,8 @@ class IdentityPropagator:
 
 class DiagonalPropagator:
     # L diagonal in fields and k: everything is elementwise.
+    hoistable = False     # see the header: nothing to gain, and it keeps the FD-z/2D graph
+
     def __init__(self, L):
         self.L = L
 
@@ -46,8 +93,11 @@ class DiagonalPropagator:
         # propagator of factor*L (LSRK pre-scales by dt: see lsrk_advance)
         return DiagonalPropagator(self.L*factor)
 
+    def exp_op(self, tau):
+        return DiagonalExp(jnp.exp(self.L*tau))
+
     def apply_exp(self, arr, tau):
-        return jnp.exp(self.L*tau)*arr
+        return self.exp_op(tau).apply(arr)
 
     def solve_shifted(self, arr, a):
         return arr/(1.0 - a*self.L)
@@ -60,6 +110,8 @@ class Putzer2Propagator:
     # m = tr L/2 and s^2 = m^2 - det L (Putzer/Sylvester). 
     # m and s2 are precomputed at setup. 
     # all of the arithmetic is complex (waves)
+    hoistable = True      # the per-stage coefficient evaluation is what hoisting removes
+
     def __init__(self, L, m, s2):
         self.L = L
         self.m = m
@@ -83,16 +135,18 @@ class Putzer2Propagator:
                           jnp.sinh(z_safe)/z_safe)
         return jnp.cosh(z), tau*sinhc
 
-    def apply_exp(self, arr, tau):
+    def exp_op(self, tau):
         cosh_z, sinh_over_s = self._coeffs(tau)
         pref = jnp.exp(self.m*tau)
-        # M = pref*(cosh I + (sinh/s)(L - m I)), applied to the (2, ...) field stack
+        # M = pref*(cosh I + (sinh/s)(L - m I)); its four entries, to apply to a (2, ...) stack
         d = cosh_z - sinh_over_s*self.m
-        m00 = pref*(d + sinh_over_s*self.L[0,0])
-        m01 = pref*(sinh_over_s*self.L[0,1])
-        m10 = pref*(sinh_over_s*self.L[1,0])
-        m11 = pref*(d + sinh_over_s*self.L[1,1])
-        return jnp.stack([m00*arr[0] + m01*arr[1], m10*arr[0] + m11*arr[1]])
+        return Putzer2Exp(m00=pref*(d + sinh_over_s*self.L[0,0]),
+                          m01=pref*(sinh_over_s*self.L[0,1]),
+                          m10=pref*(sinh_over_s*self.L[1,0]),
+                          m11=pref*(d + sinh_over_s*self.L[1,1]))
+
+    def apply_exp(self, arr, tau):
+        return self.exp_op(tau).apply(arr)
 
     def solve_shifted(self, arr, a):
         # closed-form inverse of the 2x2 M = I - a*L. Pole note (mirrors apply_exp's

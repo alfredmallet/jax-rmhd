@@ -270,6 +270,18 @@ layout (see "Fourier conventions").
 so a stage exponent is formed as `exp((L·dt)·γ)` — the floating-point op order of the
 pre-propagator code, which keeps the LSRK schemes bitwise identical to it on RMHD.
 
+`exp_op(τ)` returns `exp(L·τ)` itself as an `ExpOp` pytree (`DiagonalExp`, `Putzer2Exp`,
+`IdentityExp`) with `.apply(arr)`; `apply_exp(arr, τ)` is literally `exp_op(τ).apply(arr)`.
+This is what the hoisted path stores: the exponent depends only on `τ = γ·dt`, so over a
+block of steps sharing one dt (fixed dt, or a `cfl_every` block) `run.py` forms each stage's
+ExpOp once (`timestepping.stage_exp_ops`) and the stepper only applies it — the same
+numbers in the same op order, bitwise equal to the per-stage evaluation at fp64
+(`tests/test_hoist_propagator.py`). The cost it removes is the putzer2 coefficient
+evaluation: complex `cosh`/`sinh`/`sqrt`/`exp` per mode per stage, which is ~10 real `exp`,
+5 `cos`, 5 `sin`, 7 `sqrt` and 9 divides per mode once XLA has expanded them, against the 2
+complex exps the mathematics needs (docs/performance.md "Where the z_spectral step's extra
+time goes" has the numbers and the cheaper evaluations not yet taken).
+
 ## Stochastic forcing
 
 An Ornstein-Uhlenbeck process on a shell of perpendicular wavenumbers, rescaled every step

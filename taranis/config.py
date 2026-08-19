@@ -104,7 +104,7 @@ class Parameters():
     def __init__(self,nx,ny,Lx,Ly,cfl_safety,eqpars=None,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0e4,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
-                 cfl_every=1,z_spectral=False,particles=None):
+                 cfl_every=1,z_spectral=False,particles=None,hoist_propagator=True):
         # capture the constructor arguments (before any normalization below) so
         # save()/from_snapshot() can reproduce this object exactly via __init__
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
@@ -238,6 +238,14 @@ class Parameters():
         # vs statically unrolled (lsrk_scan=False; in principle could
         # be faster on some GPU systems)
         self.lsrk_scan = lsrk_scan
+        # timestepping (structure): form the IF schemes' per-stage exp(L*tau) once per
+        # frozen-dt block (fixed dt, or a cfl_every block) instead of inside every stage of
+        # every step (timestepping.stage_exp_ops). Same numbers; putzer2 backend only
+        # (z_spectral RMHD, GDI under an IF scheme); costs one ExpOp per stage of memory,
+        # 4 complex arrays of L's full shape each (the knob to turn when a z_spectral grid
+        # is memory-bound). No effect on the diagonal backend (FD-z / 2D RMHD), on adaptive
+        # dt with cfl_every=1 (nothing is frozen) or on the IMEX schemes.
+        self.hoist_propagator = bool(hoist_propagator)
         if self.spatial_dimensions==3 and self.rank==0 and (z_diff_order != 4 or z_diss_hyper != 2.0):
             warnings.warn(f"z_diff_order={z_diff_order}, z_diss_hyper={z_diss_hyper}: both are "
                           "stored but IGNORED. rmhd.FDLinearTerm is fixed at 4th-order centered "

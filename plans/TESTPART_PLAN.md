@@ -524,6 +524,26 @@ Coupled gates (live solver):
    difference across two RAW stepper calls with the forcing state frozen, so ψ(t) is smooth;
    it converges at O(dt²), order 1.94 measured.)
 
+Two gates added after Phase B (2026-08-19), both closing gaps in the PUSHER's coverage
+rather than the assembly's:
+
+10. **Mirror force and μ** (kernel, `tests/test_particles_kernel.py`): gates 1–3 all
+    arrange `b̂·∇|B| = 0`, so nothing tested the parallel dynamics. The gap is 3D-only —
+    in a static z-independent field with E = 0 the exactly-conserved |v| and
+    p_z = v_z − qm·ψ already determine the parallel/perpendicular split from the
+    particle's perpendicular position, so the mirror channel is not independent there
+    (gates 1/5 and 4c pin both invariants). A static analytic `B = B₀ẑ + ẑ×∇ψ(x,z)` —
+    divergence-free for any ψ, the RMHD structure, so it drives B1's trilinear gather —
+    gives a mirror along z; the gate asserts the reflection point against
+    `|B|_turn = |B|₀·|v|²/v_⊥0²` over a v_∥0 sweep, the SCALING of μ's violation, a
+    loss-cone particle, and the z-independent control.
+11. **Varying dt**: the KDK driver exists so that dt may change from step to step, and
+    nothing tested it. Kernel half (`tests/test_particles_kernel.py`): a jittered dt
+    sequence at fixed total time — |v| still exact, the orbit still second order in
+    max(dt), the E×B drift still exact. Coupled half
+    (`tests/test_particles_coupled.py`): gate 4's live p_z invariant under
+    `adaptive_timestep=True`, converging in `cfl_safety` rather than dt.
+
 (B2, 2026-08-19: the 3D coupled gates landed in `tests/test_particles_3d.py`, single-process,
 **every one of them run in both z modes**. What changed, gate by gate, and what was measured:
 
@@ -584,6 +604,58 @@ No gate was invented where 3D has no analogue: kernel gates 1–3 drive analytic
 the pusher with no solver and no z structure, so the 2D file already exercises the identical
 code, and gate 6a's reference npz is 2D by construction. Both statements are in the new file's
 module comment. 3D overhead is in docs/performance.md.)
+
+(2026-08-19: **gates 10 and 11 landed**, closing the two pusher gaps above. Both are in the
+KERNEL file except gate 11's coupled half — gate 10 needs a 3D grid but no solver, so the
+"no 3D kernel analogue" sentence in `tests/test_particles_3d.py` was amended to point at it
+rather than moved. Neither is precision-marked except gate 11's coupled half (a convergence
+fit): the fp32 numbers below reproduce the fp64 ones to ~5 digits, the fields being analytic
+constants stored at field precision and every asserted quantity being ≥ 1e-5.
+
+**Gate 10** — `B = (0, b·cos(k_x x)·cos(k_z z), B₀)`, i.e. ψ = (b/k_x)·sin(k_x x)·cos(k_z z),
+at `b/B₀ = 0.5` (mirror ratio 1.1180, deliberately outside the RMHD ordering — it buys a
+usable mirror and no solver is in the loop), 64×8×64, four quadrature gyrophases launched in
+the well at z = L_z/4 where `cos(k_z z) = 0` and the field is exactly B₀ẑ.
+(a) **Turning point**: at ρ·k_z = 0.05, the sweep v_∥0/v_⊥0 = 0.1/0.2/0.3 predicts
+`|B|_turn/|B|₀` = 1.01/1.04/1.09 (a 9× lever on the mirror depth) and measures it to
+3.9e-4/1.9e-3/4.9e-3 per particle, **2.6e-5/4.2e-5/4.4e-4 averaged over the four gyrophases**
+— the per-particle spread being the O(ρ) gyrophase term. `|v|²` conserved to ≤ 1.0e-14
+throughout (E = 0). Refinement controls, which is what makes those deviations *physics*:
+doubling the steps per gyration moves `|B|_turn` by 4.5e-5 (0.9% of the deviation) and the μ
+excursion by 0.06%; doubling the grid moves them by 7.2e-4 (15%) and 0.46%.
+(b) **μ is asserted by its SCALING, not by a number.** Over an 8× sweep of ρ·k_z
+(0.1 → 0.0125, through q/m) the largest excursion `max|Δμ/μ|` = 2.02e-2, 9.40e-3, 4.64e-3,
+2.31e-3 — **order 1.041**, with the ratio to ρ·k_z flat at 0.202/0.188/0.185/0.185. That is
+the *reversible finite-Larmor* term (the field at the particle differs from the field at the
+guiding centre at O(ρ∇), and the invariant itself carries an O(ρ) gyrophase correction), NOT
+a secular drift, and first order is what it should be — the textbook exponentially-small
+secular part is far below it and is not what a bouncing orbit exhibits. The reversibility is
+measured rather than asserted: the gyrophase-averaged net Δμ/μ back at the launch plane
+(where |B| = B₀ for every x, so v_∥ = v_z with no gyro-ripple) is 2.3e-3, 2.5e-3, 1.2e-4,
+**1.0e-5** — 39× and 230× below the excursion en route at the two most adiabatic points. The
+turning-point error converges at order 0.971 in ρ·k_z on the same sweep.
+(c) **Controls**: a particle at v_∥0/v_⊥0 = 0.5, inside the loss cone (the bound is
+√(R−1) = 0.3436), never reflects and streams to |z − z₀| = 6.16 > L_z/4 while the trapped
+ones never leave 1.13; and the SAME field with its z dependence removed has |B| constant
+along a field line, where **v_∥ is constant to 8.9e-4 of v_⊥** and nothing is trapped — the
+numerical form of the "this gap is 3D-only" argument above.
+
+**Gate 11** — (kernel) dt jittered ±60% step to step (realized max/min 3.97) and renormalized
+to a fixed total time of 20 gyrations, so refining means more steps over the SAME elapsed
+time: `|v_⊥|` drift ≤ 2.7e-15 at every resolution, and the orbit converges to the analytic
+gyration at **order 1.974** in max(dt) (1.75e-1 → 2.75e-3 over 400 → 3200 steps). The E×B
+drift under the same sequence is exact to **3.3e-17/7.3e-18** of |E|, not gate 2's 1e-3 —
+for uniform fields the Boris map fixes v = u, so the quadrature average advances at exactly
+u per unit time however the steps are chosen.
+(coupled) gate 4 live at 64², `adaptive_timestep=True`, cfl_safety 0.5/0.25/0.125 → 48/95/190
+steps to t = 0.818/0.816/0.826 (the same elapsed time to 1.3%, since each run takes
+`ceil(T/dt(t₀))` steps and dt(t₀) is its largest), with dt varying by **1.39–1.42 within a
+run** and mean dt 0.01705/0.00858/0.00435. Full-mask rms|Δp_z| per unit time
+4.92e-2/2.43e-2/1.29e-2, **order 0.978** against the fixed-dt gate's 0.948; ideal-only order
+−0.025 and 182× the full-mask drift at the finest. Since the runs end at different times,
+everything is quoted per unit time, and the O(dt) constant `drift/(t·dt)` is
+2.89/2.84/2.97 adaptive against 2.56/2.62/2.75 fixed — **agreeing to 9.8%**, which is the
+statement that a varying dt costs the invariant nothing beyond the dt it actually took.)
 
 ## 7. Module layout
 
@@ -1116,3 +1188,124 @@ pipeline check, not physics — this profile has no inertial range):
   rather than measured.
 - **The GPU factor.** ±2× on a chain of inferences from a different card at a different
   precision. The first production session should time 20 steps and re-plan before committing.
+
+## 12. Time interpolation of the particle fields (PLAN, 2026-08-19 — not implemented)
+
+Decided with Alfred after Phase B: **quadratic (TSC) interpolation in time**, matching Xia et
+al.'s 4D TSC. This section is the design; nothing here is built.
+
+### 12.1 What is wrong now
+
+`_advance_particles` assembles the fields from the PRE-step state and holds them fixed across
+the step, so the impulse `∫E(x(t),t)dt` is evaluated as `(dt/2)[E(x_n,t_n) + E(x_{n+1},t_n)]`:
+trapezoid in SPACE along the trajectory, left-endpoint rectangle in TIME. That is the O(dt)
+term gate 4's live variant measures (order 0.838 fixed dt, 0.978 adaptive — §6), and it is
+first order where everything else in the push is second.
+
+The parameter is the field's Eulerian decorrelation rate at the gyroscale against dt. With
+`dt = cfl·dx/(κ·u_rms)` and sweeping `ω ~ u_rms/ρ`, it collapses to
+
+    ω·dt = cfl / (κ · ρ/dx)     = 3.6% / 2.4% / 1.8% / 1.2% / 0.9%  at ρ/dx = 2/3/4/6/8
+                                  (cfl = 0.5, κ = 7)
+
+independent of amplitude, so it is the same on every rung of the ε ladder. **It is worst
+exactly where the exponential is measured**: design (a) sweeps q/m at fixed v_th, so small ρ
+means small δu(ρ) means small ξ, and `d ln Q_⊥/d ln ξ = 3 + c₂/ξ ≈ 7` at ξ = 0.1.
+
+Three things that do NOT bound it, each a natural assumption that fails:
+
+- **The E = 0 and δb = 0 controls are blind to it** — their masks make E exactly zero, so
+  there is no E-time-sampling error to commit. The §11.4 floor does not cover this.
+- **`substeps` does not reduce it.** Substeps refine `Ω·dt`, not `ω·dt`; the fields stay frozen
+  across the whole solver step whatever `substeps` says. Today `substeps` is decorative for
+  this error.
+- **The `p_z` drift is a weaker proxy than §11.8 assumes.** It is a systematic first-order
+  quantity; spurious heating is diffusive and second order in the same error. Small `p_z`
+  drift is necessary, not sufficient.
+
+### 12.2 Which quadratic, and why it is a smoothness argument
+
+Two different objects hide behind "quadratic in time", and only one gives what is wanted:
+
+- **Lagrange quadratic** through `(t_{n−1}, t_n, t_{n+1})` — interpolating, third-order
+  accurate, but adjacent intervals use different quadratics, so it is still only C⁰ at the
+  joins. The kink survives, and the third order is wasted against a second-order pusher.
+- **Quadratic B-spline — which is what TSC is** — C¹, genuinely kink-free, but APPROXIMATING:
+  the curve does not pass through the field values. It slightly low-passes E in time.
+
+Take the B-spline. The overall scheme stays second order either way, so this is a
+**smoothness** decision, not an accuracy one: the point is to remove the step-boundary
+discontinuity whose error signal is a sawtooth with fundamental `1/dt`. The price is that
+TSC's temporal low-pass is itself a small systematic in the direction of LESS stochasticity,
+so it must be measured, not assumed (§12.5).
+
+**Non-uniform knots.** dt is adaptive (`cfl_every = 1`), so the textbook three-constant TSC
+weights do not apply. Non-uniform quadratic B-splines are still C¹ — the weights just become
+knot-dependent (Cox–de Boor on the actual `h₁ = t_n − t_{n−1}`, `h₂ = t_{n+1} − t_n`). This
+costs nothing: the weights are THREE SCALARS per half-kick, ~10 scalar flops, computed once
+per half-kick and not per particle or per grid point. Carry the two past dt values alongside
+the field history; they are traced scalars under `scan`, needing no `lax.cond` and no shape
+dependence. At fixed dt the non-uniform weights must collapse to the textbook constants —
+a free unit test.
+
+### 12.3 Where the cost actually is: blend the grids, do not gather three times
+
+    blend three grid levels, then ONE gather   O(N_grid × 3)                  streaming
+    gather three times, blend the samples      O(N_particle × 8 corners × 3)  irregular
+
+Element counts are within a small factor at production loading (4.3e5 particles against
+4.19M grid points), but the gather is already the largest particle cost — B2's numbers imply
+≈400 ms of a 707 ms step at 13 ensembles on the M1, and **tripling that is fatal**, while the
+blend is one fused pass (3 reads, 1 write) over ~7 arrays ≈ 1.3 ms per half-kick on a P100.
+Blend the grids.
+
+That moves the cost driver onto `substeps`: one blend per half-kick means `2 × substeps`
+blends per step, ≈ +14% at `substeps = 4`. Measure it rather than trusting the estimate.
+
+### 12.4 Carry, memory, and the restart ladder
+
+Quadratic needs `F(t_{n−1})`, `F(t_n)`, `F(t_{n+1})`. `_advance_particles` receives only
+`prev_state` and `new_state`, so one past level must be carried. With a carried history the
+extra field assembly DISAPPEARS — at step n the two older levels are already in hand and only
+the new one is assembled, so it stays **one `particle_fields` per step, exactly as today**,
+plus a ring-buffer shift. Quadratic in time costs memory, not transforms:
+
+| carry | memory at 256²×64 fp64 | compute |
+|---|---|---|
+| two past `PFields` | ~470 MB (~600 with the optional pieces) | unchanged |
+| two past `(φ,ψ)` states, reassemble each step | ~68 MB | 3 assemblies/step (+34%) |
+
+Both fit a 16 GB P100 against a ~0.5 GB working set; prefer the memory.
+
+**The history is NOT checkpointed.** Saving it would add ~68 MB (states) or ~470 MB (PFields)
+per snapshot against a 67.6 MB field snapshot — +11 GB or +48 GB over the campaign's 161
+snapshots, against a 12.4 GB budget and Kaggle's 20 GiB / ~500 file cap. Instead **degrade by
+available history**: 0 levels → frozen, 1 → linear, 2+ → quadratic. Two reduced-order steps
+per restart out of ~1e5, and synchronization is never broken (the alternative, "start pushing
+on the second step", leaves the particles one dt behind the fields).
+
+Resetting the history at block boundaries — so that an uninterrupted run degrades at the same
+steps a restarted one does, keeping restart bitwise — was **considered and rejected**. It
+injects a PERIODIC first-order perturbation at a cadence set by `nblock`, a pure performance
+knob; on a measurement whose whole content is spurious-versus-real stochasticity, a periodic
+scheme change is the artifact one would least want, and it is worse than a one-off warm-up.
+The property it protected is not there anyway: production restarts are already non-bitwise
+(`forcing_norm_per_step=True` recomputes the forcing scale at dt = 0 on driver entry), and
+gate 6c only achieves bitwise by turning that off. **Gate 6c is therefore re-specified**: a
+restart is deterministic, and reproduces the uninterrupted run bitwise AFTER the two-step
+warm-up, with the warm-up difference measured and reported.
+
+### 12.5 How it gets measured
+
+As a **paired ensemble**, like the resistive split: frozen and TSC-interpolated particles in
+the same run, on identical fields, differing only in this. The difference in `Q_⊥` is then
+measured with zero realization noise rather than argued about — which is the only honest way
+to settle both the sign of the frozen-field bias and the size of TSC's temporal low-pass.
+Run the pair at `mvp` scale before `full` commits.
+
+The cheaper alternative — rerun one host at `cfl_safety/2` — works but is noisier: halving dt
+gives a different turbulence realization, so the comparison has to fight through window
+statistics instead of differencing per particle.
+
+Once fields vary within a step, `substeps` finally does something, so `substeps = 2` (§11.3)
+should be revisited against Xia's ≈4 at the same time.

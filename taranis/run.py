@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from functools import partial
 from jax.sharding import PartitionSpec as P
-from .timestepping import get_scheme
+from .timestepping import get_scheme, stage_exp_ops
 from .snapshot_io import save_snapshot, get_saved_steps
 from time import perf_counter
 from .physics import equation_registry, construct_rhs
@@ -111,13 +111,24 @@ def _block_dt(state,kgrid,params):
     recipe = equation_registry[params.eqtype]
     return recipe.set_timestep_func(recipe.grad_func(state,kgrid,params),params)
 
+def _hoisted_exp_ops(kgrid,params,scheme,stepper,dt):
+    # exp(L*tau) per stage, formed ONCE here for every step that shares dt (a fixed-dt block,
+    # or one cfl_every block): evaluated outside the step scan, closed over by it. None means
+    # the stepper forms them itself (timestepping.stage_exp_ops).
+    return stage_exp_ops(kgrid,params,scheme,stepper,dt)
+
+def _fixed_dt(params):
+    # the frozen dt of the plain (non-cfl-block) step scan, or None when dt is adaptive
+    return None if params.adaptive_timestep else params.dt
+
 def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
     # params.cfl_every full steps sharing one dt; forcing still advances every step.
     if params.particles is not None:
         return _cfl_block_particles(state,kgrid,params,rhs,set_timestep,scheme,stepper)
     dt = _block_dt(state,kgrid,params)
+    exp_ops = _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
     def stepping(state,_):
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt)
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt,exp_ops)
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
         return new_state, None
@@ -127,9 +138,10 @@ def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
 def _cfl_block_particles(carry,kgrid,params,rhs,set_timestep,scheme,stepper):
     # _cfl_block on the (state, pstate) carry; ys = (post-step t, per-ensemble moments).
     dt = _block_dt(carry[0],kgrid,params)
+    exp_ops = _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
     def stepping(carry,_):
         state,pstate = carry
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt)
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt,exp_ops)
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
         pstate,mom = _advance_particles(pstate, state, new_state, kgrid, params)
@@ -144,9 +156,11 @@ def _block_of_steps_particles(carry,kgrid,params,nblock,scheme,stepper,rhs,set_t
         carry,ys = jax.lax.scan(block,carry,None,-(-nblock//params.cfl_every))
         # (nblocks, cfl_every, ...) -> (nsteps, ...)
         return carry, tuple(y.reshape((-1,)+y.shape[2:]) for y in ys)
+    dt = _fixed_dt(params)
+    exp_ops = None if dt is None else _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
     def stepping(carry,_):
         state,pstate = carry
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,None,exp_ops)
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
         pstate,mom = _advance_particles(pstate, state, new_state, kgrid, params)
@@ -165,8 +179,11 @@ def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
             return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper), None
         final_state,_ = jax.lax.scan(block,state,None,-(-nblock//params.cfl_every))
         return final_state
+    # fixed dt: the stage propagators are the same for every step of the block -> hoist
+    dt = _fixed_dt(params)
+    exp_ops = None if dt is None else _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
     def stepping(state,_):
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
+        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,None,exp_ops)
         # advance the O-U forcing state (and per-step norm scale) once per full timestep
         if params.forcing:
             new_state = _advance_forcing(new_state, state.t, kgrid, params)
