@@ -601,6 +601,16 @@ resubmission at TAG=baseline for the single-GPU tables; the sharded row is in ha
   (Z1 is a memory win regardless) but changes what docs/performance.md says about speed.
 - Production grid sizing per card: the "after" column of §2 in bytes, with OOM boundaries.
 
+### §9 decision record (2026-08-20, Alfred, with the two-card postFZ data)
+
+- §9.1 F3/gate-6: accepted + regenerated (see §3 F3).
+- §9.2 F1 granularity: GRAD_CHUNK stays 1 everywhere (chunk1 is >5% slower only on the
+  P100, not the 2080Ti; P100-class note in docs/performance.md).
+- §9.3 Z3: hoist_propagator KEPT, documented putzer2-only (GDI-IF unhoisted 1.22×).
+- §9.4 B1: moot — Z1 landed first, as planned.
+- F2 default: block path + Z_STENCIL_BLOCKS to be DELETED in the docs sweep (all three
+  platforms prefer the old path; the 2080Ti has it worse on both axes).
+
 ## 6. Not planned, and why
 
 - **B1 (default `hoist_propagator=False`)**: a stopgap that Z1 makes moot for RMHD; flip it

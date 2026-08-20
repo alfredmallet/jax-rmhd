@@ -584,7 +584,23 @@ as the P100 profile plus a 512²×64 twin of the OOM candidate):
 The headline row is the recorded "before" of the Z1 flip: **hoisted z_spectral lsrk54 at
 512²×128 fp32 OOMs the 11 GB card** (9.2 GB program + context; the allocator fails on a
 7.5 GB request) while the unhoisted path fits — after Z1 removes the hoist memory this
-row must fit, and that flip is the G2 post-Z deliverable. The 2080Ti is otherwise
+row must fit, and that flip is the G2 post-Z deliverable.
+
+**2080Ti post-F/Z point** (`bench/memory_probe_gtx2080_postFZ_*.json`): **the flip is
+recorded** — the row that OOM'd now runs at 17.3 u, 18.3 u peak = 2.4 GB, 240 ms. Every
+RMHD row lands at 17.1–17.3 u (FD-z included: 28.1 → 17.1 — this card's scheduler beats
+even the P100's 20.1), all FASTER than baseline at the default settings (FD-z lsrk33
+148 vs 162 ms; z_spectral adaptive 145 vs 201 = 0.72×; z_spectral lsrk54 238 vs the
+old unhoisted 328 = 0.73×). Decision pairs, closing the plan's §9 items (Alfred,
+2026-08-20): the chunk pair reads 1.8–3.3% for chunk 2 — under the 5% bar, so
+**GRAD_CHUNK stays 1 everywhere** (P100-class cards gain 3–20% from setting 2 — the one
+per-card tuning worth knowing); the z-blocks pair is negative on this card in BOTH
+memory (19.8 vs 17.1 u) and time (+9–14%), so with all three platforms preferring the
+old path **the block-stencil path and Z_STENCIL_BLOCKS are scheduled for deletion**;
+GDI-IF hoisting still pays (1.22× unhoisted on P100, 2080Ti consistent), so
+**hoist_propagator stays, putzer2-only**. Z1's GPU timing gate final tally: lsrk54
+0.72–0.79× and adaptive 0.72–0.76× meet ≤0.85; lsrk33 fixed-dt 0.89–0.97× does not
+(3-stage coefficient work amortizes less) — moot at ¼ the memory, recorded for honesty. The 2080Ti is otherwise
 ~10–15% faster than the P100 per step, the 4-GPU sharded row matches the earlier run
 exactly (near-perfect weak scaling at nz_local = 32, per-GPU per-point parity with the
 P100), and fp64 mirrors the P100 structure. Absolute u differs a little from the P100
