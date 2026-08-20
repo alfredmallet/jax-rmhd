@@ -5,6 +5,10 @@ Written 2026-08-19 from the two hand-offs it supersedes, `plans/TARANIS_MEMORY_H
 profile + hoisted propagators), plus this session's CB-IMEX and unrolled-loop probe. Those
 two files stay as the measurement record; this file is the plan. Execution per the standing
 flow (§8): Fable overseer, opus implementers, fresh-Fable adversarial review per phase.
+Reviewed 2026-08-19 (`plans/MEMORY_PERF_PLAN_REVIEW.md`, against the buffer dumps); its four
+substantive fixes are folded in below (Z2 cutoffs, F2 buffer model + F3-before-F2, Z1
+equal-schemes memory gate, Z1 timing gate) plus the Z1 brief notes; its B1-in-Phase-0
+recommendation is held as §9.4 (Alfred's call).
 
 ## 0. Principles
 
@@ -30,6 +34,16 @@ flow (§8): Fable overseer, opus implementers, fresh-Fable adversarial review pe
    (`temp + arguments + output`) on the jitted `run.block_of_steps`; on GPU additionally the
    device `memory_stats()['peak_bytes_in_use']` delta. ms/step = median wall time of a
    jitted block divided by its step count. Both come from the probe landed in Phase 0.
+   The probe's `total_u` is the §-defined temp+args+out; it also reports the breakdown.
+   NOTE (Phase 0 finding, confirmed per-case against the baseline JSON): the §1 table
+   below mixes conventions — EVERY FD-z row is `temp` only (IF 26.5 = temp 26.58, total
+   30.96; IMEX 25.0 = temp 24.57, total 28.96; imexcb3f 58.8 ≈ temp 56.45, total 60.83),
+   while the z_spectral and both GDI blocks match `total` to ≤0.13 u (lin_* lives in
+   args). Phase gates are therefore checked as DELTAS in `total_u` against the baseline
+   JSON for the same grid, machine and precision, not against the absolute numbers quoted
+   here. The probe measures the NON-donated graph (it reuses one state across reps);
+   production jits with `donate_argnums=(0,)`, which can alias input to output — u
+   numbers describe the probe's graph, consistently at every measurement point.
 5. **Measured on CPU, decided on GPU.** The CPU numbers below are structural (how many
    field-sized buffers are simultaneously live) and have held to 2 significant figures
    across grid sizes; the GPU numbers (§5) are what production sizing uses. Anything whose
@@ -55,6 +69,9 @@ per-grid constant overhead.
 | GDI 3D z_spectral | lsrk33 | 42.0 u | 5.0 |
 | GDI 3D z_spectral | imexcb2 / cb3e / cb3c | 23.4 u | 6.0 / 7.9 / 8.0 |
 
+(Phase 0 re-measured every ms/step within ±10% except imexcb3f: 10.6, not 7.5 — the
+baseline JSON's number is the one to cite.)
+
 What the FD-z 30.5 u is (XLA buffer table, lsrk54):
 
 | u | buffer |
@@ -73,10 +90,12 @@ putzer2 complex `sqrt/cosh/sinh/exp` per mode per stage out of a ~37 ms gap; tra
 ~3 ms of it.
 
 Two further facts from this session's probe, both to be recorded in docs/performance.md by
-Phase 0: (a) `lsrk_scan=False` costs 1.5–2.4× the memory of the scan path for EVERY stepper
-(FD-z lsrk54 26.5 → 63.6 u, imexcb3e 25.0 → 37.7 u, lsrk33 26.5 → 42.3 u) and on the
-unrolled path `hoist_propagator` is a no-op on both axes (XLA hoists the literal-gamma
-stage exponents itself: 43.3 u and the hoisted speed either way); (b) the [2R] CB-IMEX
+Phase 0: (a) `lsrk_scan=False` costs 1.4–1.9× the memory of the scan path for EVERY stepper
+(Phase 0 re-measured in probe totals, correcting this session's hand-derived numbers:
+FD-z lsrk54 30.96 → 59.58 u, imexcb3e 28.96 → 39.71 u, lsrk33 30.96 → 42.33 u; these
+rows are in the laptop baseline JSON) and on the unrolled path `hoist_propagator` is a
+no-op on both axes (XLA hoists the literal-gamma stage exponents itself: 43.3 u and the
+hoisted speed either way — reproduced exactly by Phase 0); (b) the [2R] CB-IMEX
 steppers are already the memory-lightest path in every mode and need no IMEX-specific work;
 `imexcb3f`'s 2.2× is its unrolled-only [3R] loop (optional fix, §6).
 
@@ -115,9 +134,9 @@ k-space gradient memory: 2 u instead of 8 u.
 `gphi,gpsi,gvort,gjpar = grads`, `bracket(a,b)` indexes `a[0],a[1]`, `set_timestep` reads
 `grads[0]`, `grads[1]`. A tuple removes the need for any concatenate of the outputs, which is
 the trap the audit's per-component variant would otherwise fall into (8 separate outputs
-then `stack`ed = a second 7.9 u copy). Check `particles/fields.py` and
-`bench/zspectral_profile.py` for any consumer that relies on `grads` being an array
-(`.shape`, `grads[:2]`) and fix those call sites.
+then `stack`ed = a second 7.9 u copy). Check `particles/fields.py`,
+`bench/zspectral_profile.py` and `diagnostics/` for any consumer that relies on `grads`
+being an array (`.shape`, `grads[:2]`) and fix those call sites.
 
 **Shared helper.** One function in `shared_physics` (e.g. `grad_fields(fks, kgrid, params)
 -> tuple`) taking a tuple of k-space fields; `rmhd.grad` and `gdi.grad` call it. `gradk`
@@ -145,10 +164,13 @@ measurably slower on GPU (> 5%), the fallback is two fields per call (peak 4 u) 
 ### F2 — z stencil without the padded state copy
 
 **What.** `shared_physics.z_derivatives` does `f_padded = concatenate([recv_left, f,
-recv_right], axis=1)` — a `(2, nz+4, nkx, nky)` copy of the whole state, which the buffer
-table shows twice (2.13 u each; the two stencil consumers appear to each get their own
-materialised copy — confirm from the dump before and after). The exchange itself is 4
-planes; the copies are the cost. Replace with:
+recv_right], axis=1)`. The optimized HLO (review, measured) shows XLA decomposing this
+single 3-way concatenate into TWO 2-way concatenates of nz+2 planes each (2.13 u each,
+4.26 u total), both `kLoop` fusions with the halo slice fused in — there is no nz+4
+buffer and no per-consumer duplication; the two materialised nz+2 halves are the whole
+cost. Their metadata places them inside `cond/branch_0_fun` — the `lax.cond` F3 deletes —
+so **F3 runs first and F2's design starts from a fresh post-F3 buffer dump.** The
+exchange itself is 4 planes; the copies are the cost. Replace with:
 - interior planes `2 .. nz−3` from shifted slices of `f` itself (`f[:,4:]`, `f[:,3:-1]`,
   `f[:,2:-2]`, `f[:,1:-3]`, `f[:,:-4]`) — views that fuse into the elementwise stencil;
 - the 2 boundary planes at each end from a 6-plane `concatenate([recv_left, f[:,:4]])`
@@ -171,8 +193,10 @@ planes; the copies are the cost. Replace with:
   `tests/test_halo_width.py` tests green.
 - 3D FD-z RMHD solver output bitwise equal to pre-F2 over 20 steps (the test records a
   reference in-process from the private old stencil, NOT a new npz).
-- Probe: FD-z drops by ≥ 3.5 u (both padded copies gone) at 128²×32; if only one copy goes,
-  report why before closing the phase.
+- Probe: FD-z drops by ≥ 3.5 u at 128²×32 (both nz+2 concatenate halves gone — they are
+  one decomposed concatenate, so the rewrite removes both or neither; a smaller drop means
+  the interior slices are being staged through a buffer — find it in the dump before
+  closing the phase).
 - gate 6 / spinup / precision references: untouched by construction (2D never calls
   `z_derivatives`) — still run.
 
@@ -241,7 +265,11 @@ exp(L·τ) = e^{dperp·τ}(k⊥) · e^{dz·τ}(kz) · [cos(kz·τ)·I + i·sin(k
 (I − a·L)⁻¹ = [(1 − a·d)·I + i·a·kz·σx] / ((1 − a·d)² + a²·kz²)
 ```
 
-Exact (`[d·I, i·kz·σx] = 0`), not a splitting. `kz` here is `rmhd._kz_deriv` — the
+Exact (`[d·I, i·kz·σx] = 0`), not a splitting. The `solve_shifted` denominator
+`(1 − a·d)² + a²·kz²` is bounded below by 1 for `a > 0` since `d ≤ 0` (review, verified):
+the separable backend has NO pole, unlike putzer2's `det(I − a·L) = 0` at `λ = 1/a` —
+state this in docs/numerics.md, it retires one of the two documented NaN traps in
+`propagators.py` for this path. `kz` here is `rmhd._kz_deriv` — the
 Nyquist-zeroed kz — used for BOTH the off-diagonal and the `kz⁴` term, exactly as
 `linear_matrix` does today, so the dense reconstruction equals the current L to the bit.
 For ν ≠ η the diagonal blocks differ and the constant rotation no longer diagonalises —
@@ -261,9 +289,12 @@ keep `apply_exp(arr,τ) == exp_op(τ).apply(arr)` bitwise (the existing contract
   pytree with `.apply`, `apply_exp`, `solve_shifted`, `apply_L`, `hoistable=False`); a
   `SeparableL` NamedTuple `(dperp, dz, kz)` that a recipe may return from
   `linear_matrix_func` instead of a dense array; `linear_fields` accepts both (dense →
-  current path; `SeparableL` → the three entries, after building the dense operator in HOST
-  numpy at setup and passing it through `_check_hermitian_compatible` — setup-time only,
-  freed); `get_propagator` dispatches on which entries are populated; a
+  current path; `SeparableL` → the three entries; the Hermitian-compatibility check is
+  done analytically for the separable form or plane-by-plane — NOT by materialising the
+  dense operator in host numpy and passing it through `_check_hermitian_compatible`,
+  whose `np.roll(np.flip(...))` would transiently double a ~4 u host array (~3.2 GB at
+  512²×128 fp64) in the setup path of a memory-reduction plan);
+  `get_propagator` dispatches on which entries are populated; a
   `dense_operator(kgrid)` helper that materialises `(2,2,nz,nkx,nky)` L from any backend,
   for tests and `particles/fields.py` only (it is 4 u and must never be called in a step).
 - `grids.py`: three new Optional `K_Grids` fields (`kgrid_specs` replicates them like
@@ -303,10 +334,16 @@ damping, CLAUDE.md) but `solve_shifted`/`apply_L` must be right: test against
   `test_imex.py`, `test_linear_propagator.py`, `test_dissipation.py`,
   `test_precision_dtypes.py`, `test_time_order.py`, particle 3D gates: green. Any test that
   read `kgrid.lin_L` for RMHD z_spectral switches to `dense_operator`.
-- Probe: z_spectral lsrk54 hoisted 62.0 → ≤ 41 u; lsrk33 43.2 → ≤ 37 u (the −22/−3.4 u
-  hoist term and the −6 u `lin_*` both gone; the rest is A/D territory); `kgrid` bytes
-  drop by 6 u.
-- Timing (CPU): z_spectral lsrk33 fixed-dt step ≤ 1.05× the hoisted putzer2 step, and
+- Probe (the review's two-sided gate): after Z1 nothing scheme-dependent is stored, so
+  z_spectral lsrk33 and lsrk54 must land on the SAME number — both at 33.8 ± 0.5 u
+  (total_u, 64²×16 baseline units: the unhoisted rows are both 39.8 today, minus the 6 u
+  `lin_*`) and equal to each other within 0.1 u. Catches a partial `lin_*` removal and a
+  stray per-stage live array; makes §2's ~27 u check out (33.8 − 4.9 F1 − 2.0 F3 = 26.9).
+  `kgrid` bytes drop by 6 u.
+- Timing: z_spectral lsrk33 fixed-dt step ≤ 1.0× the hoisted putzer2 step on CPU and
+  ≤ 0.85× on GPU (per stage, hoisted putzer2 streams 8 u — 4 u ExpOp + 2 in + 2 out —
+  where separable streams 4 u; a GPU result > 1.0× means the apply is materialising an
+  intermediate, e.g. `c·a0` before the `P·` multiply — find it, don't accept it), and
   adaptive `cfl_every=1` ≤ 0.7× its current value (`bench/zspectral_profile.py`).
 - HLO check (as the hoist work did): no `cosh`/`sinh`/complex `sqrt` in the z_spectral RMHD
   step; the only transcendentals are one real exp over (nkx,nky) and exp/cos/sin over (nz)
@@ -324,15 +361,21 @@ tests listed.
 Store `s = sqrt(s2)` at setup (replace `lin_s2` by `lin_s`; `s2 = s·s` where the Taylor
 branch needs it — a 1-ulp change in the small-|z| branch only), and per stage form
 `w = exp(s·τ)` once: `cosh = (w + 1/w)/2`, `sinh/s = τ·(w − 1/w)/(2·s·τ)`, `pref = exp(m·τ)`
-— 2 complex exps + 1 complex reciprocal per mode per stage. Keep the Taylor branch
-(`|s·τ|² < tol`, the `w − 1/w` form cancels there) and the overflow note. This is the
+— 2 complex exps + 1 complex reciprocal per mode per stage. Keep the Taylor branch and the
+overflow note, and **raise both Taylor cutoffs ~100× in |z²|** (fp32 to |z²| < 1e-2, fp64
+to |z²| < 1e-4) in the SAME commit as the coefficient form: the `w − 1/w` form loses ~2
+digits to cancellation that grows as z shrinks (review, measured: 1.2e-5 rel on sinh(z)/z
+at the old fp32 cutoff |z| = 1e-2 — over the 1e-5 gate; 8.8e-7 at |z| = 0.1), while the
+existing 4-term series truncates at |z|⁸/362880 = 2.8e-14 at |z| = 0.1, covering the
+widened branch with room to spare. This is the
 fallback path: ν ≠ η RMHD and GDI-IF (GDI's production CB-IMEX path never forms an
 exponential and is unaffected). It is the lever for adaptive `cfl_every=1` on those paths,
 which hoisting cannot touch.
 
 **Gates.**
 - New test: new `_coeffs` vs a private copy of the old `_coeffs` over a sweep of `(m, s2,
-  τ)` covering real/imaginary/complex `s2`, the Taylor branch and its boundary, and
+  τ)` covering real/imaginary/complex `s2`, the (widened) Taylor branch and its boundary
+  — sample AT the new cutoff on both sides, the worst point for the w-form — and
   |Re(sτ)| up to ~600 (fp64) / 80 (fp32): 1e-13 relative (fp64), 1e-5 (fp32); continuity
   across the branch threshold.
 - `test_hoist_propagator.py` (hoisted == unhoisted still bitwise on putzer2: both paths go
@@ -469,11 +512,11 @@ Phases are small; sequence them so shared files have one owner at a time.
 | # | phase | files (owner) | parallel with | bitwise |
 |---|---|---|---|---|
 | 0 | probe + baseline + slurm script + docs stub; G1/G2 baseline runs | `bench/memory_probe.py`, `slurms/memory_probe_2080.sh`, `docs/performance.md` (new section, overseer owns the text) | — | n/a |
-| 1 | **F1** grad tuple | `shared_physics.py` (grad helper), `rmhd.py` (`grad`), `gdi.py` (`grad`), consumers, test | **Z1** (disjoint: propagators/grids/`rmhd.linear_matrix`/particles fields) — ONLY if `rmhd.py` edits are confined to the named functions and the overseer merges; otherwise F1 then Z1 | yes |
-| 1' | **Z1** separable backend | `propagators.py`, `grids.py`, `rmhd.py` (`linear_matrix`), `particles/fields.py`, tests | F1 (see left) | z_spectral round-off; FD-z/2D bitwise |
-| 2 | **F2** halo-free stencil | `shared_physics.py` (`z_derivatives`), `rmhd.py` (`FDLinearTerm`), `test_z_stencils.py` | **Z2** (`propagators.py`, `grids.py` `lin_s`) | yes |
-| 2' | **Z2** cheap putzer2 coeffs | `propagators.py`, `grids.py`, tests | F2 | putzer2 round-off |
-| 3 | **F3** peel stage 0 | `timestepping.py` | — | expected; verify |
+| 1 | **F1** grad tuple | `shared_physics.py` (grad helper), `rmhd.py` (`grad`), `gdi.py` (`grad`), consumers (grep `bench/`, `particles/`, `diagnostics/` for array-`grads` uses), test | — (serialised before Z1: both touch `rmhd.py`, F1 is small) | yes |
+| 1' | **Z1** separable backend | `propagators.py`, `grids.py`, `rmhd.py` (`linear_matrix`), `particles/fields.py`, tests | — (after F1) | z_spectral round-off; FD-z/2D bitwise |
+| 2 | **F3** peel stage 0 | `timestepping.py` | **Z2** (`propagators.py`, `grids.py` `lin_s`) | expected; verify |
+| 2' | **Z2** cheap putzer2 coeffs | `propagators.py`, `grids.py`, tests | F3 | putzer2 round-off |
+| 3 | **F2** halo-free stencil (design from a fresh post-F3 dump — the nz+2 concats sit inside the cond F3 deletes) | `shared_physics.py` (`z_derivatives`), `rmhd.py` (`FDLinearTerm`), `test_z_stencils.py` | — | yes |
 | 4 | **F4** bracket liveness | `rmhd.py` (`grad`/`NonlinearTerm`) | — | yes / measure-first |
 | 5 | G1/G2 post-F and post-Z runs; **Z3** decision prep | probe outputs; deletion diff staged, not merged | — | — |
 | 6 | docs sweep (§8), move the two hand-off notes to `plans/old/` | CLAUDE.md, docs | — | — |
@@ -508,6 +551,8 @@ test, a gate that passes when the change is reverted.
 2. F1 granularity if the GPU pair disagrees between cards.
 3. Z3: delete the hoist machinery or keep it (criterion in §4 Z3).
 4. B1 stopgap if Z1 is not landed before the next production z_spectral run.
+   [2026-08-19, Alfred: keep as written — B1 stays deferred; the review's
+   land-it-in-Phase-0 recommendation declined.]
 5. Whether to scan `imexcb3f` (only if cb3f is in use).
 
 ## Appendix A — Savio GTX 2080Ti job script (`slurms/memory_probe_2080.sh`)

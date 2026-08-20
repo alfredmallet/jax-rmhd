@@ -352,6 +352,85 @@ the hoisted/unhoisted bitwise agreement is an op-order statement, not a guarante
 constant folding, so expect round-off-level differences on other grids/versions and never
 pin a hoisted putzer2 run bitwise against an unhoisted one across jax versions.
 
+**Memory, measured** (`jit(block_of_steps).lower(...).compile().memory_analysis()`, fp64,
+lsrk, elsasser forcing; U = one complex full-grid array = nz·nkx·nky·16 B; "temp" is XLA's
+working set for the program, "total" adds the live arguments — state + kgrid):
+
+| case | U | kgrid | state | temp | temp/U | total |
+|---|---|---|---|---|---|---|
+| spec 128²×16 lsrk33, unhoisted | 2.0 MB | 12.5 MB | 4.6 MB | 64.9 MB | 31.9 | 81.9 MB |
+| spec 128²×16 lsrk33, hoisted | | | | 72.0 | 35.4 | 89.0 (+9%) |
+| spec 128²×16 lsrk54, hoisted | | | | 105.0 | 51.7 | 122.0 (+49%) |
+| FD-z 128²×16 lsrk33 | 2.0 | 0.3 | 4.6 | 46.0 | 22.6 | 50.8 |
+| spec 256²×64 lsrk33, unhoisted | 32.2 | 196 | 66.5 | 1018 | 31.6 | 1281 |
+| spec 256²×64 lsrk33, hoisted | | | | 1131 | 35.1 | 1394 (+9%) |
+| spec 256²×64 lsrk54, hoisted | | | | 1661 | 51.5 | 1924 (+49%) |
+| FD-z 256²×64 lsrk33 | 32.2 | 1.1 | 66.5 | 714 | 22.1 | 781 |
+
+Reading it: the z_spectral step's working set is ~32 U before any hoisting (FD-z: ~22 U) —
+the RHS's real-space gradient stack and the rfftn intermediates, not the propagator — and the
+persistent putzer2 operator (`lin_L` 4 U + `lin_m` + `lin_s2`) is 6 U = 196 MB at 256²×64.
+Hoisting adds 4·nstage U of live arrays less the per-stage coefficient temporaries it
+removes: measured +3.5 U for lsrk33 (+9% of the program) and +20 U for lsrk54 (+49%);
+`cfl_every` blocks give the same numbers as fixed dt. So lsrk33 hoisted is cheap; lsrk54
+hoisted is the case to think about on a memory-bound grid.
+
+**Splitting the operator into perp-only and z-only factors** would make the hoisted memory
+vanish (perp arrays (nkx,nky) plus z arrays (nz,) per stage) and also drop the 6 U operator
+itself — but `exp((A+B)τ) = exp(Aτ)exp(Bτ)` only when `[A,B] = 0`. RMHD spectral-z with
+ν = η: `L = D(k⊥)·I + i·kz·σ_x` (+ `−z_diss_k·kz⁴·I`), everything commutes, the split is EXACT
+(it is the Elsasser-separable form measured at 0.62× above, which needs no hoisting and no
+change of state variables). ν ≠ η: `diag(d_φ,d_ψ)` does not commute with `σ_x`, the split is a
+Lie splitting with O(τ²·(d_φ−d_ψ)·kz) error — not acceptable for a scheme whose point is the
+exact linear propagator. KAW-type operators (entries `i·kz·f(k⊥)`): the exponential carries
+`cos(kz·√(fg)(k⊥)·τ)`, a function of the *product*, which no product of a kz-only and a
+k⊥-only array reproduces — there the memory-free choice is the per-stage real-trig
+evaluation (`m` real, `s²` real ≤ 0: 1 real exp on (nkx,nky) + cos + sin on the full grid,
+0.75×) and hoisting stays the speed-for-memory lever. Generic halving available either way:
+a 2×2 with `L00 = L11` and `L01 = L10` has `m00 = m11`, `m01 = m10`, so `Putzer2Exp` could
+store 2 arrays per stage instead of 4 (detectable at setup).
+
+**Precomputed eigenvectors, reassessed against these numbers.** `V`, `V⁻¹`, `λ` are 10 U
+persistent; hoisting on top stores `exp(λτ)` = 2 U per stage and the apply costs 10 complex
+mults instead of putzer2's 4: totals 10 + 2·nstage (16/20 U for lsrk33/54) against putzer2's
+6 + 4·nstage (18/26 U) — a saving only for lsrk54, bought with ~2 ms/step of extra multiplies.
+Unhoisted it is the 0.69× per-step path. For RMHD specifically `V` is the constant Elsasser
+transform (nothing stored) and `λ = d ± i·kz` is separable at ν = η (nothing stored): the
+eigen route collapses into the separable form above. So: RMHD wants the separable propagator
+(zero memory, 0.62× at every step, adaptive included); generic 2×2 operators want putzer2 +
+hoisting for speed, eigen storage only if lsrk54's hoisted 26 U is the constraint.
+
+**Schemes against each other under z_spectral** (same run, 128²×16, fixed dt, hoisting on
+unless stated; memory at 256²×64 is the same picture). "stab." is the scheme's own
+imaginary-axis stability limit `|ω·dt|_max` for the explicit (advective) part — L is exact
+under IF so only the nonlinear term sees the RK stability polynomial (lsrk33 1.73, rk44 2.83,
+lsrk54 3.34, computed from the stored tableaus); the last column is ms/step ÷ stab., i.e. cost
+per unit simulated time IF `cfl_safety` were raised to each scheme's limit — at a common
+`cfl_safety` the comparison is just ms/step:
+
+| scheme | temp/U | ms/step | ms/stage | cost per unit t at stab.-limited dt (rel.) |
+|---|---|---|---|---|
+| lsrk33, unhoisted | 31.9 | 80.5 | 26.8 | 1.00 |
+| lsrk33 | 35.4 | 49.2 | 16.4 | 0.61 |
+| lsrk54, unhoisted | 31.9 | 130.5 | 26.1 | 0.84 |
+| lsrk54 | 51.7 | 81.3 | 16.3 | 0.52 |
+| rk44 (hoist on or off: identical) | 36.2 | 60.0 | 15.0 | **0.46** |
+
+Two conclusions. (i) The 2N (two-register) property of the LSRK schemes buys nothing here:
+the z_spectral working set is ~32 U of RHS temporaries either way, hoisted lsrk33 (35.4 U)
+sits level with rk44 (36.2 U, four k-registers AND its two hoisted ops), and hoisted lsrk54
+(51.7 U) is the most memory-hungry option of all. (ii) rk44 needs no hoisting machinery:
+its two taus (`dt/2`, `dt`) are fixed per step, so XLA's loop-invariant code motion already
+lifts them out of the step loop (hoist on/off identical), it is 4th order, its per-stage cost
+is the lowest (no stage scan, no `cond`), and it tolerates the largest dt of the three per
+stage but one. At a common `cfl_safety` hoisted lsrk33 remains the cheapest step (49 vs 60
+ms); if `cfl_safety` is scaled to the scheme, rk44 is the cheapest per unit time and 4th
+order — worth considering as the z_spectral default once the separable propagator lands
+(which removes the hoisted-memory term from every row and leaves only the registers, where
+lsrk33 wins again by 4 U). **FD-z is a different regime:** the diagonal z-broadcast exp costs
+nothing per stage, so hoisting is neither needed nor enabled there (`hoistable=False`), and
+the scheme choice is the classical one — lsrk33 for cost, lsrk54/rk44 for order.
+
 **Available, not done — the adaptive `cfl_every=1` path.** Nothing is frozen there, so the
 per-stage evaluation stays and only a cheaper evaluation helps. Generic, no memory, any L:
 store `s = sqrt(s2)` at setup (kills the complex sqrt — its 7 sqrt/9 div/18 selects per mode —
@@ -367,6 +446,63 @@ untouched). A naive real-trig version that evaluates both `cosh`/`cos` branches 
 and casts back to complex measured *slower* (114.8 ms/step). The full per-mode
 eigendecomposition (V, V⁻¹, λ stored) was measured at 0.69× and rejected: 10 full-grid arrays
 for less than the separable form gives.
+
+## Memory: where it goes and what was removed
+
+The measurement instrument is `bench/memory_probe.py` (Phase 0 of
+`plans/MEMORY_PERF_PLAN.md`), which reports per case: XLA
+`compiled.memory_analysis()` as temp/args/out in bytes and in **u** — one field-sized
+complex array, `nz_local·nkx·nky·itemsize` (8 B fp32, 16 B fp64; the RMHD state is
+2 u) — plus `total_u = temp+args+out`, the device `peak_bytes_in_use` on GPU, and the
+median ms/step of a jitted `block_of_steps`. Three conventions to hold when reading any
+number in this section: (i) `total_u` is the quotable one — `lin_*` and the hoisted
+ExpOps live in *args*, so temp-only understates z_spectral by ~6–8 u; (ii) the probe
+measures the **non-donated** graph (it reuses one state across reps), while production
+jits with `donate_argnums=(0,)` and may alias input to output — u values describe the
+probe's graph, consistently at every measurement point, and phase gates in the plan are
+**deltas** between probe runs, never absolute targets; (iii) under `comm_backend="jax"`
+both `memory_analysis()` and u are per-device (verified against a fake-device mesh).
+(The "Memory, measured" block above uses U = the fp64 u at other grids — same idea,
+different absolute numbers.)
+
+**CPU baseline** (M1 laptop, jax 0.10.0, fp32, `bench/memory_probe_laptop_baseline.json`
+— the regression reference; fp64 twin `..._fp64.json` has identical memory to ≤0.07 u
+and 1.6–1.7× the time. u = 0.26 MB at 64²×16, 0.25 MB at 256²):
+
+| case (64²×16 RMHD/GDI-3D, 256² GDI-2D) | temp u | args u | total u | ms/step |
+|---|---|---|---|---|
+| rmhd_fdz lsrk33 / lsrk54 | 26.58 | 2.26 | 30.96 | 4.85 / 8.04 |
+| rmhd_fdz imexcb2 / cb3e / cb3c | 24.57 | 2.26 | 28.96 | 5.02 / 6.81 / 6.79 |
+| rmhd_fdz imexcb3f | 56.45 | 2.26 | 60.83 | 10.63 |
+| rmhd_fdz lsrk33 / lsrk54 / cb3e unrolled | 37.95 / 55.20 / 35.32 | 2.26 | 42.33 / 59.58 / 39.71 | 7.59 / 21.32 / 7.19 |
+| rmhd_zspec lsrk33 hoisted / unhoisted | 32.89 / 29.51 | 8.31 | 43.33 / 39.95 | 5.87 / 11.89 |
+| rmhd_zspec lsrk54 hoisted / unhoisted | 51.76 / 29.51 | 8.31 | 62.19 / 39.95 | 9.77 / 19.63 |
+| rmhd_zspec imexcb3e | 18.89 | 6.31 | 27.33 | 9.37 |
+| rmhd_zspec lsrk33 ν≠η (putzer2) | 32.89 | 8.31 | 43.33 | 6.02 |
+| gdi2d_256 lsrk33 / lsrk54 | 33.47 / 53.64 | 11.13 | 48.60 / 68.77 | 4.06 / 6.88 |
+| gdi2d_256 imexcb2 / cb3e / cb3c | 16.97 | 9.13 | 30.10 | 4.86 / 6.69 / 6.67 |
+| gdi3d lsrk33 | 31.57 | 8.31 | 42.01 | 4.79 |
+| gdi3d imexcb2 / cb3e / cb3c | 14.95 | 6.31 | 23.39 | 5.50 / 7.97 / 7.66 |
+
+What the table says, structurally (buffer breakdown in `plans/TARANIS_MEMORY_HANDOFF.md`):
+the FD-z IF working set is dominated by the batched gradient transforms (8 u k-space
+stack + ~8 u real-space output — the plan's F1) and the halo-concatenate pair (~4.3 u,
+F2/F3); z_spectral adds the resident putzer2 operator (6 u of args) and, hoisted,
+4·nstage u of ExpOps (+3.4 u lsrk33, +22 u lsrk54 — the plan's Z1 removes both for
+ν=η); the [2R] CB-IMEX steppers are the memory floor everywhere (no exponentials, one
+shifted solve per stage); `imexcb3f` is unrolled-only and pays 2.1×. `lsrk_scan=False`
+costs 1.4–1.9× the scan path's total for every stepper measured, and on the unrolled
+path `hoist_propagator` is a no-op on both axes (XLA hoists the literal-gamma stage
+exponents itself: 43.33 u and the hoisted speed either way). Memory in u is machine-
+and jax-version-independent (0.00 u across 23 cases, jax 0.10.0 vs 0.10.2) — timings
+are this laptop's only.
+
+**GPU baseline (G1 Kaggle P100, G2 Savio GTX 2080Ti)** — pending; this subsection gets
+the P100/2080Ti tables at baseline, post-Part-F and post-Part-Z, the per-card OOM
+boundaries, and the 512²×128 z_spectral lsrk54 hoisted row that is expected to OOM the
+11 GB card today and fit after Z1. Launchers: `../lugus/launch.py run
+bench/memory_probe.py --entry-kwargs '{"profile": "p100"}'` (fp32 and fp64), and
+`slurms/memory_probe_2080.sh` (TAG=baseline|postF|postZ).
 
 ## Known, not done
 
