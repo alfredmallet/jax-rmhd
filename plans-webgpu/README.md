@@ -23,6 +23,13 @@ disagree, the file is right.
 
 ## Live
 
+- **IO_PLAN.md** — data in and out: expression ICs (`x, y, z` in code units, a hand-written
+  parser, non-periodic warned about per axis and never forbidden), a save button on chart
+  cards, save-all-cards as one ZIP, a "download fields" export of real-space φ/ψ as `.npz`,
+  and multi-display recording — every open display card (at most 3) in one
+  frame-synchronous video, for z+ / z- in an imbalanced run. Written 2026-08-20, **not
+  started**. Nothing in it touches WGSL or the solver; item 5 is the only one that can
+  regress shipped behaviour (`Recorder`) and is sequenced last for that reason.
 - **VOLTEX_PLAN.md** — the 3D volume raymarch should sample a `texture_3d` with hardware
   trilinear filtering instead of doing eight scalar loads per sample out of a storage
   buffer. Written 2026-08-12, **not started**. Item 7 of the audit.
