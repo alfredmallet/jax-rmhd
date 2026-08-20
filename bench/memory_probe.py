@@ -81,8 +81,10 @@ def profile_laptop(precision):
             cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_{s}_hoist{int(h)}", nx, nz, s,
                                True, hoist=h))
     cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_imexcb3e", nx, nz, "imexcb3e", True))
-    cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_lsrk54_unroll", nx, nz, "lsrk54", True,
-                       scan=False))
+    for s in ("lsrk33", "lsrk54"):
+        for h in (True, False):
+            cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_{s}_unroll_hoist{int(h)}", nx, nz, s,
+                               True, scan=False, hoist=h))
     for s in ("lsrk33", "lsrk54", "imexcb3e"):
         cases.append(_rmhd(f"rmhd_fdz_{nx}x{nz}_{s}_unroll", nx, nz, s, False, scan=False))
     # nu != eta keeps the putzer2 path under measurement after Z1 lands
@@ -92,6 +94,21 @@ def profile_laptop(precision):
         cases.append(_gdi(f"gdi2d_256_{s}", 256, 1, s))
     for s in ("lsrk33", "imexcb2", "imexcb3e", "imexcb3c"):
         cases.append(_gdi(f"gdi3d_{nx}x{nz}_{s}", nx, nz, s))
+    return cases
+
+
+def profile_laptop128(precision):
+    # 128^2 x 32: the grid the F1/F2/F3 memory gates are quoted on
+    nx, nz = 128, 32
+    cases = []
+    for s in ("lsrk33", "lsrk54", "imexcb3e"):
+        cases.append(_rmhd(f"rmhd_fdz_{nx}x{nz}_{s}", nx, nz, s, False, nblock=5, nrep=3))
+    for s in ("lsrk33", "lsrk54"):
+        for h in (True, False):
+            cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_{s}_hoist{int(h)}", nx, nz, s, True,
+                               hoist=h, nblock=5, nrep=3))
+    cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_imexcb3e", nx, nz, "imexcb3e", True,
+                       nblock=5, nrep=3))
     return cases
 
 
@@ -146,6 +163,7 @@ def profile_gtx2080_sharded(precision):
 
 PROFILES = {
     "laptop": profile_laptop,
+    "laptop128": profile_laptop128,
     "p100": profile_p100,
     "gtx2080": profile_gtx2080,
     "gtx2080-sharded": profile_gtx2080_sharded,
@@ -394,6 +412,7 @@ def main(profile="laptop", out=None, cases=None, precision=None, precision_check
     header = {
         "tag": tag or os.environ.get("TAG", "unset"),
         "profile": profile,
+        "cases_filter": cases,          # the subset that ran, None for the whole profile
         "device": f"{dev.platform}:{getattr(dev, 'device_kind', '?')}",
         "n_devices": jax.device_count(),
         "backend": jax.default_backend(),

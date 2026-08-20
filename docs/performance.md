@@ -455,8 +455,9 @@ The measurement instrument is `bench/memory_probe.py` (Phase 0 of
 complex array, `nz_local·nkx·nky·itemsize` (8 B fp32, 16 B fp64; the RMHD state is
 2 u) — plus `total_u = temp+args+out`, the device `peak_bytes_in_use` on GPU, and the
 median ms/step of a jitted `block_of_steps`. Three conventions to hold when reading any
-number in this section: (i) `total_u` is the quotable one — `lin_*` and the hoisted
-ExpOps live in *args*, so temp-only understates z_spectral by ~6–8 u; (ii) the probe
+number in this section: (i) `total_u` is the quotable one — `lin_*` lives in *args*
+(the hoisted ExpOps are formed inside the jitted block and sit in *temp*), so temp-only
+understates z_spectral by ~8–10 u; (ii) the probe
 measures the **non-donated** graph (it reuses one state across reps), while production
 jits with `donate_argnums=(0,)` and may alias input to output — u values describe the
 probe's graph, consistently at every measurement point, and phase gates in the plan are
@@ -466,23 +467,26 @@ both `memory_analysis()` and u are per-device (verified against a fake-device me
 different absolute numbers.)
 
 **CPU baseline** (M1 laptop, jax 0.10.0, fp32, `bench/memory_probe_laptop_baseline.json`
-— the regression reference; fp64 twin `..._fp64.json` has identical memory to ≤0.07 u
-and 1.6–1.7× the time. u = 0.26 MB at 64²×16, 0.25 MB at 256²):
+— the regression reference. The fp64 twin `..._fp64.json` has the same memory to
+≤0.38 u — every difference sits in the z_spectral/GDI args block (fp64-always scalars),
+FD-z rows agree to ≤0.005 u — and costs 1.3–2.1× the time. The 128²×32 gate grid is in
+`bench/memory_probe_laptop128_baseline.json`. u = 0.26 MB at 64²×16, 0.25 MB at 256²):
 
 | case (64²×16 RMHD/GDI-3D, 256² GDI-2D) | temp u | args u | total u | ms/step |
 |---|---|---|---|---|
-| rmhd_fdz lsrk33 / lsrk54 | 26.58 | 2.26 | 30.96 | 4.85 / 8.04 |
-| rmhd_fdz imexcb2 / cb3e / cb3c | 24.57 | 2.26 | 28.96 | 5.02 / 6.81 / 6.79 |
-| rmhd_fdz imexcb3f | 56.45 | 2.26 | 60.83 | 10.63 |
-| rmhd_fdz lsrk33 / lsrk54 / cb3e unrolled | 37.95 / 55.20 / 35.32 | 2.26 | 42.33 / 59.58 / 39.71 | 7.59 / 21.32 / 7.19 |
-| rmhd_zspec lsrk33 hoisted / unhoisted | 32.89 / 29.51 | 8.31 | 43.33 / 39.95 | 5.87 / 11.89 |
-| rmhd_zspec lsrk54 hoisted / unhoisted | 51.76 / 29.51 | 8.31 | 62.19 / 39.95 | 9.77 / 19.63 |
-| rmhd_zspec imexcb3e | 18.89 | 6.31 | 27.33 | 9.37 |
-| rmhd_zspec lsrk33 ν≠η (putzer2) | 32.89 | 8.31 | 43.33 | 6.02 |
-| gdi2d_256 lsrk33 / lsrk54 | 33.47 / 53.64 | 11.13 | 48.60 / 68.77 | 4.06 / 6.88 |
-| gdi2d_256 imexcb2 / cb3e / cb3c | 16.97 | 9.13 | 30.10 | 4.86 / 6.69 / 6.67 |
-| gdi3d lsrk33 | 31.57 | 8.31 | 42.01 | 4.79 |
-| gdi3d imexcb2 / cb3e / cb3c | 14.95 | 6.31 | 23.39 | 5.50 / 7.97 / 7.66 |
+| rmhd_fdz lsrk33 / lsrk54 | 26.58 | 2.26 | 30.96 | 5.07 / 8.28 |
+| rmhd_fdz imexcb2 / cb3e / cb3c | 24.57 | 2.26 | 28.96 | 5.09 / 7.54 / 6.84 |
+| rmhd_fdz imexcb3f | 56.45 | 2.26 | 60.83 | 10.96 |
+| rmhd_fdz lsrk33 / lsrk54 / cb3e unrolled | 37.95 / 55.20 / 35.32 | 2.26 | 42.33 / 59.58 / 39.71 | 7.36 / 21.15 / 7.11 |
+| rmhd_zspec lsrk33 hoisted / unhoisted | 32.89 / 29.51 | 8.31 | 43.33 / 39.95 | 6.04 / 12.02 |
+| rmhd_zspec lsrk54 hoisted / unhoisted | 51.76 / 29.51 | 8.31 | 62.19 / 39.95 | 10.08 / 19.70 |
+| rmhd_zspec lsrk33 / lsrk54 unrolled (hoist on = off) | 32.89 / 43.76 | 8.31 | 43.33 / 54.20 | 5.70 / 9.50 |
+| rmhd_zspec imexcb3e | 18.89 | 6.31 | 27.33 | 9.52 |
+| rmhd_zspec lsrk33 ν≠η (putzer2) | 32.89 | 8.31 | 43.33 | 5.95 |
+| gdi2d_256 lsrk33 / lsrk54 | 33.47 / 53.64 | 11.13 | 48.60 / 68.77 | 4.07 / 6.77 |
+| gdi2d_256 imexcb2 / cb3e / cb3c | 16.97 | 9.13 | 30.10 | 4.89 / 6.73 / 6.83 |
+| gdi3d lsrk33 | 31.57 | 8.31 | 42.01 | 4.86 |
+| gdi3d imexcb2 / cb3e / cb3c | 14.95 | 6.31 | 23.39 | 5.59 / 7.67 / 7.64 |
 
 What the table says, structurally (buffer breakdown in `plans/TARANIS_MEMORY_HANDOFF.md`):
 the FD-z IF working set is dominated by the batched gradient transforms (8 u k-space
@@ -491,11 +495,12 @@ F2/F3); z_spectral adds the resident putzer2 operator (6 u of args) and, hoisted
 4·nstage u of ExpOps (+3.4 u lsrk33, +22 u lsrk54 — the plan's Z1 removes both for
 ν=η); the [2R] CB-IMEX steppers are the memory floor everywhere (no exponentials, one
 shifted solve per stage); `imexcb3f` is unrolled-only and pays 2.1×. `lsrk_scan=False`
-costs 1.4–1.9× the scan path's total for every stepper measured, and on the unrolled
-path `hoist_propagator` is a no-op on both axes (XLA hoists the literal-gamma stage
-exponents itself: 43.33 u and the hoisted speed either way). Memory in u is machine-
-and jax-version-independent (0.00 u across 23 cases, jax 0.10.0 vs 0.10.2) — timings
-are this laptop's only.
+costs 1.37–1.92× the scan path's total for every stepper measured, and on the unrolled
+path `hoist_propagator` is a no-op on both axes — XLA hoists the literal-gamma stage
+exponents itself (the `_unroll_hoist{1,0}` rows: identical totals, identical speed at
+both settings, both precisions). Memory in u reproduced identically (0.00 u per case) on a second
+machine and across jax 0.10.0/0.10.2 during Phase 0 validation — timings are this
+laptop's only.
 
 **GPU baseline (G1 Kaggle P100, G2 Savio GTX 2080Ti)** — pending; this subsection gets
 the P100/2080Ti tables at baseline, post-Part-F and post-Part-Z, the per-card OOM

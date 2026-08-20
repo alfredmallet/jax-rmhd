@@ -35,13 +35,15 @@ recommendation is held as §9.4 (Alfred's call).
    device `memory_stats()['peak_bytes_in_use']` delta. ms/step = median wall time of a
    jitted block divided by its step count. Both come from the probe landed in Phase 0.
    The probe's `total_u` is the §-defined temp+args+out; it also reports the breakdown.
-   NOTE (Phase 0 finding, confirmed per-case against the baseline JSON): the §1 table
-   below mixes conventions — EVERY FD-z row is `temp` only (IF 26.5 = temp 26.58, total
-   30.96; IMEX 25.0 = temp 24.57, total 28.96; imexcb3f 58.8 ≈ temp 56.45, total 60.83),
-   while the z_spectral and both GDI blocks match `total` to ≤0.13 u (lin_* lives in
-   args). Phase gates are therefore checked as DELTAS in `total_u` against the baseline
-   JSON for the same grid, machine and precision, not against the absolute numbers quoted
-   here. The probe measures the NON-donated graph (it reuses one state across reps);
+   NOTE (Phase 0 finding, confirmed per-case against the laptop128 baseline): the §1
+   memory column is 128²×32 `total_u` throughout (reproduced to ≤0.6 u), with two
+   exceptions — the FD-z IF parenthetical "26.5 at 64²×16" is a 64²×16 `temp` (26.58;
+   the 64²×16 total is 30.96), and the FD-z IMEX row's original 25.0 reproduced under no
+   convention at either grid and is corrected to 28.5 in the table. Phase gates are
+   checked as DELTAS in `total_u` against the baseline JSON for the same grid, machine
+   and precision, not against the absolute numbers quoted here. Witnesses: `bench/memory_probe_laptop_baseline{,_fp64}.json` (64²×16 / 256²) and
+   `bench/memory_probe_laptop128_baseline.json` (128²×32 fp32 — the grid the F1/F2/F3
+   probe gates are stated at). The probe measures the NON-donated graph (it reuses one state across reps);
    production jits with `donate_argnums=(0,)`, which can alias input to output — u
    numbers describe the probe's graph, consistently at every measurement point.
 5. **Measured on CPU, decided on GPU.** The CPU numbers below are structural (how many
@@ -59,7 +61,7 @@ per-grid constant overhead.
 | config | scheme | memory | ms/step (64²×16) |
 |---|---|---|---|
 | RMHD FD-z | lsrk33 / lsrk54 | 30.5 u (26.5 at 64²×16) | 5.2 / 9.0 |
-| RMHD FD-z | imexcb2 / cb3e / cb3c | 25.0 u | 4.9 / 7.2 / 6.5 |
+| RMHD FD-z | imexcb2 / cb3e / cb3c | 28.5 u (Phase 0 correction; the original 25.0 reproduced under no convention) | 4.9 / 7.2 / 6.5 |
 | RMHD FD-z | imexcb3f | 58.8 u | 7.5 |
 | RMHD z_spectral | lsrk33 hoisted / unhoisted | 43.2 / 39.8 u | 5.9 / 12.2 |
 | RMHD z_spectral | lsrk54 hoisted / unhoisted | 62.0 / 39.8 u | 10.4 / 20.2 |
@@ -69,7 +71,7 @@ per-grid constant overhead.
 | GDI 3D z_spectral | lsrk33 | 42.0 u | 5.0 |
 | GDI 3D z_spectral | imexcb2 / cb3e / cb3c | 23.4 u | 6.0 / 7.9 / 8.0 |
 
-(Phase 0 re-measured every ms/step within ±10% except imexcb3f: 10.6, not 7.5 — the
+(Phase 0 re-measured every ms/step within ±8% except imexcb3f: 10.96, not 7.5 — the
 baseline JSON's number is the one to cite.)
 
 What the FD-z 30.5 u is (XLA buffer table, lsrk54):
@@ -90,12 +92,13 @@ putzer2 complex `sqrt/cosh/sinh/exp` per mode per stage out of a ~37 ms gap; tra
 ~3 ms of it.
 
 Two further facts from this session's probe, both to be recorded in docs/performance.md by
-Phase 0: (a) `lsrk_scan=False` costs 1.4–1.9× the memory of the scan path for EVERY stepper
-(Phase 0 re-measured in probe totals, correcting this session's hand-derived numbers:
-FD-z lsrk54 30.96 → 59.58 u, imexcb3e 28.96 → 39.71 u, lsrk33 30.96 → 42.33 u; these
-rows are in the laptop baseline JSON) and on the unrolled path `hoist_propagator` is a
-no-op on both axes (XLA hoists the literal-gamma stage exponents itself: 43.3 u and the
-hoisted speed either way — reproduced exactly by Phase 0); (b) the [2R] CB-IMEX
+Phase 0: (a) `lsrk_scan=False` costs 1.37–1.92× the memory of the scan path for EVERY
+stepper (Phase 0 re-measured in probe totals, correcting this session's hand-derived
+numbers: FD-z lsrk54 30.96 → 59.58 u, imexcb3e 28.96 → 39.71 u, lsrk33 30.96 → 42.33 u;
+these rows are in the laptop baseline JSON) and on the unrolled path `hoist_propagator`
+is a no-op on both axes (XLA hoists the literal-gamma stage exponents itself: witness
+rows `rmhd_zspec_64x16_lsrk{33,54}_unroll_hoist{1,0}` — 43.33 u / 54.20 u and the same
+speed at both settings); (b) the [2R] CB-IMEX
 steppers are already the memory-lightest path in every mode and need no IMEX-specific work;
 `imexcb3f`'s 2.2× is its unrolled-only [3R] loop (optional fix, §6).
 
@@ -456,8 +459,10 @@ python ../lugus/launch.py run bench/memory_probe.py --entry-kwargs '{"profile": 
 
 `--dry-run` first to inspect the staged upload. Output: `output/memory-probe-fp32/…zip`
 containing `results.json`; the table is also in the kernel log. Budget: the p100 profile
-should complete in well under an hour (each case is compile + a few 10-step blocks); set
-`wall_budget` accordingly in `--entry-kwargs` if the driver grows a loop. Run G1 at three
+should complete in well under an hour (each case is compile + a few 10-step blocks); if a
+run needs bounding, pass `nblock`/`nrep`/`timeout` in `--entry-kwargs` — those are real
+`main()` parameters; `main()` rejects unknown kwargs, so a `wall_budget` key would
+TypeError in the kernel. Run G1 at three
 points, each with the full profile: **baseline** (Phase 0, before any change — this is the
 table docs/performance.md cites), **after Part F** (this run carries the F1 granularity
 pair), **after Part Z** (this run carries the Z3 hoist on/off pair on GDI-IF).
@@ -557,8 +562,12 @@ test, a gate that passes when the change is reverted.
 
 ## Appendix A — Savio GTX 2080Ti job script (`slurms/memory_probe_2080.sh`)
 
-Copied-from blocks are from `slurms/bench_phase3_2080_scale.sh` (working on this pool as
-of 2026-07). `--gres` is per node; the 2080Ti FCA pool is 2:1 CPU:GPU.
+SUPERSEDED by the landed `slurms/memory_probe_2080.sh` (Phase 0), which additionally
+passes `--precision` with `--precision-check` (the sketch below passes only the check
+flag, which no-ops without `--precision`), adds the F1 grad-chunk pair and `--tag`.
+Kept for the copied-from provenance: blocks are from `slurms/bench_phase3_2080_scale.sh`
+(working on this pool as of 2026-07). `--gres` is per node; the 2080Ti FCA pool is 2:1
+CPU:GPU.
 
 ```bash
 #!/bin/bash
@@ -626,15 +635,19 @@ the first jax device work in the process (CLAUDE.md rule) and reports per-rank
 
 ```
 { "tag": "baseline", "device": "NVIDIA Tesla P100-PCIE-16GB", "jax": "0.10.0",
-  "precision": "32", "cases": [
+  "precision": "32", "cases_filter": null, "cases": [
     { "label": "rmhd_fdz_512x512x128_lsrk54_scan",
       "params": {"nx":512,"ny":512,"nz":128,"dims":3,"eqtype":"RMHD","z_spectral":false,
                  "lsrk_scan":true,"hoist_propagator":true,"adaptive_timestep":false,"dt":1e-3,
                  "comm_backend":"serial","eqpars":{"diss":[1e-4,1e-4],"hyper":2}},
       "scheme": "lsrk54", "u_bytes": 135266304,
-      "mem_analysis": {"temp": ..., "args": ..., "out": ..., "total_u": 30.5},
+      "mem_analysis": {"temp": ..., "args": ..., "out": ..., "code": ...},
+      "total_bytes": ..., "total_u": 30.5,
       "device_peak_bytes": ..., "device_peak_u": ...,
       "ms_per_step": ..., "nblock": 10, "nrep": 5, "oom": false } ] }
+
+(`total_u` is a sibling of `mem_analysis`, as the landed probe writes it; the header
+`cases_filter` records any `--cases` subset, null for a full profile.)
 ```
 
 ## Appendix C — the numbers behind the floor (FD-z, 2-register IF-LSRK)
