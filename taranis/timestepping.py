@@ -107,27 +107,32 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
                                                fields=e.apply(current_state.fields) + beta*delta)
     return current_state
 
-# used if params.lsrk_scan=True
+# used if params.lsrk_scan=True. Stage 0 -- the one stage that reuses init_rhs -- is peeled
+# out and the scan runs stages 1..s-1: no cond in the scan body, and init_rhs is dead
+# before the scan starts.
 def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop, exp_ops):
     alphas_arr = jnp.array(scheme.alphas, dtype=_precision.ftype)
     betas_arr = jnp.array(scheme.betas, dtype=_precision.ftype)
     gammas_arr = jnp.array(scheme.gammas, dtype=_precision.ftype)
 
-    init_delta = jnp.zeros_like(state.fields)
-    init_carry = (state,init_delta)
+    # stage 0: alphas[0]=0 and delta starts at zero, so delta is just exp(L*gamma_0*dt)
+    # applied to dt*init_rhs. forcing fields threaded through unchanged via _replace.
+    e0 = exp_ops[0] if exp_ops is not None else prop.exp_op(gammas_arr[0])
+    delta0 = e0.apply(dt * init_rhs)
+    state0 = state._replace(t=state.t + gammas_arr[0]*dt,
+                            fields=e0.apply(state.fields) + betas_arr[0]*delta0)
 
-    stage_pars = (alphas_arr, betas_arr, gammas_arr, jnp.arange(len(scheme.alphas)))
+    stage_pars = (alphas_arr[1:], betas_arr[1:], gammas_arr[1:])
     if exp_ops is not None:
-        # hoisted: the per-stage ExpOps ride along as scan xs (leading axis = stage)
-        stage_pars = stage_pars + (stack_exp_ops(exp_ops),)
+        # hoisted: the stage-1.. ExpOps ride along as scan xs (leading axis = stage)
+        stage_pars = stage_pars + (stack_exp_ops(exp_ops[1:]),)
 
     def scan_stage_func(carry,stage_vals):
         current_state, delta = carry
-        alpha, beta, gamma, istage = stage_vals[:4]
-        e = stage_vals[4] if exp_ops is not None else prop.exp_op(gamma)
+        alpha, beta, gamma = stage_vals[:3]
+        e = stage_vals[3] if exp_ops is not None else prop.exp_op(gamma)
 
-        stage_rhs = jax.lax.cond(istage == 0,lambda: init_rhs,
-                                 lambda: rhs(current_state,kgrid,params)[0])
+        stage_rhs = rhs(current_state,kgrid,params)[0]
 
         next_delta = e.apply(alpha * delta + dt * stage_rhs)
         next_fields = e.apply(current_state.fields) + beta*next_delta
@@ -135,7 +140,7 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop, exp
         # forcing_state/forcing_key threaded through unchanged
         return (current_state._replace(t=next_t,fields=next_fields),next_delta), None
 
-    (final_state, _), _ = jax.lax.scan(scan_stage_func,init_carry,stage_pars)
+    (final_state, _), _ = jax.lax.scan(scan_stage_func,(state0,delta0),stage_pars)
 
     return final_state
 
@@ -156,7 +161,8 @@ def _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop, exp
 # never point these at a wave-dominated L (spectral-z RMHD's +-i*kz) at large dt.
 #
 # All four have b^IM = b^EX = b and c^IM = c^EX = c (that is the paper's design constraint
-# which makes the coupling conditions tractable), c_1 = 0 and c_s = 1 (FSAL).
+# which makes the coupling conditions tractable), c_1 = 0 and c_s = 1. b_s != 0 in every
+# tableau here, so the last stage is not the step's solution and nothing is reused (no FSAL).
 class IMEX_Scheme(NamedTuple):
     a_im: Tuple[Tuple[float,...],...]   # dense DIRK tableau, lower triangular incl. diagonal
     a_ex: Tuple[Tuple[float,...],...]   # dense ERK tableau, strictly lower triangular

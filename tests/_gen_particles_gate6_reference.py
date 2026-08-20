@@ -6,7 +6,10 @@
 # identical to what current main produces. This script IS that pre-wiring capture, run
 # on the current (unmodified) tree.
 #
-# GENERATED 2026-08-18. Not a test module (leading underscore keeps pytest away). Run
+# GENERATED 2026-08-18. REGENERATED 2026-08-20 on the post-F3 tree: the F3 stage-0 peel
+# (plans/MEMORY_PERF_PLAN.md §3) changed XLA's fusion of the LSRK stage scan at the 1-2 ulp
+# level, accepted as a §9.1 decision.
+# Not a test module (leading underscore keeps pytest away). Run
 # both precisions (separate processes -- TARANIS_PRECISION is read once at import):
 #   TARANIS_PRECISION=64 python tests/_gen_particles_gate6_reference.py
 #   TARANIS_PRECISION=32 python tests/_gen_particles_gate6_reference.py
