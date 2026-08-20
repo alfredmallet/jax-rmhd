@@ -3,17 +3,14 @@ import numpy as np
 from .. import grids
 from .. import _precision
 from . import shared_physics
-from .shared_physics import gradk,bracket,z_derivatives
+from .shared_physics import bracket,grad_fields,z_derivatives
 from .. import comms
 
 def grad(state,kgrid,params):
+    # (gphi, gpsi, gvort, gjpar), one real-space (2,nz,nx,ny) gradient per field
     phik=state.fields[0]
     psik=state.fields[1]
-    vortk = -kgrid.ksq*phik
-    jpark = -kgrid.ksq*psik
-    fk = jnp.stack([phik,psik,vortk,jpark])
-    gradients = grids.ifft(gradk(fk,kgrid),params)
-    return gradients
+    return grad_fields((phik,psik,-kgrid.ksq*phik,-kgrid.ksq*psik),kgrid,params)
 
 def linear_matrix(kgrid,params):
     # finite-difference z: just perp (hyper)dissipation L = -diss*k_perp^(2*hyper)

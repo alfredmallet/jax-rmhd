@@ -145,10 +145,16 @@ being an array (`.shape`, `grads[:2]`) and fix those call sites.
 -> tuple`) taking a tuple of k-space fields; `rmhd.grad` and `gdi.grad` call it. `gradk`
 stays for any remaining caller (the bench uses it); if nothing uses it after F1, delete it.
 
-**Transform granularity is a module constant**, default 1 field (2 components) per `ifft`.
-The GPU run (§5) compares it against the current single batched call; if per-field is
-measurably slower on GPU (> 5%), the fallback is two fields per call (peak 4 u) — not a
-`Parameters` knob.
+**Transform granularity is a module constant** (`shared_physics.GRAD_CHUNK`, read at
+trace time — the probe's `--grad-chunk` sets it). [As landed, overseer-approved
+deviation: `GRAD_CHUNK=1` transforms per COMPONENT with a free per-field restack — XLA
+writes both component iffts straight into the (2,…) pair buffer, so the "trap" above
+only applies to re-stacking ACROSS fields. Literal per-field transforms measured
+24.54 u on FD-z 128²×32, missing the ≤24 gate; per-component lands the audit's 23.55.
+`GRAD_CHUNK>1` batches that many whole fields per ifft; 1, 2 and 4 are all bitwise
+identical, and chunk=4 reproduces the pre-F1 graph byte-exactly.] The GPU run (§5)
+compares granularities; if chunk=1 is measurably slower on GPU (> 5%), the fallback is
+a larger chunk — not a `Parameters` knob.
 
 **Gates.**
 - `grad` output bitwise equal to the old implementation (`np.array_equal` per field) at
@@ -240,8 +246,11 @@ if the stack indexing needs it.
 gjpar) − bracket(gphi, gvort)`, `NLTerm_psi = −bracket(gphi, gpsi)` can be ordered so only 6
 components are live. **Python statement order does not control XLA liveness** — after F1
 the transforms are separate kernels and XLA's scheduler may already realise this; it may
-not. Measure after F1 from the buffer table: if the 8-component real-space slot is already
-below 6 u, F4 is done with no change. Otherwise try (a) ordering the per-field transforms
+not. [F1 measured: it does not — the 8-component slot did NOT shrink and is now the
+dominant term in the 23.55 u FD-z step. `gvort`/`gjpar` are each consumed by exactly one
+bracket and could retire early; `gphi` feeds two. Details in F1's scratch notes → to be
+folded here when F4 dispatches.] Measure after F1 from the buffer table: if the
+8-component real-space slot is already below 6 u, F4 is done with no change. Otherwise try (a) ordering the per-field transforms
 in `grad` so `gvort` is produced last and consumed first, (b) computing the brackets inside
 `grad`'s successor in that order. Drop F4 if the gain is < 1 u; do not restructure
 `NonlinearTerm` for a sub-u gain.

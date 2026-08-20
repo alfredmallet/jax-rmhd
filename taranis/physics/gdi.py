@@ -34,7 +34,7 @@ import numpy as np
 
 from .. import comms, grids
 from . import shared_physics
-from .shared_physics import bracket, gradk
+from .shared_physics import bracket, grad_fields
 
 
 def _check_supported(params):
@@ -159,12 +159,11 @@ def _max_re_lambda(params):        # cache would pin every Parameters in a long 
 
 
 def grad(state, kgrid, params):
-    # everything needed for the brackets
+    # everything needed for the brackets: (gphi, gN, gvort), one real-space
+    # (2,nz,nx,ny) gradient per field
     Nk = state.fields[0]
     phik = state.fields[1]
-    vortk = -kgrid.ksq*phik
-    fk = jnp.stack([phik, Nk, vortk])
-    return grids.ifft(gradk(fk, kgrid), params)
+    return grad_fields((phik, Nk, -kgrid.ksq*phik), kgrid, params)
 
 
 def set_timestep(grads, params):

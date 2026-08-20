@@ -1,15 +1,37 @@
 import jax
 import jax.numpy as jnp
 from .. import comms
+from .. import grids
 from .. import _precision
 
 # velocity floor for the adaptive CFL dt: caps dt at cfl_safety*min(dx,dy)/QUIESCENT_EPS
 QUIESCENT_EPS = 0.1
 
+# fields per inverse transform in grad_fields; read at trace time, not at import
+GRAD_CHUNK = 1
+
 # takes gradient in fourier space
 # expects the kx,ky axes to be the last two (-2,-1)
 def gradk(fk,kgrid):
     return jnp.stack([1j*kgrid.kx*fk,1j*kgrid.ky*fk],axis=1)
+
+def grad_fields(fks,kgrid,params):
+    # real-space (d/dx, d/dy) of each k-space field in the tuple fks, GRAD_CHUNK fields
+    # per inverse transform. Returns one (2,nz,nx,ny) array per input field, unstacked.
+    # A lone field has its two components transformed separately and re-paired, so only
+    # one k-space component is live at a time.
+    chunk = max(1,int(GRAD_CHUNK))
+    out = []
+    for i in range(0,len(fks),chunk):
+        group = fks[i:i+chunk]
+        if len(group) == 1:
+            fk = group[0]
+            out.append(jnp.stack([grids.ifft(1j*kgrid.kx*fk,params),
+                                  grids.ifft(1j*kgrid.ky*fk,params)]))
+        else:
+            g = grids.ifft(gradk(jnp.stack(group),kgrid),params)
+            out.extend(g[j] for j in range(len(group)))
+    return tuple(out)
 
 # Poisson bracket of real-space fields A and B. Returns in real space
 def bracket(a,b):
