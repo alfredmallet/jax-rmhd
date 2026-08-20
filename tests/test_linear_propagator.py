@@ -299,6 +299,12 @@ def _coeff_tols():
     return (1e-13, "fp64") if _fp64() else (1e-5, "fp32")
 
 
+# Phase samples on the cutoff circle. The w-form's cancellation error at fixed |z| swings by
+# several times with arg(z), so a sparse sweep can sit in a lucky phase and pass at a cutoff
+# that is actually too small: this count is what makes a shrunken cutoff fail the test.
+_CUTOFF_PHASES = 1024
+
+
 def _re_limit():
     # |Re(s*tau)| the exponential still has to survive (cosh overflows at ~710 / ~88)
     return 600.0 if _fp64() else 80.0
@@ -370,27 +376,26 @@ def test_coeffs_at_the_taylor_cutoff_match_an_accurate_reference():
     rtol, label = _coeff_tols()
     tol_z2 = propagators._tol_z2()
     zb = np.sqrt(tol_z2)
-    phases = np.array([0.0, 0.6, np.pi/2, 2.4, np.pi])
+    phases = np.linspace(0.0, 2*np.pi, _CUTOFF_PHASES, endpoint=False)
     tau = 1.0
     with checks() as c:
+        sides = {}
         for side, frac in (("Taylor side", 0.999), ("w = exp(z) side", 1.001)):
-            z = np.sqrt(frac)*zb*np.exp(1j*phases)
-            s = jnp.asarray(z/tau, dtype=_precision.ctype)
+            s = jnp.asarray(np.sqrt(frac)*zb*np.exp(1j*phases)/tau, dtype=_precision.ctype)
             got_c, got_s = propagators.Putzer2Propagator(None, None, s)._coeffs(tau)
+            sides[side] = (got_c, got_s)
+            # reference at the z the kernel really evaluates at: s is stored at field
+            # precision, so this measures the evaluation, not the input quantization
+            z = np.asarray(np.asarray(s), dtype=np.complex128)*tau
             ref_c = np.cosh(z)
-            ref_s = tau*np.sinh(z)/np.where(z == 0, 1.0, z)
+            ref_s = tau*np.sinh(z)/z
             ec = float(np.max(_rel(got_c, ref_c, 0.0)))
             es = float(np.max(_rel(got_s, ref_s, 0.0)))
             c.check(f"cosh at the cutoff, {side} ({label}, |z|={np.abs(z[0]):.3g})",
                     ec < rtol, f"rel err {ec:.3e}")
             c.check(f"sinh(z)/z at the cutoff, {side} ({label}, |z|={np.abs(z[0]):.3g})",
                     es < rtol, f"rel err {es:.3e}")
-        below = propagators.Putzer2Propagator(
-            None, None, jnp.asarray(np.sqrt(0.999)*zb*np.exp(1j*phases)/tau,
-                                    dtype=_precision.ctype))._coeffs(tau)
-        above = propagators.Putzer2Propagator(
-            None, None, jnp.asarray(np.sqrt(1.001)*zb*np.exp(1j*phases)/tau,
-                                    dtype=_precision.ctype))._coeffs(tau)
+        below, above = sides["Taylor side"], sides["w = exp(z) side"]
         for name, a, b in (("cosh", below[0], above[0]), ("sinh/s", below[1], above[1])):
             # the two samples differ in |z^2| by 0.002*tol_z2, so cosh and sinh(z)/z
             # themselves differ by ~1e-3*tol_z2: anything above that is a branch jump

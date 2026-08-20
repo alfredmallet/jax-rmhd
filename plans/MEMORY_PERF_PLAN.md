@@ -248,6 +248,12 @@ outside the scan, and the FD-z peak is set by the RHS gradient/FFT working set (
 residue, F4's target). Step time: FD-z −12…−20% (the cond was costing real time);
 z_spectral ν=η +5…13% — a ~2 u-for-time trade to revisit with the GPU numbers/Z3.]
 
+[Review note, 2026-08-20: the memory-light unhoisted-graph property (scanned-gamma form
+in stages 1..s−1) is currently guarded ONLY by gate 6's bitwise tripwire — the forbidden
+static-gamma restructure passes the scheme-equivalence and hoist gates while growing
+unhoisted lsrk54 36.2 → 44.3 u. A designed guard (a `memory_analysis` assertion that
+unhoisted putzer2 lsrk54 < hoisted) is a cheap candidate for the docs-sweep/F4 phase.]
+
 **Files.** `taranis/timestepping.py` (`_lsrk_scan_stages`, `lsrk_advance`), `tests/test_hoist_propagator.py`
 if the stack indexing needs it.
 
@@ -613,6 +619,10 @@ test, a gate that passes when the change is reverted.
 - `plans/README.md`: this plan under Live; the two hand-offs to Finished when §7 row 6 runs.
 - `bench/zspectral_profile.py`: the `"grad (gradk+ifft)"` label is stale post-F1 (it times
   the tuple path) — rename in the sweep, it is outside any phase's ownership.
+- Post-Z2 the hoist knob's memory framing is scheme-dependent: at lsrk33 the putzer2
+  hoisted/unhoisted gap has collapsed (36.3 vs 36.2 u at 128²×32), at lsrk54 it survives
+  (44.3 vs 36.2). "The knob to turn off on a memory-bound grid" needs that nuance in
+  CLAUDE.md/performance.md — and it feeds Z3.
 
 ## 9. Decisions for Alfred (raise when reached, with numbers)
 
