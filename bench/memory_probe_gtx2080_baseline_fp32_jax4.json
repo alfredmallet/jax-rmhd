@@ -1,0 +1,72 @@
+{
+ "tag": "baseline",
+ "profile": "gtx2080-sharded",
+ "cases_filter": null,
+ "device": "gpu:NVIDIA GeForce RTX 2080 Ti",
+ "n_devices": 4,
+ "backend": "gpu",
+ "jax": "0.10.2",
+ "precision": "32",
+ "isolated": false,
+ "grad_chunk_requested": null,
+ "utc": "2026-08-20T03:30:42Z",
+ "cases": [
+  {
+   "label": "rmhd_fdz_512x128_lsrk54_jax4",
+   "scheme": "lsrk54",
+   "params": {
+    "nx": 512,
+    "ny": 512,
+    "nz": 128,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2
+    },
+    "z_spectral": false,
+    "comm_backend": "jax",
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33685504,
+   "nz_per_device": 32,
+   "devices_in_mesh": 4,
+   "per_device": true,
+   "mem_analysis": {
+    "temp": 692793352,
+    "args": 71716376,
+    "out": 69476412,
+    "code": 1964
+   },
+   "total_bytes": 833986140,
+   "total_u": 24.758,
+   "ms_per_block": 752.5965,
+   "ms_per_step": 75.25965,
+   "ms_per_step_min": 75.19584,
+   "device_mem_before": {
+    "bytes_in_use": 71718912,
+    "peak_bytes_in_use": 139089920,
+    "bytes_limit": 8510242816
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71718912,
+    "peak_bytes_in_use": 1103473920,
+    "bytes_limit": 8510242816
+   },
+   "device_peak_bytes": 1103473920,
+   "device_peak_u": 32.758
+  }
+ ]
+}

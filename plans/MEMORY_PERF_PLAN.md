@@ -493,7 +493,13 @@ Same three measurement points as G1. The 11 GB card is the interesting one: it i
 today's hoisted lsrk54 z_spectral row at 512²×128 OOMs (8.4 GB + CUDA context + workspace)
 and where after Z1 it should fit — record that flip explicitly.
 
-[Baseline attempt 2026-08-19, job 37774831: the 4-GPU sharded FD-z row WORKED and is
+[Baseline COMPLETE 2026-08-19, job 37775868 (post env-scrub fix, tree f1e343d): all
+single-GPU cases ran; the predicted OOM recorded — hoisted z_spectral lsrk54 at 512²×128
+fp32 OOMs the 11 GB card, its 512²×64 twin and the unhoisted path fit; sharded row
+reproduced exactly. JSONs committed as bench/memory_probe_gtx2080_baseline_*.json,
+table in docs/performance.md. postF/postZ points pending.]
+
+[First attempt 2026-08-19, job 37774831: the 4-GPU sharded FD-z row WORKED and is
 rank-consistent (24.76 u per device, peak 32.76 u, 75.4 ms/step at 512²×128 fp32), but
 every single-GPU isolated case died — the isolation subprocess inherits the parent srun's
 PMIx env and `import taranis` runs MPI_Init at import (`_mpi_compat`'s module-scope

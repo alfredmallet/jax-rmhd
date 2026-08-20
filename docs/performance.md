@@ -522,8 +522,31 @@ residue):
 | gdi3d_256x64 imexcb3e | 26.34 | 41.30 | 22.7 |
 
 Zero OOMs: the hoisted z_spectral lsrk54 row (70.2 u ≈ 9.2 GB + peak 11.6 GB) fits the
-16 GB card, as the plan predicted; the 11 GB 2080Ti is where it is expected to OOM (G2,
-pending — `slurms/memory_probe_2080.sh`, TAG=baseline). What the GPU says that the CPU
+16 GB card, as the plan predicted.
+
+**GPU baseline, G2 Savio GTX 2080Ti 11 GB** (jax 0.10.2, job 37775868,
+`bench/memory_probe_gtx2080_baseline_fp{32,64}.json` + `..._fp32_jax4.json`; same grids
+as the P100 profile plus a 512²×64 twin of the OOM candidate):
+
+| case (fp32, 512²×128) | total u | peak u | ms/step |
+|---|---|---|---|
+| rmhd_fdz lsrk33 / lsrk54 | 28.06 | 36.07 | 162 / 275 |
+| rmhd_zspec lsrk33 hoisted / unhoisted | 54.17 / 36.17 | 54.2 / 44.2 | 149 / 199 |
+| rmhd_zspec lsrk54 **hoisted: OOM** / unhoisted | 70.17 / 36.17 | — / 44.2 | OOM / 328 |
+| rmhd_zspec lsrk54 hoisted, 512²×**64** | 70.21 | 79.2 | 135 |
+| rmhd_zspec imexcb3e / adaptive lsrk33 | 30.30 / 36.17 | 40.3 / 44.2 | 204 / 201 |
+| gdi2d_1024 lsrk33 / imexcb3e | 53.63 / 30.25 | 60.1 / 38.8 | 3.8 / 4.5 |
+| FD-z lsrk54, 4-GPU sharded (`comm_backend="jax"`) | 24.76 /dev | 32.76 /dev | 75.3 |
+
+The headline row is the recorded "before" of the Z1 flip: **hoisted z_spectral lsrk54 at
+512²×128 fp32 OOMs the 11 GB card** (9.2 GB program + context; the allocator fails on a
+7.5 GB request) while the unhoisted path fits — after Z1 removes the hoist memory this
+row must fit, and that flip is the G2 post-Z deliverable. The 2080Ti is otherwise
+~10–15% faster than the P100 per step, the 4-GPU sharded row matches the earlier run
+exactly (near-perfect weak scaling at nz_local = 32, per-GPU per-point parity with the
+P100), and fp64 mirrors the P100 structure. Absolute u differs a little from the P100
+JSONs on some rows (e.g. FD-z 28.1 vs 30.1) — jax 0.10.2 vs 0.11.1 buffer accounting;
+compare within a card/version, not across. What the GPU says that the CPU
 could not: (i) hoisting buys lsrk33 0.85× but lsrk54 only ~0.98× — streaming 22 u of
 ExpOps per step costs about what the transcendentals cost, exactly the bandwidth trade
 Z1 sidesteps by storing nothing full-grid; (ii) z_spectral hoisted lsrk33 (178 ms) is
