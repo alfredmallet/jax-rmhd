@@ -502,12 +502,39 @@ both settings, both precisions). Memory in u reproduced identically (0.00 u per 
 machine and across jax 0.10.0/0.10.2 during Phase 0 validation — timings are this
 laptop's only.
 
-**GPU baseline (G1 Kaggle P100, G2 Savio GTX 2080Ti)** — pending; this subsection gets
-the P100/2080Ti tables at baseline, post-Part-F and post-Part-Z, the per-card OOM
-boundaries, and the 512²×128 z_spectral lsrk54 hoisted row that is expected to OOM the
-11 GB card today and fit after Z1. Launchers: `../lugus/launch.py run
-bench/memory_probe.py --entry-kwargs '{"profile": "p100"}'` (fp32 and fp64), and
-`slurms/memory_probe_2080.sh` (TAG=baseline|postF|postZ).
+**GPU baseline, G1 Kaggle P100 16 GB** (jax 0.11.1, isolated subprocess per case,
+`bench/memory_probe_p100_baseline_fp{32,64}.json`; fp32 at 512²×128 / GDI-2D 1024², u =
+135 MB; fp64 halves the grid. `peak` is the device allocator's `peak_bytes_in_use` — it
+runs a near-constant ~16 u above `total_u` on every row, the state/kgrid/warm-up
+residue):
+
+| case (fp32) | total u | peak u | ms/step |
+|---|---|---|---|
+| rmhd_fdz lsrk33 / lsrk54 | 30.10 | 46.07 | 182.7 / 305.2 |
+| rmhd_fdz imexcb3e | 24.06 | 40.03 | 290.3 |
+| rmhd_fdz lsrk54 unrolled | 28.09 | 44.06 | 336.8 |
+| rmhd_zspec lsrk33 hoisted / unhoisted | 54.17 / 36.17 | 70.14 / 52.14 | 178.0 / 209.8 |
+| rmhd_zspec lsrk54 hoisted / unhoisted | 70.17 / 36.17 | 86.14 / 52.14 | 338.3 / 345.6 |
+| rmhd_zspec imexcb3e | 30.30 | 48.27 | 222.7 |
+| rmhd_zspec lsrk33 adaptive cfl_every=1 | 36.17 | 52.14 | 211.0 |
+| rmhd_zspec lsrk33 ν≠η (putzer2) | 54.17 | 70.14 | 178.0 |
+| gdi2d_1024 lsrk33 / imexcb3e | 53.63 / 30.25 | 66.12 / 44.74 | 4.4 / 5.3 |
+| gdi3d_256x64 imexcb3e | 26.34 | 41.30 | 22.7 |
+
+Zero OOMs: the hoisted z_spectral lsrk54 row (70.2 u ≈ 9.2 GB + peak 11.6 GB) fits the
+16 GB card, as the plan predicted; the 11 GB 2080Ti is where it is expected to OOM (G2,
+pending — `slurms/memory_probe_2080.sh`, TAG=baseline). What the GPU says that the CPU
+could not: (i) hoisting buys lsrk33 0.85× but lsrk54 only ~0.98× — streaming 22 u of
+ExpOps per step costs about what the transcendentals cost, exactly the bandwidth trade
+Z1 sidesteps by storing nothing full-grid; (ii) z_spectral hoisted lsrk33 (178 ms) is
+*at parity with FD-z lsrk33* (183 ms) on GPU — the z_spectral premium is a CPU
+phenomenon at this size; (iii) adaptive `cfl_every=1` (211 ms) sits at the unhoisted
+step, as expected (nothing frozen to hoist); (iv) FD-z lsrk54 unrolled costs LESS
+memory than the scan on GPU (28.1 vs 30.1 u — the reverse of CPU, where it is 59.6 vs
+31.0) and 1.10× the time, so `lsrk_scan=False` remains a no-win on this card. fp64 at
+256²×64: same u structure to ≤2.1 u, 46.1/75.6 ms FD-z lsrk33/54. Post-Part-F and
+post-Part-Z reruns of both G1 launches (`../lugus/launch.py run bench/memory_probe.py
+--entry-kwargs '{"profile": "p100", "tag": "postF"}'` etc.) fill in the deltas here.
 
 ## Known, not done
 

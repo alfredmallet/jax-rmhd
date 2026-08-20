@@ -457,6 +457,11 @@ python ../lugus/launch.py run bench/memory_probe.py --entry-kwargs '{"profile": 
 python ../lugus/launch.py run bench/memory_probe.py --entry-kwargs '{"profile": "p100"}' --precision 64 --kernel-slug memory-probe-fp64
 ```
 
+[Baseline point run 2026-08-19: both precisions complete, 14 cases each, zero errors,
+zero OOMs (hoisted z_spectral lsrk54 fits the P100 at 9.2 GB); JSONs committed as
+`bench/memory_probe_p100_baseline_fp{32,64}.json`, table and GPU-only findings in
+docs/performance.md. postF/postZ points pending.]
+
 `--dry-run` first to inspect the staged upload. Output: `output/memory-probe-fp32/…zip`
 containing `results.json`; the table is also in the kernel log. Budget: the p100 profile
 should complete in well under an hour (each case is compile + a few 10-step blocks); if a
