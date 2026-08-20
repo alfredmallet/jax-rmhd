@@ -297,7 +297,10 @@ def run_case(case, grad_chunk=None):
 def _run_case_isolated(case, grad_chunk, precision, timeout):
     """Run one case in a fresh process: per-case device peak, and OOM cannot poison
     the allocator for the cases that follow."""
-    env = dict(os.environ)
+    # drop the parent launcher's rank vars: the child would otherwise join its PMIx
+    # context at MPI_Init and abort. Everything else (CUDA/XLA/precision/libs) is kept.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("PMI_", "PMIX_", "OMPI_", "SLURM_", "MPI4JAX_", "MV2_"))}
     if precision:
         env["TARANIS_PRECISION"] = str(precision)
     payload = json.dumps({"case": case, "grad_chunk": grad_chunk})

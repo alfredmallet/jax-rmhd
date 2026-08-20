@@ -483,6 +483,15 @@ Same three measurement points as G1. The 11 GB card is the interesting one: it i
 today's hoisted lsrk54 z_spectral row at 512²×128 OOMs (8.4 GB + CUDA context + workspace)
 and where after Z1 it should fit — record that flip explicitly.
 
+[Baseline attempt 2026-08-19, job 37774831: the 4-GPU sharded FD-z row WORKED and is
+rank-consistent (24.76 u per device, peak 32.76 u, 75.4 ms/step at 512²×128 fp32), but
+every single-GPU isolated case died — the isolation subprocess inherits the parent srun's
+PMIx env and `import taranis` runs MPI_Init at import (`_mpi_compat`'s module-scope
+mpi4py import, regardless of comm_backend), which aborts in a child joining a live PMIx
+context. Fixed in the probe (`_run_case_isolated` scrubs PMI_/PMIX_/OMPI_/SLURM_/
+MPI4JAX_/MV2_ from the child env, matching `_LAUNCHER_SIZE_VARS`). Needs one
+resubmission at TAG=baseline for the single-GPU tables; the sharded row is in hand.]
+
 ### What the GPU numbers decide
 
 - F1 granularity (per-field vs two-field): from the post-F timing pair on P100 (and
