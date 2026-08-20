@@ -132,6 +132,9 @@ def _gpu_cases(nx, nz, nx2d, nx_gdi3d, nz_gdi3d, precision):
     cases.append(_rmhd(f"rmhd_zspec_{nx}x{nz}_lsrk33_uneq", nx, nz, "lsrk33", True,
                        eqpars=RMHD_EQPARS_UNEQUAL))
     cases.append(_gdi(f"gdi2d_{nx2d}_lsrk33", nx2d, 1, "lsrk33"))
+    # the Z3 pair: GDI-IF putzer2 with hoisting off, against the default-on row above
+    cases.append(_gdi(f"gdi2d_{nx2d}_lsrk33_hoist0", nx2d, 1, "lsrk33",
+                      hoist_propagator=False))
     cases.append(_gdi(f"gdi2d_{nx2d}_imexcb3e", nx2d, 1, "imexcb3e"))
     cases.append(_gdi(f"gdi3d_{nx_gdi3d}x{nz_gdi3d}_imexcb3e", nx_gdi3d, nz_gdi3d,
                       "imexcb3e"))

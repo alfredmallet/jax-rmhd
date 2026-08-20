@@ -62,6 +62,13 @@ for CHUNK in 1 2; do
        --out "$OUT/gtx2080_fp32_chunk${CHUNK}.json" 2>&1 | grep -v "bit precision"
 done
 
+# F2 stencil pair (post-F runs; a no-op row with a note on a pre-F2 tree)
+export TARANIS_PRECISION=32
+srun --mpi=$MPI_MODE --ntasks=1 --gres=gpu:GTX2080TI:1 --gpu-bind=single:1 \
+     "$PY" -u "$PROBE" --profile gtx2080 --precision 32 --z-blocks 1 \
+     --cases rmhd_fdz --tag "${TAG}_zblocks1" \
+     --out "$OUT/gtx2080_fp32_zblocks1.json" 2>&1 | grep -v "bit precision"
+
 # 4 GPUs, fp32: the sharded FD-z row. Memory is reported PER DEVICE (the probe divides nz
 # by the mesh size). The probe forces in-process execution when a comm_backend="jax" case
 # is present, and each rank suffixes its own output file (rank 0 keeps the plain name).

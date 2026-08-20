@@ -294,6 +294,20 @@ in `grad` so `gvort` is produced last and consumed first, (b) computing the brac
 **Gates.** Bitwise on the NL term (the bracket arithmetic is unchanged; only scheduling
 moves); reference npz tests; probe delta reported either way.
 
+[DROPPED 2026-08-20, measurement complete, no code change (no adversarial review — nothing
+shipped). Every source-level reordering — transform order, bracket consumption order, both
+— measures exactly 0.000 u at both Z_STENCIL_BLOCKS settings and both lsrk schemes; even
+the contract-breaking form (grad returning (gphi,gpsi), NonlinearTerm forming vort/jpar
+gradients interleaved with brackets) leaves the arena at 22.663/18.443 u. Ablation bounds
+the prize: deleting gvort = −2.00 u, gvort+gjpar = −4.0 u, so the pairs are genuinely
+co-live and the ~2 u belongs to XLA's scheduler (retiring gvort needs the gjpar ifft
+scheduled after bracket(gphi,gvort), a dependency no source order creates). CONSEQUENCE:
+§2's FD-z ~15–17 u target and Appendix C's floor assume a 6-component bracket set that is
+source-unreachable on the CPU backend — the §5 post-F GPU dump should check whether the
+GPU scheduler differs before anyone chases it further. Evidence: scratchpad f4_notes.md.
+The F3-review memory_analysis guard (unhoisted putzer2 < hoisted) remains unbuilt —
+docs-sweep candidate.]
+
 **Files.** `taranis/physics/rmhd.py` (`grad`, `NonlinearTerm`) — same owner as F1, run after it.
 
 ## 4. Part Z — z_spectral
