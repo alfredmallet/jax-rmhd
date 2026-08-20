@@ -109,8 +109,8 @@ def test_kgrid_carries_no_64bit_leaves():
     variants = [("plain", {}), ("forced", _FORCED),
                 ("forced+shell_noise", dict(_FORCED, forcing_shell_noise=True))]
     if mpi_size() == 1:
-        # z_spectral is the only mode that builds kz and a COMPLEX lin_L (+-i*kz), and
-        # it is single-process by construction.
+        # z_spectral is the only mode that builds kz and the separable linear-operator
+        # entries, and it is single-process by construction.
         variants.append(("z_spectral", dict(z_spectral=True)))
     with checks() as c:
         for label, kw in variants:

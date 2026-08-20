@@ -13,6 +13,7 @@ from typing import NamedTuple, Optional
 import jax.numpy as jnp
 
 from .. import grids
+from .. import propagators
 from ..physics import rmhd
 from ..physics.shared_physics import bracket, gradk, z_derivatives
 
@@ -83,10 +84,12 @@ def _psi_non_ideal(fields, kgrid, params):
 
 
 def _psi_linear_diagonal(kgrid, params):
-    # the psi DIAGONAL of the equation set's k-local L. Under z_spectral L is the 2x2
-    # putzer2 operator whose off-diagonal is the d_z(phi) Alfven term -- already
-    # cancelled out of E_z -- so propagators.apply_L would be wrong here.
+    # the psi DIAGONAL of the equation set's k-local L. Under z_spectral L is a 2x2
+    # operator whose off-diagonal is the d_z(phi) Alfven term -- already cancelled out of
+    # E_z -- so propagators.apply_L would be wrong here.
     L = rmhd.linear_matrix(kgrid, params)
+    if isinstance(L, propagators.SeparableL):
+        return L.dperp + L.dz
     if L.ndim == 5:
         return L[1, 1]
     # 4-d diagonal L: leading axis is nfields, or 1 when it broadcasts over fields

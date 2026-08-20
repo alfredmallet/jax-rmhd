@@ -5,12 +5,17 @@ from .. import _precision
 from . import shared_physics
 from .shared_physics import bracket,grad_fields,z_derivatives
 from .. import comms
+from ..propagators import SeparableL
 
 def grad(state,kgrid,params):
     # (gphi, gpsi, gvort, gjpar), one real-space (2,nz,nx,ny) gradient per field
     phik=state.fields[0]
     psik=state.fields[1]
     return grad_fields((phik,psik,-kgrid.ksq*phik,-kgrid.ksq*psik),kgrid,params)
+
+# when False, z_spectral returns the dense 2x2 operator (the putzer2 backend) even at
+# nu == eta; benchmarks and tests flip it, nothing else reads it
+SEPARABLE_L = True
 
 def linear_matrix(kgrid,params):
     # finite-difference z: just perp (hyper)dissipation L = -diss*k_perp^(2*hyper)
@@ -23,6 +28,9 @@ def linear_matrix(kgrid,params):
     diss = jnp.broadcast_to(jnp.array(diss_par, dtype=_precision.ftype).reshape(-1),
                             (params.nfields,))
     kz = _kz_deriv(kgrid,params)
+    if SEPARABLE_L and _equal_dissipation(diss_par, params):
+        # L = d*I + i*kz*sigma_x with d = dperp + dz: the separable backend
+        return SeparableL(dperp=-diss[0]*kgrid.ksq**hyper, dz=-zdiss*kz**4, kz=kz)
     # (nz,1,1) kz against (nkx,nky) k_perp broadcasts every entry to (nz,nkx,nky)
     dphi = -diss[0]*kgrid.ksq**hyper - zdiss*kz**4
     dpsi = -diss[1]*kgrid.ksq**hyper - zdiss*kz**4
@@ -30,6 +38,11 @@ def linear_matrix(kgrid,params):
     zero = jnp.zeros_like(off)
     return jnp.stack([jnp.stack([dphi + zero, off]),
                       jnp.stack([off, dpsi + zero])])
+
+def _equal_dissipation(diss_par, params):
+    # nu == eta as python floats: the condition for L to be d*I + i*kz*sigma_x
+    d = np.broadcast_to(np.asarray(diss_par, dtype=float), (params.nfields,))
+    return bool(np.all(d == d[0]))
 
 def _kz_deriv(kgrid,params):
     # kz with the Nyquist plane zeroed to maintain reality constraint

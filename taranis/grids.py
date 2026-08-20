@@ -25,6 +25,11 @@ class K_Grids(NamedTuple):
     lin_L: Optional[jnp.ndarray] = None    # (nfields, nz-or-1, nkx, nky) or (2, 2, nz-or-1, nkx, nky)
     lin_m: Optional[jnp.ndarray] = None    # putzer2 only: tr L / 2
     lin_s2: Optional[jnp.ndarray] = None   # putzer2 only: (tr L/2)^2 - det L
+    # separable backend (propagators.SeparableL): L = d*I + i*kz*sigma_x with real
+    # d = dperp(k_perp) + dz(kz). Populated instead of lin_L/lin_m/lin_s2, never alongside.
+    lin_dperp: Optional[jnp.ndarray] = None   # (nkx, nky)
+    lin_dz: Optional[jnp.ndarray] = None      # (nz, 1, 1)
+    lin_kz: Optional[jnp.ndarray] = None      # (nz, 1, 1)
     # forcing-only entries
     fmask: Optional[jnp.ndarray] = None
     z_envcos: Optional[jnp.ndarray] = None
@@ -106,9 +111,13 @@ def _attach_linear_operator(kgrid, params):
     if linear_matrix_func is None:
         return kgrid
     L = linear_matrix_func(kgrid, params)
-    dtype = _precision.ctype if jnp.iscomplexobj(L) else _precision.ftype
-    # sets lin_L, and lin_m, lin_s2 as appropriate
-    return kgrid._replace(**propagators.linear_fields(L.astype(dtype), params))
+    if isinstance(L, propagators.SeparableL):
+        # all three entries are real
+        L = propagators.SeparableL(*(a.astype(_precision.ftype) for a in L))
+    else:
+        L = L.astype(_precision.ctype if jnp.iscomplexobj(L) else _precision.ftype)
+    # sets lin_L, and lin_m, lin_s2 or the separable entries as appropriate
+    return kgrid._replace(**propagators.linear_fields(L, params))
 
 # K_Grids entries carrying a z axis (axis 0); everything else is perpendicular-only.
 _Z_KGRID_FIELDS = ("z_envcos", "z_envsin")

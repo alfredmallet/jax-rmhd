@@ -8,9 +8,10 @@
 #
 #   1. hoisted == unhoisted BITWISE at fp64, for every IF scheme (lsrk33, lsrk54, rk44),
 #      in 2D, FD-z and z_spectral, fixed dt and cfl_every blocks, scan and unrolled stage
-#      loops. Only z_spectral (the putzer2 backend) is actually hoisted; the 2D / FD-z
-#      cells (diagonal backend, never hoisted -- propagators.py header) guard that the knob
-#      leaves them alone. At fp32 the assertion is round-off (rel < 1e-6 of max|fields|):
+#      loops. The putzer2 (z_spectral nu != eta) and separable (z_spectral nu == eta)
+#      backends are actually hoisted; the 2D / FD-z diagonal cells are never hoisted --
+#      propagators.py header -- and guard that the knob leaves them alone.
+#      At fp32 the assertion is round-off (rel < 1e-6 of max|fields|):
 #      every cell but one is bitwise there too, and the one that is not (z_spectral,
 #      lsrk54, cfl_every=2, scan) differs by 1 ulp from XLA fusing the precomputed-ExpOp
 #      stage differently from the in-scan one -- the ExpOps themselves are bitwise
@@ -21,9 +22,9 @@
 #   3. IMEX schemes never receive ExpOps (stage_exp_ops returns None for them) and are
 #      bitwise independent of the knob.
 #   4. stage_exp_ops returns one Putzer2Exp per stage with the right leading shape for a
-#      2x2 L, stacked cleanly for the scan xs, and None for a diagonal L (not hoistable),
-#      for every IMEX scheme and with the knob off; IdentityExp/DiagonalExp apply as
-#      apply_exp does, bitwise (the contract the hoist rests on).
+#      2x2 L, stacked cleanly for the scan xs, and None for a diagonal or separable L (not
+#      hoistable), for every IMEX scheme and with the knob off; IdentityExp/DiagonalExp
+#      apply as apply_exp does, bitwise (the contract the hoist rests on).
 #   5. the knob round-trips through params.save / from_snapshot.
 #
 # mpirun-safe: every configuration is single-process-sized and the z_spectral cells are
@@ -65,11 +66,13 @@ def _end_fields(schemestr, nsteps=6, **kw):
 
 
 def _geoms():
-    # label -> ctx overrides; z_spectral is size==1 only
+    # label -> ctx overrides; z_spectral is size==1 only. nu != eta is the putzer2 cell
+    # (nu == eta gets the separable backend, which is never hoisted).
     g = {"2d": dict(dims=2, nx=16, ny=16),
          "3dfd": dict()}
     if mpi_size() == 1:
         g["3dspec"] = dict(z_spectral=True)
+        g["3dspec_uneq"] = dict(z_spectral=True, diss=(1e-4, 2e-4))
     return g
 
 
@@ -126,7 +129,10 @@ def test_stage_exp_ops_structure():
                     stage_exp_ops(kgrid, params, scheme, stepper, params.dt) is None)
         cases = {}
         if mpi_size() == 1:
-            cases["3dspec (putzer2 L)"] = (dict(z_spectral=True), propagators.Putzer2Exp)
+            cases["3dspec (separable L)"] = (dict(z_spectral=True),
+                                             propagators.SeparableExp)
+            cases["3dspec_uneq (putzer2 L)"] = (dict(z_spectral=True, diss=(1e-4, 2e-4)),
+                                                propagators.Putzer2Exp)
         for label, (geom, kind) in cases.items():
             params, kgrid = ctx(**geom)
             for schemestr, nstage in (("lsrk33", 3), ("lsrk54", 5), ("rk44", 2)):

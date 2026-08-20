@@ -11,18 +11,22 @@
 # run.py builds every stage's ExpOp ONCE per block (timestepping.stage_exp_ops) instead of
 # re-evaluating the matrix exponential inside every stage of every step. The ExpOps hold
 # exactly the arrays apply_exp would form, in the same op order, so the hoisted and unhoisted
-# paths compute the same numbers. Only the putzer2 backend is hoisted (`hoistable`): its
-# coefficients are complex sqrt/cosh/sinh/exp per mode per stage (docs/performance.md "Where
-# the z_spectral step's extra time goes") and it costs 4 complex full-grid arrays per stage
-# of memory (params.hoist_propagator turns it off). The diagonal backend is NOT: one real exp
+# paths compute the same numbers. The putzer2 and separable backends are hoisted
+# (`hoistable`), because both evaluate transcendental coefficients per stage: putzer2 a
+# complex sqrt/cosh/sinh/exp per mode, costing 4 complex full-grid arrays per stage of
+# memory, and separable one real exp over (nkx,nky) plus exp/cos/sin over (nz), costing
+# those same small arrays per stage (params.hoist_propagator turns both off). The diagonal
+# backend is NOT: one real exp
 # per mode per stage, z-broadcast for FD-z, so there is nothing to gain -- and leaving its
 # exponent inside the stage keeps the FD-z/2D fixed-dt solver graph byte-identical to the
 # pre-hoist one (gate 6's reference npz: with a literal gamma XLA folds (L*dt)*gamma
 # differently, measured as 15 elements at 1e-23 absolute in the 64^2 gate-6 config).
 #
-# Backends are selected by the shape of L (built once in grids.setup_kgrids):
-#   diagonal  L.ndim == 4: (nfields-or-1, nz-or-1, nkx, nky)   elementwise
-#   putzer2   L.ndim == 5: (2, 2, nz-or-1, nkx, nky)           closed-form 2x2 exponential
+# Backends are selected by what a recipe's linear_matrix_func returns (built once in
+# grids.setup_kgrids):
+#   diagonal   L.ndim == 4: (nfields-or-1, nz-or-1, nkx, nky)  elementwise
+#   putzer2    L.ndim == 5: (2, 2, nz-or-1, nkx, nky)          closed-form 2x2 exponential
+#   separable  a SeparableL: L = d*I + i*kz*sigma_x with real d = dperp(k_perp) + dz(kz)
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -58,6 +62,18 @@ class Putzer2Exp(NamedTuple):
     m11: jnp.ndarray
     def apply(self, arr):
         return jnp.stack([self.m00*arr[0] + self.m01*arr[1], self.m10*arr[0] + self.m11*arr[1]])
+
+def _mul_i(z):
+    # i*z as the real swap it is
+    return jax.lax.complex(-jnp.imag(z), jnp.real(z))
+
+class SeparableExp(NamedTuple):
+    P: jnp.ndarray          # exp(dperp*tau),               (nkx, nky)
+    c: jnp.ndarray          # exp(dz*tau)*cos(kz*tau),      (nz, 1, 1)
+    s: jnp.ndarray          # exp(dz*tau)*sin(kz*tau),      (nz, 1, 1)
+    def apply(self, arr):
+        return jnp.stack([self.P*(self.c*arr[0] + _mul_i(self.s*arr[1])),
+                          self.P*(_mul_i(self.s*arr[0]) + self.c*arr[1])])
 
 def stack_exp_ops(ops):
     # tuple of same-kind ExpOps -> one ExpOp with a leading stage axis (scan xs)
@@ -166,13 +182,78 @@ class Putzer2Propagator:
         return jnp.stack([self.L[0,0]*arr[0] + self.L[0,1]*arr[1],
                           self.L[1,0]*arr[0] + self.L[1,1]*arr[1]])
 
+class SeparableL(NamedTuple):
+    # nfields=2 with L = d*I + i*kz*sigma_x, d = dperp(k_perp) + dz(kz); all three entries
+    # real. A recipe's linear_matrix_func may return this instead of a dense array.
+    dperp: jnp.ndarray      # (nkx, nky)
+    dz: jnp.ndarray         # (nz, 1, 1)
+    kz: jnp.ndarray         # (nz, 1, 1)
+
+class SeparablePropagator:
+    # exp(L*tau) = exp(dperp*tau)*exp(dz*tau)*[cos(kz*tau) I + i sin(kz*tau) sigma_x] and
+    # (I - a*L)^-1 = [(1-a*d) I + i*a*kz*sigma_x]/((1-a*d)^2 + (a*kz)^2): every per-stage
+    # array is (nkx,nky) or (nz,1,1), never full-grid.
+    hoistable = True      # see the header: the per-stage coefficient evaluation is the cost
+
+    def __init__(self, sep):
+        self.sep = sep
+
+    def scaled(self, factor):
+        # propagator of factor*L: d and kz both scale by factor
+        return SeparablePropagator(SeparableL(self.sep.dperp*factor, self.sep.dz*factor,
+                                              self.sep.kz*factor))
+
+    def exp_op(self, tau):
+        ez = jnp.exp(self.sep.dz*tau)
+        theta = self.sep.kz*tau
+        return SeparableExp(P=jnp.exp(self.sep.dperp*tau),
+                            c=ez*jnp.cos(theta), s=ez*jnp.sin(theta))
+
+    def apply_exp(self, arr, tau):
+        return self.exp_op(tau).apply(arr)
+
+    def solve_shifted(self, arr, a):
+        # d <= 0, so for a > 0 the denominator is >= 1: this backend has no pole (unlike
+        # putzer2's det(I - a*L); see its solve_shifted)
+        w = 1.0 - a*(self.sep.dperp + self.sep.dz)
+        akz = a*self.sep.kz
+        den = w*w + akz*akz
+        return jnp.stack([(w*arr[0] + _mul_i(akz*arr[1]))/den,
+                          (_mul_i(akz*arr[0]) + w*arr[1])/den])
+
+    def apply_L(self, arr):
+        d = self.sep.dperp + self.sep.dz
+        return jnp.stack([d*arr[0] + _mul_i(self.sep.kz*arr[1]),
+                          _mul_i(self.sep.kz*arr[0]) + d*arr[1]])
+
 def get_propagator(kgrid, params):
+    if kgrid.lin_dperp is not None:
+        return SeparablePropagator(SeparableL(kgrid.lin_dperp, kgrid.lin_dz, kgrid.lin_kz))
     L = kgrid.lin_L
     if L is None:
         return IdentityPropagator()
     if L.ndim == 4:
         return DiagonalPropagator(L)
     return Putzer2Propagator(L, kgrid.lin_m, kgrid.lin_s2)
+
+def dense_operator(kgrid):
+    # the (2, 2, nz-or-1, nkx, nky) L behind whatever backend the kgrid carries. Tests and
+    # validation only: it is 4 u and must never be formed inside a step.
+    if kgrid.lin_dperp is not None:
+        d = kgrid.lin_dperp + kgrid.lin_dz
+        off = jnp.broadcast_to(1j*kgrid.lin_kz, d.shape)
+        zero = jnp.zeros_like(off)
+        return jnp.stack([jnp.stack([d + zero, off]), jnp.stack([off, d + zero])])
+    L = kgrid.lin_L
+    if L is None:
+        raise ValueError("this kgrid carries no linear operator (the identity backend)")
+    if L.ndim == 5:
+        return L
+    if L.shape[0] not in (1, 2):
+        raise ValueError(f"a diagonal operator with leading axis {L.shape[0]} is not a 2x2 L")
+    d0, d1 = (L[0], L[0]) if L.shape[0] == 1 else (L[0], L[1])
+    zero = jnp.zeros_like(d0)
+    return jnp.stack([jnp.stack([d0, zero]), jnp.stack([zero, d1])])
 
 def _mirror_k(arr, axis):
     # index k -> -k along a two-sided FFT axis (0 and Nyquist map to themselves)
@@ -199,11 +280,59 @@ def _check_hermitian_compatible(L, params):
                 f"conj(L(kx[,kz],ky)) there); max violation "
                 f"{float(np.max(np.abs(b - np.conj(a)))):.3e}")
 
+def _mirror_tol(arr):
+    return 1e3*np.finfo(np.asarray(arr).dtype).eps*max(1.0, float(np.max(np.abs(arr))))
+
+def _check_hermitian_separable(sep, params):
+    # L = d*I + i*kz*sigma_x survives the rfft2/rfftn reality constraint iff d is real and
+    # mirror-symmetric on the self-conjugate ky rows and kz is mirror-ANTIsymmetric (which
+    # forces kz = 0 at the planes the mirror maps to themselves: kz index 0 and, for even
+    # nz, the Nyquist plane).
+    dperp, dz, kz = (np.asarray(a) for a in sep)
+    for name, arr in zip(sep._fields, (dperp, dz, kz)):
+        if np.iscomplexobj(arr):
+            raise ValueError(f"{params.eqtype}: separable linear operator entry '{name}' "
+                             f"must be real, got dtype {arr.dtype}")
+    for row in (0, dperp.shape[-1] - 1):     # ky = 0 and the Nyquist row
+        a = dperp[..., row]
+        if not np.allclose(_mirror_k(a, 0), a, rtol=0.0, atol=_mirror_tol(dperp)):
+            raise ValueError(
+                f"{params.eqtype}: the separable operator's dperp is not symmetric under "
+                f"kx -> -kx on the ky index {row} row (need dperp(-kx,ky) = dperp(kx,ky) "
+                f"there for the fields to stay real)")
+    if not np.allclose(_mirror_k(dz, 0), dz, rtol=0.0, atol=_mirror_tol(dz)):
+        raise ValueError(f"{params.eqtype}: the separable operator's dz is not symmetric "
+                         f"under kz -> -kz")
+    if not np.allclose(_mirror_k(kz, 0), -kz, rtol=0.0, atol=_mirror_tol(kz)):
+        raise ValueError(
+            f"{params.eqtype}: the separable operator's kz is not antisymmetric under "
+            f"kz -> -kz (i*kz must equal its own conjugate at the kz = 0 and Nyquist "
+            f"planes, i.e. kz must vanish there); max violation "
+            f"{float(np.max(np.abs(_mirror_k(kz, 0) + kz))):.3e}")
+
+def _separable_fields(sep, params, nz_local, nkx, nky):
+    if params.nfields != 2:
+        raise ValueError(f"{params.eqtype}: the separable backend needs nfields=2, got "
+                         f"{params.nfields}")
+    shapes = (sep.dperp.shape, sep.dz.shape, sep.kz.shape)
+    if shapes != ((nkx, nky), (nz_local, 1, 1), (nz_local, 1, 1)):
+        raise ValueError(f"{params.eqtype}: the separable backend needs shapes dperp "
+                         f"({nkx}, {nky}), dz and kz ({nz_local}, 1, 1), got {shapes}")
+    if params.comm_backend == "jax":
+        # kgrid_specs replicates these entries; a z-EXTENT operator would need its own
+        # z-sharded spec
+        raise NotImplementedError(f"{params.eqtype}: a z-dependent linear operator is not "
+                                  "supported by comm_backend='jax' yet")
+    _check_hermitian_separable(sep, params)
+    return dict(lin_dperp=sep.dperp, lin_dz=sep.dz, lin_kz=sep.kz)
+
 def linear_fields(L, params):
     # Validate a recipe's L and return the K_Grids entries it populates (grids.setup_kgrids
     # is the only caller: the propagator arrays are kgrid entries, not a separate object).
     nz_local = params.nz//params.size if params.spatial_dimensions == 3 else 1
     nkx, nky = params.nx, params.ny//2 + 1
+    if isinstance(L, SeparableL):
+        return _separable_fields(L, params, nz_local, nkx, nky)
     if L.ndim == 4:
         if L.shape[0] not in (1, params.nfields):
             raise ValueError(f"{params.eqtype}: diagonal linear operator has leading axis "

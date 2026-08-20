@@ -290,8 +290,14 @@ that case (and GDI, whose L is genuinely full-grid) stays on putzer2.
 **Storage.** Three small kgrid entries instead of `lin_L/lin_m/lin_s2` (6 u): `lin_dperp`
 (nkx,nky) real, `lin_dz` (nz,1,1) real, `lin_kz` (nz,1,1) real. Per stage the propagator
 forms `P = exp(dperp·τ)` (nkx,nky), `c = exp(dz·τ)·cos(kz·τ)` and `s = exp(dz·τ)·sin(kz·τ)`
-(nz,1,1): no full-grid array anywhere, so there is nothing to hoist — `hoistable = False`,
-`stage_exp_ops` returns None, and `params.hoist_propagator` becomes irrelevant on this path.
+(nz,1,1): no full-grid array anywhere. [As landed, overseer decision: `hoistable = TRUE` —
+the plan's "nothing to hoist" premise was about full-grid streaming, but the measured hoist
+win is amortising the per-stage exp/cos/sin EVALUATION: unhoisted separable missed the
+fixed-dt gate at 1.02–1.13×, hoisted passes at 0.94–0.98×, and the stacked stage ops are
+exactly nstage·(nkx·nky + 2·nz) elements (0.016–0.096 u measured; putzer2's were 3.4–27.3 u).
+`stage_exp_ops` returns SeparableExp ops for IF schemes; `params.hoist_propagator` still
+gates it, default True. Z3 note: the knob now also covers this near-free hoist — if Z3
+deletes it, separable hoisting should become unconditional.]
 Apply: `out0 = P·(c·a0 + i·(s·a1))`, `out1 = P·(i·(s·a0) + c·a1)`, with the multiplication by
 `i` written as the real swap it is (no complex multiply). Fix this op order in the class and
 keep `apply_exp(arr,τ) == exp_op(τ).apply(arr)` bitwise (the existing contract test).
@@ -352,12 +358,17 @@ damping, CLAUDE.md) but `solve_shifted`/`apply_L` must be right: test against
   `lin_*` args block) ± 0.5 u = **29.1 ± 0.5 u at 64²×16** (35.10 − 6.05; 128²×32:
   34.92 − 6.0 ≈ 28.9). Catches a partial `lin_*` removal and a stray per-stage live
   array. `kgrid` bytes drop by 6 u. (Original pre-F1 statement was 33.8 ± 0.5; F1
-  landed −4.9 u first.)
+  landed −4.9 u first.) [Landed: 20.57/20.35 u (64²×16 / 128²×32), scheme-equal exactly
+  and hoist-independent to ≤0.1 u — 8.5 u BELOW the band because the band's arithmetic
+  counted only the args-side `lin_*`, not putzer2's per-stage full-grid coefficient
+  temporaries in temp, which the backend swap also removes. Accepted with cause.]
 - Timing: z_spectral lsrk33 fixed-dt step ≤ 1.0× the hoisted putzer2 step on CPU and
   ≤ 0.85× on GPU (per stage, hoisted putzer2 streams 8 u — 4 u ExpOp + 2 in + 2 out —
   where separable streams 4 u; a GPU result > 1.0× means the apply is materialising an
   intermediate, e.g. `c·a0` before the `P·` multiply — find it, don't accept it), and
   adaptive `cfl_every=1` ≤ 0.7× its current value (`bench/zspectral_profile.py`).
+  [Landed (CPU, with the hoist flip): fixed dt 0.94–0.98× at both grids and schemes;
+  adaptive 0.41–0.47×. The ≤0.85× GPU half is checked by the §5 post-Z runs.]
 - HLO check (as the hoist work did): no `cosh`/`sinh`/complex `sqrt` in the z_spectral RMHD
   step; the only transcendentals are one real exp over (nkx,nky) and exp/cos/sin over (nz)
   per stage.

@@ -153,7 +153,8 @@ def _swap_propagator(kg, p, kind):
         off = jnp.broadcast_to(1j * kx, dphi.shape)
         L = jnp.stack([jnp.stack([dphi + 0j, off]), jnp.stack([off, dpsi + 0j])])
     dtype = _precision.ctype if jnp.iscomplexobj(L) else _precision.ftype
-    return kg._replace(lin_L=None, lin_m=None, lin_s2=None)._replace(
+    return kg._replace(lin_L=None, lin_m=None, lin_s2=None, lin_dperp=None, lin_dz=None,
+                       lin_kz=None)._replace(
         **propagators.linear_fields(L.astype(dtype), p))
 
 
