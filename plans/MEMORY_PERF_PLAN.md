@@ -346,12 +346,13 @@ damping, CLAUDE.md) but `solve_shifted`/`apply_L` must be right: test against
   `test_imex.py`, `test_linear_propagator.py`, `test_dissipation.py`,
   `test_precision_dtypes.py`, `test_time_order.py`, particle 3D gates: green. Any test that
   read `kgrid.lin_L` for RMHD z_spectral switches to `dense_operator`.
-- Probe (the review's two-sided gate): after Z1 nothing scheme-dependent is stored, so
-  z_spectral lsrk33 and lsrk54 must land on the SAME number — both at 33.8 ± 0.5 u
-  (total_u, 64²×16 baseline units: the unhoisted rows are both 39.8 today, minus the 6 u
-  `lin_*`) and equal to each other within 0.1 u. Catches a partial `lin_*` removal and a
-  stray per-stage live array; makes §2's ~27 u check out (33.8 − 4.9 F1 − 2.0 F3 = 26.9).
-  `kgrid` bytes drop by 6 u.
+- Probe (the review's two-sided gate, restated on the post-F1 floor): after Z1 nothing
+  scheme-dependent is stored, so z_spectral lsrk33 and lsrk54 must land on the SAME
+  number — equal to each other within 0.1 u, and at (post-F1 unhoisted total − the
+  `lin_*` args block) ± 0.5 u = **29.1 ± 0.5 u at 64²×16** (35.10 − 6.05; 128²×32:
+  34.92 − 6.0 ≈ 28.9). Catches a partial `lin_*` removal and a stray per-stage live
+  array. `kgrid` bytes drop by 6 u. (Original pre-F1 statement was 33.8 ± 0.5; F1
+  landed −4.9 u first.)
 - Timing: z_spectral lsrk33 fixed-dt step ≤ 1.0× the hoisted putzer2 step on CPU and
   ≤ 0.85× on GPU (per stage, hoisted putzer2 streams 8 u — 4 u ExpOp + 2 in + 2 out —
   where separable streams 4 u; a GPU result > 1.0× means the apply is materialising an
@@ -571,6 +572,8 @@ test, a gate that passes when the change is reverted.
   `grads` tuple contract under "Term funcs"; the `z_derivatives` interior/boundary rule;
   the `K_Grids` entries; whichever way Z3 goes.
 - `plans/README.md`: this plan under Live; the two hand-offs to Finished when §7 row 6 runs.
+- `bench/zspectral_profile.py`: the `"grad (gradk+ifft)"` label is stale post-F1 (it times
+  the tuple path) — rename in the sweep, it is outside any phase's ownership.
 
 ## 9. Decisions for Alfred (raise when reached, with numbers)
 

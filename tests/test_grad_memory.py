@@ -8,6 +8,8 @@ bootstrap()
 
 import contextlib
 
+import jax
+import jax.extend.core as jex_core
 import jax.numpy as jnp
 import numpy as np
 
@@ -63,8 +65,29 @@ def _rmhd_cases():
     yield ("z_spectral 64^2x16", *ctx(nx=64, ny=64, nz=16, z_spectral=True), _ic3d)
 
 
+def _gdi_ctx(nx=64, ny=64):
+    params = jr.Parameters(nx=nx, ny=ny, Lx=2 * np.pi, Ly=2 * np.pi, dims=2,
+                           cfl_safety=0.5, adaptive_timestep=False, dt=0.01, eqtype="GDI",
+                           eqpars=dict(Ln=2.0, nu_in=0.3, v0=1.0, gpar_fac=1.0,
+                                       diss=0.0, hyper=1))
+    return params, jr.setup_kgrids(params)
+
+
 def _equal_per_field(new, ref):
     return all(np.array_equal(np.asarray(a), np.asarray(ref[i])) for i, a in enumerate(new))
+
+
+def _count_fft(jaxpr):
+    # fft-like primitives in a jaxpr, descending into any sub-jaxprs
+    n = sum(1 for e in jaxpr.eqns if "fft" in e.primitive.name)
+    for e in jaxpr.eqns:
+        for p in e.params.values():
+            for q in (p if isinstance(p, (tuple, list)) else (p,)):
+                if isinstance(q, jex_core.ClosedJaxpr):
+                    n += _count_fft(q.jaxpr)
+                elif isinstance(q, jex_core.Jaxpr):
+                    n += _count_fft(q)
+    return n
 
 
 def test_rmhd_grad_matches_stacked_reference():
@@ -83,10 +106,7 @@ def test_rmhd_grad_matches_stacked_reference():
 
 
 def test_gdi_grad_matches_stacked_reference():
-    common = dict(cfl_safety=0.5, adaptive_timestep=False, dt=0.01, eqtype="GDI",
-                  eqpars=dict(Ln=2.0, nu_in=0.3, v0=1.0, gpar_fac=1.0, diss=0.0, hyper=1))
-    params = jr.Parameters(nx=64, ny=64, Lx=2 * np.pi, Ly=2 * np.pi, dims=2, **common)
-    kgrid = jr.setup_kgrids(params)
+    params, kgrid = _gdi_ctx()
     state = make_state(params, ic=_ic2d)
     ref = _ref_gdi_grad(state, kgrid, params)
     new = gdi.grad(state, kgrid, params)
@@ -110,6 +130,44 @@ def test_grad_chunk_batching_matches_chunk_one():
                 c.check(f"{label}: GRAD_CHUNK={n} bitwise equals GRAD_CHUNK=1",
                         _equal_per_field(gn, g1),
                         f"max|dev| = {max(float(np.max(np.abs(np.asarray(a) - np.asarray(b)))) for a, b in zip(gn, g1))}")
+
+
+def test_grad_chunk_is_read_at_trace_time():
+    # the traced graph must change with GRAD_CHUNK: a constant frozen at import would
+    # give the same transform count at every setting
+    params, kgrid = ctx(nx=32, ny=32, nz=8)
+    state = make_state(params, ic=_ic3d)
+    counts = {}
+    for n in (1, 2, 4):
+        with _grad_chunk(n):
+            # a fresh callable per setting: jax caches traces by function identity
+            counts[n] = _count_fft(
+                jax.make_jaxpr(lambda s: rmhd.grad(s, kgrid, params))(state).jaxpr)
+    with checks() as c:
+        c.check("chunk=1 traces one transform per component (4 fields x 2)",
+                counts[1] == 8, f"counts={counts}")
+        c.check("chunk=2 traces one batched transform per 2 fields",
+                counts[2] == 2, f"counts={counts}")
+        c.check("chunk=4 traces a single batched transform",
+                counts[4] == 1, f"counts={counts}")
+        c.check("GRAD_CHUNK is read at trace time, not frozen at import",
+                len(set(counts.values())) == 3, f"counts={counts}")
+
+
+def test_gdi_chunk_two_mixes_batched_group_and_lone_remainder():
+    # 3 fields at chunk=2: one batched pair, then a lone field on the per-component path
+    params, kgrid = _gdi_ctx()
+    state = make_state(params, ic=_ic2d)
+    with _grad_chunk(1):
+        g1 = gdi.grad(state, kgrid, params)
+    with _grad_chunk(2):
+        g2 = gdi.grad(state, kgrid, params)
+        nfft = _count_fft(jax.make_jaxpr(lambda s: gdi.grad(s, kgrid, params))(state).jaxpr)
+    with checks() as c:
+        c.check("GDI chunk=2 traces a batched pair plus a lone per-component field",
+                nfft == 3, f"fft primitives = {nfft}")
+        c.check("GDI chunk=2 bitwise equals chunk=1 across the mixed path",
+                _equal_per_field(g2, g1))
 
 
 def test_grad_fields_shapes_and_default_chunk():
