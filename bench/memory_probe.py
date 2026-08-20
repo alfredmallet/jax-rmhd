@@ -204,7 +204,7 @@ def _device_peak():
                                       "bytes_limit") if k in stats}
 
 
-def run_case(case, grad_chunk=None):
+def run_case(case, grad_chunk=None, z_blocks=None):
     """Measure one case in the CURRENT process. Returns the result dict."""
     import jax
     import jax.numpy as jnp
@@ -225,6 +225,15 @@ def run_case(case, grad_chunk=None):
         else:
             out["grad_chunk"] = None
             out["grad_chunk_note"] = "shared_physics.GRAD_CHUNK absent (pre-F1 tree)"
+
+    if z_blocks is not None:
+        from taranis.physics import shared_physics
+        if hasattr(shared_physics, "Z_STENCIL_BLOCKS"):
+            shared_physics.Z_STENCIL_BLOCKS = bool(z_blocks)
+            out["z_blocks"] = bool(z_blocks)
+        else:
+            out["z_blocks"] = None
+            out["z_blocks_note"] = "shared_physics.Z_STENCIL_BLOCKS absent (pre-F2 tree)"
 
     try:
         p = tr.Parameters(**case["params"])
@@ -294,7 +303,7 @@ def run_case(case, grad_chunk=None):
 
 # ------------------------------------------------------------------ isolation
 
-def _run_case_isolated(case, grad_chunk, precision, timeout):
+def _run_case_isolated(case, grad_chunk, precision, timeout, z_blocks=None):
     """Run one case in a fresh process: per-case device peak, and OOM cannot poison
     the allocator for the cases that follow."""
     # drop the parent launcher's rank vars: the child would otherwise join its PMIx
@@ -303,7 +312,8 @@ def _run_case_isolated(case, grad_chunk, precision, timeout):
            if not k.startswith(("PMI_", "PMIX_", "OMPI_", "SLURM_", "MPI4JAX_", "MV2_"))}
     if precision:
         env["TARANIS_PRECISION"] = str(precision)
-    payload = json.dumps({"case": case, "grad_chunk": grad_chunk})
+    payload = json.dumps({"case": case, "grad_chunk": grad_chunk,
+                          "z_blocks": z_blocks})
     try:
         proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--single-case",
                                payload], capture_output=True, text=True, env=env,
@@ -353,8 +363,8 @@ def _fmt_table(results):
 
 
 def main(profile="laptop", out=None, cases=None, precision=None, precision_check=False,
-         grad_chunk=None, isolate=None, tag=None, nblock=None, nrep=None, timeout=3600,
-         list_only=False):
+         grad_chunk=None, z_blocks=None, isolate=None, tag=None, nblock=None,
+         nrep=None, timeout=3600, list_only=False):
     if profile not in PROFILES:
         raise SystemExit(f"unknown profile {profile!r}; choose from {sorted(PROFILES)}")
 
@@ -423,6 +433,7 @@ def main(profile="laptop", out=None, cases=None, precision=None, precision_check
         "precision": _precision.precision,
         "isolated": bool(isolate),
         "grad_chunk_requested": grad_chunk,
+        "z_blocks_requested": z_blocks,
         "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     print(json.dumps(header, indent=2), flush=True)
@@ -432,9 +443,9 @@ def main(profile="laptop", out=None, cases=None, precision=None, precision_check
         print(f"[{i}/{len(case_list)}] {case['label']} ...", flush=True)
         if isolate:
             r = _run_case_isolated(case, grad_chunk, precision or _precision.precision,
-                                   timeout)
+                                   timeout, z_blocks=z_blocks)
         else:
-            r = run_case(case, grad_chunk=grad_chunk)
+            r = run_case(case, grad_chunk=grad_chunk, z_blocks=z_blocks)
         if r.get("error"):
             print(f"    {'OOM' if r['oom'] else 'ERROR'}: {r['error']}", flush=True)
         else:
@@ -463,6 +474,9 @@ def _cli(argv=None):
                     help="assert the running precision matches --precision")
     ap.add_argument("--grad-chunk", default=None, type=int,
                     help="fields per ifft in grad (sets shared_physics.GRAD_CHUNK)")
+    ap.add_argument("--z-blocks", default=None, type=int, choices=(0, 1),
+                    help="z stencil per block instead of padded slab "
+                         "(sets shared_physics.Z_STENCIL_BLOCKS)")
     ap.add_argument("--isolate", dest="isolate", action="store_true", default=None,
                     help="one subprocess per case (default: on when a GPU is present)")
     ap.add_argument("--no-isolate", dest="isolate", action="store_false")
@@ -476,11 +490,13 @@ def _cli(argv=None):
 
     if a.single_case:                      # internal: one case, result on stdout
         spec = json.loads(a.single_case)
-        r = run_case(spec["case"], grad_chunk=spec.get("grad_chunk"))
+        r = run_case(spec["case"], grad_chunk=spec.get("grad_chunk"),
+                     z_blocks=spec.get("z_blocks"))
         print("__RESULT__ " + json.dumps(r), flush=True)
         return
     main(profile=a.profile, out=a.out, cases=a.cases, precision=a.precision,
-         precision_check=a.precision_check, grad_chunk=a.grad_chunk, isolate=a.isolate,
+         precision_check=a.precision_check, grad_chunk=a.grad_chunk,
+         z_blocks=a.z_blocks, isolate=a.isolate,
          tag=a.tag, nblock=a.nblock, nrep=a.nrep, timeout=a.timeout,
          list_only=a.list_only)
 

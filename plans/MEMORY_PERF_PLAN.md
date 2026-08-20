@@ -29,6 +29,10 @@ recommendation is held as §9.4 (Alfred's call).
    `forcing_state` bitwise), `precision_fp32_reference.npz` (fp32 round-off tolerance). A
    phase marked "bitwise" must leave all three green with no regeneration; if it does not,
    that is a bug or a decision for Alfred (§9), not a reason to regenerate.
+   Corollary (Alfred, 2026-08-20, during F2): bitwise gates are EVIDENCE that arithmetic
+   is unchanged, never a goal to engineer toward — do not restructure real floating-point
+   op order (e.g. moving a division) to make a constant fold compare clean against old
+   code. Ship the natural form; characterize fold/fusion-class drift; raise it.
 4. **Units.** `u` = one field-sized complex array = `nz_local·nkx·nky·itemsize` (8 B fp32,
    16 B fp64). The RMHD state is 2 u. Memory = XLA `compiled.memory_analysis()`
    (`temp + arguments + output`) on the jitted `run.block_of_steps`; on GPU additionally the
@@ -208,6 +212,20 @@ exchange itself is 4 planes; the copies are the cost. Replace with:
   closing the phase).
 - gate 6 / spinup / precision references: untouched by construction (2D never calls
   `z_derivatives`) — still run.
+
+[Landed 2026-08-20, behind a module constant — Alfred's call. The block stencil meets
+every memory/bitwise gate (FD-z 22.66 → 18.44 u, −4.22; both nz+2 lanes and the
+FDLinearTerm swap copy gone; stencil AND 20-step solver bitwise, serial + 4-way sharded,
+both precisions; imexcb3f/unrolled rows −13…−22 u as a side effect) but costs +23–28%
+FD-z lsrk step time on CPU — an XLA schedule artifact: the FD term alone is 34% faster,
+the RHS 1–7% faster, the cost appears only in the full block_of_steps schedule, and a
+six-variant sweep (including a swap-only change with the padded stencil kept) found no
+memory-lighter time-neutral form, the shipped one being cheapest and the only bitwise
+one. So: `shared_physics.Z_STENCIL_BLOCKS`, default False = the VERBATIM old padded path
+(CPU production keeps its speed; the swap-only sweep result is why the default must be
+the literal old code, not the new machinery fed one block), True = the block stencil;
+probe `--z-blocks` measures the pair; the §5 post-F GPU runs decide the default per
+§0.5, after which the loser and the constant are deleted.]
 
 **Files.** `taranis/physics/shared_physics.py` (`z_derivatives`), `taranis/physics/rmhd.py`
 (`FDLinearTerm` only), `tests/test_z_stencils.py`.
