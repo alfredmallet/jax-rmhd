@@ -216,8 +216,9 @@ exchange itself is 4 planes; the copies are the cost. Replace with:
 [Landed 2026-08-20, behind a module constant — Alfred's call. The block stencil meets
 every memory/bitwise gate (FD-z 22.66 → 18.44 u, −4.22; both nz+2 lanes and the
 FDLinearTerm swap copy gone; stencil AND 20-step solver bitwise, serial + 4-way sharded,
-both precisions; imexcb3f/unrolled rows −13…−22 u as a side effect) but costs +23–28%
-FD-z lsrk step time on CPU — an XLA schedule artifact: the FD term alone is 34% faster,
+both precisions; imexcb3f/unrolled rows −13…−22 u as a side effect) but costs +23–40%
+FD-z lsrk step time on CPU (machine-state dependent; review measured +40% where the
+implementer saw +23–28%) — an XLA schedule artifact: the FD term alone is 34% faster,
 the RHS 1–7% faster, the cost appears only in the full block_of_steps schedule, and a
 six-variant sweep (including a swap-only change with the padded stencil kept) found no
 memory-lighter time-neutral form, the shipped one being cheapest and the only bitwise
