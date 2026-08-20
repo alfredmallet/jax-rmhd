@@ -237,6 +237,17 @@ indexed `[1:]` for the scan and `[0]` for the peeled stage; the unhoisted path f
   already declined a 15-element 1e-23 change for the diagonal path; the same bar applies.
 - Probe: −2.0 u on FD-z and z_spectral unhoisted at 128²×32.
 
+[Landed 2026-08-20. Stage-0 form: `dt·init_rhs`, proven bitwise-equal to the `0·delta +
+dt·rhs` form one-variant-per-process (in-process A/B of stepper internals is INVALID —
+jax's trace cache silently reuses the first variant; carry that warning forward). Gate 6
+moved at fp64 only (1–2 ulp per element after one step, the lsrk_scan fusion class;
+fp32 arrays bitwise unchanged) — Alfred accepted §9.1, references regenerated with
+provenance in the generator header. Probe: z_spectral −1.95 u (on prediction); FD-z
+−0.89 u — the freed init_rhs lane is partly offset by the peeled stage's own lane
+outside the scan, and the FD-z peak is set by the RHS gradient/FFT working set (F1
+residue, F4's target). Step time: FD-z −12…−20% (the cond was costing real time);
+z_spectral ν=η +5…13% — a ~2 u-for-time trade to revisit with the GPU numbers/Z3.]
+
 **Files.** `taranis/timestepping.py` (`_lsrk_scan_stages`, `lsrk_advance`), `tests/test_hoist_propagator.py`
 if the stack indexing needs it.
 
@@ -409,6 +420,17 @@ which hoisting cannot touch.
   (`bench/zspectral_profile.py` extended with a `--gdi` case or a small new bench): target
   ≥ 0.75× the current step (the ablation ladder says the transcendentals were 28 of 34 ms).
 - Memory unchanged (probe).
+
+[Landed 2026-08-20. Cutoffs shipped |z²| < 1e-4 (fp64) / 1e-2 (fp32); the coefficient
+gate independently reproduced the review's cancellation numbers (unwidened w-form:
+1.5e-13 fp64 / 4.8e-6 fp32 at the old cutoffs — over/at gate) and passes at 5.6e-15 /
+3.2e-7 at the new boundary. HLO stage body: sqrt 14→0, exp 20→8, cos/sin 16→6, div
+21→5. Timing (quiet, interleaved medians): GDI 2D 512² 0.68× (fp64) / 0.76× (fp32);
+ν≠η z_spectral 0.79/0.81 — target met on the GDI production path, the RMHD corner is
+Amdahl on its transform share; accepted with actuals. Memory WINDFALL, bar was
+"unchanged": −1.4…−13.5 u on putzer2 paths (the old _coeffs materialised full-grid
+sqrt/cosh/sinh intermediates) — Z3 input: putzer2 hoisting now costs less to keep.
+Overflow threshold unchanged; past it inf→NaN (both are run-enders, note kept).]
 
 **Files.** `taranis/propagators.py` (`Putzer2Propagator`, `putzer2_precompute`,
 `linear_fields`), `taranis/grids.py` (`lin_s2` → `lin_s`), tests listed. Sequence after Z1

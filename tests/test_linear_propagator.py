@@ -14,7 +14,12 @@
 #   5. scaled(c) (used by lsrk_advance to keep the pre-P1 (L*dt)*gamma op order) agrees
 #      with rescaling tau;
 #   6. setup wiring: RMHD selects the diagonal backend, reproduces -diss*ksq**hyper, and
-#      an L that breaks the rfft2 reality constraint is rejected at setup.
+#      an L that breaks the rfft2 reality constraint is rejected at setup;
+#   7. the coefficient evaluation (cosh(s*tau), sinh(s*tau)/s built from w = exp(s*tau))
+#      against a private copy of the previous sqrt/cosh/sinh form, over a sweep of
+#      (m, s^2, tau) covering both sides of the Taylor cutoff and |Re(s*tau)| up to the
+#      overflow limit, plus the cutoff neighbourhood against an accurate complex128
+#      reference (the w-form's cancellation is what sets the cutoff).
 # The eqpars migration of old params.json records is tested in tests/test_params.py
 # (test_legacy_toplevel_diss_hyper_folds_into_eqpars), with the rest of the record tests.
 #
@@ -217,7 +222,7 @@ def test_rmhd_uses_the_diagonal_backend_with_eqpars_dissipation():
         c.check("kgrid.lin_L is -diss*ksq**hyper",
                 bool(jnp.array_equal(kgrid.lin_L, expected)))
         c.check("putzer2 precomputes are absent for a diagonal operator",
-                kgrid.lin_m is None and kgrid.lin_s2 is None)
+                kgrid.lin_m is None and kgrid.lin_s is None)
         c.check("kgrid.hdiss is gone", not hasattr(kgrid, "hdiss"))
         c.check("apply_exp is exp(L*tau)*arr",
                 bool(jnp.array_equal(prop.apply_exp(arr, 0.25),
@@ -259,7 +264,171 @@ def test_setup_rejects_operators_that_break_reality_or_shape():
         c.check("setup rejects an operator matching no backend", err is not None)
         c.check("a (2,2,1,nkx,nky) operator is accepted for nfields=2 and precomputed",
                 set(propagators.linear_fields(putzer_wrong_nfields, params))
-                == {"lin_L", "lin_m", "lin_s2"})
+                == {"lin_L", "lin_m", "lin_s"})
+
+
+# ---------------------------------------------------------------- coefficient evaluation
+# The reference for the two tests below: the previous _coeffs, verbatim, with the cutoffs
+# it shipped with. Those are 100x smaller in |z^2| than the current ones, so over the whole
+# widened Taylor band the reference is jnp.sinh(z)/z -- an independent accurate value there,
+# not the same series.
+_OLD_TOL_Z2 = {"64": 1e-6, "32": 1e-4}
+
+
+def _coeffs_old(s2, tau):
+    z2 = s2*(tau*tau)
+    z = jnp.sqrt(z2)
+    small = jnp.abs(z2) < _OLD_TOL_Z2[_precision.precision]
+    z_safe = jnp.where(small, jnp.ones_like(z), z)
+    sinhc = jnp.where(small,
+                      1.0 + z2*(1.0/6.0 + z2*(1.0/120.0 + z2/5040.0)),
+                      jnp.sinh(z_safe)/z_safe)
+    return jnp.cosh(z), tau*sinhc
+
+
+def _exp_entries_old(L, m, s2, tau):
+    # the previous exp_op, in the same op order, off the previous coefficients
+    cosh_z, sinh_over_s = _coeffs_old(s2, tau)
+    pref = jnp.exp(m*tau)
+    d = cosh_z - sinh_over_s*m
+    return (pref*(d + sinh_over_s*L[0, 0]), pref*(sinh_over_s*L[0, 1]),
+            pref*(sinh_over_s*L[1, 0]), pref*(d + sinh_over_s*L[1, 1]))
+
+
+def _coeff_tols():
+    return (1e-13, "fp64") if _fp64() else (1e-5, "fp32")
+
+
+def _re_limit():
+    # |Re(s*tau)| the exponential still has to survive (cosh overflows at ~710 / ~88)
+    return 600.0 if _fp64() else 80.0
+
+
+def _z_grid():
+    """Complex z = s*tau spanning the branch boundary, the defective limit and overflow."""
+    zb = np.sqrt(propagators._tol_z2())          # |z| at the Taylor cutoff
+    lim = _re_limit()
+    mags = np.array([0.0, 1e-12, 1e-6, 0.3*zb, 0.9*zb, 0.999*zb, 1.001*zb, 1.1*zb, 3*zb,
+                     0.5, 1.0, 7.3, lim/3.0, lim])
+    phases = np.array([0.0, 0.37, np.pi/4, 1.1, np.pi/2, 2.0, np.pi - 0.3])
+    return (mags[:, None]*np.exp(1j*phases[None, :])).ravel()
+
+
+def _rel(new, ref, floor):
+    """Elementwise |new - ref| / max(|ref|, floor)."""
+    num = np.abs(np.asarray(new, dtype=complex) - np.asarray(ref, dtype=complex))
+    return num/np.maximum(np.abs(np.asarray(ref, dtype=complex)), floor)
+
+
+def _eps():
+    return float(np.finfo(np.dtype(_precision.ftype)).eps)
+
+
+def _within(new, ref, sens, rtol):
+    """Worst ratio of |new - ref| to (rtol*|ref| + 32*eps*sens); < 1 passes.
+
+    The two forms do not evaluate at the same z: the old one round-trips through
+    sqrt(s^2*tau^2), which moves z by ~eps*|z|. `sens` is |dcoeff/dz|*|z|, so eps*sens is
+    the size that perturbation alone puts into the answer; it dominates the relative term
+    wherever the coefficient is ill-conditioned in z (large |z|, and the zeros of cosh and
+    sinh on the imaginary axis)."""
+    num = np.abs(np.asarray(new, dtype=complex) - np.asarray(ref, dtype=complex))
+    return float(np.max(num/(rtol*np.abs(np.asarray(ref, dtype=complex)) + 32*_eps()*sens)))
+
+
+def test_coeffs_match_the_previous_sqrt_cosh_sinh_form():
+    rtol, label = _coeff_tols()
+    z = _z_grid()
+    with checks() as c:
+        for tau in (1.0, 0.017, 43.0):
+            s = jnp.asarray(z/tau, dtype=_precision.ctype)
+            s2 = jnp.asarray((z/tau)**2, dtype=_precision.ctype)
+            prop = propagators.Putzer2Propagator(None, None, s)
+            got_c, got_s = prop._coeffs(tau)
+            ref_c, ref_s = _coeffs_old(s2, tau)
+            # d(cosh z)/dz = sinh z and d(tau*sinh(z)/z)/dz ~ tau*cosh(z)/z, both bounded
+            # by cosh(Re z); times the eps*|z| that the sqrt round-trip moves z by
+            cre = np.cosh(np.real(z))
+            sens_c = np.abs(z)*cre
+            sens_s = abs(tau)*cre
+            ec = _within(got_c, ref_c, sens_c, rtol)
+            es = _within(got_s, ref_s, sens_s, rtol)
+            c.check(f"cosh(s*tau) matches the previous form ({label}, tau={tau})",
+                    ec < 1.0 and np.all(np.isfinite(np.asarray(got_c))),
+                    f"worst tolerance ratio {ec:.3f}; worst plain rel err "
+                    f"{float(np.max(_rel(got_c, ref_c, 0.0))):.3e}")
+            c.check(f"sinh(s*tau)/s matches the previous form ({label}, tau={tau})",
+                    es < 1.0 and np.all(np.isfinite(np.asarray(got_s))),
+                    f"worst tolerance ratio {es:.3f}; worst plain rel err "
+                    f"{float(np.max(_rel(got_s, ref_s, 0.0))):.3e}")
+
+
+def test_coeffs_at_the_taylor_cutoff_match_an_accurate_reference():
+    # Both sides of the cutoff, against complex128 cosh / sinh(z)/z: the series side must be
+    # accurate (truncation |z|^8/362880) and the w = exp(z) side must not have lost the gate
+    # to cancellation. Also the two sides of the threshold must agree with each other.
+    rtol, label = _coeff_tols()
+    tol_z2 = propagators._tol_z2()
+    zb = np.sqrt(tol_z2)
+    phases = np.array([0.0, 0.6, np.pi/2, 2.4, np.pi])
+    tau = 1.0
+    with checks() as c:
+        for side, frac in (("Taylor side", 0.999), ("w = exp(z) side", 1.001)):
+            z = np.sqrt(frac)*zb*np.exp(1j*phases)
+            s = jnp.asarray(z/tau, dtype=_precision.ctype)
+            got_c, got_s = propagators.Putzer2Propagator(None, None, s)._coeffs(tau)
+            ref_c = np.cosh(z)
+            ref_s = tau*np.sinh(z)/np.where(z == 0, 1.0, z)
+            ec = float(np.max(_rel(got_c, ref_c, 0.0)))
+            es = float(np.max(_rel(got_s, ref_s, 0.0)))
+            c.check(f"cosh at the cutoff, {side} ({label}, |z|={np.abs(z[0]):.3g})",
+                    ec < rtol, f"rel err {ec:.3e}")
+            c.check(f"sinh(z)/z at the cutoff, {side} ({label}, |z|={np.abs(z[0]):.3g})",
+                    es < rtol, f"rel err {es:.3e}")
+        below = propagators.Putzer2Propagator(
+            None, None, jnp.asarray(np.sqrt(0.999)*zb*np.exp(1j*phases)/tau,
+                                    dtype=_precision.ctype))._coeffs(tau)
+        above = propagators.Putzer2Propagator(
+            None, None, jnp.asarray(np.sqrt(1.001)*zb*np.exp(1j*phases)/tau,
+                                    dtype=_precision.ctype))._coeffs(tau)
+        for name, a, b in (("cosh", below[0], above[0]), ("sinh/s", below[1], above[1])):
+            # the two samples differ in |z^2| by 0.002*tol_z2, so cosh and sinh(z)/z
+            # themselves differ by ~1e-3*tol_z2: anything above that is a branch jump
+            jump = float(np.max(_rel(a, b, 0.0)))
+            c.check(f"{name} is continuous across the |z^2| = {tol_z2:g} threshold "
+                    f"({label})", jump < 2e-3*tol_z2 + 10*rtol, f"jump {jump:.3e}")
+
+
+def test_exp_op_matches_the_previous_evaluation():
+    # the coefficients inside the full exp(L*tau): sweeps m as well as s^2 and tau
+    rtol, label = _coeff_tols()
+    rng = np.random.default_rng(23)
+    z = _z_grid()
+    n = z.size
+    ms = np.concatenate([np.zeros(3), rng.normal(size=n - 6) + 1j*rng.normal(size=n - 6),
+                         np.array([-3.0, -0.5j, 2.0 + 1.0j])])
+    with checks() as c:
+        for tau in (0.11, 1.0, 9.0):
+            s2 = (z/tau)**2
+            m = ms/max(1.0, float(np.max(np.abs(ms)))*tau)      # keep exp(m*tau) in range
+            # L with the right trace and determinant: [[m + a, b], [(s2 - a^2)/b, m - a]]
+            a = 0.3 + 0.2j
+            b = 1.7 - 0.4j
+            L = np.stack([np.stack([m + a, np.full(n, b)]),
+                          np.stack([(s2 - a*a)/b, m - a])]).astype(complex)
+            Lj = jnp.asarray(L, dtype=_precision.ctype)
+            mj = jnp.asarray(m, dtype=_precision.ctype)
+            prop = propagators.Putzer2Propagator(Lj, mj,
+                                                 jnp.asarray(z/tau, dtype=_precision.ctype))
+            got = prop.exp_op(tau)
+            ref = _exp_entries_old(Lj, mj, jnp.asarray(s2, dtype=_precision.ctype), tau)
+            # the entries are pref*(cosh, sinh/s)*(L, m), so the sensitivity of the
+            # coefficients carries the size of L and m with it
+            sens = (np.exp(np.real(m)*tau)*np.cosh(np.real(z))
+                    *(np.abs(z) + 1.0 + np.max(np.abs(L), axis=(0, 1))))
+            err = max(_within(g, r, sens, rtol) for g, r in zip(got, ref))
+            c.check(f"exp(L*tau) entries match the previous evaluation ({label}, "
+                    f"tau={tau})", err < 1.0, f"worst tolerance ratio {err:.3f}")
 
 
 if __name__ == "__main__":

@@ -21,12 +21,13 @@ class K_Grids(NamedTuple):
     # built iff z_spectral=True
     kz: Optional[jnp.ndarray] = None
     # linear-propagator entries (taranis.propagators): the equation set's k-local linear
-    # operator L and, for the putzer2 backend, its precomputed half-trace and discriminant.
+    # operator L and, for the putzer2 backend, its precomputed half-trace and the square
+    # root of its discriminant.
     lin_L: Optional[jnp.ndarray] = None    # (nfields, nz-or-1, nkx, nky) or (2, 2, nz-or-1, nkx, nky)
     lin_m: Optional[jnp.ndarray] = None    # putzer2 only: tr L / 2
-    lin_s2: Optional[jnp.ndarray] = None   # putzer2 only: (tr L/2)^2 - det L
+    lin_s: Optional[jnp.ndarray] = None    # putzer2 only: sqrt((tr L/2)^2 - det L)
     # separable backend (propagators.SeparableL): L = d*I + i*kz*sigma_x with real
-    # d = dperp(k_perp) + dz(kz). Populated instead of lin_L/lin_m/lin_s2, never alongside.
+    # d = dperp(k_perp) + dz(kz). Populated instead of lin_L/lin_m/lin_s, never alongside.
     lin_dperp: Optional[jnp.ndarray] = None   # (nkx, nky)
     lin_dz: Optional[jnp.ndarray] = None      # (nz, 1, 1)
     lin_kz: Optional[jnp.ndarray] = None      # (nz, 1, 1)
@@ -116,7 +117,7 @@ def _attach_linear_operator(kgrid, params):
         L = propagators.SeparableL(*(a.astype(_precision.ftype) for a in L))
     else:
         L = L.astype(_precision.ctype if jnp.iscomplexobj(L) else _precision.ftype)
-    # sets lin_L, and lin_m, lin_s2 or the separable entries as appropriate
+    # sets lin_L, and lin_m, lin_s or the separable entries as appropriate
     return kgrid._replace(**propagators.linear_fields(L, params))
 
 # K_Grids entries carrying a z axis (axis 0); everything else is perpendicular-only.

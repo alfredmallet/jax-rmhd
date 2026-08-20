@@ -12,8 +12,8 @@
 # re-evaluating the matrix exponential inside every stage of every step. The ExpOps hold
 # exactly the arrays apply_exp would form, in the same op order, so the hoisted and unhoisted
 # paths compute the same numbers. The putzer2 and separable backends are hoisted
-# (`hoistable`), because both evaluate transcendental coefficients per stage: putzer2 a
-# complex sqrt/cosh/sinh/exp per mode, costing 4 complex full-grid arrays per stage of
+# (`hoistable`), because both evaluate transcendental coefficients per stage: putzer2 two
+# complex exps per mode, costing 4 complex full-grid arrays per stage of
 # memory, and separable one real exp over (nkx,nky) plus exp/cos/sin over (nz), costing
 # those same small arrays per stage (params.hoist_propagator turns both off). The diagonal
 # backend is NOT: one real exp
@@ -35,8 +35,8 @@ from typing import NamedTuple
 from . import _precision
 
 # Taylor branch for sinh(z)/z at small |z| (z = s*tau)
-_TOL_Z2_FP64 = 1e-6   # |z| < 1e-3
-_TOL_Z2_FP32 = 1e-4   # |z| < 1e-2
+_TOL_Z2_FP64 = 1e-4   # |z| < 1e-2
+_TOL_Z2_FP32 = 1e-2   # |z| < 1e-1
 
 def _tol_z2():
     # precision-dependent Taylor cutoff
@@ -123,33 +123,38 @@ class DiagonalPropagator:
 
 class Putzer2Propagator:
     # nfields=2: exp(L*tau) = e^(m*tau)[cosh(s*tau) I + (sinh(s*tau)/s)(L - m I)] with
-    # m = tr L/2 and s^2 = m^2 - det L (Putzer/Sylvester). 
-    # m and s2 are precomputed at setup. 
+    # m = tr L/2 and s^2 = m^2 - det L (Putzer/Sylvester).
+    # m and s = sqrt(s^2) are precomputed at setup.
     # all of the arithmetic is complex (waves)
     hoistable = True      # the per-stage coefficient evaluation is what hoisting removes
 
-    def __init__(self, L, m, s2):
+    def __init__(self, L, m, s):
         self.L = L
         self.m = m
-        self.s2 = s2
+        self.s = s
 
     def scaled(self, factor):
-        # L -> factor*L scales the trace by factor and the discriminant by factor^2
-        return Putzer2Propagator(self.L*factor, self.m*factor, self.s2*(factor*factor))
+        # L -> factor*L scales the trace and s by factor (cosh(s*tau) and sinh(s*tau)/s are
+        # even in s, so the sign the sqrt branch picks does not matter)
+        return Putzer2Propagator(self.L*factor, self.m*factor, self.s*factor)
 
     def _coeffs(self, tau):
-        # (cosh(s*tau), sinh(s*tau)/s) with a Taylor branch at small |s*tau|
+        # (cosh(z), tau*sinh(z)/z) at z = s*tau, from w = exp(z): cosh = (w + 1/w)/2 and
+        # sinh(z)/z = (w - 1/w)/(2z), with a Taylor branch for the 0/0 at small |z| (which
+        # is also where w - 1/w loses digits to cancellation).
         # overflow note: cosh/sinh overflow at |Re(s*tau)| ~ 710 (fp64) /
         # 88 (fp32). unreachable under adaptive dt but a large FIXED dt with
         # a strongly damped L can hit it, giving instant NaNs.
-        z2 = self.s2*(tau*tau)
-        z = jnp.sqrt(z2)
+        z = self.s*tau
+        z2 = z*z
+        w = jnp.exp(z)
+        winv = 1.0/w
         small = jnp.abs(z2) < _tol_z2()
         z_safe = jnp.where(small, jnp.ones_like(z), z)   # keeps the 0/0 branch NaN-free
         sinhc = jnp.where(small,
                           1.0 + z2*(1.0/6.0 + z2*(1.0/120.0 + z2/5040.0)),
-                          jnp.sinh(z_safe)/z_safe)
-        return jnp.cosh(z), tau*sinhc
+                          0.5*(w - winv)/z_safe)
+        return 0.5*(w + winv), tau*sinhc
 
     def exp_op(self, tau):
         cosh_z, sinh_over_s = self._coeffs(tau)
@@ -234,7 +239,7 @@ def get_propagator(kgrid, params):
         return IdentityPropagator()
     if L.ndim == 4:
         return DiagonalPropagator(L)
-    return Putzer2Propagator(L, kgrid.lin_m, kgrid.lin_s2)
+    return Putzer2Propagator(L, kgrid.lin_m, kgrid.lin_s)
 
 def dense_operator(kgrid):
     # the (2, 2, nz-or-1, nkx, nky) L behind whatever backend the kgrid carries. Tests and
@@ -362,12 +367,13 @@ def linear_fields(L, params):
     _check_hermitian_compatible(L, params)
     if L.ndim == 4:
         return dict(lin_L=L)
-    Lc, m, s2 = putzer2_precompute(L)
-    return dict(lin_L=Lc, lin_m=m, lin_s2=s2)
+    Lc, m, s = putzer2_precompute(L)
+    return dict(lin_L=Lc, lin_m=m, lin_s=s)
 
 def putzer2_precompute(L):
-    # local import: physics sits above this module (physics -> grids -> propagators)
+    # (L, tr L/2, sqrt((tr L/2)^2 - det L)) at complex dtype: the arrays Putzer2Propagator
+    # takes. local import: physics sits above this module (physics -> grids -> propagators)
     from .physics.shared_physics import eig2_ms
     Lc = jnp.asarray(L).astype(jnp.result_type(jnp.asarray(L).dtype, jnp.complex64))
     m, s2 = eig2_ms(Lc[0,0], Lc[0,1], Lc[1,0], Lc[1,1])
-    return Lc, m, s2
+    return Lc, m, jnp.sqrt(s2)

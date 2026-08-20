@@ -18,7 +18,7 @@
 #      asymptotic limits: Hasegawa-Wakatani (3.12, nu_in=0), nearly-adiabatic drift waves
 #      (3.9, gamma_par -> infinity), and the stabilization boundary (3.15).
 #   4. propagator vs dispersion cross-check: the ACTUAL putzer2-evolved field's measured
-#      growth rate equals max Re(m +- s) from kgrid.lin_m/lin_s2 at that k.
+#      growth rate equals max Re(m +- s) from kgrid.lin_m/lin_s at that k.
 #   5. 3D's kz=0 plane is EXACTLY the 2D operator at the same gpar_fac (required
 #      consistency property of the additive gamma_par_total construction).
 #   6. nonlinear energy-budget closure (extended eq 3.18): a short fp64 run's measured
@@ -196,14 +196,13 @@ def test_inertial_limit_matches_eq211():
 def test_propagator_growth_matches_L_eigenvalues():
     # propagator vs dispersion cross-check: evolve a real taranis state through the actual
     # putzer2 propagator and measure its growth rate from the field-norm time series; must
-    # equal max Re(m +- s) read off kgrid.lin_m/lin_s2 at that mode (grids.setup_kgrids's
+    # equal max Re(m +- s) read off kgrid.lin_m/lin_s at that mode (grids.setup_kgrids's
     # own precompute, not a hand recomputation).
     params = _gdi_params(nu_in=0.3, v0=1.0, Ln=2.0, gpar_fac=1.0, diss=0.0, hyper=1)
     kgrid = jr.setup_kgrids(params)
     ikx, iky = 1, 1   # kx=ky=1 on this Lx=Ly=2*pi, nx=ny=8 grid
     m = complex(kgrid.lin_m[0, ikx, iky])
-    s2 = complex(kgrid.lin_s2[0, ikx, iky])
-    s = np.sqrt(s2)
+    s = complex(kgrid.lin_s[0, ikx, iky])
     max_re_eig = max((m + s).real, (m - s).real)
 
     prop = propagators.get_propagator(kgrid, params)
@@ -433,8 +432,7 @@ def test_3D_grid_dispersion_matches_quadratic_and_quartic_scan():
             kz_val = float(kgrid.kz[ikz, 0, 0])
             gamma_par = D_par*kz_val*kz_val
             m = complex(kgrid.lin_m[ikz, ikx, iky])
-            s2 = complex(kgrid.lin_s2[ikz, ikx, iky])
-            s = np.sqrt(s2)
+            s = complex(kgrid.lin_s[ikz, ikx, iky])
             lam1, lam2 = m + s, m - s
             omega_from_L = sorted([1j*lam1, 1j*lam2], key=lambda z: z.imag)
             qa, qb, qc = _dispersion_quadratic_coeffs(kx_val, ky_val, Ln, nu_in, v0, gamma_par)

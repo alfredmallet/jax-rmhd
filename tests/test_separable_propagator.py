@@ -120,8 +120,8 @@ def test_backend_selection():
         nkx, nky = params.nx, params.ny // 2 + 1
         c.check("z_spectral nu == eta: separable backend",
                 isinstance(prop, propagators.SeparablePropagator))
-        c.check("z_spectral nu == eta: lin_L / lin_m / lin_s2 are all None",
-                kgrid.lin_L is None and kgrid.lin_m is None and kgrid.lin_s2 is None)
+        c.check("z_spectral nu == eta: lin_L / lin_m / lin_s are all None",
+                kgrid.lin_L is None and kgrid.lin_m is None and kgrid.lin_s is None)
         c.check("z_spectral nu == eta: the three separable entries are populated, real "
                 "and plane-sized",
                 kgrid.lin_dperp.shape == (nkx, nky)
