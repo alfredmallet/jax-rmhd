@@ -1,0 +1,185 @@
+{
+ "tag": "postFZ_gdipair",
+ "profile": "p100",
+ "cases_filter": "gdi2d",
+ "device": "gpu:Tesla P100-PCIE-16GB",
+ "n_devices": 1,
+ "backend": "gpu",
+ "jax": "0.11.1",
+ "precision": "32",
+ "isolated": true,
+ "grad_chunk_requested": null,
+ "z_blocks_requested": null,
+ "utc": "2026-08-20T21:49:06Z",
+ "cases": [
+  {
+   "label": "gdi2d_1024_lsrk33",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 1024,
+    "ny": 1024,
+    "dims": 2,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 392.0,
+     "nu_in": 0.0106,
+     "v0": 25.0,
+     "gpar_fac": 1.0,
+     "diss": 5e-06,
+     "hyper": 2
+    },
+    "lsrk_scan": true,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial"
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 4202496,
+   "nz_per_device": 1,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 126570504,
+    "args": 46758936,
+    "out": 16810044,
+    "code": 1864
+   },
+   "total_bytes": 190139484,
+   "total_u": 45.244,
+   "ms_per_block": 47.7766,
+   "ms_per_step": 4.77766,
+   "ms_per_step_min": 4.75631,
+   "device_mem_before": {
+    "bytes_in_use": 48863744,
+    "peak_bytes_in_use": 61476864,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 48863744,
+    "peak_bytes_in_use": 200650496,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 200650496,
+   "device_peak_u": 47.746
+  },
+  {
+   "label": "gdi2d_1024_lsrk33_hoist0",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 1024,
+    "ny": 1024,
+    "dims": 2,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 392.0,
+     "nu_in": 0.0106,
+     "v0": 25.0,
+     "gpar_fac": 1.0,
+     "diss": 5e-06,
+     "hyper": 2
+    },
+    "lsrk_scan": true,
+    "hoist_propagator": false,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial"
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 4202496,
+   "nz_per_device": 1,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 97144576,
+    "args": 46758936,
+    "out": 16810044,
+    "code": 1864
+   },
+   "total_bytes": 160713556,
+   "total_u": 38.242,
+   "ms_per_block": 58.3481,
+   "ms_per_step": 5.83481,
+   "ms_per_step_min": 5.82506,
+   "device_mem_before": {
+    "bytes_in_use": 48863744,
+    "peak_bytes_in_use": 61476864,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 48863744,
+    "peak_bytes_in_use": 171224320,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 171224320,
+   "device_peak_u": 40.743
+  },
+  {
+   "label": "gdi2d_1024_imexcb3e",
+   "scheme": "imexcb3e",
+   "params": {
+    "nx": 1024,
+    "ny": 1024,
+    "dims": 2,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 392.0,
+     "nu_in": 0.0106,
+     "v0": 25.0,
+     "gpar_fac": 1.0,
+     "diss": 5e-06,
+     "hyper": 2
+    },
+    "lsrk_scan": true,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial"
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 4202496,
+   "nz_per_device": 1,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 59345668,
+    "args": 38353944,
+    "out": 16810044,
+    "code": 1888
+   },
+   "total_bytes": 114509656,
+   "total_u": 27.248,
+   "ms_per_block": 62.447,
+   "ms_per_step": 6.2447,
+   "ms_per_step_min": 6.23515,
+   "device_mem_before": {
+    "bytes_in_use": 48863744,
+    "peak_bytes_in_use": 61476864,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 48863744,
+    "peak_bytes_in_use": 133425664,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 133425664,
+   "device_peak_u": 31.749
+  }
+ ]
+}

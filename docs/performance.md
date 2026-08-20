@@ -549,6 +549,24 @@ residue):
 Zero OOMs: the hoisted z_spectral lsrk54 row (70.2 u ≈ 9.2 GB + peak 11.6 GB) fits the
 16 GB card, as the plan predicted.
 
+**P100 post-F/Z point** (same profile, tree with F1+Z1+F3+Z2+F2-behind-constant;
+`bench/memory_probe_p100_postFZ_*.json`). Memory, fp32 512²×128 total u, baseline →
+postFZ (default `GRAD_CHUNK=1`, `Z_STENCIL_BLOCKS=False`): FD-z lsrk 30.10 → 20.10
+(17.82 with `--z-blocks 1`); **every z_spectral ν=η row 30–70 → 17.30** — scheme-,
+hoist- and dt-independent; ν≠η 54.2 → 43.3; GDI-2D 53.6 → 45.2 (hoist0 38.2); the
+fp64 twin shows the same collapse (all RMHD rows ≈ 17.2 u at 256²×64). The GPU
+scheduler does what the CPU one would not (the F4 finding inverts here): FD-z drops
+far below the CPU's 22.7 u without any bracket reordering. Timing tells a
+granularity story: at the default per-component transforms (`GRAD_CHUNK=1`) FD-z/IMEX
+rows run +4–17% vs baseline, while `--grad-chunk 2` beats baseline nearly everywhere
+(FD-z lsrk −5.5%, z_spectral lsrk54 267 vs 338 ms = 0.79×, adaptive 160 vs 211 =
+0.76×) at +2–3 u — the P100 wants chunk 2 where the M1 CPU wants chunk 1
+(chunk 2 measures 1.25–1.54× on CPU); the F1 granularity decision is per-device.
+`--z-blocks 1` on the P100: −2.3 u for +1.5–4.7% time (the scheduler already
+recovers most of the halo waste on the default path). GDI-IF putzer2 hoist pair
+(Z3 input): unhoisted = 1.22× the hoisted step for 7 u — hoisting still pays on
+GDI-IF after Z2.
+
 **GPU baseline, G2 Savio GTX 2080Ti 11 GB** (jax 0.10.2, job 37775868,
 `bench/memory_probe_gtx2080_baseline_fp{32,64}.json` + `..._fp32_jax4.json`; same grids
 as the P100 profile plus a 512²×64 twin of the OOM candidate):

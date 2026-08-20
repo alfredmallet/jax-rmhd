@@ -544,6 +544,17 @@ zero OOMs (hoisted z_spectral lsrk54 fits the P100 at 9.2 GB); JSONs committed a
 `bench/memory_probe_p100_baseline_fp{32,64}.json`, table and GPU-only findings in
 docs/performance.md. postF/postZ points pending.]
 
+[postFZ point run 2026-08-20: fp32+fp64 full profiles, chunk2 pair, z-blocks pair,
+GDI hoist pair — zero errors; JSONs committed as bench/memory_probe_p100_postFZ_*.json,
+tables in docs/performance.md. Every z_spectral nu=eta row lands at 17.3 u (from 30-70);
+FD-z 20.1 default / 17.8 blocks. Decisions fed: F1 granularity is DEVICE-SPLIT (P100
+wants chunk 2 by 5-20%, CPU wants chunk 1 by 25-54%); F2 blocks on P100 = -2.3 u for
++1.5-4.7%; Z1 GPU timing gate met at chunk2 for lsrk54 (0.79x), 0.89x lsrk33; Z3 GDI-IF
+pair: unhoisted 1.22x hoisted -> knob earns its keep. 2080Ti postFZ pending. NOTE
+(lugus): back-to-back launches can serve a STALE dataset version to the first kernel —
+the first fp32 postFZ kernel measured the old tree and was relaunched; check a known
+post-change row before trusting a kernel's output.]
+
 `--dry-run` first to inspect the staged upload. Output: `output/memory-probe-fp32/…zip`
 containing `results.json`; the table is also in the kernel log. Budget: the p100 profile
 should complete in well under an hour (each case is compile + a few 10-step blocks); if a

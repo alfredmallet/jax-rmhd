@@ -1,0 +1,912 @@
+{
+ "tag": "postFZ",
+ "profile": "p100",
+ "cases_filter": null,
+ "device": "gpu:Tesla P100-PCIE-16GB",
+ "n_devices": 1,
+ "backend": "gpu",
+ "jax": "0.11.1",
+ "precision": "64",
+ "isolated": true,
+ "grad_chunk_requested": null,
+ "z_blocks_requested": null,
+ "utc": "2026-08-20T21:34:57Z",
+ "cases": [
+  {
+   "label": "rmhd_fdz_256x64_lsrk33",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2
+    },
+    "z_spectral": false,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 440974080,
+    "args": 69782816,
+    "out": 68689984,
+    "code": 1888
+   },
+   "total_bytes": 579446880,
+   "total_u": 17.135,
+   "ms_per_block": 509.1932,
+   "ms_per_step": 50.91932,
+   "ms_per_step_min": 50.89683,
+   "device_mem_before": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 204532480,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 647083520,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 647083520,
+   "device_peak_u": 19.135
+  },
+  {
+   "label": "rmhd_fdz_256x64_lsrk54",
+   "scheme": "lsrk54",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2
+    },
+    "z_spectral": false,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 440974080,
+    "args": 69782816,
+    "out": 68689984,
+    "code": 1936
+   },
+   "total_bytes": 579446880,
+   "total_u": 17.135,
+   "ms_per_block": 834.8642,
+   "ms_per_step": 83.48642,
+   "ms_per_step_min": 83.45826,
+   "device_mem_before": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 204532480,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 647083520,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 647083520,
+   "device_peak_u": 19.135
+  },
+  {
+   "label": "rmhd_fdz_256x64_imexcb3e",
+   "scheme": "imexcb3e",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2
+    },
+    "z_spectral": false,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 507026176,
+    "args": 69782816,
+    "out": 68689984,
+    "code": 1936
+   },
+   "total_bytes": 645498976,
+   "total_u": 19.088,
+   "ms_per_block": 687.497,
+   "ms_per_step": 68.7497,
+   "ms_per_step_min": 68.7197,
+   "device_mem_before": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 204532480,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 713135616,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 713135616,
+   "device_peak_u": 21.088
+  },
+  {
+   "label": "rmhd_fdz_256x64_lsrk54_unroll",
+   "scheme": "lsrk54",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2
+    },
+    "z_spectral": false,
+    "lsrk_scan": false,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 442303760,
+    "args": 69782816,
+    "out": 68689984,
+    "code": 1576
+   },
+   "total_bytes": 580776560,
+   "total_u": 17.174,
+   "ms_per_block": 768.5496,
+   "ms_per_step": 76.85496,
+   "ms_per_step_min": 76.84387,
+   "device_mem_before": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 204532480,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 69785344,
+    "peak_bytes_in_use": 648413440,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 648413440,
+   "device_peak_u": 19.174
+  },
+  {
+   "label": "rmhd_zspec_256x64_lsrk33_hoist1",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 442270976,
+    "args": 71600160,
+    "out": 68689984,
+    "code": 1888
+   },
+   "total_bytes": 582561120,
+   "total_u": 17.227,
+   "ms_per_block": 455.2524,
+   "ms_per_step": 45.52524,
+   "ms_per_step_min": 45.5122,
+   "device_mem_before": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 206350592,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 650198528,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 650198528,
+   "device_peak_u": 19.227
+  },
+  {
+   "label": "rmhd_zspec_256x64_lsrk33_hoist0",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": false,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 441738752,
+    "args": 71600160,
+    "out": 68689984,
+    "code": 1888
+   },
+   "total_bytes": 582028896,
+   "total_u": 17.211,
+   "ms_per_block": 460.2673,
+   "ms_per_step": 46.02673,
+   "ms_per_step_min": 46.01822,
+   "device_mem_before": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 206350592,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 649666304,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 649666304,
+   "device_peak_u": 19.211
+  },
+  {
+   "label": "rmhd_zspec_256x64_lsrk54_hoist1",
+   "scheme": "lsrk54",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 442803456,
+    "args": 71600160,
+    "out": 68689984,
+    "code": 1936
+   },
+   "total_bytes": 583093600,
+   "total_u": 17.243,
+   "ms_per_block": 759.1,
+   "ms_per_step": 75.91,
+   "ms_per_step_min": 75.89751,
+   "device_mem_before": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 206350592,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 650731008,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 650731008,
+   "device_peak_u": 19.243
+  },
+  {
+   "label": "rmhd_zspec_256x64_lsrk54_hoist0",
+   "scheme": "lsrk54",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": false,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 441738752,
+    "args": 71600160,
+    "out": 68689984,
+    "code": 1936
+   },
+   "total_bytes": 582028896,
+   "total_u": 17.211,
+   "ms_per_block": 767.3591,
+   "ms_per_step": 76.73591,
+   "ms_per_step_min": 76.71532,
+   "device_mem_before": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 206350592,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 649666304,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 649666304,
+   "device_peak_u": 19.211
+  },
+  {
+   "label": "rmhd_zspec_256x64_imexcb3e",
+   "scheme": "imexcb3e",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 441998856,
+    "args": 71600160,
+    "out": 68689984,
+    "code": 1936
+   },
+   "total_bytes": 582289000,
+   "total_u": 17.219,
+   "ms_per_block": 636.4919,
+   "ms_per_step": 63.64919,
+   "ms_per_step_min": 63.64088,
+   "device_mem_before": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 206350592,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 649926656,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 649926656,
+   "device_peak_u": 19.219
+  },
+  {
+   "label": "rmhd_zspec_256x64_lsrk33_adaptive",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": true,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 441739112,
+    "args": 71600160,
+    "out": 68689984,
+    "code": 1888
+   },
+   "total_bytes": 582029256,
+   "total_u": 17.211,
+   "ms_per_block": 457.9613,
+   "ms_per_step": 45.79613,
+   "ms_per_step_min": 45.77473,
+   "device_mem_before": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 206350592,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 71603456,
+    "peak_bytes_in_use": 649666816,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 649666816,
+   "device_peak_u": 19.211
+  },
+  {
+   "label": "rmhd_zspec_256x64_lsrk33_uneq",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0002
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "hoist_propagator": true,
+    "adaptive_timestep": false,
+    "cfl_every": 1,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 1117282304,
+    "args": 274234400,
+    "out": 68689984,
+    "code": 1888
+   },
+   "total_bytes": 1460206688,
+   "total_u": 43.18,
+   "ms_per_block": 483.1383,
+   "ms_per_step": 48.31383,
+   "ms_per_step_min": 48.297,
+   "device_mem_before": {
+    "bytes_in_use": 274501888,
+    "peak_bytes_in_use": 443585024,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 274501888,
+    "peak_bytes_in_use": 1561924864,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 1561924864,
+   "device_peak_u": 46.188
+  },
+  {
+   "label": "gdi2d_512_lsrk33",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 512,
+    "ny": 512,
+    "dims": 2,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 392.0,
+     "nu_in": 0.0106,
+     "v0": 25.0,
+     "gpar_fac": 1.0,
+     "diss": 5e-06,
+     "hyper": 2
+    },
+    "lsrk_scan": true,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial"
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 2105344,
+   "nz_per_device": 1,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 63264512,
+    "args": 23296544,
+    "out": 8421440,
+    "code": 1888
+   },
+   "total_bytes": 94982496,
+   "total_u": 45.115,
+   "ms_per_block": 24.1215,
+   "ms_per_step": 2.41215,
+   "ms_per_step_min": 2.40082,
+   "device_mem_before": {
+    "bytes_in_use": 24352768,
+    "peak_bytes_in_use": 30674432,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 24352768,
+    "peak_bytes_in_use": 100250368,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 100250368,
+   "device_peak_u": 47.617
+  },
+  {
+   "label": "gdi2d_512_lsrk33_hoist0",
+   "scheme": "lsrk33",
+   "params": {
+    "nx": 512,
+    "ny": 512,
+    "dims": 2,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 392.0,
+     "nu_in": 0.0106,
+     "v0": 25.0,
+     "gpar_fac": 1.0,
+     "diss": 5e-06,
+     "hyper": 2
+    },
+    "lsrk_scan": true,
+    "hoist_propagator": false,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial"
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 2105344,
+   "nz_per_device": 1,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 48524032,
+    "args": 23296544,
+    "out": 8421440,
+    "code": 1888
+   },
+   "total_bytes": 80242016,
+   "total_u": 38.113,
+   "ms_per_block": 27.6657,
+   "ms_per_step": 2.76657,
+   "ms_per_step_min": 2.76408,
+   "device_mem_before": {
+    "bytes_in_use": 24352768,
+    "peak_bytes_in_use": 30674432,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 24352768,
+    "peak_bytes_in_use": 85509888,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 85509888,
+   "device_peak_u": 40.616
+  },
+  {
+   "label": "gdi2d_512_imexcb3e",
+   "scheme": "imexcb3e",
+   "params": {
+    "nx": 512,
+    "ny": 512,
+    "dims": 2,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 392.0,
+     "nu_in": 0.0106,
+     "v0": 25.0,
+     "gpar_fac": 1.0,
+     "diss": 5e-06,
+     "hyper": 2
+    },
+    "lsrk_scan": true,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial"
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 2105344,
+   "nz_per_device": 1,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 29591296,
+    "args": 19085856,
+    "out": 8421440,
+    "code": 1936
+   },
+   "total_bytes": 57098592,
+   "total_u": 27.121,
+   "ms_per_block": 31.9458,
+   "ms_per_step": 3.19458,
+   "ms_per_step_min": 3.19087,
+   "device_mem_before": {
+    "bytes_in_use": 24352768,
+    "peak_bytes_in_use": 30674432,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 24352768,
+    "peak_bytes_in_use": 66577152,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 66577152,
+   "device_peak_u": 31.623
+  },
+  {
+   "label": "gdi3d_256x64_imexcb3e",
+   "scheme": "imexcb3e",
+   "params": {
+    "nx": 256,
+    "ny": 256,
+    "nz": 64,
+    "dims": 3,
+    "eqtype": "GDI",
+    "eqpars": {
+     "Ln": 3.0,
+     "nu_in": 0.2,
+     "v0": 2.0,
+     "D_par": 0.05,
+     "gpar_fac": 0.0,
+     "diss": 0.001,
+     "hyper": 2
+    },
+    "z_spectral": true,
+    "lsrk_scan": true,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "Lz": 6.283185307179586
+   },
+   "nblock": 10,
+   "nrep": 5,
+   "oom": false,
+   "error": null,
+   "u_bytes": 33816576,
+   "nz_per_device": 64,
+   "devices_in_mesh": 1,
+   "per_device": false,
+   "mem_analysis": {
+    "temp": 509367560,
+    "args": 206601248,
+    "out": 68689984,
+    "code": 1936
+   },
+   "total_bytes": 784658792,
+   "total_u": 23.203,
+   "ms_per_block": 513.1115,
+   "ms_per_step": 51.31115,
+   "ms_per_step_min": 51.29697,
+   "device_mem_before": {
+    "bytes_in_use": 308054272,
+    "peak_bytes_in_use": 476080640,
+    "bytes_limit": 12794724352
+   },
+   "device_mem_after": {
+    "bytes_in_use": 308054272,
+    "peak_bytes_in_use": 985449216,
+    "bytes_limit": 12794724352
+   },
+   "device_peak_bytes": 985449216,
+   "device_peak_u": 29.141
+  }
+ ]
+}
