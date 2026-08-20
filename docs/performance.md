@@ -618,6 +618,394 @@ memory than the scan on GPU (28.1 vs 30.1 u — the reverse of CPU, where it is 
 post-Part-Z reruns of both G1 launches (`../lugus/launch.py run bench/memory_probe.py
 --entry-kwargs '{"profile": "p100", "tag": "postF"}'` etc.) fill in the deltas here.
 
+## Memory and time accounting after MEMORY_PERF_PLAN (2026-08-20)
+
+Measured 2026-08-20 on HEAD `72840fa` (every MEMORY_PERF_PLAN build phase landed), Apple M1
+laptop, macOS 14, jax 0.10.0, CPU, **fp32**, quiet machine under the scratchpad bench lock.
+Working tree clean throughout: nothing under `taranis/` was edited, every variant below is a
+monkeypatch applied in a scratch script before the first trace. Provenance: the memory numbers
+are compile-time (`memory_analysis` + XLA buffer dumps) and contention-immune; the timing
+numbers all come from the **second** interleaved campaign (`acct_campaign2.jsonl`), run with
+the machine confirmed quiet, and its base rows have a 1.1–2.8% round-to-round scatter. A first
+campaign (`acct_campaign.jsonl`, same variants, machine at load ~2–3) agrees with it to within
+1–3% on every row and 4% on the base rows; it is kept as the contention control, not quoted.
+
+Canonical configuration: RMHD 128²×32 (u = 2.03 MiB), GDI 2D 256² (u = 258 KiB), defaults
+(`GRAD_CHUNK=1`, `Z_STENCIL_BLOCKS=False`, `hoist_propagator=True`, `lsrk_scan=True`), fixed
+`dt = 1e-3`, no forcing, no particles, `comm_backend="serial"`, single process. The three
+paths are the ones the plan sizes production from:
+
+| path | probe label | propagator backend |
+|---|---|---|
+| RMHD finite-difference z, lsrk54 | `rmhd_fdz_128x32_lsrk54` | diagonal (real, z-broadcast) |
+| RMHD `z_spectral` ν=η, lsrk54 | `rmhd_zspec_128x32_lsrk54_hoist1` | separable |
+| GDI 2D 256², lsrk33 | `gdi2d_256_lsrk33` | putzer2 (dense 2×2) |
+
+Scripts (scratchpad): `acct_dump.py` (compile + XLA dump + `memory_analysis`),
+`acct_scope.py` (same compile with `jax.named_scope` wrappers monkeypatched around the RHS
+seams, for attribution), `acct_table.py` / `acct_args.py` (lane and argument tables),
+`acct_time.py` (one ablation variant per process), `acct_campaign.sh` (the interleaved
+repeat campaign).
+
+### Where the memory goes
+
+`memory_analysis()` on the jitted `run.block_of_steps`, the probe's non-donated graph.
+
+| path | temp | args | out | **total** |
+|---|---|---|---|---|
+| RMHD FD-z lsrk54 | 18.471 u | 2.129 u | 2.063 u | **22.663 u** |
+| RMHD z_spectral lsrk54 (separable, hoisted) | 14.127 u | 2.235 u | 2.063 u | **18.425 u** |
+| GDI 2D 256² lsrk33 (putzer2, hoisted) | 25.999 u | 11.131 u | 4.000 u | **41.130 u** |
+
+Against the plan's §1 baseline table (same grids, pre-plan): FD-z lsrk54 30.48 → 22.66 u,
+z_spectral lsrk54 hoisted 61.97 → 18.43 u, GDI 2D 256² lsrk33 48.6 → 41.13 u.
+
+### Attribution method
+
+The optimized-HLO `op_name` metadata carries only the jaxpr-level op path
+(`jit(block_of_steps)/while/body/closed_call/mul`) and a `stack_frame_id` that the text dump
+does not resolve, so a buffer cannot be attributed from the dump alone. Wrapping the RHS
+seams (`grids.fft`/`ifft`, `grad_fields`, `bracket`, `z_derivatives`, `halo_exchange`, the
+term funcs, the `ExpOp.apply`/`exp_op` methods) in `jax.named_scope` puts the seam name into
+every instruction's `op_name`. `named_scope` is metadata only: the scoped compile reproduces
+the plain compile's total **byte for byte** on all three paths, which is the check that the
+attribution costs nothing.
+
+Lanes below are distinct temp-arena **offsets**, sized by the largest buffer placed there.
+Buffers at overlapping addresses are lifetime-disjoint reuse, so the lane-max sum exceeds the
+arena high-water; both numbers are given.
+
+### RMHD FD-z lsrk54 — 22.663 u (33 lanes, lane-max sum 26.42 u, arena 18.47 u)
+
+| u | lanes | shape | what |
+|---|---|---|---|
+| 2.125 | 2 | `c64[2,34,128,65]` | the halo-padded z slab of `shared_physics._padded_z_derivatives` — (nz+2)/nz × 2 u, one per RHS instantiation (peeled stage 0, and the stage scan) |
+| 2.000 | 2 | `c64[2,32,128,65]` | LSRK stage-scan carry: `fields` and `delta` |
+| 2.000 | 2 | `c64[2,32,128,65]` | `NonlinearTerm`'s k-space output, one per RHS instantiation |
+| 2.000 | 1 | `c64[2,32,128,65]` | `FDLinearTerm`'s output — the `jnp.stack([df_dz[1],df_dz[0]])` field swap, materialised |
+| 1.000 | 5 | `c64[32,128,65]` | per-component k-space gradient `i·k·f̂` before its inverse transform (`GRAD_CHUNK=1`) |
+| 0.985 | 7 | `f32[32,128,128]` | real-space gradient components out of `irfft2` |
+| (1.969) | 2 occupants | `f32[2,32,128,128]` | the two real-space bracket results stacked for the forward transform (they share offsets with 2 u k-space lanes) |
+| | | | remaining lanes < 0.4 u: 0.28 u |
+
+args 2.129 u = `state.fields` 2.000 + `forcing_state` `c64[1,2,128,65]` 0.062 +
+`kgrid.lin_L` `f32[2,1,128,65]` 0.031 (the diagonal backend's real, z-broadcast L) + change.
+out 2.063 u = fields + forcing_state.
+
+**What bounds it:** the RHS gradient working set. The arena holds 16 k-space gradient values
+(1 u each) and 16 real-space ones (0.985 u each) — eight per RHS instantiation, in 5 and 7
+distinct lanes after reuse — plus the two 2.125 u halo-padded z slabs; F1's reading that all
+four `(2,nz,nx,ny)` gradient pairs are co-live at the peak is what sets the peak, and F4 established that no source-level reordering retires one
+early on the XLA CPU scheduler, so the ~2 u ideal-ordering prize is unreachable from source.
+
+### RMHD z_spectral lsrk54, ν=η, hoisted — 18.425 u (34 lanes, lane-max sum 19.10 u, arena 14.13 u)
+
+| u | lanes | shape | what |
+|---|---|---|---|
+| 2.000 | 2 | `c64[2,32,128,65]` | LSRK stage-scan carry: `fields` and `delta` |
+| 2.000 | 1 | `c64[2,32,128,65]` | `NonlinearTerm`'s k-space output |
+| 1.000 | 8 | `c64[32,128,65]` | per-component k-space gradient `i·k·f̂` |
+| 1.000 | 1 | `c64[32,128,65]` | `NonlinearTerm` convert/scale temporary |
+| 0.985 | 4 | `f32[32,128,128]` | real-space gradient components out of `irfftn` |
+| 0.062 | 1 | `f32[4,128,65]` | **the hoisted stage propagators**: `SeparableExp.P = exp(dperp·τ)` for the four scanned stages |
+| ~0 | 5 | `f32[4,32,1,1]`, `f32[32,1,1]` | the same ops' `c`, `s` (nz,1,1) envelopes |
+
+args 2.235 u = fields 2.000 + `forcing_state` 0.062 + `dealias` `pred[32,128,65]` 0.125 +
+the separable `lin_dperp`/`lin_dz`/`lin_kz` (≈ 0.03 u together).
+
+**What bounds it:** the same gradient working set as FD-z, and nothing else — the operator has
+left the accounting. The dense `lin_L`/`lin_m`/`lin_s2` that cost 6 u of arguments in the
+baseline are gone (Z1), and hoisting five stages of `exp(L·τ)` now costs **0.06 u** instead of
+the 22 u the putzer2 backend needed, because `SeparableExp` is `(nkx,nky) + 2×(nz,1,1)` reals
+per stage rather than four full-grid complex arrays.
+
+### GDI 2D 256² lsrk33, putzer2, hoisted — 41.130 u (35 lanes, lane-max sum 33.49 u, arena 26.00 u)
+
+| u | lanes | shape | what |
+|---|---|---|---|
+| 2.000 | 4 | `c64[2,1,256,129]` | **hoisted `Putzer2Exp` entries** `m00,m01,m10,m11`, stacked over the two scanned stages (`stack_exp_ops`) |
+| 1.000 | 7 | `c64[1,256,129]` | stage-0's four `Putzer2Exp` entries plus `_coeffs`' `cosh`/`sinhc`/`pref` intermediates |
+| 0.500 | 3 | `f32[1,256,129]` | real intermediates inside `_coeffs` (the `|z²| < tol` branch) |
+| 2.000 | 2 | `c64[2,1,256,129]` | LSRK stage-scan carry: `fields` and `delta` |
+| 2.000 | 1 | `c64[2,1,256,129]` | the stage's `EXPAPPLY` output |
+| 1.000 | 5 | `c64[1,256,129]` | per-component k-space gradient (three fields × two components) |
+| 0.992 | 3 | `f32[1,256,256]` | real-space gradient components |
+| 1.000 | 3 | `c64[256,129]` | `NonlinearTerm` k-space output/temporaries |
+
+args 11.131 u = `kgrid.lin_L` `c64[2,2,1,256,129]` **4.000** + `lin_m` 1.000 + `lin_s2` 1.000
++ fields 2.000 + `forcing_state` `c64[1,2,256,129]` 2.000 + `ksq`/`inv_ksq` 0.500 each +
+`dealias` 0.125. out 4.000 u = fields + forcing_state.
+
+**What bounds it:** the operator, not the RHS. The putzer2 propagator owns 16.5 u of the
+26.0 u temp arena (12 u of hoisted stage coefficients — four complex full-grid entries for
+stage 0 plus four stacked over the two scanned stages — and 4.5 u of `_coeffs` intermediates)
+and 6 u of the 11.1 u of arguments (`lin_L`/`lin_m`/`lin_s2`). The whole RHS working set —
+gradients, brackets, transforms — is under 10 u. `hoist_propagator=False` is NOT the memory
+knob here that the plan expects it to be: the same case with hoisting off measures 41.091 u,
+so hoisting is memory-neutral on this backend and grid (§2 has why, and the GPU contrast).
+
+### Two cases the memory probe has never carried
+
+| case | temp | args | out | total |
+|---|---|---|---|---|
+| z_spectral lsrk54, **elsasser forcing on** | 16.409 u | 2.301 u | 2.125 u | **20.836 u** |
+| the same case unforced (the row above) | 14.127 u | 2.235 u | 2.063 u | 18.425 u |
+
+**Forcing costs +2.41 u**, and every existing probe row runs unforced, so this has never been
+on the books. It is +0.066 u of arguments (`forcing_state` is `c64[2,2,128,65]` in elsasser
+mode against `c64[1,2,128,65]` in momentum), +0.062 u of output, and **+2.28 u of temp** — the
+O-U update, `reconstruct_envelope`, and the two full-grid reductions
+(`perp_inner_product`/`perp_mean_square`) that `selfnorm_scale` needs. The lane count goes from
+34 to 92: the forcing adds many sub-u lanes rather than one large one, and the largest new
+lanes are 2 u field-vector temporaries in the once-per-step `_advance_forcing`, not in the
+stage scan.
+
+**Snapshot peak sequence** (block → `save_snapshot` → block, device `peak_bytes_in_use`
+sampled at each stage): the driver runs it, and on CPU it reports null peaks with a note —
+`jax.local_devices()[0].memory_stats()` is unavailable on the CPU backend. This case exists for
+the GPU: the save materialises host copies of every state array while orbax holds its own
+buffers, so a run's true high-water mark can sit at the checkpoint rather than in the step,
+which a step-only probe cannot see. Run it on the P100 to get the number.
+
+### Cross-check against the committed probes
+
+`bench/memory_probe_p100_postFZ_fp32.json` is the committed post-plan probe (GPU, P100,
+fp32, 512²×128 for the RMHD rows and 1024² for GDI 2D):
+
+| path | this measurement (laptop, 128²×32 / 256²) | committed p100 postFZ (512²×128 / 1024²) |
+|---|---|---|
+| RMHD FD-z lsrk54 | 22.663 u | 20.096 u |
+| RMHD z_spectral lsrk54 hoisted | 18.425 u | 17.309 u |
+| GDI 2D lsrk33 hoisted | 41.130 u | 45.244 u |
+
+The RMHD rows sit 1.1–2.6 u above the GPU numbers, which is the per-grid constant overhead the
+plan's §0.4 note describes (the smaller grid pays proportionally more for the sub-u lanes and
+for the peeled-stage duplication); the structural counts — 8 co-live gradient pairs, 2 carry
+registers, one NL output per RHS instantiation — are identical. The GDI row moves the other
+way (41.1 laptop vs 45.2 p100) because its putzer2 coefficient arrays scale with the grid
+while `forcing_state` and the small kgrid entries do not.
+The FD-z total also reproduces the F4 phase's landed figure (22.663 u) exactly, on the same
+grid and tree.
+
+### Where the time goes
+
+Two independent methods, reported side by side because they disagree in known places.
+
+**Primary — ablation ladder.** One variant per process (the F3 trace-cache rule; no
+`jax.clear_caches()` anywhere), each variant swapping ONE part of the step for a cheap
+stand-in of identical shapes and dtypes, re-timing the same jitted `run.block_of_steps`.
+Five interleaved rounds (`acct_campaign.sh`, `NREP=21`, 240 measurements), so drift shows up
+as round-to-round scatter rather than as a bias on one variant; the tables quote the
+**minimum over rounds of the per-round minimum**, with the base row's round scatter as the
+noise floor — 0.74 ms on 44.60 (FD-z), 0.76 on 67.40 (z_spectral), 0.07 on 2.50 (GDI), i.e.
+1.7 / 1.1 / 2.8 %.
+
+**Cross-check — op-level XLA:CPU profile.** `jax.profiler.trace` on the *scoped* build emits
+one trace event per optimized-HLO instruction on the CPU backend, which rolls up by
+`named_scope` into a per-part share (`acct_profscope.py`). Two caveats: the summed op time is
+~1.9× the wall time because XLA:CPU runs the ops on a thread pool and the trace sums
+per-thread intervals — read the profile as **shares, not wall time**; and container ops
+(`while`) nest their body's duration and are excluded.
+
+Step times against the plan's §1 baseline, same grids and machine: FD-z lsrk54 79.7 → 45.6
+ms/step, z_spectral lsrk54 hoisted 98.2 → 68.7, z_spectral lsrk33 hoisted 64.2 → 39.6, GDI 2D
+256² lsrk33 4.07 → 2.65 (medians).
+
+### RMHD FD-z lsrk54 — 44.60 ms/step
+
+Build-up ladder (each row restores one part; monotone, every delta positive):
+
+| the step contains | ms/step | the part just added | % of base |
+|---|---|---|---|
+| stepper skeleton only (`norhs_noprop`) | 1.12 | scan machinery + `_replace` state updates | 2.5 |
+| + propagator apply (`norhs`) | 1.79 | diagonal `exp(L·τ)` apply | 1.5 |
+| + the FD-z linear term (`nonlin`) | 7.52 | z stencil + halo + field swap | 12.8 |
+| + the gradient/nonlinear pipeline = **base** | **44.60** | everything below | 83.1 |
+
+Inside the pipeline, by subtraction from base:
+
+| part | ms/step | % of base | op profile |
+|---|---|---|---|
+| inverse transforms (8 per stage, `noifft`) | 26.33 | 59.0 | 72.8 |
+| forward transform (2 fields, one op per stage, `nofft`) | 6.09 | 13.7 | 7.8 |
+| *both* (`notrans`) | 32.99 | 74.0 | 80.7 |
+| k-space gradient multiply `i·k·f̂` (`nogradk`) | 0.11 | 0.3 | 4.8 |
+| bracket ALU (`nobracket`, all operands still live) | −0.07 | −0.2 | 2.3 |
+| z stencil + halo (from the ladder) | 5.73 | 12.8 | 10.6 |
+| propagator (from the ladder) | 0.67 | 1.5 | 0.1 |
+| stepper skeleton (from the ladder) | 1.12 | 2.5 | 1.0 |
+| **residual** (dealias/`inv_ksq` scaling, the stacks, real-space traffic) | 3.97 | **8.9** | 0.5 (NL) |
+
+Rows sum to 100.0% with the residual carried explicitly. The residual and the two arithmetic
+rows are the one place the methods disagree, and they disagree consistently: the ablation
+credits 0.1% to the gradient multiply and the bracket where the profile credits 7.1%, and the
+ablation's 8.9% residual is that same work. The stand-ins keep every read and only cheapen the
+arithmetic (a complex scalar multiply instead of an `i·k_perp` broadcast array; three adds
+instead of two multiplies and a subtract), so their deltas are lower bounds on what the fused
+kernels actually spend there. Read the combined result as: transforms **74–81%**, z stencil +
+halo **11–13%**, gradient and bracket arithmetic **0–7%**, propagator **≤1.5%**, stepper
+**1–2.5%**.
+
+### RMHD z_spectral lsrk54, ν=η, hoisted — 67.40 ms/step
+
+| the step contains | ms/step | the part just added | % of base |
+|---|---|---|---|
+| stepper skeleton (`norhs_noprop`) | 1.10 | scan + state updates | 1.6 |
+| + propagator apply (`norhs`) | 5.35 | separable apply (2 complex mults + the `i` swap per stage) | 6.3 |
+| + the pipeline = **base** | **67.40** | | 92.1 |
+
+`nonlin` (5.34) reproduces `norhs` (5.35) to within noise, as it must: with no
+finite-difference-z term there is nothing between the two.
+
+| part | ms/step | % of base | op profile |
+|---|---|---|---|
+| inverse transforms (`noifft`) | 48.02 | 71.2 | 73.9 |
+| forward transform (`nofft`) | 11.42 | 16.9 | 11.5 |
+| *both* (`notrans`) | 56.86 | 84.4 | 85.4 |
+| propagator apply | 4.25 (build-up) / 9.23 (`noprop` subtraction) | 6.3–13.7 | 11.5 |
+| hoisted stage-coefficient formation (`noexpform`) | −0.02 | 0.0 | 0.03 |
+| k-space gradient multiply / bracket ALU | ≈ 0 | 0.0 | 2.0 |
+| stepper skeleton | 1.10 | 1.6 | 0.5 |
+| **residual** | 5.19 | **7.7** | 0.6 (NL) |
+
+**The z_spectral premium is now the transform, not the propagator.** At this grid the
+z_spectral step is 1.51× the FD-z step (67.40 vs 44.60 ms), and the gap decomposes as
+transforms +23.9 ms (the 3-D `rfftn` over (z,x,y) costs log₂(nz·nx·ny) where the FD-z mode
+pays nz × log₂(nx·ny)), propagator apply +3.6 ms, minus the 5.7 ms of z stencil and halo the
+spectral mode does not run — **+21.7 ms predicted against +22.8 ms measured**. That inverts
+the pre-Z1 finding recorded above ("of the +37 ms, 33.9 ms is the putzer2 matrix
+exponential"): the separable backend has taken the propagator out of the accounting on both
+axes, and what is left of the premium is irreducible transform work.
+
+### GDI 2D 256² lsrk33, putzer2, hoisted — 2.50 ms/step
+
+| the step contains | ms/step | the part just added | % of base |
+|---|---|---|---|
+| stepper skeleton (`norhs_noprop`) | 0.08 | scan + state updates | 3.2 |
+| + propagator apply and hoisted formation (`norhs`) | 0.55 | putzer2 2×2 apply + the once-per-block `_coeffs` | 18.8 |
+| + the pipeline = **base** | **2.50** | | 78.2 |
+
+| part | ms/step | % of base | op profile |
+|---|---|---|---|
+| inverse transforms (`noifft`) | 1.19 | 47.8 | 61.7 |
+| *both* transforms (`notrans`) | 1.70 | 68.2 | 74.7 |
+| forward transform (by difference) | 0.51 | 20.4 | 13.0 |
+| putzer2 apply | ≈ 0.40 | 16.0 | 15.3 |
+| hoisted `_coeffs` formation (`noexpform`) | 0.07 | 2.8 | 4.1 |
+| bracket ALU / gradient multiply | ≈ 0 | 0.0 | 2.5 |
+| stepper skeleton | 0.08 | 3.2 | 1.5 |
+| **residual** | 0.26 | **10.4** | 1.7 (NL) |
+
+The direct forward-transform stand-in is invalid at this shape — `nofft` lands **17% above**
+base, because a 256-wide strided reduction on XLA:CPU costs more than the `rfft2` it replaces.
+The 0.51 ms above is `notrans` minus `noifft`, and the op profile's 13.0% is the independent
+confirmation that the forward transform is real work here, not a measurement artifact.
+
+`hoist_propagator` on this path is worth **1.80×** in time (2.50 ms/step hoisted against 4.50
+unhoisted, `nblock=10`) and costs **nothing** in memory on this backend and grid: 41.130 u
+hoisted against 41.091 u unhoisted. That is not what the plan's §1 note predicts ("cost of
+True on putzer2: 4 complex arrays of L's full shape per stage") and not what the GPU shows —
+the committed `bench/memory_probe_p100_postFZ_fp32.json` has `gdi2d_1024_lsrk33` at 45.244 u
+hoisted against 38.242 u unhoisted, a real +7.0 u. The arena tables explain the CPU result:
+unhoisted, XLA keeps a 4.000 u copy of the dense `lin_L` plus seven 1 u `_coeffs` lanes live
+inside the stage scan, and those cost as much as the twelve 1 u-equivalents of hoisted stage
+coefficients they replace. The memory price of hoisting is a scheduler property, not an
+arithmetic one; size it on the GPU, per the plan's §0.5.
+
+### Adaptive `z_spectral` lsrk33 (`cfl_every=1`, nothing frozen) — 43.26 ms/step
+
+Recorded because it is the one production path where no propagator work is hoisted. Against
+the same scheme at fixed dt with hoisting (38.87 ms/step) the adaptive step costs **+11.3%**.
+
+| part | ms/step | % of base | op profile |
+|---|---|---|---|
+| transforms (`notrans`) | 35.83 | 82.8 | 80.3 |
+| per-stage separable coefficient formation (`noexpform`) | 5.43 | 12.6 | 12.4 |
+| propagator apply + formation (`noprop`, a subtraction row: over-counts) | 8.11 | 18.7 | 14.1 |
+| CFL dt: reduction, `allreduce_max`, the `minimum` (`nocfl`) | 1.51 | 3.5 | 0.4 |
+| stepper skeleton, bracket, gradient multiply, residual | ≈ 0.5 | ≈ 1 | 5.1 |
+
+The three exp/cos/sin evaluations per step cost **1.8 ms per stage** here (5.43 ms over three
+stages), and hoisting removes 4.4 of those 5.4 ms — the +11.3% above. The putzer2 backend paid
+~9 ms per stage for the same job at a comparable grid (the 2026-08-19 ablation above); that
+ratio is the separable operator's whole point. `nocfl` (3.5%) and the profile's `SETDT` (0.4%)
+bracket the adaptive dt itself: the ablation also removes the dependency that forces `grads`
+to be materialised before dt is known, so 0.4–3.5% is the honest range.
+
+### Two things the ablation ladder cannot measure
+
+**Removing a consumer can make the step slower.** Four FD-z variants land *above* the
+baseline: `noexpform` +28.8%, `nofdlin` +20.2%, `nozarith` +13.9%, `noprop` +8.5% (and GDI's
+`nofft` +17.0%). These are not noise — the base row's round scatter is 1.7% and these repeat
+across all five rounds. XLA re-fuses the RHS around whatever is left, and on FD-z the schedule
+it finds without the z-stencil's materialised halo slab, or without a real `exp(L·τ)` to
+multiply by, is worse than the production one. Any part whose ablation is non-monotone must be
+read from the build-up ladder or the op profile, never from base-minus-variant; that is the
+concrete form of the warning recorded above ("isolated timings mislead here, in both
+directions").
+
+**`GRAD_CHUNK > 1` loses on both axes on XLA CPU**, at every path measured — it is slower
+*and* larger, which settles the CPU half of F1's deferred trade:
+
+| path | `GRAD_CHUNK=1` | `=2` | `=4` |
+|---|---|---|---|
+| RMHD FD-z lsrk54 | 44.2 ms, 22.66 u | 67.9 ms, 24.66 u | 75.5 ms, 28.60 u |
+| RMHD z_spectral lsrk54 | 67.4 ms, 18.42 u | 78.5 ms, 21.39 u | 89.6 ms, 25.33 u |
+| GDI 2D 256² lsrk33 | 2.50 ms, 41.13 u | 3.69 ms, 43.11 u | 3.85 ms, 46.10 u |
+
+The intuition that batching the inverse transforms should pay — the op profile shows the
+per-component *inverse* transform costing ~3× the per-component *forward* one, and the forward
+is the batched op — is wrong: batching the inverses makes them worse, so the asymmetry belongs
+to `irfft2`/`irfftn` itself and not to how many components share an op. Whether the GPU agrees
+is still the open half of the trade.
+
+### Reproduce
+
+The whole accounting is packaged as the git-tracked driver `bench/step_accounting.py`, with a
+lugus-compatible `main(**kwargs)` and `memory` / `timing` / `both` modes; it carries the same
+six paths (the three above, the adaptive case, the forced case and the snapshot-peak
+sequence) and reproduces every total in §1 exactly, with `scope_neutral=true` on each.
+
+```
+python bench/step_accounting.py --mode memory --profile laptop
+python bench/step_accounting.py --mode timing --profile laptop --rounds 5   # quiet machine
+python bench/step_accounting.py --mode memory --paths zspec_forced,snapshot_peak
+python bench/step_accounting.py --mode both --profile p100 --precision 32 --rounds 3
+```
+
+The scratchpad scripts the 2026-08-20 numbers came from are listed in `README_accounting.md`;
+`S` is that directory. Nothing under `taranis/` is modified by any of them.
+
+```
+# memory: compile-only dump, then the lane / argument tables
+python $S/acct_dump.py  rmhd_fdz_128x32_lsrk54 $S/acct_fdz
+python $S/acct_scope.py rmhd_fdz_128x32_lsrk54 $S/acct_fdz_sc $S/acct_fdz   # asserts MATCH
+python $S/acct_table.py $S/acct_fdz_sc 0.4
+python $S/acct_args.py  $S/acct_fdz_sc
+#   (labels: rmhd_zspec_128x32_lsrk54_hoist1, gdi2d_256_lsrk33, gdi2d_256_lsrk33_hoist0)
+
+# time: one variant per process, then the interleaved campaign and its reduction
+python $S/acct_time.py rmhd_fdz_128x32_lsrk54 noifft 21
+zsh    $S/acct_ladder.sh          # first pass, one round
+zsh    $S/acct_campaign.sh        # 5 interleaved rounds -> acct_campaign.jsonl
+python $S/acct_analyze.py $S/acct_campaign.jsonl
+
+# op-level profile cross-check
+python $S/acct_profscope.py rmhd_fdz_128x32_lsrk54 /tmp/acct_pf_fdz
+```
+
+Raw results: `acct_ladder.jsonl`, `acct_campaign.jsonl` (240 measurements, 5 rounds),
+`acct_profiles.txt`, `acct_fdz_table.txt`, `acct_zspec_table.txt`, `acct_gdi_table.txt`,
+`acct_gdi0_table.txt`.
+
+Variant vocabulary in `acct_time.py`: `noifft`/`nofft`/`notrans` (transforms → a shape- and
+read-preserving reduction), `noifft_dead`/`nobracket_dead` (crude twins that also dead-code
+their producer, i.e. upper bounds), `nogradk` (the `i·k_perp` array multiply → a complex
+scalar), `nobracket` (2 mul + 1 sub → 3 adds, all operands live), `nozarith` (the 4th-order
+stencils → two of their operands, halo and concatenate kept), `nohalo`, `nofdlin`/`nonlin`
+(a term → zeros), `noprop` (`ExpOp.apply` → identity), `noexpform` (`Propagator.exp_op` →
+same-shaped constants), `norhs`/`norhs_noprop`, `nocfl`, `chunk2`/`chunk4`.
+
 ## Known, not done
 
 `run.py` calls `mngr.wait_until_finished()` immediately after every `save_snapshot`, which
