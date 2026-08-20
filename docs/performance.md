@@ -431,6 +431,15 @@ lsrk33 wins again by 4 U). **FD-z is a different regime:** the diagonal z-broadc
 nothing per stage, so hoisting is neither needed nor enabled there (`hoistable=False`), and
 the scheme choice is the classical one — lsrk33 for cost, lsrk54/rk44 for order.
 
+**DONE for RMHD ν=η (Z1, 2026-08-20): the Elsasser-separable backend landed** — see
+"Memory: where it goes and what was removed" below and docs/numerics.md for the
+derivation. Measured: z_spectral RMHD total 41.7 → 20.4 u at 128²×32 (scheme- and
+hoist-independent; the stage ExpOps are 0.02–0.10 u against putzer2's 3.4–27.3 u),
+fixed-dt step 0.94–0.98× and adaptive `cfl_every=1` 0.40–0.47× the pre-Z1 hoisted
+putzer2 step, HLO transcendentals down from 30 exp + 30 cos + 30 sin + 21 sqrt full-grid
+to one perp-plane exp plus exp/cos/sin on (nz,1,1) per stage. ν ≠ η and GDI stay on
+putzer2 — for those the paragraph below still describes what is available:
+
 **Available, not done — the adaptive `cfl_every=1` path.** Nothing is frozen there, so the
 per-stage evaluation stays and only a cheaper evaluation helps. Generic, no memory, any L:
 store `s = sqrt(s2)` at setup (kills the complex sqrt — its 7 sqrt/9 div/18 selects per mode —
@@ -501,6 +510,22 @@ exponents itself (the `_unroll_hoist{1,0}` rows: identical totals, identical spe
 both settings, both precisions). Memory in u reproduced identically (0.00 u per case) on a second
 machine and across jax 0.10.0/0.10.2 during Phase 0 validation — timings are this
 laptop's only.
+
+**What has been removed so far** (deltas at 128²×32 fp32, scratchpad post-phase probe
+runs vs the committed baselines):
+
+- **F1** (per-field gradient transforms, `grads` a tuple): FD-z 30.48 → 23.55 u,
+  z_spectral unhoisted 39.85 → 34.92 u, IMEX FD-z 28.48 → 22.57 u — the 8 u stacked
+  k-space gradient is gone, and on a bandwidth-bound CPU that was also an 18–31%
+  step-time win. `shared_physics.GRAD_CHUNK` (module constant, default 1 = per-component
+  transforms) batches fields per ifft for the GPU comparison; chunks 1/2/4 are bitwise
+  identical and chunk 4 reproduces the pre-F1 graph byte-exactly.
+- **Z1** (Elsasser-separable propagator, ν = η z_spectral RMHD): 34.92 → **20.35 u**,
+  identical for lsrk33/lsrk54 and hoist on/off (nothing scheme- or dt-dependent is
+  stored; the kgrid args block dropped 6 u and the per-stage putzer2 coefficient
+  temporaries went with the backend). Hoisted lsrk54's 61.97 u → the same 20.39 u.
+  Fixed-dt step 0.94–0.98× and adaptive 0.40–0.47× the pre-Z1 hoisted putzer2 step.
+  FD-z, 2D, GDI and ν ≠ η rows: unchanged to the last digit.
 
 **GPU baseline, G1 Kaggle P100 16 GB** (jax 0.11.1, isolated subprocess per case,
 `bench/memory_probe_p100_baseline_fp{32,64}.json`; fp32 at 512²×128 / GDI-2D 1024², u =
@@ -574,11 +599,13 @@ at the end of the run — was planned and never implemented. It needs care aroun
 
 **Savio GPU:** `comm_backend="jax"`, fp32 workloads, sizes per the cost table above.
 
-**z_spectral (single process):** run with `cfl_every > 1` or a fixed dt so the hoisted
-propagators (`hoist_propagator`, default on) apply — at adaptive `cfl_every=1` the step pays
-the full putzer2 coefficient cost every stage (~1.9× the FD-z step at 128²×16 on CPU); budget
-4·nstage complex full-grid arrays for the hoisted ops, or turn the knob off on a memory-bound
-grid.
+**z_spectral (single process):** at ν = η (equal `diss` entries) the separable backend
+(Z1, 2026-08-20) makes every step cheap — adaptive `cfl_every=1` included — at ~20 u
+total with nothing scheme-dependent stored; no hoisting trade-off to think about (the
+hoisted stage ops are ≤0.1 u and on by default). At ν ≠ η the putzer2 guidance still
+applies: run `cfl_every > 1` or fixed dt so hoisting amortises the coefficient cost, and
+budget 4·nstage complex full-grid arrays for the hoisted ops (or turn `hoist_propagator`
+off on a memory-bound grid).
 
 **fp64 GPU production** needs full-rate-fp64 hardware. Verified candidates as of
 2026-07-27: NASA HECC Cabeus (A100 NVLink, plus GH200 nodes), NSF ACCESS DeltaAI, TACC

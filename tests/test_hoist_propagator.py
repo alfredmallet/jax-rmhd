@@ -21,10 +21,12 @@
 #      (nothing is frozen), so the knob has no effect on that path -- bitwise.
 #   3. IMEX schemes never receive ExpOps (stage_exp_ops returns None for them) and are
 #      bitwise independent of the knob.
-#   4. stage_exp_ops returns one Putzer2Exp per stage with the right leading shape for a
-#      2x2 L, stacked cleanly for the scan xs, and None for a diagonal or separable L (not
-#      hoistable), for every IMEX scheme and with the knob off; IdentityExp/DiagonalExp
-#      apply as apply_exp does, bitwise (the contract the hoist rests on).
+#   4. stage_exp_ops returns one ExpOp per stage with the right leading shape, stacked
+#      cleanly for the scan xs -- a Putzer2Exp per stage for a 2x2 L, a SeparableExp (the
+#      small (nkx,nky) and (nz,1,1) coefficient arrays) for a separable L -- and None for a
+#      diagonal L (the one backend that is not hoistable), for every IMEX scheme and with
+#      the knob off; IdentityExp/DiagonalExp apply as apply_exp does, bitwise (the contract
+#      the hoist rests on).
 #   5. the knob round-trips through params.save / from_snapshot.
 #
 # mpirun-safe: every configuration is single-process-sized and the z_spectral cells are
@@ -66,8 +68,8 @@ def _end_fields(schemestr, nsteps=6, **kw):
 
 
 def _geoms():
-    # label -> ctx overrides; z_spectral is size==1 only. nu != eta is the putzer2 cell
-    # (nu == eta gets the separable backend, which is never hoisted).
+    # label -> ctx overrides; z_spectral is size==1 only. Both z_spectral cells are hoisted
+    # backends: nu == eta is separable, nu != eta is putzer2.
     g = {"2d": dict(dims=2, nx=16, ny=16),
          "3dfd": dict()}
     if mpi_size() == 1:

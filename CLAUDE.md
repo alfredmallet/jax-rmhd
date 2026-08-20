@@ -95,9 +95,11 @@ Equation sets register in `physics/__init__.py::equation_registry`:
 forcing_scale_func=None, halo_start_func=None, linear_matrix_func=None)` per `eqtype`.
 `term_funcs` are summed into the RHS (`construct_rhs`); the k-local LINEAR part is not an
 RHS term — `linear_matrix_func(kgrid, params) -> L` (convention `dt f = L f + N(f)`) is
-built once by `setup_kgrids` into `kgrid.lin_L`/`lin_m`/`lin_s2`, and the steppers apply
+built once by `setup_kgrids` into `kgrid.lin_L`/`lin_m`/`lin_s2` (dense) or
+`lin_dperp`/`lin_dz`/`lin_kz` (a `SeparableL` return), and the steppers apply
 it only through the `taranis.propagators` hook (`apply_exp`, `solve_shifted`, `scaled`;
-backend chosen by L's shape — diagonal 4-d, putzer2 2x2 5-d). Never reintroduce
+backend: a `SeparableL` → separable, a dense L by shape — diagonal 4-d, putzer2 2x2
+5-d; RMHD returns `SeparableL` for `z_spectral` with `diss[0]==diss[1]`). Never reintroduce
 `kgrid.hdiss` or read `lin_*` from a stepper directly; the op order inside `apply_exp` is
 the RMHD bitwise-equivalence gate (docs/numerics.md). **Term funcs take 5
 positional args** `(state, grads, kgrid, params, halo)` — declare `halo=None` and ignore
@@ -183,10 +185,13 @@ Two scheme families in `_scheme_registry`, one contract
 **Hoisted stage propagators** (`params.hoist_propagator`, default True): whenever dt is frozen
 over a block — fixed dt, or one `cfl_every` block — `run.py` forms every IF stage's
 `exp(L·tau)` ONCE per block (`timestepping.stage_exp_ops(kgrid, params, scheme, stepper, dt)`
-→ a tuple of `propagators.ExpOp` pytrees: `Putzer2Exp`/`DiagonalExp`/`IdentityExp`, each with
-`.apply(arr)`) and passes it to the stepper's `exp_ops=` kwarg (every stepper in the registry
-takes it; IMEX ignores it and `stage_exp_ops` returns None for them). **Only the putzer2
-backend is hoisted** (`prop.hoistable`): the diagonal backend is one real exp per mode per
+→ a tuple of `propagators.ExpOp` pytrees: `Putzer2Exp`/`SeparableExp`/`DiagonalExp`/
+`IdentityExp`, each with `.apply(arr)`) and passes it to the stepper's `exp_ops=` kwarg
+(every stepper in the registry takes it; IMEX ignores it and `stage_exp_ops` returns None
+for them). **The putzer2 and separable backends are hoisted** (`prop.hoistable`) — putzer2's
+ops are 4 complex full-grid arrays per stage (the memory trade below), the separable ops are
+`(nkx,nky) + 2×(nz,1,1)` reals per stage (~free; what hoisting amortises there is the
+per-stage exp/cos/sin evaluation). The diagonal backend is not: one real exp per mode per
 stage, z-broadcast for FD-z — nothing to gain — and leaving it in the stage keeps the FD-z/2D
 fixed-dt graph byte-identical to the pre-hoist solver (gate 6's reference: with a literal
 `gamma` XLA folds `(L·dt)·gamma` differently, 15 elements at 1e-23 in the 64² gate-6 config).
@@ -197,11 +202,13 @@ the legacy graph: the exponent evaluated inside each stage — under `lsrk_scan`
 stage scan, where `gamma` is a scanned value — which is what keeps `hoist_propagator=False`
 memory-light (XLA's own loop-invariant code motion would otherwise hoist ops formed outside
 the stage scan with static `gamma`; do not "simplify" the unhoisted branch into that form).
-Cost of True: 4 complex arrays of L's full shape per stage — the knob to turn off on a
-memory-bound z_spectral grid. Win: z_spectral RMHD 0.62× the step at fixed dt / `cfl_every>1`
+Cost of True on putzer2 (GDI-IF, ν≠η RMHD): 4 complex arrays of L's full shape per stage —
+the knob to turn off on a memory-bound grid; win 0.62× the step at fixed dt / `cfl_every>1`
 (the putzer2 complex sqrt/cosh/sinh per stage were ~34 of the 38 ms z_spectral premium;
 docs/performance.md "Where the z_spectral step's extra time goes"); nothing on adaptive
-`cfl_every=1` (nothing is frozen). Every `run.py` block function computes the ops OUTSIDE its
+`cfl_every=1` (nothing is frozen). On the separable backend (ν=η z_spectral RMHD) the cost
+is ≤0.1 u and the adaptive step needs no hoisting anyway (0.40–0.47× the old putzer2 step —
+docs/performance.md). Every `run.py` block function computes the ops OUTSIDE its
 step scan (`_hoisted_exp_ops` after `_block_dt`, or from `_fixed_dt(params)`) — keep it
 there, that placement is the whole point.
 

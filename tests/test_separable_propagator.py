@@ -238,6 +238,29 @@ def test_dense_operator_reproduces_the_dense_linear_matrix_bitwise():
                                np.asarray(reference)))
 
 
+def test_particle_psi_diagonal_reads_both_separable_terms():
+    # particles/fields._psi_linear_diagonal takes the psi diagonal of L, which on this
+    # backend is the SUM dperp + dz. z_diss_k != 0 is what makes dz nonzero, and every
+    # particle gate runs with it at 0, so this is the only check that the sum is a sum.
+    if mpi_size() > 1:
+        return
+    from taranis.particles import fields as pfields
+    params, kgrid = _ctx(**_ZS)
+    psi_diag = np.asarray(pfields._psi_linear_diagonal(kgrid, params))
+    dense_psi = np.asarray(propagators.dense_operator(kgrid)[1, 1])
+    dz = np.asarray(kgrid.lin_dz)
+    with checks() as c:
+        c.check("the dz term is actually nonzero here (z_diss_k != 0)",
+                float(np.max(np.abs(dz))) > 0.0, f"max|dz| = {np.max(np.abs(dz)):.3e}")
+        c.check("_psi_linear_diagonal == dense_operator[1,1] exactly",
+                np.array_equal(psi_diag, dense_psi),
+                f"max diff {float(np.max(np.abs(psi_diag - dense_psi))):.3e}")
+        # dperp alone (the term the sum could silently lose) is measurably different
+        c.check("dropping dz would be visible",
+                not np.array_equal(np.broadcast_to(np.asarray(kgrid.lin_dperp),
+                                                   psi_diag.shape), psi_diag))
+
+
 def _dense_linear_matrix(kgrid, params):
     # rmhd.linear_matrix's dense 2x2 form, cast exactly as grids._attach_linear_operator
     # casts it

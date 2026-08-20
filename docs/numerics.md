@@ -242,14 +242,18 @@ schemes — `solve_shifted(arr, a) = (I − a·L)⁻¹ arr`. No stepper sees a m
 propagator is `exp(L·τ)` and a damped mode has `Re λ(L) < 0`. (RMHD's `L` is exactly the
 old `hdiss`; the `∂ₜf + M f = 0` convention of the earlier gdi branch is *not* used here.)
 
-The backend is selected by the shape of `L`, which carries an optional z/kz axis
-(broadcast, size 1, whenever the operator is perpendicular-only):
+The backend is selected by what `linear_matrix_func` returns: a dense array dispatches on
+its shape, which carries an optional z/kz axis (broadcast, size 1, whenever the operator
+is perpendicular-only); a `SeparableL` NamedTuple selects the separable backend.
 
 - **diagonal**, `(nfields, nz-or-1, nkx, nky)`: `exp(L·τ)·arr`, elementwise.
 - **putzer2**, `(2, 2, nz-or-1, nkx, nky)`: the closed form
   `exp(Lτ) = e^{mτ}[cosh(sτ)·I + (sinh(sτ)/s)·(L − m·I)]` with `m = tr L/2` and
   `s² = m² − det L` (Putzer/Sylvester). No eigendecomposition and no eigenvector storage,
   and it is smooth through the defective points where an eigenbasis does not exist.
+- **separable**, `SeparableL(dperp, dz, kz)`: the exact factorised form for
+  `L = d·I + i·kz·σx` with real `d = dperp(k⊥) + dz(kz)` — z_spectral RMHD at ν = η.
+  Derivation and properties below.
 
 Two traps in the 2×2 form, both guarded in `tests/test_linear_propagator.py`:
 
@@ -281,6 +285,72 @@ evaluation: complex `cosh`/`sinh`/`sqrt`/`exp` per mode per stage, which is ~10 
 5 `cos`, 5 `sin`, 7 `sqrt` and 9 divides per mode once XLA has expanded them, against the 2
 complex exps the mathematics needs (docs/performance.md "Where the z_spectral step's extra
 time goes" has the numbers and the cheaper evaluations not yet taken).
+
+### The Elsasser-separable backend (z_spectral RMHD, ν = η)
+
+RMHD under `z_spectral` with `eqpars["diss"] = (ν, η)`, hyper order h and optional
+`z_diss_k` = zd has, in the `∂ₜf = L f + N` convention on fields (φ, ψ),
+
+```
+L = [[ −ν·k⊥^{2h} − zd·kz⁴ ,        i·kz         ],
+     [        i·kz          , −η·k⊥^{2h} − zd·kz⁴ ]]
+```
+
+with `kz` the Nyquist-zeroed `rmhd._kz_deriv`. At ν = η both diagonal entries are the
+same real `d(k⊥,kz) = dperp(k⊥) + dz(kz)`, so `L = d·I + i·kz·σx` — and the two terms
+commute (`d` is a scalar multiple of the identity at each mode), so the exponential
+factorises EXACTLY, with no splitting error:
+
+```
+exp(L·τ) = e^{dperp·τ} · e^{dz·τ} · [cos(kz·τ)·I + i·sin(kz·τ)·σx]
+```
+
+using `σx² = I`. "Elsasser" records where the exactness comes from: σx is diagonalised
+by `z± = φ ± ψ` with eigenvalues `d ± i·kz` — two independent damped waves — and the
+eigenvectors are the constant vectors (1, ±1), independent of k. The implementation
+stays in (φ, ψ) (the Elsasser transform would cost two full-grid adds per apply) and
+stores three small REAL arrays: `lin_dperp` (nkx,nky), `lin_dz` and `lin_kz` (nz,1,1) —
+against putzer2's 6 u of resident complex full-grid `lin_L/lin_m/lin_s2`. Per stage the
+propagator forms `P = exp(dperp·τ)`, `c = e^{dz·τ}cos(kz·τ)`, `s = e^{dz·τ}sin(kz·τ)`
+and applies `out₀ = P·(c·a₀ + i·(s·a₁))`, `out₁ = P·(i·(s·a₀) + c·a₁)`, the `i·` written
+as the real swap `x + iy → −y + ix`. The backend is hoistable: its whole stage stack is
+`nstage·(nkx·nky + 2·nz)` reals, and what hoisting amortises here is the per-stage
+exp/cos/sin evaluation, not full-grid streaming.
+
+**ν ≠ η limit.** Write `d± = (d_φ ± d_ψ)/2`; then `L = d₊·I + d₋·σz + i·kz·σx`, and σz
+does not commute with σx: the eigenvalues become `d₊ ± sqrt(d₋² − kz²)`, the eigenvectors
+depend on kz and the dissipation contrast, and the constant rotation no longer
+diagonalises L. That closed form is exactly what putzer2 evaluates, so ν ≠ η stays on
+putzer2 (selection at setup, comparing `diss[0] == diss[1]` as python floats). GDI's L is
+genuinely full-grid and is untouched.
+
+**`solve_shifted`, and the no-pole property.** From
+`(A·I + iB·σx)(A·I − iB·σx) = (A² + B²)·I`:
+
+```
+(I − a·L)⁻¹ = [(1 − a·d)·I + i·a·kz·σx] / ((1 − a·d)² + (a·kz)²)
+```
+
+`d ≤ 0` everywhere (ν, zd ≥ 0), so for a > 0 the denominator is ≥ (1 − a·d)² ≥ 1: the
+separable `solve_shifted` divides by nothing smaller than 1. This retires, for this path,
+one of the two documented NaN traps above — putzer2's `det(I − a·L) = 0` at λ = 1/a
+(reachable at large fixed dt). The overflow trap is retired too: `e^{dperp·τ}` and
+`e^{dz·τ}` are exponentials of negative reals — they underflow to 0, never overflow —
+where cosh/sinh overflow at |Re(sτ)| ~ 710 (fp64) / 88 (fp32).
+
+**Reality, and why the setup check is analytic.** The rfft layout's self-conjugate rows
+require `L(−kx, −kz, ky) = conj(L(kx, kz, ky))` there, which for the separable form is
+three elementary conditions: `dperp` mirror-symmetric in kx (true by construction — it
+depends on kx²), `dz` mirror-symmetric in kz (kz⁴), and `kz` mirror-ANTIsymmetric
+(`kz[−j] = −kz[j]`, so `i·kz → conj(i·kz)`). The antisymmetry check subsumes the
+Nyquist rule: the mirror maps index 0 and nz/2 to themselves, forcing kz = 0 at both —
+`kz[0] = 0` holds anyway and `kz[nz/2]` is zeroed by `_kz_deriv`. These are checked on
+plane-sized arrays at setup; the dense operator (4 u, and transiently doubled by
+`_check_hermitian_compatible`'s host-numpy mirror) is never materialised — the
+`propagators.dense_operator` helper exists for tests and `particles/fields.py` only.
+The same `_kz_deriv` array feeds the off-diagonal and the kz⁴ term, exactly as the dense
+path does, which is why `dense_operator` of the separable entries reproduces the dense L
+bitwise.
 
 ## Stochastic forcing
 
