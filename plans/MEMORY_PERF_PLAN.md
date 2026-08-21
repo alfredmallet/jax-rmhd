@@ -797,7 +797,7 @@ sizes from):
 
 | path | before | after | step time |
 |---|---|---|---|
-| RMHD z_spectral ν=η, any IF scheme | 30–70 u on GPU, 39.8–62 u on CPU (scheme- and hoist-dependent) | **17.3 u** on both cards, 18.4 u on CPU — scheme-, hoist- and dt-independent | 0.72–0.98× fixed dt, **0.43–0.47×** adaptive `cfl_every=1` |
+| RMHD z_spectral ν=η, any IF scheme | 36–70 u on GPU for the IF schemes (30.3 for IMEX), 39.8–62 u on CPU (scheme- and hoist-dependent) | **17.3 u** on both cards, 18.4 u on CPU — scheme-, hoist- and dt-independent | 0.72–0.98× fixed dt, **0.43–0.47×** adaptive `cfl_every=1` |
 | RMHD z_spectral ν≠η (putzer2) | 54.2 u | 43.3 u (P100) | 0.79–0.81× |
 | RMHD FD-z | 28–30 u | **20.1 u** (P100) / 17.1 u (2080Ti) / 22.7 u (CPU) | 0.91× (2080Ti); 0.80–0.88× on CPU, from F3's `cond` removal |
 | GDI 2D (IF/putzer2) | 53.6 u (P100, 1024²) | 45.2 u (P100) | 0.68× fp64 / 0.76× fp32 adaptive (CPU, 512²) |
@@ -841,3 +841,7 @@ identity of `block_of_steps` (FD-z, lsrk33/lsrk54/imexcb3e) against the pre-dele
 GPU schedulers already do better than the CPU one there, so the gap is a scheduler question,
 not a code one. `imexcb3f`'s unrolled [3R] loop (§6) is still 2.2× the [2R] steppers and
 still not worth scanning unless someone runs cb3f.
+
+(Recorded exception, per §9.2: at the shipped GRAD_CHUNK=1 default the P100 FD-z step
+is ~1.04× baseline — that card wants GRAD_CHUNK=2, 3–20% faster there; CPU and the
+2080Ti are faster at the default.)

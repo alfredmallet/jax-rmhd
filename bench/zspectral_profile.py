@@ -170,7 +170,7 @@ def _ablation_ms(p, kg, state):
     P = propagators.Putzer2Propagator
     orig_coeffs, orig_apply = P._coeffs, P.apply_exp
 
-    def no_transcendental(self, tau):        # drop the complex sqrt/cosh/sinh
+    def no_transcendental(self, tau):        # drop the putzer2 coefficient evaluation
         one = jnp.ones_like(self.m)
         return one, tau*one
 
@@ -187,7 +187,7 @@ def _ablation_ms(p, kg, state):
         out["baseline (production)"] = _step_ms(p, kg, state)[0]
         P._coeffs = no_transcendental
         jax.clear_caches()
-        out["- complex sqrt/cosh/sinh"] = _step_ms(p, kg, state)[0]
+        out["- putzer2 coefficient evaluation"] = _step_ms(p, kg, state)[0]
         P._coeffs = orig_coeffs
         P.apply_exp = apply_mults_only
         jax.clear_caches()

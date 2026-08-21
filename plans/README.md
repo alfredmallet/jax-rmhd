@@ -30,8 +30,9 @@ were corrected on the way out (see below).
 
 - **MEMORY_PERF_PLAN.md** (closed 2026-08-20) — memory and step-time reduction for FD-z
   (F1–F4) and z_spectral (Z1–Z3), with the two-card GPU assessment (Kaggle P100 via lugus,
-  Savio GTX 2080Ti). Outcome: z_spectral RMHD 62 → 17–18 u, FD-z 30 → 20–23 u, and every
-  path 0.43–0.97× its old step time; all §9 decisions closed (GRAD_CHUNK stays 1,
+  Savio GTX 2080Ti). Outcome: z_spectral RMHD 62 → 17–18 u, FD-z 30 → 17–23 u (platform-dependent), and every production path 0.43–0.98× its old step time (one recorded exception: at the
+  default GRAD_CHUNK=1 the P100 FD-z step is ~1.04× — the §9.2 device split; set
+  GRAD_CHUNK=2 there to recover it); all §9 decisions closed (GRAD_CHUNK stays 1,
   `hoist_propagator` kept and documented putzer2-only, the block stencil deleted). The
   durable record is in `docs/performance.md` ("Memory: where it goes and what was removed",
   the accounting section, "Tuning knobs, measured") and `docs/numerics.md` (separable
