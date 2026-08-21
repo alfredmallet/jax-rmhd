@@ -408,3 +408,89 @@ Item 5 is independent of items 1–4 and touches only `Recorder`, which items 1�
 It should be done **last or in a separate branch**: it is the only item that can regress
 something already shipped and already fixed twice on-device (RECRAF, RECASYNC), so it wants
 its own on-device pass rather than sharing one with four unrelated changes.
+
+## EXECUTION NOTES (2026-08-20)
+
+Executed on branch `io-plan-exec`, five commits, one per item bar 2+3 which shared the
+result-strip refactor: `c8e264c` (items 2+3 and the gate repairs below), `1957103` (item 1),
+`79956dd` (item 4), `b974a5a` (item 5). Item 1 and item 5 were built in worktrees off the
+main line and merged; the only conflicts were three places where two items appended to the
+same UI row table and the same `docs.html` section, resolved by union. The sequencing the
+plan proposed held: item 2 first did shake out the shared strip, and the ZIP writer built
+once for item 3 needed nothing added for item 4.
+
+**Two corrections to this plan's own text.**
+
+- **The amp-row instruction in item 1 is wrong.** The plan says the expression preset "must
+  be added to that predicate" (`icIsPacketIC(p) || p === "custom"`). That predicate is a
+  SHOW test: adding `expr` to it would have shown the φ amp / ψ amp rows, the opposite of
+  what item 1 wants. `expr` belongs OUTSIDE it, exactly as the equilibria do, and that is
+  what shipped. The paragraph's premise — that a builder's `rows` list does not control the
+  amp rows — is correct; only the prescription was inverted.
+- **The evaluator cost estimate is optimistic by 2–3×.** Measured, with the node harness's
+  cross-realm `Math` tax (83 ns/call against 7 ns native, 12×) separated out: **≈140 ms at
+  1024²** against the plan's "tens of ms", and **≈560 ms at 256²×64** against "~200 ms".
+  The design conclusion is unchanged — it is one button press, not a frame — but closing
+  that gap would need compiling to JS through `new Function`, which item 1 forbids for
+  reasons that still hold. Quote the measured numbers, not the plan's.
+
+**The gate board was not green when this started, and three of the four reds were real
+debt.** Found before any work landed, repaired in `c8e264c`, each with its teeth
+demonstrated by breaking the code and watching the gate go red:
+
+- `checkiso`, `checkeigf` and `check2dspec` pinned the emitted 2D `prepDisp` against commits
+  older than the perp-offsets change (`268100f`). The entire difference is that commit's
+  `bpad` → `sh` struct rename plus its 8-line `e^{-i k.S}` block; the rename is a base line
+  MOVING, which an insertion-only comparison cannot express. `checkiso`'s neighbouring leg —
+  the emitted kernel EXECUTED and compared bit for bit — passed throughout, which is what
+  said the arithmetic was untouched and the text pin was merely stale. Repaired through one
+  shared `devtools/dispoffsets.js` that reconstructs base + that exact change; the two other
+  gates now also assert POSITIVELY that all 4 of 4 `prepDisp` emissions carry the offset, so
+  a vanished block cannot pass as "nothing moved". Bases were NOT rebased forward — that
+  would have deleted the gates.
+- `checkoff`'s slider-visibility leg spelled "visible" as `style.display === ""`, which under
+  the stub reads `undefined` for a property the app never assigns. It had **never passed**,
+  including at the commit that introduced it.
+- `cmapcheck` wrote its reference into a directory it never created.
+- `checkmp4` needs ffmpeg/ffprobe, absent on the laptop; an isolated conda env fixes it.
+
+Worth knowing for the next phase: when `devtools/node_modules` is missing (it is gitignored,
+so any fresh sandbox lacks it) `checkoff` silently drops from 29 assertions to 23 — the whole
+executed-arithmetic section vanishes without the board going red for it.
+
+**Deviations from the plan, all deliberate.**
+
+- **Item 2's save button sits in the chart card's HEADER**, not mirroring the display card's
+  footer capture group — a chart card has no `.viewfoot` capture group to mirror. Two-line
+  move if that is wrong.
+- **Items 3, 4 and 5 deliver onto a PAGE-level result strip**, not a card's. A save-all, a
+  field export and an all-displays recording belong to no single card, and parking them on
+  one card's footer would lose the file when that card is closed. `cardResult` asks its host
+  for only `foot`, a `resEl` slot and `dead`, so the page satisfies that interface directly.
+- **Item 4 needed a FOURTH mode uniform, not a third.** φ and ψ are pinned separately
+  (`modeX`, `modeX2`) so both fields come from one compute pass with both readbacks submitted
+  before the first await — which is what makes them the same instant of the run.
+- **Item 5: a display card closed mid-recording ends the take and keeps the file.** The
+  encoder's frame size cannot change, so a vanished source could only be covered with a stale
+  or blank tile — a picture that lies — and stopping silently would lose the take. The
+  watchdog does not feed a composite either (it builds a `VideoFrame` from one canvas, and a
+  composite has none): fewer frames, never stretched.
+- **Item 5 took the plan's preferred leg-2 option**: the action is offered only where the
+  WebCodecs leg runs. Single-card recording is untouched everywhere else.
+
+**Measured, against what the plan guessed.**
+
+| quantity | plan | measured |
+|---|---|---|
+| `.npz`, 2D 512² | ≈2 MB | 2.10 MB |
+| `.npz`, 3D 256²×64 | ≈32 MB | 33.56 MB |
+| ZIP format overhead | — | 106 B/member (76 + 2×name + 22/n) |
+| composite stitch, 1 source | — | 0.000 ms (fast path, no copy) |
+| composite stitch, 3×1024² | ~2 ms/extra source | 1.86 ms |
+| expression eval, 1024² | "tens of ms" | ≈140 ms |
+
+**Still owed.** The whole on-device checklist above — nothing in it has been run. Alfred's
+copy pass on the new `docs.html` text, which is marked DRAFT in the source in all four
+places. And the two open UI questions the plan itself parked: the discoverability of **edit
+IC** (item 1's preamble) and whether a preset should open on the imbalanced z±
+configuration that makes item 5 self-demonstrating.
