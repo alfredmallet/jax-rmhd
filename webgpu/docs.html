@@ -219,8 +219,7 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     Unlike the drawing, nothing is rescaled afterwards &mdash; what you write is what
     runs, so the numbers in the formula <i>are</i> the amplitude.</p>
   <p><b>When it takes effect.</b> A formula is applied when you press Enter in the box or
-    click away from it, and again every time you press <b>Reset</b> &mdash; not on every
-    keystroke, so a half-finished formula never restarts the run. The error line below
+    click away from it, and again every time you press <b>Reset</b>. The error line below
     still updates as you type; it is only the applying that waits.</p>
   <p><b>The coordinates are the box's own.</b> <code>x</code> runs from 0 up to
     <code>Lx</code>, <code>y</code> up to <code>Ly</code>, and in the 3D app <code>z</code>
@@ -237,18 +236,12 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     logarithm</b> &mdash; use <code>log10</code> if you want base 10. <code>mod</code>
     follows the sign of the second argument, which is the useful convention on a periodic
     coordinate. <code>^</code> is a power, and it binds tightly: <code>-x^2</code> is
-    &minus;(x&sup2;), and <code>2^3^2</code> is 2<sup>9</sup>. There is deliberately no
-    random-number function: the same text should always give the same run.</p>
-  <p>If something is mistyped you get one line under the boxes saying what and where
-    &mdash; <i>unknown name 'sn' at character 8</i> &mdash; as you type, before you press
-    anything.</p>
-  <p><b>The one thing that is refused.</b> If the formula is infinite, undefined, or
+    &minus;(x&sup2;), and <code>2^3^2</code> is 2<sup>9</sup>.</p>
+  <p><b>Refused functions.</b> If the formula is infinite, undefined, or
     simply too big to store anywhere on the grid &mdash; <code>1/x</code> at
     x&nbsp;=&nbsp;0, <code>log(y)</code> at y&nbsp;=&nbsp;0, <code>exp(100)</code>
     anywhere &mdash; that field is not uploaded, and the line tells you how many
-    points and where the first one is. This is not fussiness: a single undefined value
-    goes through the transform into every wave in the box, and the run would be dead from
-    the first step while still looking like it was working.</p>
+    points and where the first one is.</p>
   <p><b>The periodicity warning.</b> The box wraps: the right edge is glued to the left
     edge, the top to the bottom, and in 3D the two ends along z. Your formula does not
     have to respect that, and if it does not you get a line saying which seam it fails on
@@ -779,9 +772,10 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     for example <code>taranis-rmhd2d-fields-t12.500.npz</code>. It is one moment, not a
     time series. Expect about 2 MB from a 512&sup2; 2D run and around 30 MB from the
     largest 3D box, so on a phone it is worth watching which one you press.</p>
-  <p>Three lines read it, and the coordinate vectors are in the file so you do not have to
+  <p>Four lines read it, and the coordinate vectors are in the file so you do not have to
     rebuild the grid:</p>
   <p><code>import numpy as np</code><br>
+    <code>import matplotlib.pyplot as plt</code><br>
     <code>d = np.load("taranis-rmhd2d-fields-t12.500.npz")</code><br>
     <code>plt.pcolormesh(d["x"], d["y"], d["phi"].T)</code></p>
   <p><b>The axis order.</b> In 2D <code>phi</code> and <code>psi</code> have shape
