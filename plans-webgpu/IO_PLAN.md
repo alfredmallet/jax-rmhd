@@ -494,3 +494,51 @@ copy pass on the new `docs.html` text, which is marked DRAFT in the source in al
 places. And the two open UI questions the plan itself parked: the discoverability of **edit
 IC** (item 1's preamble) and whether a preset should open on the imbalanced z±
 configuration that makes item 5 self-demonstrating.
+
+### Review round (2026-08-21)
+
+Three fresh adversarial reviews, one per scope, each required to mutate the code and prove
+the new gates go red. They found **5 MAJOR**, all now fixed and gated; every fix was
+demonstrated red-on-revert. The two that were real defects rather than missing teeth:
+
+- **The non-finite guard tested a double and stored a float32.** `exp(100)`, `10^40` and —
+  the one a person would actually type — `exp(x*100)` passed `isFinite` and landed as
+  `Infinity` in the uploaded field, with **no warning at all**: the exact silent death from
+  step 0 the guard was written to prevent, plus a suppressed seam warning as a side effect.
+- **`recCapture` lacked `recTick`'s `!W.cv` guard**, so a composite take latched off the
+  buffer path fed `VideoFrame(null)`. Three shipped catches can latch it, including
+  `recPoolMake`'s OOM — the 36 MB phone case. On a real engine that throws once per due slot
+  for the rest of the take, past the queue check, so `W.drop` never advances: a silent stall
+  and a lying sample table, the RECRAF/RECASYNC failure exactly.
+
+The other three MAJORs were gates that only looked like they tested something, which is the
+more transferable lesson:
+
+- **`checkzip`'s axis-order legs were vacuous** because both booted pages happen to run
+  `nx == ny` and `Lx == Ly`, and the expected array was built from the file's own shape —
+  self-consistent for any shape. A transposed shape tuple and swapped `x`/`y` members each
+  passed 126/126. Non-square boxes ship and are preset-reachable. Fixed by building the
+  expectation independently and adding a section that reruns the file legs on a wide 2D box
+  and a non-cubic 3D grid.
+- **The `compress_size` contract had no teeth**: Python's `zipfile` ignores that field for
+  stored members, so writing zero stayed green while Info-ZIP rejects the archive outright.
+  Asserting it through Python was still not enough — the mutation lives in the LOCAL header
+  and `zipfile` reads only the central directory. The gate now unpacks each local header by
+  hand against the central directory's copy, and runs `unzip -t` as a second, independent
+  reader. **One reader shares your blind spots**; that is the argument for the external leg,
+  and it needed two readers to land.
+- **`params.json` dropped the expression text**, so an `expr` run was unreproducible from its
+  own archive — a cross-item integration miss (expressions landed after the manifest), which
+  is the seam a per-item brief does not cover.
+
+Two smaller ones worth carrying forward: the perf assertions in `checkexpr` were absolute
+millisecond ceilings that fail on a busy machine — the way a real gate gets ignored — and are
+now ratios against a same-process calibration (survives 9x CPU contention, still catches a
+1.79x dispatch regression); and `recBlitPatch` clipped labels to the FRAME rather than the
+tile, invisible today only because the blit is interleaved with the row copy, so a natural
+future tidy would have leaked labels into neighbouring tiles.
+
+**Gate growth over the whole plan**: `checkzip` 0 -> 189, `checkexpr` 0 -> 97, `checkrecall`
+0 -> 121, `checkchartsave` 0 -> 43, plus the four pre-existing gates repaired at the start.
+Board 22/22 green, `dup.py` 0 clone groups, WGSL byte-identical on both pages throughout,
+`physics.js` never touched.
