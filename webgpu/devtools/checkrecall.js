@@ -2,15 +2,20 @@
 //
 // Section A is the TILER and the COMPOSITOR alone: synthetic byte patterns in, one
 // composite out, every row asserted at its expected offset, for BOTH layouts (a row and
-// a column), padded rows, the halved tiles and the label blit. Nothing there needs a
+// a column), padded rows, the halved tiles, a source with no pixels, the label blit
+// clipped to its own TILE (recCompose overwrites a bleed, so that one is asserted on
+// recBlitPatch itself) and the take's reused composite scratch. Nothing there needs a
 // page, a GPU or an encoder -- it is the arithmetic the whole feature rests on.
 //
 // Section B is the action on a booted page. It asserts on the FILE and on the take's own
-// state, never on a handler having run, and it drives the four failure modes that matter:
-// an all-or-nothing slot (one source fails, the WHOLE slot goes and W.n does not move),
-// the isConfigSupported refusal (tiles halve, the card list does NOT), a card closed
-// mid-recording, and -- because the no-fork rule means the single-card recorder was
-// refactored underneath -- that a card's own `rec` still records exactly its own canvas.
+// state, never on a handler having run, and it drives the failure modes that matter:
+// an all-or-nothing slot (one source fails, the WHOLE slot goes and W.n does not move) in
+// its three forms -- a resized source, a rejected map, and the buffer path latched off,
+// where a composite has no canvas to fall back to and simply keeps dropping -- the
+// isConfigSupported refusal (tiles halve, the card list does NOT), a field retyped under
+// a live take (the caption follows the pixels), a card closed mid-recording, and --
+// because the no-fork rule means the single-card recorder was refactored underneath --
+// that a card's own `rec` still records exactly its own canvas, sync fallback included.
 //
 // Run: node devtools/checkrecall.js [dir]
 "use strict";
@@ -71,6 +76,15 @@ function tilerLegs(env) {
      mixed === null, JSON.stringify(mixed));
   const none = env.run("function(){ return recTiles([]); }");
   ok("no sources at all is no layout", none === null);
+  // ... and a source with NO PIXELS is refused the same way rather than dropped out of
+  // the list: a card list quietly one short is the silent cap this must not have
+  const zero = env.run(`function(){ return [
+    recTiles([{ cv: { width: 512, height: 512 } }, { cv: { width: 0, height: 0 } }]),
+    recTiles([{ cv: { width: 0, height: 512 } }]),
+    recTiles([{}])]; }`);
+  ok("a source with no pixels (or no canvas) refuses the layout -- it is never dropped "
+     + "quietly out of the card list",
+     zero.length === 3 && zero.every(x => x === null), JSON.stringify(zero));
 
   // 3. the halved fallback: the TILES halve, the card list never does
   const half = env.run(`function(){
@@ -178,6 +192,68 @@ function tilerLegs(env) {
     return { len: out.length, w: L.w, h: L.h }; }`);
   ok("a label wider and taller than its frame is clipped, not written out of bounds",
      clip.len === clip.w * clip.h * 4, JSON.stringify(clip));
+
+  // 7. ... and clipped to its own TILE, not merely to the frame. recCompose interleaves
+  //    the blits with the row copies, so a bleed into the NEXT tile is overwritten there
+  //    and invisible -- which is exactly why this is asserted on recBlitPatch itself,
+  //    where the arithmetic lives, rather than through a composite that hides it.
+  const bleed = (sw, sh) => env.run(`function(sw, sh){
+    const L = recTiles([{ cv: { width: sw, height: sh } }, { cv: { width: sw, height: sh } }]);
+    const row = L.w * 4, out = new Uint8Array(row * L.h);
+    const p = { w: 4 * L.tw, h: 4 * L.th, bytes: new Uint8Array(4 * 4 * L.tw * 4 * L.th).fill(7) };
+    const t = L.tiles[0];
+    recBlitPatch(out, row, p, t.x + REC_LBL_PAD, t.y + REC_LBL_PAD,
+                 L.tw - REC_LBL_PAD, L.th - REC_LBL_PAD);
+    let drawn = 0, out_of_tile = 0;
+    for (let y = 0; y < L.h; y++) for (let x = 0; x < L.w; x++) {
+      if (out[y * row + 4 * x] !== 7) continue;
+      drawn++;
+      if (x >= L.tw || y >= L.th) out_of_tile++;
+    }
+    return { w: L.w, h: L.h, tw: L.tw, th: L.th, cols: L.cols, drawn: drawn,
+             out: out_of_tile, want: (L.tw - REC_LBL_PAD) * (L.th - REC_LBL_PAD) }; }`,
+    sw, sh);
+  for (const [sw, sh, shape] of [[64, 32, "column"], [32, 64, "row"]]) {
+    const b = bleed(sw, sh);
+    ok("a label bigger than its tile stops at the TILE edge, not the frame's (" + shape + ")",
+       b.drawn === b.want && b.out === 0,
+       JSON.stringify({ drawn: b.drawn, want: b.want, spilled: b.out,
+                        tile: b.tw + "x" + b.th, frame: b.w + "x" + b.h }));
+  }
+
+  // 8. ONE composite buffer per take, reused every slot: a 3x1024^2 frame is 12 MB, so
+  //    allocating one per slot is ~360 MB/s of garbage at 30 fps. The bytes must be
+  //    identical to what a fresh allocation gives, or the reuse is leaking a frame.
+  const reuse = env.run(`function(sw, sh, bpr, n){
+    const cs = []; for (let i = 0; i < n; i++) cs.push({ cv: { width: sw, height: sh } });
+    let L = recTiles(cs); L.bpr = bpr;
+    const ranges = [];
+    for (let i = 0; i < n; i++) {
+      const b = new Uint8Array(bpr * sh);
+      for (let k = 0; k < b.length; k++) b[k] = (k * 7 + 1 + 31 * i) & 255;
+      ranges.push(b.buffer);
+    }
+    const scratch = new Uint8Array(L.w * 4 * L.h);
+    const a = recCompose(L, ranges, scratch), b2 = recCompose(L, ranges, scratch);
+    const fresh = recCompose(L, ranges);
+    return { reused: a === scratch && b2 === scratch, fresh: fresh !== scratch,
+             same: Array.from(a).join() === Array.from(fresh).join(),
+             len: a.length, want: L.w * 4 * L.h }; }`, 4, 6, 256, 2);
+  ok("a composite handed a scratch buffer WRITES INTO IT and allocates nothing per slot",
+     reuse.reused && reuse.fresh && reuse.len === reuse.want, JSON.stringify(reuse));
+  ok("... and the bytes are exactly what a freshly allocated frame holds", reuse.same);
+  // the one-tile PADDED slot is not the fast path (it has to compact the rows), so it
+  // composites -- and must compose the same bytes with the scratch as without it
+  const pad1 = env.run(`function(){
+    const L = recTiles([{ cv: { width: 4, height: 3 } }]); L.bpr = 256;
+    const b = new Uint8Array(256 * 3);
+    for (let k = 0; k < b.length; k++) b[k] = (k * 13 + 5) & 255;
+    const scratch = new Uint8Array(L.w * 4 * L.h);
+    const a = recCompose(L, [b.buffer], scratch), fresh = recCompose(L, [b.buffer]);
+    return { reused: a === scratch, len: a.length, want: L.w * 4 * L.h,
+             same: Array.from(a).join() === Array.from(fresh).join() }; }`);
+  ok("a ONE-tile padded slot composes identically with the scratch and without it",
+     pad1.reused && pad1.same && pad1.len === pad1.want, JSON.stringify(pad1));
 }
 
 // ===========================================================================
@@ -278,6 +354,11 @@ async function pageLegs(name) {
      T0.bufOn && !T0.cv && /-displays-t/.test(T0.name) && /\.mp4$/.test(T0.name), T0.name);
   ok("each tile carries a label patch (the picture would be ambiguous without one)",
      T0.labels.length === 2 && T0.labels.every(Boolean), JSON.stringify(T0.labels));
+  const lab0 = env.run(`function(){ const W = recAll.recorder.wc;
+    return { on: W.tiles.map(t => t.label && t.label.text),
+             want: cards.disp.map(d => DISP_SLUG[d.barMode >= 0 ? d.barMode : d.sel()]) }; }`);
+  ok("... naming the field that tile is showing",
+     JSON.stringify(lab0.on) === JSON.stringify(lab0.want), JSON.stringify(lab0));
   ok("the button says it is live", btn(env).live);
 
   // the render gate: every source of a live take must render, or the slot would capture
@@ -348,8 +429,53 @@ async function pageLegs(name) {
      rej.busy === 1 && afterRej.n === landed.n && afterRej.drop > afterResize.drop &&
      afterRej.busy === 0,
      JSON.stringify({ n: afterRej.n, drop: afterRej.drop, busy: afterRej.busy }));
+  // (c) the take LATCHES OFF the buffer path. Three shipped catches do it mid-take
+  //     (recPoolMake's OOM, a thrown copy, a failed compose) and a take can start with it
+  //     off; the fallback is the SYNC canvas path, which needs the one canvas a composite
+  //     has not got. Every remaining slot is therefore a drop -- never `VideoFrame(null)`,
+  //     which on a real engine throws once per due slot for the rest of the take.
+  const nFrL = env.caps.frames.length, fails0 = env.fails.length;
+  const latched = env.run(`function(){ const W = recAll.recorder.wc;
+    W.bufOn = false;
+    const b = { n: W.n, drop: W.drop, chunks: W.chunks.length };
+    renderCards(false); renderCards(false);
+    const a = { n: W.n, drop: W.drop, chunks: W.chunks.length, cv: W.cv };
+    W.bufOn = true;
+    return { b: b, a: a }; }`);
+  ok("a composite that has latched OFF the buffer path DROPS its due slots: no frame is "
+     + "built, W.n does not move, and nothing is asked of a canvas it has not got",
+     latched.a.cv === null && latched.a.n === latched.b.n &&
+     latched.a.chunks === latched.b.chunks && latched.a.drop > latched.b.drop &&
+     env.caps.frames.length === nFrL && env.fails.length === fails0,
+     JSON.stringify({ n: latched.a.n - latched.b.n, drop: latched.a.drop - latched.b.drop,
+                      frames: env.caps.frames.length - nFrL,
+                      fails: env.fails.slice(fails0) }));
+
+  // ---- 3b. the caption follows the field --------------------------------------
+  // The field select stays LIVE under a take and the tile's pixels move with it, so the
+  // label has to move too -- otherwise tile 0 shows vorticity captioned `u` for the rest
+  // of the recording. The patches are rendered ONCE at start; this is the one thing that
+  // re-renders one.
+  const relab = env.run(`function(){ const W = recAll.recorder.wc, d = cards.disp[0];
+    const was = W.tiles[0].label, keep = W.tiles[1].label;
+    const alt = cards.cfg.fields.filter(f => String(f.v) !== d.selField.value)[0];
+    d.selField.value = String(alt.v);
+    d.selField.onchange();
+    renderCards(false); renderCards(false);
+    return { before: was && was.text, after: W.tiles[0].label && W.tiles[0].label.text,
+             want: DISP_SLUG[d.barMode >= 0 ? d.barMode : d.sel()],
+             mate: W.tiles[1].label === keep,
+             size: [W.sw, W.sh, d.cv.width, d.cv.height] }; }`);
+  env.maps();
+  await settle();
+  ok("a field retyped under a live take is RE-CAPTIONED: the label follows the pixels",
+     !!relab.after && relab.after === relab.want && relab.after !== relab.before,
+     JSON.stringify(relab));
+  ok("... and the tile that did NOT change keeps the very patch it was given at start",
+     relab.mate, JSON.stringify(relab.mate));
+
   // ... and the sample table the take ends with is still uniform: a fixed 1/30 s ladder
-  // with no hole where the two dropped slots were
+  // with no hole where the dropped slots were
   const before = env.caps.downloads.length;
   await press(env);
   await settle();
@@ -386,10 +512,10 @@ async function pageLegs(name) {
   };
   const runs = u8 && sttsOf(u8);
   const allFr = env.caps.frames.slice(nFr0).filter(f => f.kind === "bytes" && f.codedWidth > 2);
-  ok("the dropped slots left FEWER frames and a still-UNIFORM sample table: one stts run",
+  ok("every dropped slot left FEWER frames and a still-UNIFORM sample table: one stts run",
      !!runs && runs.length === 1 && runs[0][0] === allFr.length && runs[0][1] === 1000,
      JSON.stringify(runs) + " for " + allFr.length + " frames");
-  ok("... and the frame indices are unbroken: no backfill for the two dropped slots",
+  ok("... and the frame indices are unbroken: no backfill for any dropped slot",
      allFr.every((f, i) => f.timestamp === Math.round(i * 1e6 / 30)),
      JSON.stringify(allFr.map(f => f.timestamp)));
   stripPress(env, "&times;");
@@ -506,6 +632,20 @@ async function pageLegs(name) {
      sFr.length >= 1 && sFr.every(f => f.codedWidth === S.cw && f.codedHeight === S.ch) &&
      env.run(`function(){ const W = cards.disp[0].wc; return W.pool[0].b.length; }`) === 1,
      JSON.stringify(sFr.map(f => [f.codedWidth, f.codedHeight])));
+  // the SYNC fallback is a single-source take's own: it HAS one canvas, so latching the
+  // buffer path off keeps it recording (from the canvas, as it did before RECASYNC)
+  // rather than dropping -- the leg the composite guard above must not have taken away.
+  const nFrSync = env.caps.frames.length;
+  const sync = env.run(`function(){ const W = cards.disp[0].wc, was = W.n;
+    W.bufOn = false;
+    renderCards(false);
+    const r = { was: was, n: W.n, cv: W.cv === cards.disp[0].cv };
+    W.bufOn = true; return r; }`);
+  const syncFr = env.caps.frames.slice(nFrSync);
+  ok("... and with the buffer path off it still records SYNCHRONOUSLY from that canvas",
+     sync.cv && sync.n === sync.was + 1 && syncFr.length === 1 &&
+     syncFr[0].kind === "canvas" && syncFr[0].codedWidth === S.cw,
+     JSON.stringify({ n: sync.n - sync.was, frames: syncFr.map(f => [f.kind, f.codedWidth]) }));
   env.run(`function(){ cards.disp[0].btnRec.onclick(); }`);
   await settle();
   const cardStrip = env.run(`function(){ const d = cards.disp[0], s = d.resEl.video;

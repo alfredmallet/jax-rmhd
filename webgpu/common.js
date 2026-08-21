@@ -3678,9 +3678,14 @@ const REC_LBL_PX = 18;                   // ... and its type size
 // scale: sources of different sizes are a bug upstream, not a layout to solve, and this
 // returns null instead of silently letterboxing one of them.
 function recTiles(cards) {
-  const cs = (cards || []).filter(c => c && !c.dead && c.cv && c.cv.width > 0 && c.cv.height > 0);
+  const cs = (cards || []).filter(c => c && !c.dead);
   const n = cs.length;
   if (!n) return null;
+  // a source with no canvas, or a canvas with no pixels, cannot be tiled -- and a card
+  // list quietly one short is exactly the silent cap this feature must not have. Refuse
+  // the whole layout, as a size mismatch does. (_resize gives every display card its
+  // pixels in the constructor, so this is a guard rather than a case that happens.)
+  if (cs.some(c => !c.cv || !(c.cv.width > 0) || !(c.cv.height > 0))) return null;
   const sw = cs[0].cv.width, sh = cs[0].cv.height;
   for (const c of cs) if (c.cv.width !== sw || c.cv.height !== sh) return null;
   // the two candidate shapes, compared on how far from square each comes out. A tie goes
@@ -3737,25 +3742,43 @@ function recLabelPatch(text, fmt) {
       b[s] = swap ? d[s + 2] : d[s]; b[s + 1] = d[s + 1]; b[s + 2] = swap ? d[s] : d[s + 2];
       b[s + 3] = 255;                                  // the X channel: opaque, always
     }
-    return { w: pw, h: ph, bytes: b };
+    return { w: pw, h: ph, bytes: b, text: text };
   } catch (e) { return null; }
+}
+// one tile's caption, from the field it is showing right now. `lmode` is what the patch
+// was rendered FROM, which is what lets the take notice the field moving under it.
+function recLabelOf(t, fmt) {
+  t.lmode = t.card.barMode >= 0 ? t.card.barMode : t.card.sel();
+  t.label = recLabelPatch(DISP_SLUG[t.lmode] || "field", fmt);
 }
 // give every tile its field name, once, at start. Only a MULTI-source take is labelled:
 // a card's own recording is of one field the visitor picked and has never carried text,
 // and item 5 does not change what `rec` produces.
 function recLabels(L, fmt) {
   if (!L || L.n < 2) return L;
-  for (const t of L.tiles) {
-    const m = t.card.barMode >= 0 ? t.card.barMode : t.card.sel();
-    t.label = recLabelPatch(DISP_SLUG[m] || "field", fmt);
-  }
+  for (const t of L.tiles) recLabelOf(t, fmt);
   return L;
 }
-// one patch into the frame, clipped to the frame's own edges
-function recBlitPatch(out, row, p, x, y, h) {
-  const w4 = 4 * Math.min(p.w, (row - 4 * x) / 4 | 0);
+// ... and the ONE thing that re-renders one mid-take: the card's field select is live
+// during a take, so a visitor who retypes tile 0 from u to vorticity gets new pixels --
+// and, without this, the old caption over them. A changed field costs one canvas round
+// trip on that slot; an unchanged one costs a compare, which is what keeps the plan's
+// "rendered once at recording start" true of every steady frame.
+function recRelabel(L, fmt) {
+  if (!L || L.n < 2) return;
+  for (const t of L.tiles) {
+    const m = t.card.barMode >= 0 ? t.card.barMode : t.card.sel();
+    if (m !== t.lmode) recLabelOf(t, fmt);
+  }
+}
+// one patch into the frame, clipped to ITS OWN TILE (`cw` x `ch` of it are left): a label
+// must never write into the neighbouring tile. recCompose interleaves the blits with the
+// row copies today, so a bleed would be overwritten by the next tile -- invisible, and
+// only until someone hoists the blits into a loop of their own.
+function recBlitPatch(out, row, p, x, y, cw, ch) {
+  const w4 = 4 * Math.min(p.w, Math.max(0, cw));
   if (w4 <= 0) return;
-  for (let py = 0; py < p.h && y + py < h; py++)
+  for (let py = 0; py < p.h && py < ch; py++)
     out.set(p.bytes.subarray(py * p.w * 4, py * p.w * 4 + w4), (y + py) * row + 4 * x);
 }
 // THE COMPOSITE. Each source's mapped bytes copied row-wise into one frame buffer at its
@@ -3766,11 +3789,17 @@ function recBlitPatch(out, row, p, x, y, h) {
 // The one-tile, tight-row, unlabelled slot -- a card's own `rec` -- hands the mapped
 // range straight to the VideoFrame constructor with no copy at all, exactly as it always
 // did: one tile covering the whole frame IS the composite, and the fast case of it.
-function recCompose(L, ranges) {
+//
+// `scratch` is the take's ONE composite buffer, reused every slot (recPoolMake owns it).
+// A 3x1024^2 frame is 12 MB, so allocating one per slot is ~360 MB/s of garbage at 30 fps
+// on exactly the devices this feature is riskiest on; VideoFrame(BufferSource) COPIES at
+// construction, so the buffer is free again the moment the frame is built. A caller that
+// passes none gets a fresh one; the fast path below allocates nothing at all either way.
+function recCompose(L, ranges, scratch) {
   const row = L.w * 4;
   if (L.n === 1 && L.step === 1 && L.bpr === row && !L.tiles[0].label)
     return new Uint8Array(ranges[0]);
-  const out = new Uint8Array(row * L.h);
+  const out = scratch && scratch.length === row * L.h ? scratch : new Uint8Array(row * L.h);
   for (let i = 0; i < L.n; i++) {
     const t = L.tiles[i], x0 = 4 * t.x;
     if (L.step === 1) {
@@ -3782,14 +3811,16 @@ function recCompose(L, ranges) {
       // 32-bit pixel at a time. The alternative is a resample per frame through a canvas
       // or the GPU -- the cost this leg exists to avoid -- and the result strip says the
       // tiles were downscaled rather than pretending they are full resolution.
-      const s32 = new Uint32Array(ranges[i]), d32 = new Uint32Array(out.buffer);
+      const s32 = new Uint32Array(ranges[i]);
+      const d32 = new Uint32Array(out.buffer, out.byteOffset, out.length / 4);
       const sp = L.bpr / 4, dp = row / 4, dx = x0 / 4;
       for (let y = 0; y < L.th; y++) {
         const so = y * L.step * sp, dof = (t.y + y) * dp + dx;
         for (let x = 0; x < L.tw; x++) d32[dof + x] = s32[so + x * L.step];
       }
     }
-    if (t.label) recBlitPatch(out, row, t.label, t.x + REC_LBL_PAD, t.y + REC_LBL_PAD, L.h);
+    if (t.label) recBlitPatch(out, row, t.label, t.x + REC_LBL_PAD, t.y + REC_LBL_PAD,
+                              L.tw - REC_LBL_PAD, L.th - REC_LBL_PAD);
   }
   return out;
 }
@@ -3962,7 +3993,8 @@ class Recorder {
                 // resolving after that must find it and do nothing.
                 bufOn: !recBufOff && L.tiles.every(t => !!t.card.ctx) && !!device,
                 fmt: REC_BUF_FMT[canvasFormat],
-                pool: null, bpr: 0, pad: false, pend: 0, onDrain: null, gone: false,
+                pool: null, bpr: 0, frame: null, pad: false, pend: 0, onDrain: null,
+                gone: false,
                 chain: null, tL: 0,         // max capture->encode lag in ms (recdebug)
               };
     W.enc = new window.VideoEncoder({
@@ -4066,6 +4098,10 @@ class Recorder {
     // started. (A closed card ENDS an all-displays take; this covers the slot in between.)
     for (const t of W.tiles)
       if (t.card.dead || t.card.cv.width !== W.sw || t.card.cv.height !== W.sh) { W.drop++; return; }
+    // the sources have already rendered this pass, so a field changed under the take is
+    // in the pixels about to be copied: re-caption first, or this slot ships the old name
+    // over the new field (item 5's labels are otherwise rendered once, at start).
+    recRelabel(W.lay, W.fmt);
     if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
     let s = null;
     for (const e of W.pool) if (!e.busy) { s = e; break; }
@@ -4128,6 +4164,11 @@ class Recorder {
       W.bpr = Math.ceil(W.sw * 4 / 256) * 256;
       W.pad = W.bpr !== W.sw * 4;
       W.lay.bpr = W.bpr;                       // the composite reads rows at this pitch
+      // ONE composite buffer for the whole take (recCompose). The fast path -- one tile,
+      // aligned rows, no label -- composites nothing and gets none.
+      const row = W.lay.w * 4;
+      W.frame = (W.lay.n === 1 && W.lay.step === 1 && W.bpr === row)
+        ? null : new Uint8Array(row * W.lay.h);
       for (let i = 0; i < REC_POOL; i++)
         pool.push({ b: W.tiles.map(() => device.createBuffer({ size: W.bpr * W.sh,
                       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })), busy: false });
@@ -4137,7 +4178,7 @@ class Recorder {
       // no memory: sync path -- and the buffers a mid-loop throw DID create go back
       // (adversarial review 2026-08-12, MINOR 3)
       for (const p of pool) for (const b of p.b) { try { b.destroy(); } catch (err) {} }
-      W.bufOn = false; W.pool = null; return false;
+      W.bufOn = false; W.pool = null; W.frame = null; return false;
     }
   }
   // a slot goes back to the pool: unmap whatever really mapped (`got` null = all of them,
@@ -4162,7 +4203,7 @@ class Recorder {
   recEncodeMapped(W, s, tCap) {
     if (W.gone) return;                     // torn down while this sat in the chain
     try {
-      const bytes = recCompose(W.lay, s.b.map(b => b.getMappedRange()));
+      const bytes = recCompose(W.lay, s.b.map(b => b.getMappedRange()), W.frame);
       // capture-submit to encode: the "arrives a beat late" number, ?recdebug's `lag`
       const lag = performance.now() - tCap;
       if (lag > W.tL) W.tL = lag;
@@ -4183,7 +4224,7 @@ class Recorder {
   recPoolFree(W) {
     W.gone = true;
     for (const e of (W.pool || [])) for (const b of e.b) { try { b.destroy(); } catch (err) {} }
-    W.pool = null;
+    W.pool = null; W.frame = null;
   }
   // wait for the captures still in flight before the file is written (RECASYNC_PLAN 5).
   // The timeout is the guard against a map that never resolves: half a second, then mux
@@ -4228,6 +4269,12 @@ class Recorder {
     // tally is incremented THERE -- it counts frames this feeder put in the FILE, and on
     // this path that is not knowable yet.
     if (W.bufOn) return this.recCaptureBuf(W);
+    // ... and when it is NOT on -- a take that started without it, or one of the three
+    // catches below that latch it off mid-take -- the fallback is the sync canvas path,
+    // which needs the ONE canvas a composite does not have. Drop the slot rather than
+    // hand `new VideoFrame(null, init)` to the engine (a throw on every due slot for the
+    // rest of the take, and not even counted). Same rule as recTick's guard.
+    if (!W.cv) { W.drop++; return; }
     if (this.recEncodeFrame(W)) W.rafN++;
   }
   // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped

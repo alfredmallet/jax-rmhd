@@ -486,7 +486,7 @@ vectors `x.npy` / `y.npy` (and `z.npy` in 3D) and the same `params.json`, in a s
 — which is all an `.npz` is, so `zipStore` is the writer and `npyBytes` is the only new
 format (`.npy` v1.0: magic, version, a 16-bit header length, an ASCII dict padded so the
 DATA starts **64-byte aligned**, then raw little-endian values). One writer for all five
-members; the shape tuple is the only thing that differs. Four contracts:
+members; the shape tuple is the only thing that differs. Five contracts:
 
 - **The array axis order IS the buffer layout read literally**: `(nx, ny)` in 2D from
   `ix*ny + iy`, `(nz, nx, ny)` in 3D from `(iz*nx + ix)*ny + iy`, C order, `<f4`. That is
@@ -519,12 +519,26 @@ members; the shape tuple is the only thing that differs. Four contracts:
   staging buffer and `destroy()`s it when the read resolves — the rule is written at the
   pool as well as here. Measured archives: 2.10 MB at 2D 512², 8.40 MB at 2D 1024²,
   33.56 MB at 3D 256²×64.
+- **What the export actually costs in memory is FOUR times the archive, not one.** At the
+  largest 3D grid the press holds, all at once: the two fields `readBufOnce` copies out of
+  the mapped range (2 × 16.8 MB), the two `.npy` members `npyBytes` copies them into again
+  (2 × 16.8 MB), the finished ZIP buffer `zipStore` assembles (33.6 MB) and the `Blob`
+  copy of it (33.6 MB) — **≈134 MB of host memory** (measured 128 MiB in the node
+  harness), on top of 33.6 MB of GPU staging while the two reads are in flight. Everything
+  after the await is one uninterrupted main-thread block: two full-array copies, a CRC-32
+  pass per member over ~34 MB, and one whole-archive copy (≈180 ms in node, more on a
+  phone). That is the number the on-device memory check is sized against — not the 33.6 MB
+  of the file.
 
 The export has its **own** slot on the page strip (`saveAll.resEl.npz`, `RES_WHAT.npz`)
 and its own busy flag: an archive of pictures and a field export are different files, so
 pressing one must not throw the other away. Name: `capName("fields", "npz")`. Gate:
-`devtools/checkzip.js` section D, which verifies the file **externally** — `zipfile` for
-the archive, `numpy.load` for dtype, shape, axis order and values. `rec` records the field canvas (that canvas alone: the arrows, the field lines
+`devtools/checkzip.js` sections D and E, which verify the file **externally** — `zipfile`
+for the archive, `numpy.load` for dtype, shape, axis order and values, with every
+expectation built from the solver's grid rather than from the file's own header. Section E
+reruns those legs on a grid whose axes are **not** equal (the 2D `wide` box, 256×64 over
+4π × 2π, and a 3D 64²×128), because on the square boot grids a transposed axis order is
+invisible however carefully it is asserted. `rec` records the field canvas (that canvas alone: the arrows, the field lines
 and the colorbar are in the PNG only) with a 30 s hard stop, on whichever of **two legs**
 the engine supports.
 
@@ -634,11 +648,17 @@ exactly that. Five contracts:
   sample table **and** never a composite whose panels are from different moments. A
   composite take costs N × `REC_POOL` staging buffers.
 - **Composite at encode time.** `recCompose` copies each source's mapped bytes row-wise
-  into one frame buffer at its tile offset and blits that tile's label patch — N memcpy
-  loops, no 2D canvas on this leg. Layout is one **row or one column, whichever comes out
-  closer to square** (a tie goes to the row: side by side is the case this exists for);
-  all cards show the same run, so equal `cv` sizes are **asserted**, not scaled — mismatched
-  sources return no layout at all.
+  into one frame buffer at its tile offset and blits that tile's label patch, clipped to
+  **its own tile** — N memcpy loops, no 2D canvas on this leg. The frame buffer is ONE
+  per take (`W.frame`, made with the pool and freed with it): 3 × 1024² is 12 MB, so a
+  fresh one per slot would be ~360 MB/s of garbage at 30 fps, and `VideoFrame(BufferSource)`
+  copies at construction, so the buffer is free again the moment the frame is built. The
+  one-tile, aligned, unlabelled slot — a card's own `rec` — still hands the mapped range
+  straight to the constructor with no copy and no scratch at all. Layout is one **row or
+  one column, whichever comes out closer to square** (a tie goes to the row: side by side
+  is the case this exists for); all cards show the same run, so equal `cv` sizes are
+  **asserted**, not scaled — mismatched sources, and sources with no pixels, return no
+  layout at all rather than a card list quietly one short.
 - **Probe the composite size, halve the TILES.** The press asks `isConfigSupported` for the
   composite config and, if refused, for the same tiles at half size (point-sampled in the
   same row loop; a per-frame resample is the cost this leg exists to avoid) — and the
@@ -652,8 +672,14 @@ exactly that. Five contracts:
   the one canvas the sync paths may read — null for a composite — which is also why the
   watchdog does not feed a composite take on a hidden page: it would have to build a
   VideoFrame from a canvas that does not exist, so the take simply records fewer frames.
-  Labels are rendered ONCE at start into small opaque RGBA patches (`recLabelPatch`, in
-  the frame's own byte order) and blitted per frame; a card's own take is unlabelled, as
+  It is also why a composite that has latched OFF the buffer path (`recPoolMake`'s
+  out-of-memory catch, a thrown copy, a failed compose) **drops every remaining slot**:
+  there is no canvas to fall back to, so the slot is counted lost rather than built from
+  nothing. Labels are rendered ONCE at start into small opaque RGBA patches
+  (`recLabelPatch`, in the frame's own byte order) and blitted per frame — the one
+  exception being a field **retyped under a live take**, which re-renders that tile's
+  patch on the next slot (`recRelabel`): the tile's pixels have already moved, so the
+  caption moves with them instead of lying about them. A card's own take is unlabelled, as
   it always was. **A source card closed mid-take ends the take and writes the file** — the
   encoder's frame size cannot move, so a vanished source could only be papered over with a
   stale tile, and the strip is the page's, so the file survives the card that went.
@@ -675,12 +701,15 @@ exactly on the forced indices, equal pts deltas, `30/1`, and a decode with zero 
 a square canvas, the 1024×256 wide box, a one-frame file and the 1024×512 two-tile
 composite. `devtools/checkrecall.js` is item 5's own gate: the tiler and `recCompose`
 alone (synthetic patterns in, one composite out, every row read back at its expected
-offset, both layouts, padded and tight rows, the halved tiles, the label blit and its
-clipping), then the action on both booted pages — the offer rule, a two-card take from
-first copy to muxed file, an all-or-nothing slot driven twice (a resized source, a
-rejected map) with the file's `stts` read back as a single uniform run, the
+offset, both layouts, padded and tight rows, the halved tiles, a source with no pixels,
+the label blit clipped to its tile in both layouts, and the composite scratch reused
+byte-for-byte), then the action on both booted pages — the offer rule, a two-card take
+from first copy to muxed file, an all-or-nothing slot driven three times (a resized
+source, a rejected map, and the buffer path latched off) with the file's `stts` read back
+as a single uniform run, a field retyped mid-take being re-captioned, the
 `isConfigSupported` refusal halving the tiles without truncating the card list, a card
-closed mid-take, and the single-card path asserted unchanged.
+closed mid-take, and the single-card path asserted unchanged — its own canvas, its own
+name, no label, and its **sync** fallback still recording when the buffer path is off.
 
 **Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
 field lines), φ contours (= the streamlines), or **both at once** (ψ + φ — the alignment

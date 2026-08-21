@@ -1,8 +1,9 @@
 // GATE: the stored-ZIP writer and what it is used for (plans-webgpu/IO_PLAN.md).
 //
 // Section A is the writer alone (`zipStore`), section B the save-all button (item 3) on
-// both booted pages, and section D the field export (item 4) on both -- the same archive
-// writer carrying `.npy` members, read back by `numpy.load` rather than by us. `py()`
+// both booted pages, section D the field export (item 4) on both -- the same archive
+// writer carrying `.npy` members, read back by `numpy.load` rather than by us -- and
+// section E the SAME export legs on a grid whose axes are not equal. `py()`
 // runs a python script over a written file; `zipInfo()` and `npzInfo()` are the two
 // external readers every leg asserts through.
 //
@@ -28,6 +29,12 @@
 // PINNED third and fourth Mode uniforms -- the export must not write a live display
 // card's mode, which is asserted by tracing every Mode-uniform write across an export
 // with two loaded cards open and finding none.
+//
+// Section E exists because BOTH pages boot square in the perpendicular plane (nx == ny,
+// Lx == Ly), where a transposed axis order is invisible however carefully it is asserted.
+// It reruns the file legs on the 2D `wide` box (256x64 over 4pi x 2pi) and on a 3D grid
+// that is not cubic (64^2 x 128), with every expectation built from the solver's grid and
+// never from the file's own header.
 //
 // Run: node devtools/checkzip.js [dir]
 "use strict";
@@ -609,10 +616,19 @@ for k in names:
     out["npy"][k] = {"magic": raw[:6].decode("latin1"), "ver": [raw[6], raw[7]],
                      "hlen": hl, "data": 10 + hl,
                      "head": raw[10:10 + hl].decode("latin1")}
-# the two fields, element by element, against C-order arange
+# The two fields, element by element, against a C-order arange of the shape the CALLER
+# says the grid is -- never a.shape. Reshaping the expectation by the file's own header
+# is self-consistent for any header, so a transposed shape tuple would agree with itself.
+shape = tuple(int(v) for v in spec["shape"])
+size = int(np.prod(shape))
 for i, k in enumerate(("phi", "psi")):
     a, off = z[k], spec["off"][i]
-    want = (np.arange(a.size, dtype=np.float64) + off).astype(np.float32).reshape(a.shape)
+    out["arrays"][k]["shapeok"] = list(a.shape) == list(shape)
+    if not out["arrays"][k]["shapeok"]:
+        out["arrays"][k]["wrong"] = -1
+        out["arrays"][k]["probe"] = [list(spec["probe"]), None, None]
+        continue
+    want = (np.arange(size, dtype=np.float64) + off).astype(np.float32).reshape(shape)
     p = tuple(spec["probe"])
     out["arrays"][k]["wrong"] = int(np.count_nonzero(a != want))
     out["arrays"][k]["probe"] = [list(p), float(a[p]), float(want[p])]
@@ -620,7 +636,11 @@ for i, k in enumerate(("phi", "psi")):
 for k, n, L in zip(("x", "y", "z"), spec["n"], spec["L"]):
     if k in out["arrays"]:
         want = (np.arange(n, dtype=np.float64) * L / n).astype(np.float32)
-        out["arrays"][k]["wrong"] = int(np.count_nonzero(z[k] != want))
+        a = z[k]
+        # a vector of the wrong LENGTH is a wrong vector, not a broadcast error that
+        # takes every other leg's reading down with it
+        out["arrays"][k]["wrong"] = -1 if a.shape != want.shape \
+            else int(np.count_nonzero(a != want))
 out["manifest"] = zf.read("params.json").decode("utf-8")
 print(json.dumps(out))
 `;
@@ -737,7 +757,19 @@ async function fieldLegs(name) {
                          m.cmap === 0 && m.zslice === 0),
      JSON.stringify([px, pp]));
 
-  // ---- 3. the file, through the real button -------------------------------
+  const F = await exportFileLegs(env, slug, three);
+  if (!F.npz) return env;
+  return fieldTailLegs(env, slug, three, F);
+}
+
+// ---- 3-7. the file, through the real button ------------------------------
+// Run on WHATEVER GRID the page is on -- section D on the boot grid, section E on a box
+// whose axes differ. Every expectation is built from the solver's own (nx, ny, nz) and
+// box lengths and NEVER from the file's header: an expectation reshaped by the shape the
+// file declares is self-consistent for any shape it declares, which is exactly how a
+// transposed axis order would pass unseen on the square boot box (nx == ny, Lx == Ly).
+async function exportFileLegs(env, slug, three, tag) {
+  tag = tag || slug;
   const g = env.run(`function(){ const q = solver.p;
     return { nx: q.nx, ny: q.ny, nz: q.nz || 1, Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0,
              nr: solver.nr, t: simT, name: capName("fields", "npz") }; }`);
@@ -752,9 +784,9 @@ async function fieldLegs(name) {
      !!npz && env.caps.downloads.length === nDl0,
      (npz ? npz.size + " B" : "no file") + ", " +
        (env.caps.downloads.length - nDl0) + " downloads");
-  if (!npz) return env;
+  if (!npz) return { npz: null };
   // ... which is first of all a valid stored ZIP, read by zipfile
-  const zi = zipInfo(npz.bytes, slug + "-npz");
+  const zi = zipInfo(npz.bytes, tag + "-npz");
   ok("  ... a valid stored ZIP: testzip() clean, every member's CRC recomputed",
      !zi.err && zi.bad === null && zi.members.every(m => storedOk(m) && m.crcok),
      zi.err || zi.members.length + " members");
@@ -766,28 +798,35 @@ async function fieldLegs(name) {
 
   // ---- 4. what numpy sees --------------------------------------------------
   const probe = three ? [1, 2, 3] : [2, 1];
-  const info = npzInfo(npz.bytes, { off: [0, 1e6], probe: probe,
+  const shape = three ? [g.nz, g.nx, g.ny] : [g.nx, g.ny];
+  const info = npzInfo(npz.bytes, { off: [0, 1e6], probe: probe, shape: shape,
                                     n: [g.nx, g.ny, g.nz], L: [g.Lx, g.Ly, g.Lz] },
-                       slug + "-fields");
+                       tag + "-fields");
   const A = info.arrays || {};
   ok("numpy.load opens it and finds the arrays by name",
      !info.err && (info.files || []).join(",") ===
        want.map(n => n.replace(/\.npy$/, "")).join(","),
      info.err || (info.files || []).join(","));
-  const shape = three ? [g.nz, g.nx, g.ny] : [g.nx, g.ny];
   ok("  ... phi and psi are float32 '<f4', C-contiguous, shaped " +
        (three ? "(nz, nx, ny)" : "(nx, ny)"),
      !info.err && ["phi", "psi"].every(k => A[k] && A[k].dtype === "<f4" && A[k].c &&
                                             A[k].shape.join(",") === shape.join(",")),
      info.err || JSON.stringify(["phi", "psi"].map(k => A[k] && [A[k].dtype, A[k].shape])));
-  // THE axis-order leg: the buffer index read literally, every element
+  // THE axis-order leg: the buffer index read literally, every element, against an
+  // arange reshaped to the shape the GRID says -- not the shape the file says
   ok("  ... and every element is the buffer index read literally -- the axis order holds",
-     !info.err && A.phi && A.phi.wrong === 0 && A.psi && A.psi.wrong === 0,
+     !info.err && A.phi && A.phi.shapeok && A.phi.wrong === 0 &&
+     A.psi && A.psi.shapeok && A.psi.wrong === 0,
      info.err || "phi " + (A.phi && A.phi.wrong) + " wrong, psi " +
        (A.psi && A.psi.wrong) + " wrong of " + g.nr);
-  ok("  ... at an index that is NOT symmetric in x and y: phi[" + probe.join(", ") + "]",
-     !info.err && A.phi && A.phi.probe[1] === A.phi.probe[2],
-     info.err || (A.phi && (A.phi.probe[1] + " want " + A.phi.probe[2])));
+  // ... and one spot value against the buffer index computed HERE, in JS, from the grid
+  // -- no numpy, no reshape, no header: `ix*ny + iy`, the layout setICFromReal consumes
+  const lin = three ? ((probe[0] * g.nx + probe[1]) * g.ny + probe[2])
+                    : (probe[0] * g.ny + probe[1]);
+  ok("  ... and phi[" + probe.join(", ") + "] is exactly buffer index " + lin +
+       " -- the index arithmetic, spelt out here rather than by numpy",
+     !info.err && A.phi && A.phi.probe[1] === lin,
+     info.err || (A.phi && (A.phi.probe[1] + " want " + lin)));
 
   // ---- 5. the coordinate vectors ------------------------------------------
   const axes = ["x", "y"].concat(three ? ["z"] : []);
@@ -836,6 +875,12 @@ async function fieldLegs(name) {
      !!man && !!man.export && /2\/3/.test(man.export.dealiased) &&
      /spectrum/.test(man.export.dealiased),
      man && man.export && man.export.dealiased);
+  return { npz: npz, g: g, live0: live0, want: want };
+}
+
+// ---- 8-11, on the boot grid ----------------------------------------------
+async function fieldTailLegs(env, slug, three, F) {
+  const g = F.g, npz = F.npz, live0 = F.live0, want = F.want;
 
   // ---- 8. the staging buffers are destroyed, never pooled ------------------
   // The plan's one memory rule. _stagePool has no eviction by design, so a field read
@@ -940,6 +985,37 @@ async function fieldLegs(name) {
   return env;
 }
 
+// ===========================================================================
+// E. the same export on a grid whose axes DIFFER
+// ===========================================================================
+// Both pages BOOT square in the perpendicular plane -- 2D 256^2, 3D 64x128x128 -- so
+// nx == ny and Lx == Ly there, and a transposed shape tuple, a swapped pair of coordinate
+// vectors and a transposed field are all invisible in section D by construction. Boxes
+// that are not square ship and are preset-reachable (rmhd2d's `wide`, 256x64 over
+// 4pi x 2pi), and so are 3D grids that are not cubic (64^2 x 128), so the axis order is
+// asserted on one of each -- through the SAME legs, whose expectations come from the
+// solver's own grid rather than from the file's header.
+async function oddBoxLegs(name, set) {
+  console.log("\n=== E. field export on a non-square grid (" + name + ") ===");
+  const env = await boot(name);
+  if (!env.run("function(){ return !!solver; }")) {
+    ok(name + ": solver came up", false); return env;
+  }
+  const g = env.run(`function(s){ const e = el(s.id);
+    e.value = s.v; e.onchange();                       // rebuilds the solver, synchronously
+    const q = solver.p;
+    return { nx: q.nx, ny: q.ny, nz: q.nz || 1, Lx: q.Lx, Ly: q.Ly }; }`, set);
+  ok(name + ": " + set.what + " gives a grid whose axes differ -- " +
+       [g.nz > 1 ? g.nz : null, g.nx, g.ny].filter(v => v).join("x") +
+       ", box " + (g.Lx / Math.PI).toFixed(2) + "pi x " + (g.Ly / Math.PI).toFixed(2) + "pi",
+     set.odd(g), JSON.stringify(g));
+  const slug = name.replace(".html", "");
+  const F = await exportFileLegs(env, slug, env.is3d, slug + "-odd");
+  ok("  ... and the page raised no stub failures on the odd grid",
+     env.fails.length === 0, env.fails.join(" | "));
+  return F.npz ? env : env;
+}
+
 (async () => {
   const env = await boot("rmhd2d.html");
   writerLegs(env);
@@ -947,6 +1023,10 @@ async function fieldLegs(name) {
   await pageLegs("rmhd3d.html");
   await fieldLegs("rmhd2d.html");
   await fieldLegs("rmhd3d.html");
+  await oddBoxLegs("rmhd2d.html", { id: "selBox", v: "wide", what: "the wide box",
+                                    odd: g => g.nx !== g.ny && g.Lx !== g.Ly });
+  await oddBoxLegs("rmhd3d.html", { id: "selRes", v: "64,128", what: "the 64^2 x 128 grid",
+                                    odd: g => g.nz !== g.nx && g.nz > 1 });
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* leave it */ }
   console.log("\n" + (bad ? "FAIL" : "PASS") + "  zip: " + pass + " checks passed, " +
               bad + " failed" + (skipped ? ", " + skipped + " skipped (no unzip binary)" : ""));

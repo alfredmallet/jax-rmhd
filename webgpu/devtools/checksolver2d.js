@@ -47,25 +47,34 @@ const DEFS = ["function makeGrid(p) {", "function buildShaders(g) {", "class Sol
 // export (webgpu/README.md, "The fields themselves, as `.npz`"). It adds two
 // PINNED Mode uniforms and their two prepDisp bind groups to _makeChain, plus the
 // encodeExport method -- buffers and bind groups only, which is why leg 2's WGSL
-// byte-identity does not move with it. Recorded here as the exact inserted LINES, in
-// dispoffsets.js's spirit: leg 5 strips them and then still demands the base text byte
-// for byte, so any OTHER change to the class fails, and a block that has stopped being
-// there fails as a STALE ALLOWANCE rather than quietly widening the leg.
+// byte-identity does not move with it. Recorded here as the exact inserted LINES **and
+// where they go**, in dispoffsets.js's spirit: leg 5 strips them and then still demands
+// the base text byte for byte, so any OTHER change to the class fails, and a block that
+// has stopped being there fails as a STALE ALLOWANCE rather than quietly widening the leg.
+//
+// `at` is the 0-based line of the BASE `class Solver` text the block is inserted before,
+// and `tag` names it in the failure message. Position is part of the contract: matching a
+// block ANYWHERE in the class would let the same lines MOVED elsewhere pass as unchanged,
+// which is the opposite of what the leg claims (adversarial review 2026-08-20, MINOR 6).
 const IO4_INSERTS = [
-  ["      // the FIELD EXPORT's pair (IO_PLAN item 4): plain phi and plain psi, no band, no",
+  { tag: "modeX / modeX2, the two pinned Mode uniforms (_makeChain)", at: 124, lines: [
+   "      // the FIELD EXPORT's pair (IO_PLAN item 4): plain phi and plain psi, no band, no",
    "      // offset, no colormap. Written once below and never again -- setDisplayMode does",
    "      // not touch them -- which is what lets an export run without disturbing whatever",
    "      // this card is showing.",
    "      modeX: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),",
-   "      modeX2: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),"],
-  ["    d.queue.writeBuffer(B.modeX, 0, modeWords(DISP_PHI, 0, 0, null));",
-   "    d.queue.writeBuffer(B.modeX2, 0, modeWords(DISP_PSI, 0, 0, null));"],
-  ["      // the export's two preps: phi through the chain's first component, psi through the",
+   "      modeX2: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),"] },
+  { tag: "the one-time write of the pinned pair (_makeChain)", at: 130, lines: [
+   "    d.queue.writeBuffer(B.modeX, 0, modeWords(DISP_PHI, 0, 0, null));",
+   "    d.queue.writeBuffer(B.modeX2, 0, modeWords(DISP_PSI, 0, 0, null));"] },
+  { tag: "prepDispX / prepDispX2, the export's two bind groups (_makeChain)", at: 142, lines: [
+   "      // the export's two preps: phi through the chain's first component, psi through the",
    "      // second (the same two-slot pattern contPrep uses -- each writes the OTHER",
    "      // component's scratch as its throwaway outk2)",
    "      prepDispX: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.modeX, B.dispK2]),",
-   "      prepDispX2: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeX2, B.dispK]),"],
-  ["  // the field export (IO_PLAN item 4): plain phi -> dispR and plain psi -> dispR2, each",
+   "      prepDispX2: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeX2, B.dispK]),"] },
+  { tag: "the encodeExport method", at: 500, lines: [
+   "  // the field export (IO_PLAN item 4): plain phi -> dispR and plain psi -> dispR2, each",
    "  // through its own PINNED Mode uniform, so no live display uniform is written. Same",
    "  // three stages the display uses; the psi leg runs second because its prep zeroes dispK,",
    "  // which the phi leg has finished with by then. `readFieldPair` (common.js) owns the",
@@ -82,20 +91,27 @@ const IO4_INSERTS = [
    "      p.dispatchWorkgroups(this.g.nx);",
    "    }",
    "  }",
-   ""]
+   ""] }
 ];
 // the text with those insertions taken back out, plus whichever blocks were not found
+// WHERE THEY ARE RECORDED. `cut` is how many lines have already come out, so the index a
+// block is found at IS its line in the base text -- earlier blocks are gone and later ones
+// are below it. A block in the wrong place is left in, so the byte-identity leg above goes
+// red with this one rather than silently absorbing the move.
 function io4Strip(txt) {
   const lines = txt.split("\n"), miss = [];
+  let cut = 0;
   for (const blk of IO4_INSERTS) {
+    const b = blk.lines;
     let at = -1;
-    for (let i = 0; i + blk.length <= lines.length && at < 0; i++) {
-      if (blk.every((l, j) => lines[i + j] === l)) at = i;
+    for (let i = 0; i + b.length <= lines.length && at < 0; i++) {
+      if (b.every((l, j) => lines[i + j] === l)) at = i;
     }
-    if (at < 0) miss.push(blk[blk.length - 1].trim().slice(0, 48) || "(blank)");
-    else lines.splice(at, blk.length);
+    if (at < 0) miss.push(blk.tag + ": not in the class at all");
+    else if (at !== blk.at) miss.push(blk.tag + ": at base line " + at + ", recorded " + blk.at);
+    else { lines.splice(at, b.length); cut += b.length; }
   }
-  return { txt: lines.join("\n"), miss: miss };
+  return { txt: lines.join("\n"), miss: miss, cut: cut };
 }
 
 let bad = 0;
@@ -339,9 +355,9 @@ if (bd) {
     // in the file, and stripping them really did change something
     ok("    ... and the IO_PLAN item 4 allowance is the WHOLE of the difference",
        !!st && st.miss.length === 0 && raw !== a && b === a,
-       !st ? "no text" : st.miss.length ? "blocks not found: " + st.miss.join(" | ")
+       !st ? "no text" : st.miss.length ? "allowance: " + st.miss.join(" | ")
          : raw === a ? "the allowance is vacuous -- nothing to strip"
-         : IO4_INSERTS.reduce((n, blk) => n + blk.length, 0) + " lines allowed");
+         : st.cut + " lines allowed, each at its recorded place");
   }
 }
 
