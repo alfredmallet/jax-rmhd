@@ -3020,7 +3020,7 @@ async function boot() {
   el("cbAspect").onchange = () => { if (solver) solver.uploadBox(); cardsSync(); };
   bootApply(pre);
   // ?bench only; a no-op without it
-  benchBuild({ page: "rmhd3d", spec: benchSpec3D, chains: true });
+  benchBuild({ page: "rmhd3d", spec: benchSpec3D, applyIC: applyIC, chains: true });
   loop();
 }
 boot();

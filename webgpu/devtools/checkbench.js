@@ -8,26 +8,29 @@
 //        and one JSON record per run must land in the textarea. The spec's pipelines,
 //        dispatch shapes and bind-group buffers are compared against the ones the
 //        solver's OWN step encoded, cell by cell; a campaign must hold the frame loop
-//        off (no steps, no render, no readStats) and leave the hero button paused; and
-//        one cell must drain R + 1 times and report the median and min of the reps it
-//        kept, the first discarded.
+//        off (no steps, no render, no readStats) and leave the hero button paused, must
+//        let the frame ALREADY in flight finish before it times anything, and must
+//        restore through the page's own applyIC; and one cell must drain R + 1 times and
+//        report the median and min of the reps it kept, the first discarded.
 //   ii   fftKernel / fftRowPair with NO probe are byte-identical to the emission
 //        captured from the pre-phase tree (fixtures/fftkernel_<base>.json: every offered
 //        line length, both directions, with and without `lpb`), and so is the text the
-//        Solver actually compiles for each FFT pipeline, at the self-test grid and at
-//        the default preset (the fixture's `pipelines`). This is the leg that pins the
-//        kernel text from here on -- 2A/2B regenerate the capture, and anything else
-//        that moves it fails.
+//        Solver actually compiles for each FFT pipeline, at the self-test grid, at the
+//        default preset and at the longest line the page offers (the fixture's
+//        `pipelines`). This is the leg that pins the kernel text from here on -- 2A/2B
+//        regenerate the capture, and anything else that moves it fails.
 //   iii  the two probes: "consttw" differs from the default in EXACTLY the two twiddle
 //        lines and keeps every barrier; "copy" has no stage loop at all and still
 //        carries the load and store bodies verbatim. All three parse (wgsl_reflect).
 //        A build that THROWS under benchShaders still leaves the seam null.
 //   iv   the bytes-per-step sum reproduces a hand-computed number for 2D 256^2 and
-//        3D 128^2 x 64 exactly (appendix A; the arithmetic is in the comment below).
+//        3D 128^2 x 64 exactly (appendix A; the arithmetic is in the comment below),
+//        and the 2D eqsrc solver's extra binding is counted.
 //   v    fftAnalyticCase (the self-test's analytic reference, FFTPERF_PLAN phase 0's
 //        other half) returns three nonzero bins at the flat indices it reports, zeros
 //        everywhere else, and a real input of the right length; and fftAnalyticRows
-//        drops its rows, rather than throwing, when the solver is rebuilt mid-readback.
+//        leaves a VISIBLE skipped row, rather than throwing or nothing at all, when the
+//        solver is rebuilt during either of its readbacks.
 //
 // The fixture was captured from a clean checkout of its `base` commit by booting that
 // tree's rmhd2d.html under stubenv and replaying `cases` through fftKernel /
@@ -37,6 +40,10 @@ const fs = require("fs"), path = require("path");
 const { pathToFileURL } = require("url");
 const dir = path.resolve(process.argv[2] || path.join(__dirname, ".."));
 const FIX = path.join(__dirname, "fixtures", "fftkernel_f83386e.json");
+
+// FAILED until the summary says otherwise: a leg that parks forever (a held mapAsync
+// nothing releases) drains node's queue and exits, and that exit must not read as green
+process.exitCode = 1;
 
 let bad = 0;
 const ok = (name, pass, note) => {
@@ -97,9 +104,12 @@ async function legGate(page) {
 // ladder variants need their own bind groups) the buffers in binding order.
 const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 const shape = d => [d[0], d[1] || 1, d[2] || 1];
-// every dispatch the step made that is NOT in the byte table: the CFL pair and the
-// per-step scalar kernels (FFTPERF_PLAN appendix A)
-const UNCOUNTED = ["cflPartial", "cflFinal", "energyFinal", "tick", "ou", "scale"];
+// every dispatch the step made that is NOT in the byte table, with the number of times
+// the step makes it: the CFL pair (once per cflEvery block, so once in the step this leg
+// records) and the per-step scalar kernels (FFTPERF_PLAN appendix A). Counts, not just
+// names -- a kernel dispatched twice where the table assumes once is a byte count that
+// has drifted, whatever it is called.
+const UNCOUNTED = { cflPartial: 1, cflFinal: 1, energyFinal: 1, tick: 1, ou: 1, scale: 1 };
 function legWiring(env, page) {
   const meta = env.run("() => { const sp = benchSpec(), s = solver, pl = {};" +
     " for (const k in s.pl) pl[k] = s.pl[k];" +
@@ -145,10 +155,15 @@ function legWiring(env, page) {
   ok(page + ": every stepIO entry is dispatched exactly `n` times per step",
      wrong.length === 0,
      wrong.map(e => e.name + ": " + e.n + " claimed, " + (per.get(meta.pl[e.name]) || 0) + " seen").join(", "));
-  const named = new Set(meta.stepIO.map(e => e.name).concat(UNCOUNTED).map(n => meta.pl[n]));
+  const un = Object.keys(UNCOUNTED);
+  const named = new Set(meta.stepIO.map(e => e.name).concat(un).map(n => meta.pl[n]));
   const stray = [...per.keys()].filter(p => !named.has(p));
   ok(page + ": ... and the step dispatches nothing the table has not accounted for",
      stray.length === 0, stray.map(p => p.__name).join(", "));
+  const overUn = un.filter(n => (per.get(meta.pl[n]) || 0) !== UNCOUNTED[n]);
+  ok(page + ": ... and each kernel the table excuses is dispatched exactly as often as it assumes",
+     overUn.length === 0,
+     overUn.map(n => n + ": " + UNCOUNTED[n] + " assumed, " + (per.get(meta.pl[n]) || 0) + " seen").join(", "));
 }
 
 // ---------------------------------------------------------------------------
@@ -193,20 +208,84 @@ async function legLoopHold(page) {
 }
 
 // ---------------------------------------------------------------------------
+// (i.c2) the frame already in flight when the campaign starts
+// ---------------------------------------------------------------------------
+// The benchBusy guard only stops the NEXT iteration. This drives the one case it cannot
+// see: a frame parked on its own drain (its render, stats readback and frame hooks still
+// to come) when the button is pressed. The campaign must not submit a single batch until
+// that iteration has finished, and nothing of it may land in a timed rep.
+async function legLoopRace(page) {
+  const env = await boot(page, { search: "?bench" });
+  env.sandbox.window.__frame = env.frame;
+  env.run("() => { setRunning(true); window.bench.cfg.K = 2; window.bench.cfg.R = 2;" +
+    " const s = solver, rs = s.readStats.bind(s), r = s.render.bind(s), q = device.queue;" +
+    " const fh = frameHook;" +
+    " window.__seen = { stats: 0, renders: 0, hooks: 0, statsTimed: 0, hooksTimed: 0," +
+    "                   rendersTimed: 0, steps: 0, busyAtFirstStep: null };" +
+    " const timed = () => benchBusy && window.__seen.steps > 0;" +
+    " s.readStats = function () { window.__seen.stats++; if (timed()) window.__seen.statsTimed++; return rs(); };" +
+    " s.render = function (ctx, ci) { window.__seen.renders++; if (timed()) window.__seen.rendersTimed++; return r(ctx, ci); };" +
+    " frameHook = async sv => { window.__seen.hooks++; if (timed()) window.__seen.hooksTimed++;" +
+    "                           if (fh) await fh(sv); };" +
+    // the campaign's timed window opens at the first step of its first rep
+    " const step = s.step.bind(s);" +
+    " s.step = function (ce) { if (benchBusy) { if (window.__seen.steps === 0)" +
+    "     window.__seen.busyAtFirstStep = loopBusy; window.__seen.steps++; } return step(ce); };" +
+    // one-shot hold on the LOOP's own drain: window.__release() lets that frame finish
+    "  const drain = q.onSubmittedWorkDone; let held = null;" +
+    " window.__release = () => { const h = held; held = null; if (h) h(); return !!h; };" +
+    " q.onSubmittedWorkDone = function () {" +
+    "   if (window.__armed && held === null) { window.__armed = false;" +
+    "     return new Promise(res => { held = res; }); }" +
+    "   return drain(); }; }");
+  env.run("() => { window.__armed = true; }");
+  env.frame();
+  for (let i = 0; i < 4; i++) await new Promise(r => setTimeout(r, 0));
+  const parked = env.run("() => ({ armed: window.__armed, loopBusy: loopBusy })");
+  ok(page + ": a frame is parked mid-iteration when the button is pressed",
+     parked.armed === false && parked.loopBusy === true, JSON.stringify(parked));
+  const done = env.run("() => window.bench.whole()");
+  for (let i = 0; i < 3; i++) await new Promise(r => setTimeout(r, 0));
+  const releasedLate = env.run("() => window.__release()");
+  await done;
+  for (let i = 0; i < 12; i++) await new Promise(r => setTimeout(r, 0));
+  const seen = env.run("() => window.__seen");
+  ok(page + ": ... its drain was still held when the campaign was asked to run",
+     releasedLate === true, "released by the leg: " + releasedLate);
+  ok(page + ": ... and the campaign stepped nothing until that frame was done",
+     seen.busyAtFirstStep === false && seen.steps > 0,
+     "loopBusy at the first step: " + seen.busyAtFirstStep + ", " + seen.steps + " steps");
+  ok(page + ": ... so no stats readback, hook or render landed in a timed rep",
+     seen.statsTimed === 0 && seen.hooksTimed === 0 && seen.rendersTimed === 0,
+     seen.statsTimed + " readStats, " + seen.hooksTimed + " hooks, " + seen.rendersTimed +
+     " renders in the reps (" + seen.stats + " / " + seen.hooks + " / " + seen.renders + " in all)");
+  ok(page + ": ... and the parked frame did run its tail, before the campaign",
+     seen.stats > 0 && seen.hooks > 0, seen.stats + " readStats, " + seen.hooks + " hooks");
+}
+
+// ---------------------------------------------------------------------------
 // (i.d) one cell: R + 1 reps, the first discarded, median and min reported
 // ---------------------------------------------------------------------------
 // performance.now is replaced by a sequence whose FIRST rep is the cheap one, so a kept
 // warm-up rep shows up as a `min` below the median. Drains are counted in the stub.
+// A rep is "everything up to the next drain", so the clock is driven by the DRAINS and
+// not by how many times now() is called: it reads 1000*r during rep r and 1000*r + dur[r]
+// on the first call after that rep's drain. Calls from anywhere else (benchGo's wait for
+// the frame loop) fall on a rep boundary and change no duration.
 const CLOCK = "() => { window.__now = performance.now;" +
-  " const dur = [1, 10, 10]; let k = 0;" +
-  " performance.now = () => { const i = k >> 1, t = 1000 * i; k++;" +
-  "   return (k % 2) ? t : t + dur[Math.min(i, dur.length - 1)]; }; }";
+  " const q = device.queue, drain = q.onSubmittedWorkDone;" +
+  " const dur = [1, 10, 10]; let r = 0, ended = false;" +
+  " window.__drain = drain;" +
+  " q.onSubmittedWorkDone = async () => { const v = await drain(); ended = true; return v; };" +
+  " performance.now = () => { if (!ended) { return 1000 * r; }" +
+  "   ended = false; r++; return 1000 * (r - 1) + dur[Math.min(r - 1, dur.length - 1)]; }; }";
 async function legReps(env, page) {
   env.run("() => { window.bench.cfg.K = 1; window.bench.cfg.R = 2; }");
   env.run(CLOCK);
   env.gpuReset();
   const rec = await env.run("() => window.bench.whole()");
-  env.run("() => { performance.now = window.__now; }");
+  env.run("() => { performance.now = window.__now;" +
+          " device.queue.onSubmittedWorkDone = window.__drain; }");
   const cell = (rec && rec.cells && rec.cells[0]) || {};
   ok(page + ": one cell drains R + 1 times (the warm-up rep included)",
      env.gpu.drains === 3, env.gpu.drains + " drains for R = 2");
@@ -229,7 +308,18 @@ async function legCampaigns(env, page, chains) {
   // the stub validates every dispatch extent and every bind group as the campaigns run
   env.run("() => { window.bench.cfg.K = 2; window.bench.cfg.R = 1; " +
           "window.bench.cfg.reps = 3; window.bench.cfg.chainReps = 2; }");
+  // ... and the restore goes through the PAGE's applyIC (the selected preset), not the
+  // solver's built-in modes IC
+  env.run("() => { window.__ic = { applyIC: 0, setIC: 0 };" +
+    " const a = benchPage.applyIC, s = solver, si = s.setIC.bind(s);" +
+    " benchPage.applyIC = () => { window.__ic.applyIC++; return a(); };" +
+    " s.setIC = function (z) { window.__ic.setIC++; return si(z); }; }");
   await env.run("() => window.bench.all()");
+  const ic = env.run("() => window.__ic");
+  ok(page + ": each campaign that trampled the fields restored them through applyIC",
+     ic.applyIC === (chains ? 3 : 2) && ic.setIC <= ic.applyIC,
+     ic.applyIC + " applyIC, " + ic.setIC + " setIC (expected " + (chains ? 3 : 2) +
+     " restores: per kernel, ladder" + (chains ? ", chains" : "") + ")");
   const txt = env.run("() => window.bench.text()");
   const recs = txt.trim().split("\n").filter(l => l).map(l => JSON.parse(l));
   ok(page + ": one JSON record landed in the textarea", recs.length === 1,
@@ -291,18 +381,22 @@ function legCapture(env) {
      fix.cases.length + " cases");
 }
 // ... and the text the SOLVER compiles, which is what the app runs: each FFT pipeline's
-// module against the same capture, at the self-test grid and -- through the page's LIVE
-// solver, the one boot() built before anything here ran -- at the default preset.
+// module against the same capture, at the self-test grid, at the default preset (through
+// the page's LIVE solver, the one boot() built before anything here ran) and at the
+// LONGEST line the page's selRes offers, where a length-gated emission would hide.
+const LONGEST = { "rmhd2d.html": { nx: 1024, ny: 1024 },
+                  "rmhd3d.html": { nx: 64, ny: 64, nz: 256 } };
 function legPipelines(env, page) {
   const want = JSON.parse(fs.readFileSync(FIX, "utf8")).pipelines[page];
   const grids = Object.keys(want);
-  const got = env.run("(grids, keys) => { const R = REFVEC, out = {};" +
-    " const dims = { selftest: { nx: R.nx, ny: R.ny, nz: R.nz }, preset: null };" +
+  const got = env.run("(grids, keys, long) => { const R = REFVEC, out = {};" +
+    " const dims = { selftest: { nx: R.nx, ny: R.ny, nz: R.nz }, preset: null, longest: long };" +
     " for (const g of grids) { const s = dims[g] ? new Solver(device, dims[g]) : solver;" +
     "   const t = { __res: [s.g.nx, s.g.ny, s.g.nz || 1] };" +
     "   for (const k of keys) t[k] = s.pl[k].__code;" +
     "   if (dims[g]) s.destroy(); out[g] = t; }" +
-    " return out; }", grids, Object.keys(want[grids[0]]).filter(k => k !== "__res"));
+    " return out; }", grids, Object.keys(want[grids[0]]).filter(k => k !== "__res"),
+    LONGEST[page]);
   const nk = env.is3d ? 6 : 4;                  // the row / column pair, plus z in 3D
   for (const g of grids) {
     const keys = Object.keys(want[g]).filter(k => k !== "__res");
@@ -405,7 +499,8 @@ function legSeamRestore(env) {
 //   per stage                           = 400447488  x3 = 1201342464
 //   energyPartial 2cx + 2grp + grz      = 8786944
 //   TOTAL                               = 1210129408
-const BYTES = { "rmhd2d.html": { fn: "benchSpec2D", res: [256, 256, 1], bytes: 71208960 },
+const BYTES = { "rmhd2d.html": { fn: "benchSpec2D", res: [256, 256, 1], bytes: 71208960,
+                                 eqsrc: true },
                 "rmhd3d.html": { fn: "benchSpec3D", res: [128, 128, 64], bytes: 1210129408 } };
 function legBytes(env, page) {
   const w = BYTES[page];
@@ -416,6 +511,16 @@ function legBytes(env, page) {
      String(got.res) === String(w.res), got.res + " vs " + w.res);
   ok(page + ": bytes per step = the hand-computed " + w.bytes,
      got.bytes === w.bytes, got.bytes + " B/step, " + got.bf + " butterflies");
+  if (!w.eqsrc) return;
+  // the maintained-flux equilibrium binds psi_eq,k as nlAssemble's fifth buffer: one more
+  // complex field read per stage, and nothing else moves
+  const eq = env.run("(fn) => { const s = new Solver(device, { eqsrc: true });" +
+    " const sp = globalThis[fn](s); const io = benchStepIO(sp);" +
+    " const r = { eqk: !!s.buf.eqk, bytes: io.bytes, cx: s.g.nm * 8 }; s.destroy(); return r; }", w.fn);
+  ok(page + ": ... and an eqsrc solver counts its eqk read, 1cx per stage, on top",
+     eq.eqk === true && eq.bytes === w.bytes + 3 * eq.cx,
+     eq.bytes + " B/step, " + (eq.bytes - w.bytes) + " over the eqsrc-off count (3cx = " +
+     3 * eq.cx + ")");
 }
 
 // ---------------------------------------------------------------------------
@@ -465,22 +570,39 @@ function legAnalytic(env, g) {
      err.every(e => e < 1e-5), err.map(e => e.toExponential(1)).join(", "));
 }
 // the rows themselves, driven with an empty encode pair (this leg is about the awaits,
-// not the numbers): two rows on a live solver, none at all when a resolution change
-// retires it while a readback is parked.
+// not the numbers): two rows on a live solver, and a visible "skipped" row -- never a
+// throw and never silence -- when a resolution change retires it while a readback is
+// parked, whichever of the two readbacks it is parked on.
 async function legAnalyticRows(env, page) {
   const call = "() => fftAnalyticRows(solver, { fwd: () => {}, inv: () => {} })" +
-    ".then(r => r.length, e => 'threw: ' + e.message)";
+    ".then(r => r, e => ['threw: ' + e.message])";
+  const live = await env.run(call);
   ok(page + ": fftAnalyticRows adds both rows on a live solver",
-     (await env.run(call)) === 2, String(await env.run(call)));
-  env.holdMaps(true);
-  const pending = env.run(call);
-  env.run("() => { window.__sv = solver; solver = null; }");
-  env.maps();
-  const n = await pending;
-  env.run("() => { solver = window.__sv; }");
-  env.holdMaps(false);
-  ok(page + ": ... and drops them, without throwing, when the solver is rebuilt mid-row",
-     n === 0, String(n));
+     live.length === 2 && !live.some(r => /skipped/.test(r)),
+     live.length + " rows");
+  // retire the solver while readback `k` (1 or 2) is parked, then release every map that
+  // is still held -- the leg must terminate and report, not park with node's queue empty
+  const race = async k => {
+    env.holdMaps(true);
+    const pending = env.run(call);
+    for (let i = 0; i < 40 && env.mapsPending() < 1; i++) await new Promise(r => setTimeout(r, 0));
+    if (k > 1) { env.maps(false, 1); for (let i = 0; i < 40 && env.mapsPending() < 1; i++) await new Promise(r => setTimeout(r, 0)); }
+    env.run("() => { window.__sv = solver; solver = null; }");
+    while (env.mapsPending()) { env.maps(); await new Promise(r => setTimeout(r, 0)); }
+    const rows = await pending;
+    env.run("() => { solver = window.__sv; }");
+    env.holdMaps(false);
+    return rows;
+  };
+  const r1 = await race(1);
+  ok(page + ": ... a rebuild during the FORWARD readback leaves one visible skipped row",
+     r1.length === 1 && /skipped \(solver rebuilt during test\)/.test(r1[0]),
+     r1.length + " rows: " + r1.join(" ").slice(0, 120));
+  const r2 = await race(2);
+  ok(page + ": ... and one during the ROUNDTRIP readback keeps the forward row and adds it",
+     r2.length === 2 && /forward transform at/.test(r2[0]) &&
+     /skipped \(solver rebuilt during test\)/.test(r2[1]),
+     r2.length + " rows: " + r2.map(r => r.slice(4, 60)).join(" | "));
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +618,9 @@ async function legAnalyticRows(env, page) {
   console.log("(i.c) a campaign holds the frame loop off");
   await legLoopHold("rmhd2d.html");
   await legLoopHold("rmhd3d.html");
+  console.log("(i.c2) ... including the frame already in flight when it starts");
+  await legLoopRace("rmhd2d.html");
+  await legLoopRace("rmhd3d.html");
   console.log("(i.d) R + 1 reps per cell, the first discarded");
   await legReps(e2, "rmhd2d.html");
   console.log("(ii) the default fftKernel emission is the captured one");
@@ -514,5 +639,6 @@ async function legAnalyticRows(env, page) {
   await legAnalyticRows(e2, "rmhd2d.html");
   await legAnalyticRows(e3, "rmhd3d.html");
   console.log(bad ? "bench harness: FAILED (" + bad + ")" : "bench harness: all green");
-  process.exit(bad ? 1 : 0);
+  process.exitCode = bad ? 1 : 0;
+  process.exit(process.exitCode);
 })();

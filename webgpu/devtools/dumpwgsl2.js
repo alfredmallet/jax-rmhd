@@ -16,7 +16,11 @@ const [dir, page, demo, out] = process.argv.slice(2);
 const ovr = process.argv[6] ? JSON.parse(process.argv[6]) : null;
 const env = require("./stubenv")(dir, page, demo);
 const is3d = env.is3d;
-const presets = is3d ? [[64, 32], [128, 32], [128, 64], [256, 64]] : [[128], [256], [512]];
+// every resolution the page's own selRes offers -- the dump is only a pin on the text the
+// app can actually emit, and a kernel that differs only at the longest line (1024 in 2D,
+// nz = 128/256 in 3D) is invisible to a dump that stops short of it
+const presets = is3d ? [[64, 32], [128, 32], [128, 64], [256, 64], [64, 128], [64, 256]]
+                     : [[128], [256], [512], [1024]];
 const chunks = [];
 function dump(label, P) {
   if (ovr) Object.assign(P, ovr);

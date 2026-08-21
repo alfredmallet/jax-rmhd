@@ -1,6 +1,7 @@
 # FFTPERF_PLAN — what the step's transforms cost, then twiddle table / radix-4 / gradient chunking
 
-Written 2026-08-21, **not started**. Prompted by `plans/MEMORY_PERF_PLAN.md` closing on the
+Written 2026-08-21. **Phase 0 landed 2026-08-21** (`58c3fd7` + review fixes `4972e0e`; execution
+notes at the end); Phase 1 is Alfred's campaign and is **not started**. Prompted by `plans/MEMORY_PERF_PLAN.md` closing on the
 solver: of its four shipped phases, Z1 (the Elsasser-separable propagator) is what
 `rmhd3d.html`'s stage kernel has always been, Z2/F2 have no counterpart here, F4 is dead
 (`realGrads` is shared with the field-line pass), and F1's diagnosis — the eight-lane gradient
@@ -168,6 +169,15 @@ shipped kernels before Phase 2 touches them — that is the baseline the rows ex
   hand-computed number for 2D 256² and 3D 128²×64 (Appendix A) exactly; (v) the analytic
   self-test row's reference generator returns the three bins and zeros elsewhere for two
   `(N, k)` choices (pure JS, no GPU).
+- [As landed, after two review rounds, `checkbench.js` also carries: the Solver's OWN
+  compiled FFT text pinned against the fixture at the self-test grid, the default preset
+  and the largest offered grid; `FFT_PROBE === null` on a freshly booted page before any
+  campaign; every spec cell's pipeline, bind group, dispatch extent, lane count and buffer
+  order compared against a recorded `solver.step`, with every `stepIO` entry dispatched
+  exactly `n` times and nothing dispatched the table neither counts nor excuses; the frame
+  loop held off during a campaign, including the iteration in flight at the click; R+1
+  drains with the first discarded; the `finally` on the probe seam; the self-test's
+  mid-test solver rebuild; `process.exitCode` non-zero unless the summary line is reached.]
 - `bootstub`, `checkidle`, the whole devtools suite: green untouched.
 - The self-test rows: green on-device on the shipped kernels (Alfred, once, both pages, at
   the default and the largest resolution).
@@ -407,7 +417,7 @@ gates; uncommitted work has been lost that way).
 ## Appendix A — bytes per step, for the bench's GB/s (checkable by hand)
 
 The count is **buffer bytes bound and read or written by each dispatch** (not cache traffic,
-not the CFL pair, not `tick`/`ou`/`scale`, not the `clearBuffer(delta)`). Units: `cx = nm·8`
+not the CFL pair, not `tick`/`ou`/`scale`/`energyFinal`, not the `clearBuffer(delta)`). Units: `cx = nm·8`
 (one complex field), `rx = nr·4` (one real field); the static grids are `grA = grB = nm·16`
 in 2D and `nmp·16` in 3D (`gridA`/`gridB` are perpendicular-only there), `grZ = nz·16`
 (3D only). Per stage, with lane counts as the step dispatches them:
@@ -442,3 +452,53 @@ The two hand numbers `checkbench.js` leg (iv) pins:
 The bench sums the same table from the page's own dispatch list so a kernel added later is
 counted; a disagreement between the check's literal and the function is a change to one of
 them that the other did not follow.
+
+## Phase 0 execution notes (2026-08-21)
+
+Two opus implementers in the shared tree (A: harness, probe seam, `checkbench.js`; B:
+`fftAnalyticCase` and the production-N rows), fresh-Fable adversarial review, one fix round,
+fresh-Fable close-out. Landed as `58c3fd7` and `4972e0e`. WGSL byte-identical to `f83386e`
+on both pages (124/124, 270/270) throughout; the whole devtools suite green; `checkbench.js`
+135 legs.
+
+**Deviations from §3, accepted:**
+- `buildShaders` did not gain an `opts` argument: `checksolver2d.js` pins its header and
+  `solver2d.js`'s top-level names against `268100f`. The probe reaches the emitter through
+  `FFT_PROBE`, a module-level seam in `common.js` set only inside `benchShaders` (try/finally)
+  — §0.1's "module-level emit options that only the bench reads". The gate now asserts it is
+  null on a freshly booted page before any campaign, and pins the Solver's own compiled FFT
+  text against the `f83386e` fixture.
+- The whole-step cell is K `solver.step` submits with one drain (§3 item 1, as amended): an
+  encode-only step would be a second copy of `step`.
+- The bench spec is a page-level function (`benchSpec2D`/`benchSpec3D`) next to the solver,
+  not a `Solver` method (the same pin).
+- The analytic rows run on the LIVE solver (`realNL`/`nlk` are RHS scratch) — a throwaway
+  solver at 256²×64 would double the page's largest allocation.
+- Appendix A was rewritten as the per-kernel table after the first review found the
+  implementers' byte count and the appendix's prose both short of what the kernels bind
+  (`gridA`/`gridB`/`gridZ` reads, 2D `forcingAdd` = 6cx); the fix round then caught that the
+  reviewer and the appendix had `stage` at 8cx where the kernel reads three fields and writes
+  two (10cx). Three people, three numbers; the table is now the single statement and the
+  check's two literals follow from it: 71,208,960 (2D 256²), 1,210,129,408 (3D 128²×64).
+
+**What the first review found and the fix round closed:** the `FFT_PROBE` assertion ran after
+the bench's own `finally` had reset it (toothless; now asserted on a fresh boot); nothing pinned
+the spec's dispatch shapes/buffers to the solver's (the stub only rejected non-integers — it now
+logs every dispatch and bind group, and `legWiring` compares against a recorded `step`); the
+whole-step cell let the rAF loop render and read back inside the timed window (`benchBusy`
+holds `loop()` off; gated with a parked-rAF stub); `running = false` → `setRunning(false)`;
+first-rep discard, `finally`, and the self-test's mid-test solver rebuild are gated.
+
+**What the close-out review found and the second fix round closed:** the `loop()` iteration
+already in flight at the click finished its tail (`readStats`, the 3D hooks) inside a kept
+rep — `benchGo` now waits for it; 1024² and 64²×128/256 were outside every byte-identity
+gate (`dumpwgsl2`'s preset list predated them — added, baselines regenerated from `f83386e`,
+the largest grids pinned in the fixture); a deadlocked check exited 0 without a summary
+(`process.exitCode`); `benchRestore` re-applied the hard-coded "modes" IC, not the page's
+selected one (now `applyIC`). Three independent recomputations of the byte table now agree.
+
+**Only checkable on device** (handed to Alfred before Phase 1): the two new self-test rows
+green on both pages at the default and largest resolutions; the `?bench` panel renders and
+a campaign completes with no WebGPU validation error (the variant pipelines' `auto` layouts
+and the hand-listed `bufs` get their only real validation there); per kernel
+`copy ≤ consttw ≤ full`; whole-step `ms_med` stable across two runs.

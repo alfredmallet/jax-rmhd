@@ -614,6 +614,9 @@ let device = null, canvasFormat = "bgra8unorm";
 // expose adapter.info) and every reader must treat it as one.
 let gpuInfo = "";
 let solver = null, running = false, stepsPerFrame = 1, spsSmooth = 0;
+// true from the moment loop() enters a frame's work until that frame is done: a frame
+// parked on its own drain still has a render / stats / hook tail to run (benchLoopIdle)
+let loopBusy = false;
 // the sim time of the last stats readback: the readout prints it, and the save/record
 // filenames stamp it (item 13), so it is kept once here rather than parsed back out
 let simT = 0;
@@ -8548,11 +8551,14 @@ function renderCards(paused) {
 }
 async function loop() {
   for (;;) {
+    loopBusy = false;             // nothing of the last iteration is in flight any more
     await new Promise(r => requestAnimationFrame(r));
     while (graveyard.length) graveyard.pop().destroy();
     if (!solver) continue;
     if (benchBusy) continue;      // a ?bench campaign owns the queue: no steps, no render,
                                   // no stats readback inside its timed window
+    loopBusy = true;              // ... and an iteration already past that guard runs to
+                                  // its end before a campaign starts timing (benchLoopIdle)
     const t0 = performance.now();
     let n = 0;
     if (running) {
@@ -8799,24 +8805,25 @@ function fftAnalyticCase(g) {
 // ... and the two rows it feeds, at the resolution the page is running: the analytic
 // forward spectrum and the roundtrip, both through the production pipelines. `enc.fwd` /
 // `enc.inv` are the page's own nonlinear-term transform chains, encoded on the solver's
-// realNL / nlk scratch. A resolution change during either readback retires `s`, and the
-// rows it was going to add are dropped rather than read off destroyed buffers.
+// realNL / nlk scratch. A resolution change during either readback retires `s`: what is
+// left to measure is dropped rather than read off destroyed buffers, and a row says so.
 async function fftAnalyticRows(s, enc) {
   const d = s.device, g = s.g, B = s.buf;
   const c = fftAnalyticCase(g);
   const res = g.nx + "x" + g.ny + (g.nz > 1 ? "x" + g.nz : "");
   const note = "the running " + res + " solver; 3 cosine modes, " + c.bins.length + " nonzero bins";
-  const gone = () => { console.warn("self-test: solver rebuilt during the " + res + " transform rows"); return []; };
+  const skipRow = () => testRow("transforms at " + res + ": skipped (solver rebuilt during test)",
+                                NaN, 1e-5, "the page changed resolution while a readback was in flight");
   d.queue.writeBuffer(B.realNL, 0, c.input);
   let e = d.createCommandEncoder(), p = e.beginComputePass();
   enc.fwd(p); p.end(); d.queue.submit([e.finish()]);
   const got = await readBufOnce(d, B.nlk, g.nm * 8);
-  if (solver !== s) return gone();
+  if (solver !== s) return [skipRow()];
   const rows = [testRow("forward transform at " + res + ", analytic", relL2(got, c.expect), 1e-5, note)];
   e = d.createCommandEncoder(); p = e.beginComputePass();
   enc.inv(p); p.end(); d.queue.submit([e.finish()]);
   const back = await readBufOnce(d, B.realNL, s.nr * 4);
-  if (solver !== s) return gone();
+  if (solver !== s) { rows.push(skipRow()); return rows; }
   rows.push(testRow("roundtrip at " + res, relL2(back.subarray(0, s.nr), c.input), 1e-5, note));
   return rows;
 }
@@ -8958,10 +8965,25 @@ function benchHead(spec, campaign) {
            nx: spec.res[0], ny: spec.res[1], nz: spec.res[2],
            cflEvery: benchCflEvery(), K: benchCfg.K, R: benchCfg.R, reps: benchCfg.reps };
 }
-// the fields the isolated loops trampled: back to the solver's built-in IC
+// the fields the isolated loops trampled: back to the page's selected IC
 async function benchRestore() {
-  solver.setIC();
+  benchPage.applyIC();
   await device.queue.onSubmittedWorkDone();
+}
+// the frame loop can be mid-iteration when a campaign starts -- past the benchBusy guard
+// and parked on its own drain, with a render, a stats readback and the frame hooks still
+// to run. Wait that iteration out before the clock starts; give up after BENCH_IDLE_MS so
+// a loop that has stopped iterating cannot wedge the button.
+const BENCH_IDLE_MS = 2000;
+function benchLoopIdle() {
+  return new Promise(res => {
+    const t0 = performance.now();
+    const poll = () => {
+      if (!loopBusy || performance.now() - t0 > BENCH_IDLE_MS) res();
+      else setTimeout(poll, 4);
+    };
+    poll();
+  });
 }
 
 // K steps (each its own submit, as the app's own loop does), drained once
@@ -9053,13 +9075,15 @@ function benchEmit(rec) {
   console.log(line);
   return rec;
 }
-// run one campaign: pause the run, and hold the frame loop off for the whole campaign.
-// Nothing is restored beyond what setIC re-applies -- see the panel's hint.
+// run one campaign: pause the run, hold the frame loop off for the whole campaign, and
+// let the frame already in flight finish first. Nothing is restored beyond what the
+// page's applyIC re-applies -- see the panel's hint.
 async function benchGo(fn) {
   if (benchBusy) return null;
   benchBusy = true;
   setRunning(false);
   el("benchstatus").textContent = "running…";
+  await benchLoopIdle();
   let rec = null;
   try {
     rec = benchEmit(await fn());
@@ -9072,8 +9096,9 @@ async function benchGo(fn) {
   return rec;
 }
 
-// the panel, and window.bench. `page` = {page, spec, chains}: the app's name, the
-// function that builds its bench spec off the live solver, and whether it offers whole
+// the panel, and window.bench. `page` = {page, spec, applyIC, chains}: the app's name,
+// the function that builds its bench spec off the live solver, its own IC re-apply (the
+// selected preset, not solver.setIC's built-in modes), and whether it offers whole
 // chains. Called unconditionally by both apps' boot; without the flag it does nothing.
 function benchBuild(page) {
   if (!BENCH) return;
@@ -9083,8 +9108,8 @@ function benchBuild(page) {
   _mk("summary", null, d).textContent = "bench";
   _mk("div", "hint", d).textContent =
     "pauses the run. the per-kernel, ladder and chain campaigns leave the fields garbage "
-    + "and end by re-applying the initial condition: fields, forcing state and scalars. "
-    + "one JSON record per run below -- copy it out.";
+    + "and end by re-applying the page's selected initial condition (fields, forcing "
+    + "state, scalars). one JSON record per run below -- copy it out.";
   const row = _mk("div", "row", d);
   const st = _mk("div", "hint", d);
   st.id = "benchstatus";

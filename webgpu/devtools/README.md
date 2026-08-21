@@ -66,6 +66,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   overrides every parameter set (`pm` = Pm = nu/eta, `eqsrc` = the maintained-flux
   source, `ny`/`Lx`/`Ly` = a rectangular 2D box),
   which is how a knob's kernel footprint is shown: dump twice, diff the two.
+  Its preset list is every resolution the page's own `selRes` offers — 128/256/512/1024 in
+  2D, 64²×32 through 256²×64 plus 64²×128 and 64²×256 in 3D — and it has to stay that way:
+  a kernel that differs only at a line length the dump never visits (the 1024 row, the long
+  z pass) is invisible to the byte-diff, whatever else is green. 155 kernels on rmhd2d,
+  378 on rmhd3d.
 - `wgslparse.mjs` — parse all emitted kernels with wgsl_reflect (closest available
   compile check; npm i wgsl_reflect first, or `WGSL_REFLECT=<path-to-wgsl_reflect.module.js>`,
   the same idiom names.mjs uses for acorn).
@@ -774,16 +779,23 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   group it names must be one the solver's own `step()` dispatched, at the spec's extent and
   lane count, with the FFT cells' `bufs` equal to that bind group's buffers in binding
   order — and every byte-table entry dispatched exactly `n` times, with nothing dispatched
-  the table has neither counted nor excused. Then the LOOP: with frames driven from inside
+  the table has neither counted nor excused and each excused kernel dispatched exactly as
+  often as the table assumes. Then the LOOP: with frames driven from inside
   the queue drains, a campaign must encode no display chain, read no stats, and leave the
-  hero button paused — and the next frame after it must draw again. Then the REPS: one cell
+  hero button paused — and the next frame after it must draw again. Its second half is the
+  frame ALREADY in flight when the button is pressed: a frame is parked on its own drain
+  (its render, stats readback and frame hooks still to come), the campaign is started, and
+  the campaign must not step until that frame has finished (`loopBusy` at its first step)
+  and must keep the frame's tail out of every timed rep. Each campaign that trampled the
+  fields must also restore through the page's own `applyIC`, not a bare `setIC`. Then the REPS: one cell
   drains R+1 times and reports the median and min of what it kept, against a clock whose
   first rep is the cheap one, so a kept warm-up rep shows up as the min. Then the EMISSION:
   `fftKernel` / `fftRowPair` with no probe are byte-identical to
   `fixtures/fftkernel_f83386e.json` — every offered line length, both directions, with and
   without `lpb` — and so is the text the Solver COMPILES for each FFT pipeline, at the
-  self-test grid and, through the page's live solver, at the default preset (the fixture's
-  `pipelines`). That is the pair of legs that pins the kernel text from here on (2A and 2B
+  self-test grid, through the page's live solver at the default preset, and at the LONGEST
+  line the page offers (1024² / 64²×256 — where a length-gated emission would hide from a
+  dump that stopped short of it). That is the pair of legs that pins the kernel text from here on (2A and 2B
   regenerate the capture by booting that tree's pages under stubenv, replaying the fixture's
   `cases` and reading each pipeline's `__code`; anything else that moves the text fails).
   Then the PROBES: `consttw` differs from the default in exactly the two twiddle
@@ -791,10 +803,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   and store bodies verbatim, all three parse, and a build that THROWS still hands the seam
   back. Then BYTES: the per-step sum reproduces a
   hand-computed number for 2D 256² and 3D 128²×64 exactly, with the appendix-A arithmetic
-  written out in the check. Last, `fftAnalyticCase` — the self-test's analytic reference —
+  written out in the check, and a 2D `eqsrc` solver counts its extra `eqk` binding on top.
+  Last, `fftAnalyticCase` — the self-test's analytic reference —
   returns three nonzero bins at the flat indices it reports, zeros everywhere else, and
   each bin holding `amp·nr/2·exp(i·phase)`; and `fftAnalyticRows` adds two rows on a live
-  solver and none at all when a parked readback resolves after the solver was rebuilt.
+  solver and a VISIBLE "skipped" row when the solver is rebuilt during either readback (the
+  forward one, or the roundtrip, where the row it already had survives beside it). The
+  process exit code starts at 1 and is cleared only by the summary line, so a leg that parks
+  forever — a held `mapAsync` nothing releases — fails instead of exiting green in silence.
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`). The shared set is PER PAGE
   (rmhd2d loads common + physics + solver2d, rmhd3d loads common + physics), and

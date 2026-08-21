@@ -67,7 +67,8 @@ rfft bin on every grid the pages offer) and computes in float64 the unnormalized
 they must produce: `amp·nr/2·exp(i·phase)` in three bins, exact zeros elsewhere. The rows go
 through the production pipelines (the nonlinear term's transform chain) on the LIVE solver —
 `realNL`/`nlk` are RHS scratch the next step rewrites, so the paused run keeps its state —
-at the same 1e-5 tolerance; the fp32 floor of the comparison is ~3e-8.
+at the same 1e-5 tolerance; the reference's own f32 quantization puts a floor of ~2e-8
+under the comparison before the transform's rounding adds to it.
 
 To regenerate the vectors after changing the physics:
 
@@ -117,7 +118,7 @@ controller and no `timestamp-query`.
 
 A campaign pauses the run; the per-kernel, ladder and chain campaigns leave the buffers as
 garbage (kernels run out of order on the live state), so each ends by re-applying the
-initial condition — fields, forcing state and scalars. One variant per page load, nothing
+page's selected initial condition — fields, forcing state and scalars. One variant per page load, nothing
 else running, plugged in.
 
 ## Files

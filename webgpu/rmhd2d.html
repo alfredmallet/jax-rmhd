@@ -597,7 +597,9 @@ function benchSpec2D(s) {
       { name: "bracket", n: 3, bytes: 10 * rx },
       { name: "rowsR2C:2", n: 3, bytes: 2 * (rx + cx), bf: 2 * nx * bl(ny) },
       { name: "colsFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nky * bl(nx) },
-      { name: "nlAssemble", n: 3, bytes: 2 * cx + 2 * gr + 2 * cx },
+      // the maintained-flux equilibrium (J2.3) is a fifth binding of nlAssemble: one
+      // more complex field read, and only when the preset asks for it
+      { name: "nlAssemble", n: 3, bytes: 2 * cx + 2 * gr + 2 * cx + (s.p.eqsrc ? cx : 0) },
       { name: "forcingAdd", n: 3, bytes: 2 * cx + 2 * cx + 2 * cx },
       { name: "stage", n: 3, bytes: 10 * cx + gr },
       { name: "energyPartial", n: 1, bytes: 2 * cx + 2 * gr }
@@ -784,7 +786,8 @@ async function boot() {
   wireCommonControls({ presets: PRESETS, rebuildOn: ["selBox", "nPm", "cbEqSrc"],
                        icSliders: EQ_SLIDERS });
   bootApply(pre);
-  benchBuild({ page: "rmhd2d", spec: benchSpec2D });   // ?bench only; a no-op without it
+  // ?bench only; a no-op without it
+  benchBuild({ page: "rmhd2d", spec: benchSpec2D, applyIC: applyIC });
   loop();
 }
 boot();
