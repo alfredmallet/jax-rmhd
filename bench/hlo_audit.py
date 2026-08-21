@@ -59,12 +59,24 @@ if NDEV:
     if "xla_force_host_platform_device_count" not in flags:
         os.environ["XLA_FLAGS"] = (flags + f" --xla_force_host_platform_device_count={NDEV}").strip()
 
+# Select the package version via RMHD_PKG=<dir>, exactly as bench/bench_phase1.py does
+# (a PEP-660 editable install registers a meta-path finder that silently beats PYTHONPATH),
+# falling back to this file's own repo root so the audit runs from a checkout with no
+# install at all -- what bench/memory_probe.py does.
+_pkgdir = os.environ.get("RMHD_PKG") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.meta_path = [f for f in sys.meta_path
+                 if "taranis" not in (getattr(f, "__module__", "") or "")]
+sys.path.insert(0, _pkgdir)
+
 import jax                     # noqa: E402
 import jax.numpy as jnp        # noqa: E402
 import numpy as np             # noqa: E402
 import taranis as jr           # noqa: E402
 from taranis import comms, run as jrun          # noqa: E402
 from taranis.timestepping import get_scheme     # noqa: E402
+
+assert jr.__file__.startswith(os.path.abspath(_pkgdir) + os.sep), \
+    f"wrong taranis imported: {jr.__file__} (wanted {_pkgdir})"
 
 L = 2 * np.pi
 p = jr.Parameters(nx=NX, ny=NX, nz=NZ, Lx=L, Ly=L, Lz=L, dims=3, z_diss=0.25,
