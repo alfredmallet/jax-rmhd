@@ -1,0 +1,544 @@
+{
+ "base": "f83386e",
+ "note": "fftKernel / fftRowPair emission captured from webgpu/common.js at f83386e (the tree FFTPERF_PLAN phase 0 starts from). checkbench.js leg (ii) replays `cases` and demands `texts` back, byte for byte.",
+ "cases": [
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=8 dir=-1 lpb=0",
+   "o": {
+    "N": 8,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=8 dir=-1 lpb=7",
+   "o": {
+    "N": 8,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=8 dir=1 lpb=0",
+   "o": {
+    "N": 8,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=8 dir=1 lpb=7",
+   "o": {
+    "N": 8,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=8 lpb=0",
+   "ny": 8,
+   "nky": 5
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=8 lpb=7",
+   "ny": 8,
+   "nky": 5,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=16 dir=-1 lpb=0",
+   "o": {
+    "N": 16,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=16 dir=-1 lpb=7",
+   "o": {
+    "N": 16,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=16 dir=1 lpb=0",
+   "o": {
+    "N": 16,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=16 dir=1 lpb=7",
+   "o": {
+    "N": 16,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=16 lpb=0",
+   "ny": 16,
+   "nky": 9
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=16 lpb=7",
+   "ny": 16,
+   "nky": 9,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=32 dir=-1 lpb=0",
+   "o": {
+    "N": 32,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=32 dir=-1 lpb=7",
+   "o": {
+    "N": 32,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=32 dir=1 lpb=0",
+   "o": {
+    "N": 32,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=32 dir=1 lpb=7",
+   "o": {
+    "N": 32,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=32 lpb=0",
+   "ny": 32,
+   "nky": 17
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=32 lpb=7",
+   "ny": 32,
+   "nky": 17,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=64 dir=-1 lpb=0",
+   "o": {
+    "N": 64,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=64 dir=-1 lpb=7",
+   "o": {
+    "N": 64,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=64 dir=1 lpb=0",
+   "o": {
+    "N": 64,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=64 dir=1 lpb=7",
+   "o": {
+    "N": 64,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=64 lpb=0",
+   "ny": 64,
+   "nky": 33
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=64 lpb=7",
+   "ny": 64,
+   "nky": 33,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=128 dir=-1 lpb=0",
+   "o": {
+    "N": 128,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=128 dir=-1 lpb=7",
+   "o": {
+    "N": 128,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=128 dir=1 lpb=0",
+   "o": {
+    "N": 128,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=128 dir=1 lpb=7",
+   "o": {
+    "N": 128,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=128 lpb=0",
+   "ny": 128,
+   "nky": 65
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=128 lpb=7",
+   "ny": 128,
+   "nky": 65,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=256 dir=-1 lpb=0",
+   "o": {
+    "N": 256,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=256 dir=-1 lpb=7",
+   "o": {
+    "N": 256,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=256 dir=1 lpb=0",
+   "o": {
+    "N": 256,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=256 dir=1 lpb=7",
+   "o": {
+    "N": 256,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=256 lpb=0",
+   "ny": 256,
+   "nky": 129
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=256 lpb=7",
+   "ny": 256,
+   "nky": 129,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=512 dir=-1 lpb=0",
+   "o": {
+    "N": 512,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=512 dir=-1 lpb=7",
+   "o": {
+    "N": 512,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=512 dir=1 lpb=0",
+   "o": {
+    "N": 512,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=512 dir=1 lpb=7",
+   "o": {
+    "N": 512,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=512 lpb=0",
+   "ny": 512,
+   "nky": 257
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=512 lpb=7",
+   "ny": 512,
+   "nky": 257,
+   "lpb": 7
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=1024 dir=-1 lpb=0",
+   "o": {
+    "N": 1024,
+    "dir": -1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=1024 dir=-1 lpb=7",
+   "o": {
+    "N": 1024,
+    "dir": -1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=1024 dir=1 lpb=0",
+   "o": {
+    "N": 1024,
+    "dir": 1,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "kernel",
+   "name": "fftKernel N=1024 dir=1 lpb=7",
+   "o": {
+    "N": 1024,
+    "dir": 1,
+    "lpb": 7,
+    "decl": "@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;",
+    "load": "  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }",
+    "store": "  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }"
+   }
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=1024 lpb=0",
+   "ny": 1024,
+   "nky": 513
+  },
+  {
+   "kind": "rowpair",
+   "name": "fftRowPair ny=1024 lpb=7",
+   "ny": 1024,
+   "nky": 513,
+   "lpb": 7
+  }
+ ],
+ "texts": {
+  "fftKernel N=8 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=8 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=8 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=8 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 8u;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=8 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 8u;\nconst NKY_: u32 = 5u;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=8 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 8u;\nconst NKY_: u32 = 5u;\nconst SCL: f32 = 1.250000000000e-1;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=8 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 8u;\nconst NKY_: u32 = 5u;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=8 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 8u;\nconst NKY_: u32 = 5u;\nconst SCL: f32 = 1.250000000000e-1;\nvar<workgroup> buf: array<vec2<f32>, 16u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 8u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 3u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 4u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 4u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=16 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=16 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=16 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=16 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 16u;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=16 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 16u;\nconst NKY_: u32 = 9u;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=16 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 16u;\nconst NKY_: u32 = 9u;\nconst SCL: f32 = 6.250000000000e-2;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=16 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 16u;\nconst NKY_: u32 = 9u;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=16 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 16u;\nconst NKY_: u32 = 9u;\nconst SCL: f32 = 6.250000000000e-2;\nvar<workgroup> buf: array<vec2<f32>, 32u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 16u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 4u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 8u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 8u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=32 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=32 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=32 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=32 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 32u;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=32 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 32u;\nconst NKY_: u32 = 17u;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=32 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 32u;\nconst NKY_: u32 = 17u;\nconst SCL: f32 = 3.125000000000e-2;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=32 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 32u;\nconst NKY_: u32 = 17u;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=32 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 32u;\nconst NKY_: u32 = 17u;\nconst SCL: f32 = 3.125000000000e-2;\nvar<workgroup> buf: array<vec2<f32>, 64u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 32u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 5u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 16u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 16u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=64 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=64 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=64 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=64 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 64u;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=64 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 64u;\nconst NKY_: u32 = 33u;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=64 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 64u;\nconst NKY_: u32 = 33u;\nconst SCL: f32 = 1.562500000000e-2;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=64 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 64u;\nconst NKY_: u32 = 33u;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 32u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=64 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 64u;\nconst NKY_: u32 = 33u;\nconst SCL: f32 = 1.562500000000e-2;\nvar<workgroup> buf: array<vec2<f32>, 128u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(32)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 64u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 6u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 32u; i = i + 32u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 32u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 32u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=128 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=128 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=128 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=128 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 128u;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=128 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 128u;\nconst NKY_: u32 = 65u;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 64u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 64u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=128 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 128u;\nconst NKY_: u32 = 65u;\nconst SCL: f32 = 7.812500000000e-3;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 64u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 64u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=128 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 128u;\nconst NKY_: u32 = 65u;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 64u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 64u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=128 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 128u;\nconst NKY_: u32 = 65u;\nconst SCL: f32 = 7.812500000000e-3;\nvar<workgroup> buf: array<vec2<f32>, 256u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 64u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 128u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 7u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 64u; i = i + 64u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 64u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 64u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=256 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=256 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=256 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=256 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 256u;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=256 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 256u;\nconst NKY_: u32 = 129u;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 128u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 128u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=256 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 256u;\nconst NKY_: u32 = 129u;\nconst SCL: f32 = 3.906250000000e-3;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 128u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 128u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=256 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 256u;\nconst NKY_: u32 = 129u;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 128u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 128u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=256 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 256u;\nconst NKY_: u32 = 129u;\nconst SCL: f32 = 3.906250000000e-3;\nvar<workgroup> buf: array<vec2<f32>, 512u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(128)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 128u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 256u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 8u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 128u; i = i + 128u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 128u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 128u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=512 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=512 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=512 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=512 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 512u;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=512 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 512u;\nconst NKY_: u32 = 257u;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 256u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=512 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 512u;\nconst NKY_: u32 = 257u;\nconst SCL: f32 = 1.953125000000e-3;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=512 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 512u;\nconst NKY_: u32 = 257u;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 256u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=512 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 512u;\nconst NKY_: u32 = 257u;\nconst SCL: f32 = 1.953125000000e-3;\nvar<workgroup> buf: array<vec2<f32>, 1024u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 512u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 9u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 256u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 256u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftKernel N=1024 dir=-1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=1024 dir=-1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=1024 dir=1 lpb=0": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftKernel N=1024 dir=1 lpb=7": "\n@group(0) @binding(0) var<storage, read_write> dat: array<vec2<f32>>;\nconst NN: u32 = 1024u;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let base: u32 = line * NN;\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { buf[idx] = dat[base + idx]; }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  for (var idx: u32 = tid; idx < NN; idx = idx + 32u) { dat[base + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=1024 lpb=0 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 1024u;\nconst NKY_: u32 = 513u;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 256u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=1024 lpb=0 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 1024u;\nconst NKY_: u32 = 513u;\nconst SCL: f32 = 9.765625000000e-4;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}",
+  "fftRowPair ny=1024 lpb=7 r2c": "\n@group(0) @binding(0) var<storage, read> rin: array<f32>;\n@group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;\nconst NY_: u32 = 1024u;\nconst NKY_: u32 = 513u;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { buf[idx] = vec2<f32>(rin[ib + idx], 0.0); }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = -PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NKY_; idx = idx + 256u) { cout[ob + idx] = buf[src + idx]; }\n}",
+  "fftRowPair ny=1024 lpb=7 c2r": "\n@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;\n@group(0) @binding(1) var<storage, read_write> rout: array<f32>;\nconst NY_: u32 = 1024u;\nconst NKY_: u32 = 513u;\nconst SCL: f32 = 9.765625000000e-4;\nvar<workgroup> buf: array<vec2<f32>, 2048u>;\nconst PI: f32 = 3.1415926535897932;\n@compute @workgroup_size(256)\nfn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {\n  let line: u32 = wgid.y * 7u + wgid.x;\n  let tid: u32 = lid.x;\n  let ib: u32 = line * NKY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) {\n    var v: vec2<f32>;\n    if (idx < NKY_) { v = cin[ib + idx]; }\n    else { let c: vec2<f32> = cin[ib + (NY_ - idx)]; v = vec2<f32>(c.x, -c.y); }\n    buf[idx] = v;\n  }\n  var src: u32 = 0u;\n  var dst: u32 = 1024u;\n  var p: u32 = 1u;\n  for (var s: u32 = 0u; s < 10u; s = s + 1u) {\n    workgroupBarrier();\n    for (var i: u32 = tid; i < 512u; i = i + 256u) {\n      let k: u32 = i & (p - 1u);\n      let j: u32 = ((i - k) << 1u) + k;\n      let u0: vec2<f32> = buf[src + i];\n      let u1: vec2<f32> = buf[src + i + 512u];\n      let ang: f32 = PI * f32(k) / f32(p);\n      let wc: f32 = cos(ang);\n      let ws: f32 = sin(ang);\n      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);\n      buf[dst + j] = u0 + t;\n      buf[dst + j + p] = u0 - t;\n    }\n    p = p << 1u;\n    let tmp: u32 = src; src = dst; dst = tmp;\n  }\n  workgroupBarrier();\n  let ob: u32 = line * NY_;\n  for (var idx: u32 = tid; idx < NY_; idx = idx + 256u) { rout[ob + idx] = buf[src + idx].x * SCL; }\n}"
+ }
+}

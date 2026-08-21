@@ -11,6 +11,8 @@
 //   const env = require("./stubenv")(dir, page, demo, opts);
 //   opts.noGpu   an engine with no navigator.gpu at all: initGPU takes its first failure
 //                path, so the no-WebGPU poster fallback (ONEPAGE_PLAN B.5) runs for real
+//   opts.search  the page's location.search, verbatim ("?bench"); default is the
+//                third argument's "?demo=NAME", or ""
 //   env.run("function(){ ... }", args...)   evaluate in the page's context
 //   env.getEl(id) / env.els / env.allEls    the element model
 //   env.fails / env.fail(msg)               accumulated stub-level failures
@@ -610,7 +612,10 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   const gpuCanvasCtx = () => ({ __cfg: null, configure(o) { this.__cfg = o; },
                                 getCurrentTexture: () => ({ __tex: 1, createView: () => ({ __v: 1 }) }) });
 
-  const search = demo ? "?demo=" + demo : "";
+  // `opts.search` overrides the query string wholesale ("?bench", "?recdebug&demo=x"):
+  // the flags the apps read off location.search are otherwise unreachable from a stub.
+  const search = (opts && opts.search !== undefined) ? String(opts.search)
+               : demo ? "?demo=" + demo : "";
   const sandbox = {
     document: {
       // The recorder's watchdog feeds only on a page the rAF loop is known-absent from

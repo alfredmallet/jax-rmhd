@@ -47,7 +47,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   assert a saved colorbar's tick GEOMETRY off the real file instead of calling the drawing
   code with a hand-built context.
   A fourth argument carries the boot knobs: `{noGpu: true}` removes `navigator.gpu`, so
-  `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real.
+  `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real;
+  `{search: "?bench"}` sets the page's `location.search` verbatim (default: the third
+  argument's `?demo=NAME`), which is how a gate reaches the URL-only developer flags the
+  apps read off it — `?bench`, `?recdebug`.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
   kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
   clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
@@ -752,6 +755,24 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   — making three strip rows per page; its `save` button lives on the card HEADER (a chart
   has no caption line), so it is measured among that row's items and its presence on every
   chart card is asserted.
+- `checkbench.js [dir]` — the FFTPERF_PLAN phase 0 gate: the `?bench` harness and
+  `fftKernel`'s probe seam. Five legs. The FLAG gates the panel — no `#benchpanel` element
+  and no `window.bench` without it, both on both pages — and with it every campaign is
+  driven under the stub, whose dispatch and bind-group validation is what says the pages'
+  bench specs name real shapes; one JSON record per run must land in the textarea carrying
+  the page, the GPU, the resolution, the bytes/butterflies per step and, per FFT kernel,
+  the three ladder times with their shares. Then the EMISSION: `fftKernel` / `fftRowPair`
+  with no probe are byte-identical to `fixtures/fftkernel_f83386e.json` — every offered
+  line length, both directions, with and without `lpb` — which is the leg that pins the
+  kernel text from here on (2A and 2B regenerate the capture by booting that tree's page
+  under stubenv and replaying the fixture's `cases`; anything else that moves the text
+  fails). Then the PROBES: `consttw` differs from the default in exactly the two twiddle
+  lines and keeps every barrier, `copy` has no stage loop at all and still carries the load
+  and store bodies verbatim, and all three parse. Then BYTES: the per-step sum reproduces a
+  hand-computed number for 2D 256² and 3D 128²×64 exactly, with the appendix-A arithmetic
+  written out in the check. Last, `fftAnalyticCase` — the self-test's analytic reference —
+  returns three nonzero bins at the flat indices it reports, zeros everywhere else, and
+  each bin holding `amp·nr/2·exp(i·phase)`.
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`). The shared set is PER PAGE
   (rmhd2d loads common + physics + solver2d, rmhd3d loads common + physics), and

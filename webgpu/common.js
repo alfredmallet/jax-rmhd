@@ -195,10 +195,44 @@ function fftWG(N) { let w = Math.min(256, Math.max(32, N >> 1)); let p = 32; whi
 // the first barrier and stores only after the last one, and lines are owned by
 // exactly one workgroup. (Two bindings aliasing one buffer is a WebGPU validation
 // error anyway, so a ping-pong needs two distinct buffers.)
+//
+// Probe note (?bench, FFTPERF_PLAN phase 0): `o.probe` -- or, when the caller passes
+// none, the module-level FFT_PROBE the bench sets around one buildShaders call -- emits a
+// LADDER VARIANT of the same kernel instead of the shipped text. "consttw" keeps every
+// stage, barrier and butterfly and replaces the two twiddle lines with wc = 1, ws = 0 (the
+// multiply stays, so only the transcendentals go); "copy" keeps the load and the store and
+// drops the stage loop, i.e. the kernel's memory traffic alone. Nothing in either app sets
+// either, so the shipped emission is unchanged.
+let FFT_PROBE = null;
 function fftKernel(o) {
   const { N, dir, decl, load, store, lpb } = o;
+  const probe = o.probe !== undefined && o.probe !== null ? o.probe : FFT_PROBE;
   const WG = fftWG(N), LOGN = log2i(N), H = N >> 1;
   const lineExpr = lpb ? `wgid.y * ${lpb}u + wgid.x` : `wgid.x`;
+  const tw = probe === "consttw"
+    ? `      let wc: f32 = 1.0;
+      let ws: f32 = 0.0;`
+    : `      let wc: f32 = cos(ang);
+      let ws: f32 = sin(ang);`;
+  const stages = probe === "copy" ? "" : `  var dst: u32 = ${N}u;
+  var p: u32 = 1u;
+  for (var s: u32 = 0u; s < ${LOGN}u; s = s + 1u) {
+    workgroupBarrier();
+    for (var i: u32 = tid; i < ${H}u; i = i + ${WG}u) {
+      let k: u32 = i & (p - 1u);
+      let j: u32 = ((i - k) << 1u) + k;
+      let u0: vec2<f32> = buf[src + i];
+      let u1: vec2<f32> = buf[src + i + ${H}u];
+      let ang: f32 = ${dir < 0 ? "-" : ""}PI * f32(k) / f32(p);
+${tw}
+      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);
+      buf[dst + j] = u0 + t;
+      buf[dst + j + p] = u0 - t;
+    }
+    p = p << 1u;
+    let tmp: u32 = src; src = dst; dst = tmp;
+  }
+`;
   return `
 ${decl}
 var<workgroup> buf: array<vec2<f32>, ${2 * N}u>;
@@ -209,26 +243,7 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   let tid: u32 = lid.x;
 ${load}
   var src: u32 = 0u;
-  var dst: u32 = ${N}u;
-  var p: u32 = 1u;
-  for (var s: u32 = 0u; s < ${LOGN}u; s = s + 1u) {
-    workgroupBarrier();
-    for (var i: u32 = tid; i < ${H}u; i = i + ${WG}u) {
-      let k: u32 = i & (p - 1u);
-      let j: u32 = ((i - k) << 1u) + k;
-      let u0: vec2<f32> = buf[src + i];
-      let u1: vec2<f32> = buf[src + i + ${H}u];
-      let ang: f32 = ${dir < 0 ? "-" : ""}PI * f32(k) / f32(p);
-      let wc: f32 = cos(ang);
-      let ws: f32 = sin(ang);
-      let t: vec2<f32> = vec2<f32>(wc * u1.x - ws * u1.y, wc * u1.y + ws * u1.x);
-      buf[dst + j] = u0 + t;
-      buf[dst + j + p] = u0 - t;
-    }
-    p = p << 1u;
-    let tmp: u32 = src; src = dst; dst = tmp;
-  }
-  workgroupBarrier();
+${stages}  workgroupBarrier();
 ${store}
 }`;
 }
@@ -246,13 +261,14 @@ ${store}
 // 3D page has no second buffer that size and goes in place, and the two strided kernels
 // name their index variables differently. Parameterizing all of that costs more lines than
 // the three call sites spend, and every one of those kernels is pinned byte-for-byte.
-function fftRowPair(ny, nky, lpb) {
+// `probe` is fftKernel's ladder seam, passed through unchanged (?bench only).
+function fftRowPair(ny, nky, lpb, probe) {
   const WGF = fftWG(ny);
   const dims = `const NY_: u32 = ${ny}u;
 const NKY_: u32 = ${nky}u;`;
   return {
     r2c: fftKernel({
-      N: ny, dir: -1, lpb,
+      N: ny, dir: -1, lpb, probe,
       decl: `@group(0) @binding(0) var<storage, read> rin: array<f32>;
 @group(0) @binding(1) var<storage, read_write> cout: array<vec2<f32>>;
 ${dims}`,
@@ -263,7 +279,7 @@ ${dims}`,
     }),
     // inverse rows: complex half-spectrum -> real (exactly real: .x only)
     c2r: fftKernel({
-      N: ny, dir: +1, lpb,
+      N: ny, dir: +1, lpb, probe,
       decl: `@group(0) @binding(0) var<storage, read> cin: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read_write> rout: array<f32>;
 ${dims}
@@ -8735,6 +8751,74 @@ function showTests(rows, extraHtml) {
     rows.join("") + "</table>" + (extraHtml || "");
 }
 
+// ---- the analytic transform case (a reference at ANY grid size) -------------
+// Three cosine modes, the same three on every grid the pages offer: integer wavenumbers
+// in grid units, |k| <= 3 and ky > 0, so each lands in exactly one stored rfft bin, none
+// of them at a Nyquist, on grids down to 32^2 and 16x16x8. Amplitudes of both signs.
+const FFT_ANALYTIC_MODES = [
+  { kx: 1, ky: 1, kz: 0, amp: 0.7, phase: 0.0 },
+  { kx: -2, ky: 3, kz: 1, amp: -0.4, phase: 0.7 },
+  { kx: 3, ky: 2, kz: -2, amp: 0.25, phase: -1.9 }
+];
+// input[r] = sum_j amp_j*cos(2pi(kx*ix/nx + ky*iy/ny + kz*iz/nz) + phase_j) in the real
+// layout r = (iz*nx + ix)*ny + iy, and `expect` its UNNORMALIZED forward transform in the
+// rfft layout m = (iz*nkx + ix)*nky + iy (nkx = nx, nky = ny/2+1) -- numpy's convention,
+// which is the pages'. cos(th + ph) = (e^{i(th+ph)} + e^{-i(th+ph)})/2 and sum_r
+// e^{i2pi(k-K).x} = nr*delta(k,K), so the +k half puts amp*nr/2*e^{i*phase} in bin
+// (kx mod nx, ky, kz mod nz) and the -k half falls at -ky, which the half spectrum does
+// not store: three nonzero bins, `bins`, and exact zeros everywhere else. `nz` absent or
+// 1 is the 2D case, where kz drops out of both the input and the bin. Everything is
+// accumulated in float64 and rounded once, on the store into the f32 arrays.
+function fftAnalyticCase(g) {
+  const nx = g.nx, ny = g.ny, nz = g.nz || 1, d3 = nz > 1;
+  const nky = ny / 2 + 1, nr = nz * nx * ny, nm = nz * nx * nky;
+  const modes = FFT_ANALYTIC_MODES.map(m => ({ kx: m.kx, ky: m.ky, kz: d3 ? m.kz : 0,
+                                               amp: m.amp, phase: m.phase }));
+  const input = new Float32Array(nr);
+  for (let iz = 0; iz < nz; iz++) {
+    for (let ix = 0; ix < nx; ix++) {
+      for (let iy = 0; iy < ny; iy++) {
+        let v = 0;
+        for (const m of modes) {
+          v += m.amp * Math.cos(2 * Math.PI * ((m.kx * ix) / nx + (m.ky * iy) / ny +
+                                               (m.kz * iz) / nz) + m.phase);
+        }
+        input[(iz * nx + ix) * ny + iy] = v;
+      }
+    }
+  }
+  const bins = modes.map(m => ((((m.kz % nz) + nz) % nz) * nx + (((m.kx % nx) + nx) % nx)) * nky + m.ky);
+  const expect = new Float32Array(2 * nm);
+  for (let j = 0; j < modes.length; j++) {
+    const a = modes[j].amp * nr / 2;
+    expect[2 * bins[j]] = a * Math.cos(modes[j].phase);
+    expect[2 * bins[j] + 1] = a * Math.sin(modes[j].phase);
+  }
+  return { modes: modes, input: input, expect: expect, bins: bins };
+}
+
+// ... and the two rows it feeds, at the resolution the page is running (FFTPERF_PLAN
+// Phase 0): the analytic forward spectrum and the roundtrip, both through the production
+// pipelines. `enc.fwd` / `enc.inv` are the page's own nonlinear-term transform chains,
+// encoded on the solver's realNL / nlk buffers -- scratch that the RHS rewrites from
+// `fields` on every step, so a live solver keeps its state and needs no restore.
+async function fftAnalyticRows(s, enc) {
+  const d = s.device, g = s.g, B = s.buf;
+  const c = fftAnalyticCase(g);
+  const res = g.nx + "x" + g.ny + (g.nz > 1 ? "x" + g.nz : "");
+  const note = "the running " + res + " solver; 3 cosine modes, " + c.bins.length + " nonzero bins";
+  d.queue.writeBuffer(B.realNL, 0, c.input);
+  let e = d.createCommandEncoder(), p = e.beginComputePass();
+  enc.fwd(p); p.end(); d.queue.submit([e.finish()]);
+  const got = await readBufOnce(d, B.nlk, g.nm * 8);
+  const rows = [testRow("forward transform at " + res + ", analytic", relL2(got, c.expect), 1e-5, note)];
+  e = d.createCommandEncoder(); p = e.beginComputePass();
+  enc.inv(p); p.end(); d.queue.submit([e.finish()]);
+  const back = await readBufOnce(d, B.realNL, s.nr * 4);
+  rows.push(testRow("roundtrip at " + res, relL2(back.subarray(0, s.nr), c.input), 1e-5, note));
+  return rows;
+}
+
 // statistical check of the OU path: run the solver from a quiescent start at a known
 // total injection rate and compare dE/dt + <D> against it. Identical in both apps.
 async function ouInjectionRow(s) {
@@ -8779,4 +8863,244 @@ function wireTestButton(fn) {
     el("btnTest").disabled = false;
     running = wasRunning;
   };
+}
+
+// ---------------------------------------------------------------------------
+// ?bench -- the step / kernel / FFT-ladder benchmark (FFTPERF_PLAN phase 0)
+// ---------------------------------------------------------------------------
+// Gated exactly as ?recdebug is: without the flag nothing is built, no element exists
+// and window.bench is undefined. With it, a panel under the readout carries one button
+// per campaign and a textarea that accumulates one JSON record per run -- a phone has no
+// console, so copy-paste is the transport. window.bench exposes the same functions.
+//
+// Every cell is timed the same way: submit the whole batch, await onSubmittedWorkDone(),
+// performance.now() around it; R + 1 reps, the first discarded, median and min reported.
+// Nothing here steers anything -- no controller, no stepsPerFrame, no timestamp-query.
+//
+// The per-kernel and ladder campaigns run kernels on the SOLVER'S OWN buffers, so the
+// fields are garbage afterwards; each of those campaigns ends by calling solver.setIC().
+//
+// The per-page half -- which kernels, over which buffers, at which dispatch shape, and
+// the step's dispatch list the byte count is summed from -- lives in each app's own
+// script (benchSpec2D / benchSpec3D); everything below is dimension-agnostic.
+const BENCH = typeof location !== "undefined" && /[?&]bench\b/.test(location.search);
+// K = steps in one whole-step cell, R = timed reps per cell (plus one discarded),
+// reps = dispatches in one isolated kernel loop, chainReps = the same for a whole
+// gradient chain. Reachable as window.bench.cfg.
+const benchCfg = { K: 20, R: 5, reps: 50, chainReps: 10 };
+let benchPage = null, benchBusy = false;
+
+// lower median and min of the kept reps
+function benchStats(ms) {
+  const v = ms.slice().sort((a, b) => a - b);
+  return { med: v[(v.length - 1) >> 1], min: v[0] };
+}
+// one cell: `fn` submits the batch, R + 1 times, each drained before the clock is read
+async function benchCell(fn, R) {
+  const ms = [];
+  for (let r = 0; r <= R; r++) {
+    const t0 = performance.now();
+    fn();
+    await device.queue.onSubmittedWorkDone();
+    ms.push(performance.now() - t0);
+  }
+  ms.shift();                                   // the first rep is pipeline warm-up
+  return benchStats(ms);
+}
+// one pipeline, `reps` dispatches, ONE compute pass, on the solver's own bind group
+// and dispatch shape
+function benchLoop(cell, reps) {
+  const enc = device.createCommandEncoder();
+  const p = enc.beginComputePass();
+  p.setPipeline(cell.pipe);
+  p.setBindGroup(0, cell.bg);
+  for (let i = 0; i < reps; i++) p.dispatchWorkgroups(cell.d[0], cell.d[1] || 1);
+  p.end();
+  device.queue.submit([enc.finish()]);
+}
+// re-emit a page's kernels with a ladder probe in force. FFT_PROBE is the seam, set
+// only here and only around this one call, so nothing the app builds can see it.
+function benchShaders(build, g, probe) {
+  FFT_PROBE = probe || null;
+  try { return build(g); } finally { FFT_PROBE = null; }
+}
+// a ladder variant of one FFT cell: the re-emitted text, compiled here, with its OWN
+// bind group over the same buffers in the same binding order (an `auto` layout belongs
+// to its pipeline). Never reachable from the app: it lives in this call's record.
+function benchVariant(S, c, probe) {
+  const pipe = device.createComputePipeline({
+    layout: "auto",
+    compute: { module: shaderModuleFactory(device)(S[c.key], c.key + "/" + probe), entryPoint: "main" }
+  });
+  return { name: c.name, key: c.key, lanes: c.lanes, d: c.d, pipe: pipe,
+           bg: device.createBindGroup({ layout: pipe.getBindGroupLayout(0),
+             entries: c.bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) }) };
+}
+// bytes moved and butterflies performed by ONE step, summed from the page's own
+// per-step dispatch list (FFTPERF_PLAN appendix A). The CFL reduction and the per-step
+// scalar kernels (tick, OU, scale) are not in the list and are not counted.
+function benchStepIO(spec) {
+  let bytes = 0, bf = 0;
+  for (const e of spec.stepIO) { bytes += e.n * e.bytes; bf += e.n * (e.bf || 0); }
+  return { bytes: bytes, bf: bf };
+}
+const benchCflEvery = () => Math.max(1, parseInt(el("rCflEvery").value, 10) || 1);
+const benchSpec = () => benchPage.spec();
+function benchHead(spec, campaign) {
+  return { page: benchPage.page, gpu: gpuInfo, campaign: campaign,
+           nx: spec.res[0], ny: spec.res[1], nz: spec.res[2],
+           cflEvery: benchCflEvery(), K: benchCfg.K, R: benchCfg.R, reps: benchCfg.reps };
+}
+// the fields the isolated loops trampled: back to the solver's built-in IC
+async function benchRestore() {
+  solver.setIC();
+  await device.queue.onSubmittedWorkDone();
+}
+
+// K steps (each its own submit, as the app's own loop does), drained once
+async function benchWhole() {
+  const spec = benchSpec(), s = solver, K = benchCfg.K, ce = benchCflEvery();
+  const t = await benchCell(() => { for (let k = 0; k < K; k++) s.step(ce); }, benchCfg.R);
+  const io = benchStepIO(spec), med = t.med / K, min = t.min / K;
+  const rec = benchHead(spec, "whole step");
+  rec.bytes_per_step = io.bytes;
+  rec.butterflies_per_step = io.bf;
+  rec.cells = [{ cell: "step", ms_med: med, ms_min: min,
+                 GB_s: io.bytes / (med * 1e6), Gbf_s: io.bf / (med * 1e6) }];
+  return rec;
+}
+// each kernel alone, at the lane count and dispatch shape the step gives it
+async function benchKernels() {
+  const spec = benchSpec(), reps = benchCfg.reps, cells = [];
+  for (const c of spec.kernels) {
+    const t = await benchCell(() => benchLoop(c, reps), benchCfg.R);
+    cells.push({ cell: c.name, lanes: c.lanes || null, dispatch: c.d,
+                 us_med: 1e3 * t.med / reps, us_min: 1e3 * t.min / reps });
+  }
+  await benchRestore();
+  const rec = benchHead(spec, "per kernel");
+  rec.cells = cells;
+  return rec;
+}
+// the three emissions of each FFT kernel, interleaved per kernel:
+//   T_mem = copy, T_bf = consttw - copy, T_tw = full - consttw
+async function benchLadder() {
+  const spec = benchSpec(), reps = benchCfg.reps, cells = [];
+  const S = { consttw: benchShaders(spec.build, spec.g, "consttw"),
+              copy: benchShaders(spec.build, spec.g, "copy") };
+  for (const c of spec.ffts) {
+    const g = { cell: c.name, lanes: c.lanes, dispatch: c.d };
+    for (const probe of ["full", "consttw", "copy"]) {
+      const cell = probe === "full" ? c : benchVariant(S[probe], c, probe);
+      const t = await benchCell(() => benchLoop(cell, reps), benchCfg.R);
+      g[probe + "_us_med"] = 1e3 * t.med / reps;
+      g[probe + "_us_min"] = 1e3 * t.min / reps;
+    }
+    const full = g.full_us_med;
+    g.T_mem_us = g.copy_us_med;
+    g.T_bf_us = g.consttw_us_med - g.copy_us_med;
+    g.T_tw_us = full - g.consttw_us_med;
+    g.T_mem_share = g.T_mem_us / full;
+    g.T_bf_share = g.T_bf_us / full;
+    g.T_tw_share = g.T_tw_us / full;
+    cells.push(g);
+  }
+  await benchRestore();
+  const rec = benchHead(spec, "FFT ladder");
+  rec.cells = cells;
+  return rec;
+}
+// whole encoded chains the page offers (3D: the gradient chain at batch 8 against four
+// calls at batch 2)
+async function benchChains() {
+  const spec = benchSpec(), reps = benchCfg.chainReps, cells = [];
+  for (const c of (spec.chains || [])) {
+    const t = await benchCell(() => {
+      const enc = device.createCommandEncoder();
+      const p = enc.beginComputePass();
+      for (let i = 0; i < reps; i++) c.encode(p);
+      p.end();
+      device.queue.submit([enc.finish()]);
+    }, benchCfg.R);
+    cells.push({ cell: c.name, note: c.note || null,
+                 us_med: 1e3 * t.med / reps, us_min: 1e3 * t.min / reps });
+  }
+  if (cells.length) await benchRestore();
+  const rec = benchHead(spec, "chains");
+  rec.cells = cells;
+  return rec;
+}
+async function benchAll() {
+  const parts = [];
+  for (const f of [benchWhole, benchKernels, benchLadder, benchChains]) parts.push(await f());
+  const rec = benchHead(benchSpec(), "all");
+  rec.parts = parts;
+  return rec;
+}
+
+// one record -> the textarea (and the console, where there is one)
+function benchEmit(rec) {
+  const t = el("benchout");
+  const line = JSON.stringify(rec);
+  t.value = (t.value || "") + line + "\n";
+  console.log(line);
+  return rec;
+}
+// run one campaign: pause the loop first (the self-test button's idiom). Nothing is
+// restored beyond the fields -- see the panel's hint.
+async function benchGo(fn) {
+  if (benchBusy) return null;
+  benchBusy = true;
+  running = false;
+  el("benchstatus").textContent = "running…";
+  let rec = null;
+  try {
+    rec = benchEmit(await fn());
+    el("benchstatus").textContent = "done: " + rec.campaign;
+  } catch (e) {
+    el("benchstatus").textContent = "failed: " + e.message;
+    console.error(e);
+  }
+  benchBusy = false;
+  return rec;
+}
+
+// the panel, and window.bench. `page` = {page, spec, chains}: the app's name, the
+// function that builds its bench spec off the live solver, and whether it offers whole
+// chains. Called unconditionally by both apps' boot; without the flag it does nothing.
+function benchBuild(page) {
+  if (!BENCH) return;
+  benchPage = page;
+  const d = _mk("details", "panel", el("displaycol"));
+  d.id = "benchpanel";
+  _mk("summary", null, d).textContent = "bench";
+  _mk("div", "hint", d).textContent =
+    "pauses the run. the per-kernel, ladder and chain campaigns leave the fields garbage "
+    + "and end by re-applying the built-in IC. one JSON record per run below -- copy it out.";
+  const row = _mk("div", "row", d);
+  const st = _mk("div", "hint", d);
+  st.id = "benchstatus";
+  st.textContent = "idle";
+  const out = _mk("textarea", null, d);
+  out.id = "benchout"; out.rows = 6; out.value = "";
+  // style.css has no textarea rule (this is the only one in either app)
+  out.style.width = "100%"; out.style.background = "#1d2129"; out.style.color = "#d8dee6";
+  const btn = (id, label, fn) => {
+    const b = _mk("button", null, row);
+    b.id = id; b.textContent = label;
+    b.onclick = () => benchGo(fn);
+  };
+  btn("benchBtnWhole", "whole step", benchWhole);
+  btn("benchBtnKernels", "per kernel", benchKernels);
+  btn("benchBtnLadder", "FFT ladder", benchLadder);
+  if (page.chains) btn("benchBtnChains", "grad chain", benchChains);
+  btn("benchBtnAll", "all", benchAll);
+  const clr = _mk("button", null, row);
+  clr.id = "benchBtnClear"; clr.textContent = "clear";
+  clr.onclick = () => { el("benchout").value = ""; el("benchstatus").textContent = "idle"; };
+  window.bench = { whole: () => benchGo(benchWhole), kernels: () => benchGo(benchKernels),
+                   ladder: () => benchGo(benchLadder), chains: () => benchGo(benchChains),
+                   all: () => benchGo(benchAll), spec: benchSpec, cfg: benchCfg,
+                   text: () => el("benchout").value,
+                   clear: () => { el("benchout").value = ""; } };
 }

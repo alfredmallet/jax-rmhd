@@ -554,6 +554,58 @@ function applyControls() {
 }
 
 // ---------------------------------------------------------------------------
+// bench (?bench): this page's kernel, FFT and per-step lists
+// ---------------------------------------------------------------------------
+// The pipelines, bind groups and dispatch shapes are the SOLVER's own -- encodeRHS and
+// step() are the source, so a cell runs the shipped kernel over the shipped buffers at
+// the shape the step gives it. `bufs` is each FFT kernel's binding order, which the
+// bench needs because a ladder variant's `auto` layout is its own.
+//
+// `stepIO` is the step's dispatch list with the bytes each dispatch moves, in
+// FFTPERF_PLAN appendix A's terms: cx = one complex field, rx = one real field, gr = one
+// grid buffer, and a transform of b lanes reads and writes b of them per pass. It is
+// summed by benchStepIO into the record's bytes-per-step (and, through `bf`, its
+// butterflies); the CFL reduction and the per-step scalar kernels are not in the list.
+function benchSpec2D(s) {
+  s = s || solver;
+  const g = s.g, nx = g.nx, ny = g.ny, nky = g.nky, nm = g.nm, nr = s.nr;
+  const B = s.buf, P = s.pl, G = s.bg;
+  const cx = nm * 8, rx = nr * 4, gr = nm * 16;
+  const bl = N => (N / 2) * log2i(N);            // butterflies in one line of N points
+  const ffts = [
+    { name: "rowsC2R", key: "rowsC2R", lanes: 8, pipe: P.rowsC2R, bg: G.rowsC2RGrads,
+      bufs: [B.specTmp, B.realGrads], d: [8 * nx] },
+    { name: "colsInv", key: "colsInv", lanes: 8, pipe: P.colsInv, bg: G.colsInvGrads,
+      bufs: [B.gradsK, B.specTmp], d: [8 * nky] },
+    { name: "rowsR2C", key: "rowsR2C", lanes: 2, pipe: P.rowsR2C, bg: G.rowsR2CNL,
+      bufs: [B.realNL, B.specTmp], d: [2 * nx] },
+    { name: "colsFwd", key: "colsFwd", lanes: 2, pipe: P.colsFwd, bg: G.colsFwdNL,
+      bufs: [B.specTmp, B.nlk], d: [2 * nky] }
+  ];
+  return {
+    res: [nx, ny, 1], g: g, build: buildShaders, ffts: ffts,
+    kernels: ffts.concat([
+      { name: "prepGrads", pipe: P.prepGrads, bg: G.prepGrads, d: [Math.ceil(nm / 64)] },
+      { name: "bracket", pipe: P.bracket, bg: G.bracket, d: [Math.ceil(nr / 64)] },
+      { name: "nlAssemble", pipe: P.nlAssemble, bg: G.nlAssemble, d: [Math.ceil(nm / 64)] },
+      { name: "stage", pipe: P.stage, bg: G.stage[0], d: [Math.ceil(2 * nm / 64)] }
+    ]),
+    stepIO: [
+      { name: "prepGrads", n: 3, bytes: 10 * cx },
+      { name: "colsInv:8", n: 3, bytes: 8 * (2 * cx), bf: 8 * nky * bl(nx) },
+      { name: "rowsC2R:8", n: 3, bytes: 8 * (cx + rx), bf: 8 * nx * bl(ny) },
+      { name: "bracket", n: 3, bytes: 10 * rx },
+      { name: "rowsR2C:2", n: 3, bytes: 2 * (rx + cx), bf: 2 * nx * bl(ny) },
+      { name: "colsFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nky * bl(nx) },
+      { name: "nlAssemble", n: 3, bytes: 4 * cx + 2 * gr },
+      { name: "forcingAdd", n: 3, bytes: 4 * cx },
+      { name: "stage", n: 3, bytes: 8 * cx + gr },
+      { name: "energyPartial", n: 1, bytes: 2 * cx + gr }
+    ]
+  };
+}
+
+// ---------------------------------------------------------------------------
 // self-test
 // ---------------------------------------------------------------------------
 async function runSelfTest() {
@@ -574,6 +626,19 @@ async function runSelfTest() {
   rows.push(testRow("forcing shell mask", relL2(fmask, flatR(R.fmask)), 1e-5));
   rows.push(testRow("lin_L = -diss*ksq^hyper", relL2(linL, flatR(R.lin_L)), 1e-5));
 
+  // the one-lane nonlinear-term transform chain, on any solver: the recorded 32^2 rows
+  // and the analytic rows at the page's own resolution encode the same two passes
+  const fftEnc = sv => ({
+    fwd: p => {
+      p.setPipeline(sv.pl.rowsR2C); p.setBindGroup(0, sv.bg.rowsR2CNL); p.dispatchWorkgroups(sv.g.nx);
+      p.setPipeline(sv.pl.colsFwd); p.setBindGroup(0, sv.bg.colsFwdNL); p.dispatchWorkgroups(sv.g.nky);
+    },
+    inv: p => {
+      p.setPipeline(sv.pl.colsInv); p.setBindGroup(0, sv.bg.colsInvNL); p.dispatchWorkgroups(sv.g.nky);
+      p.setPipeline(sv.pl.rowsC2R); p.setBindGroup(0, sv.bg.rowsC2RNL); p.dispatchWorkgroups(sv.g.nx);
+    }
+  });
+
   // --- forward rfft2 + roundtrip -------------------------------------------
   {
     const inR = flatR(R.fft_input);
@@ -581,18 +646,25 @@ async function runSelfTest() {
     d.queue.writeBuffer(B.realNL, 0, pad);
     let enc = d.createCommandEncoder();
     let p = enc.beginComputePass();
-    p.setPipeline(s.pl.rowsR2C); p.setBindGroup(0, s.bg.rowsR2CNL); p.dispatchWorkgroups(s.g.nx);
-    p.setPipeline(s.pl.colsFwd); p.setBindGroup(0, s.bg.colsFwdNL); p.dispatchWorkgroups(s.g.nky);
+    fftEnc(s).fwd(p);
     p.end(); d.queue.submit([enc.finish()]);
     const got = (await readBuf(d, B.nlk, nm * 8));
     rows.push(testRow("forward rfft2 (32x32)", relL2(got, flatC(R.fft_output)), 1e-5));
     // roundtrip
     enc = d.createCommandEncoder(); p = enc.beginComputePass();
-    p.setPipeline(s.pl.colsInv); p.setBindGroup(0, s.bg.colsInvNL); p.dispatchWorkgroups(s.g.nky);
-    p.setPipeline(s.pl.rowsC2R); p.setBindGroup(0, s.bg.rowsC2RNL); p.dispatchWorkgroups(s.g.nx);
+    fftEnc(s).inv(p);
     p.end(); d.queue.submit([enc.finish()]);
     const back = (await readBuf(d, B.realNL, s.nr * 4)).subarray(0, s.nr);
     rows.push(testRow("rfft2 -> irfft2 roundtrip", relL2(back, inR), 1e-5));
+  }
+
+  // --- the same two transforms at the page's selected resolution ------------
+  // On the LIVE solver, not a second one at that grid: realNL / nlk are RHS scratch, so
+  // the run's state survives untouched, and a throwaway 1024^2 solver would double the
+  // page's largest allocation. The test button has already paused the loop.
+  {
+    const sv = solver;
+    if (sv) for (const r of await fftAnalyticRows(sv, fftEnc(sv))) rows.push(r);
   }
 
   // --- initial condition (forward FFT + dealias) ----------------------------
@@ -714,6 +786,7 @@ async function boot() {
   wireCommonControls({ presets: PRESETS, rebuildOn: ["selBox", "nPm", "cbEqSrc"],
                        icSliders: EQ_SLIDERS });
   bootApply(pre);
+  benchBuild({ page: "rmhd2d", spec: benchSpec2D });   // ?bench only; a no-op without it
   loop();
 }
 boot();

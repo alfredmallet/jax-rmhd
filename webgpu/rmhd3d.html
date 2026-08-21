@@ -2281,6 +2281,84 @@ function icInfoLine(sz) {
 }
 
 // ---------------------------------------------------------------------------
+// bench (?bench): this page's kernel, FFT, chain and per-step lists
+// ---------------------------------------------------------------------------
+// The pipelines, bind groups and dispatch shapes are the SOLVER's own -- encodeGrads,
+// encodeFwd3D and step() are the source, so a cell runs the shipped kernel over the
+// shipped buffers at the shape the step gives it, and every FFT is dispatched as
+// (lines, batch). `bufs` is each FFT kernel's binding order, which the bench needs
+// because a ladder variant's `auto` layout is its own; the complex passes bind one
+// read_write buffer and run in place.
+//
+// `chains` drives the gradient-chain question (FFTPERF_PLAN item C) with no chunking
+// code: one encodeInv3D at batch 8 against four at batch 2 over the same bind groups.
+//
+// `stepIO` is the step's dispatch list with the bytes each dispatch moves, in
+// FFTPERF_PLAN appendix A's terms: cx = one complex field, rx = one real field, and a
+// transform of b lanes reads and writes b of them per pass (the z pass included). The
+// grid reads are this page's own perpendicular grids (grp) and z grid (grz), which is
+// what "gridZ instead of a full-grid gridB" means here. Summed by benchStepIO into the
+// record's bytes-per-step; the CFL reduction and the per-step scalar kernels are not in
+// the list.
+function benchSpec3D(s) {
+  s = s || solver;
+  const g = s.g, nx = g.nx, ny = g.ny, nz = g.nz, nky = g.nky, nmp = g.nmp, nm = g.nm;
+  const nr = s.nr, B = s.buf, P = s.pl, G = s.bg;
+  const cx = nm * 8, rx = nr * 4, grp = nmp * 16, grz = nz * 16;
+  const bl = N => (N / 2) * log2i(N);            // butterflies in one line of N points
+  const ffts = [
+    { name: "zInv", key: "zInv", lanes: 8, pipe: P.zInv, bg: G.zInvGrads,
+      bufs: [B.gradsK], d: [nmp, 8] },
+    { name: "colsInv", key: "colsInv", lanes: 8, pipe: P.colsInv, bg: G.colsInvGrads,
+      bufs: [B.gradsK], d: [nz * nky, 8] },
+    { name: "rowsC2R", key: "rowsC2R", lanes: 8, pipe: P.rowsC2R, bg: G.rowsC2RGrads,
+      bufs: [B.gradsK, B.realGrads], d: [nz * nx, 8] },
+    { name: "rowsR2C", key: "rowsR2C", lanes: 2, pipe: P.rowsR2C, bg: G.rowsR2CNL,
+      bufs: [B.realNL, B.nlk], d: [nz * nx, 2] },
+    { name: "colsFwd", key: "colsFwd", lanes: 2, pipe: P.colsFwd, bg: G.colsFwdNL,
+      bufs: [B.nlk], d: [nz * nky, 2] },
+    { name: "zFwd", key: "zFwd", lanes: 2, pipe: P.zFwd, bg: G.zFwdNL,
+      bufs: [B.nlk], d: [nmp, 2] }
+  ];
+  return {
+    res: [nx, ny, nz], g: g, build: buildShaders, ffts: ffts,
+    kernels: ffts.concat([
+      { name: "prepGrads", pipe: P.prepGrads, bg: G.prepGrads, d: [Math.ceil(nm / 64)] },
+      { name: "bracket", pipe: P.bracket, bg: G.bracket, d: [Math.ceil(nr / 256)] },
+      { name: "nlAssemble", pipe: P.nlAssemble, bg: G.nlAssemble, d: [Math.ceil(nm / 64)] },
+      { name: "stage", pipe: P.stage, bg: G.stage[0], d: [Math.ceil(nm / 64)] }
+    ]),
+    chains: [
+      { name: "gradient chain, batch 8",
+        encode: p => s.encodeInv3D(p, 8, G.zInvGrads, G.colsInvGrads, G.rowsC2RGrads) },
+      { name: "gradient chain, 4 x batch 2",
+        note: "timing proxy: the four calls read the FIRST 2 lanes four times over, "
+            + "not lanes 0-1, 2-3, 4-5, 6-7 (that is item C's own bind groups)",
+        encode: p => {
+          for (let i = 0; i < 4; i++)
+            s.encodeInv3D(p, 2, G.zInvGrads, G.colsInvGrads, G.rowsC2RGrads);
+        } }
+    ],
+    stepIO: [
+      { name: "prepGrads", n: 3, bytes: 10 * cx },
+      { name: "zInv:8", n: 3, bytes: 8 * (2 * cx), bf: 8 * nmp * bl(nz) },
+      { name: "colsInv:8", n: 3, bytes: 8 * (2 * cx), bf: 8 * nz * nky * bl(nx) },
+      { name: "rowsC2R:8", n: 3, bytes: 8 * (cx + rx), bf: 8 * nz * nx * bl(ny) },
+      { name: "bracket", n: 3, bytes: 10 * rx },
+      { name: "rowsR2C:2", n: 3, bytes: 2 * (rx + cx), bf: 2 * nz * nx * bl(ny) },
+      { name: "colsFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nz * nky * bl(nx) },
+      { name: "zFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nmp * bl(nz) },
+      { name: "nlAssemble", n: 3, bytes: 4 * cx + 2 * grp + grz },
+      // the envelope lives on two kz planes: the 4 (A,B) x (z+,z-) arrays read, and
+      // both fields of both planes read and written
+      { name: "forcingAdd", n: 3, bytes: 12 * nmp * 8 },
+      { name: "stage", n: 3, bytes: 8 * cx + grp + grz },
+      { name: "energyPartial", n: 1, bytes: 2 * cx + grp }
+    ]
+  };
+}
+
+// ---------------------------------------------------------------------------
 // initial-condition presets
 // ---------------------------------------------------------------------------
 // A preset is a UI concept only: the solver knows the built-in pair (setIC / setIC(true))
@@ -2716,6 +2794,19 @@ async function runSelfTest() {
     rows.push(testRow("rfftn -> irfftn roundtrip", relL2(back, inR), 1e-5));
   }
 
+  // --- the same two transforms at the page's selected resolution ------------
+  // On the LIVE solver, not a second one at that grid: realNL / nlk are RHS scratch, so
+  // the run's state survives untouched, and a throwaway 256^2 x 64 solver would double
+  // the page's largest allocation. The test button has already paused the loop.
+  {
+    const sv = solver;
+    if (sv) {
+      const enc3 = { fwd: p => sv.encodeFwd3D(p, 1),
+                     inv: p => sv.encodeInv3D(p, 1, sv.bg.zInvNL, sv.bg.colsInvNL, sv.bg.rowsC2RNL) };
+      for (const r of await fftAnalyticRows(sv, enc3)) rows.push(r);
+    }
+  }
+
   // --- load state A ---------------------------------------------------------
   // forcing_state is (n_ou, [A,B], nkx, nky); the reference records A and B separately
   const frc = new Float32Array(4 * nmp * 2);
@@ -2931,6 +3022,8 @@ async function boot() {
   // what rewrites each chain's ray uniform (setDisplayMode owns volRay)
   el("cbAspect").onchange = () => { if (solver) solver.uploadBox(); cardsSync(); };
   bootApply(pre);
+  // ?bench only; a no-op without it
+  benchBuild({ page: "rmhd3d", spec: benchSpec3D, chains: true });
   loop();
 }
 boot();
