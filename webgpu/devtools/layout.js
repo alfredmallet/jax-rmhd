@@ -165,11 +165,16 @@ for (const page of ["rmhd2d.html", "rmhd3d.html"]) {
   // kinds are fabricated, because both can wait on one footer (two different files, two
   // slots) and each is a row of its own. The stub engine's canShare says yes, so the widest
   // version of each strip (download + share + dismiss) is the one measured.
+  // A CHART card has the same footer and the same strip since IO_PLAN item 2, so it is
+  // handed one too -- on a `bar` type, where the strip shares the footer with a colorbar.
   env.run(`function(){ const d = cards.disp[0];
     d.recResult("video", new window.Blob([new Uint8Array(1200)], { type: "video/mp4" }),
                 "taranis-rmhd-vorticity-t12.345.mp4", 12.3);
     d.recResult("png", new window.Blob([new Uint8Array(900)], { type: "image/png" }),
-                "taranis-rmhd-vorticity-t12.345.png"); }`);
+                "taranis-rmhd-vorticity-t12.345.png");
+    const c = cards.chart.filter(x => CHART_TYPES[x.type()].bar)[0] || cards.chart[0];
+    c.recResult("png", new window.Blob([new Uint8Array(900)], { type: "image/png" }),
+                "taranis-rmhd-gen2d-t12.345.png"); }`);
   const rows = rowsOf(env).concat(cardHeadItems(env));
   // the two things this round added, said out loud: the capture pair measured as ONE item
   // (a missing group would silently drop out of every row here), and the two strips as two
@@ -178,12 +183,22 @@ for (const page of ["rmhd2d.html", "rmhd3d.html"]) {
   const onFoot = rows.reduce((a, items) => a + items.filter(([k]) => k === "result strip").length, 0);
   const strips = rows.filter(items => items.some(([k]) => k === "result text")).length;
   if (!grp) { bad++; console.log("FAIL  " + page + ": the footer's save + rec group was not measured at all"); }
-  if (strips !== 2 || onFoot !== 2)
+  // three now: the display card's two slots, and the chart card's picture (IO_PLAN item 2)
+  if (strips !== 3 || onFoot !== 3)
     { bad++; console.log("FAIL  " + page + ": " + strips + " result-strip rows (" + onFoot +
-                         " on the footer), not 2 (png + video)"); }
-  if (grp && strips === 2 && onFoot === 2)
+                         " on a footer), not 3 (display png + video, chart png)"); }
+  // ... and every chart card's own capture button, which lives on its HEADER row (a chart
+  // has no caption line to hang it on) and must be measured with that row's other items
+  const heads = env.run(`function(){ return cards.chart.map(c =>
+    ({ t: c.type(), on: !!c.btnSave && c.btnSave.parentNode === c.head })); }`);
+  const noSave = heads.filter(h => !h.on).map(h => h.t);
+  if (noSave.length)
+    { bad++; console.log("FAIL  " + page + ": chart cards with no save button in the header: "
+                         + noSave.join(", ")); }
+  if (grp && strips === 3 && onFoot === 3 && !noSave.length)
     console.log("PASS  " + page + ": save + rec measured as one " + grp.toFixed(0) +
-                "px item, both result strips audited as rows");
+                "px item, all three result strips audited as rows, " + heads.length +
+                " chart headers carry save");
   for (const V of VIEWPORTS) {
     const avail = V - BODY_PAD[V];
     let worst = 0, worstKind = "";

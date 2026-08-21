@@ -21,6 +21,7 @@
 const fs = require("fs"), os = require("os"), path = require("path");
 const { spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
+const OFF = require("./dispoffsets");
 const dir = path.resolve(process.argv[2] || path.join(__dirname, ".."));
 const root = path.resolve(dir, "..");
 const BASE = "c3c7195";                 // ISO_PLAN's base commit (ANISO landed)
@@ -35,7 +36,9 @@ const BASE = "c3c7195";                 // ISO_PLAN's base commit (ANISO landed)
 //                            set is unchanged by Phase D: the band lives in this one kernel,
 //                            it declares its own wider Mode struct rather than widening the
 //                            shared one, and so sliceExtract / faceExtract / cutPrep / the
-//                            colorize pair are all still byte-identical to base.
+//                            colorize pair are all still byte-identical to base. On the 2D
+//                            page it also carries 268100f's display offset -- see
+//                            dispoffsets.js, which leg 9 applies to base before comparing.
 //   colorize / colorizeCube  dispX's magnitude test closed from `mode >= 4` to 4..7,
 //                            because the modes past the sigma pair are signed again
 //   renderVol                the one new shader
@@ -1098,12 +1101,18 @@ async function legFilter(state) {
     // lines, which are in the same kernel and are not what this gate switches. So the leg
     // asserts the exact shape of the difference: a pure INSERTION into base's text, of those
     // four lines and nothing else. Anything the band left behind would show up here.
-    const add = inserted(bsrc, "\n" + G.off + "\n");
-    ok(page + ": gated off, prepDisp is " + BASE + " plus Phase B's four lines and nothing else",
+    // ... and on the 2D page the base text is base's PLUS the display offset (dispoffsets:
+    // 268100f moved the Mode struct line, which no insertion can express), so that is
+    // applied to base first and what is left over is still Phase B's four lines.
+    const bexp = is3d ? bsrc : OFF.applied(bsrc);
+    const add = bexp === null ? null : inserted(bexp, "\n" + G.off + "\n");
+    ok(page + ": gated off, prepDisp is " + BASE + (is3d ? "" : " + " + OFF.COMMIT)
+       + " plus Phase B's four lines and nothing else",
        add !== null && add.length === 4 &&
        add.every(l => /omega\+-|Elsasser potential|md\.mode == 1[01]u/.test(l)),
-       add === null ? "not an insertion into the base text: base lines moved"
-                    : add.length + " inserted line(s)");
+       bexp === null ? "base's prepDisp is not the text " + OFF.COMMIT + " moved"
+                     : add === null ? "not an insertion into the base text: base lines moved"
+                                    : add.length + " inserted line(s)");
     let dbad = [];
     for (const md of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
       const a = runPrep(M, src, N, st, gA, md, [0, 0]), b = runPrep(M, bsrc, N, st, gA, md, [0, 0]);

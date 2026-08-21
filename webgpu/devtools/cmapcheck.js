@@ -49,6 +49,8 @@ for (let w = 0; w < CMAP_NAMES.length; w++) {
   S[CMAP_NAMES[w]] = [];
   for (let i = 0; i < 256; i++) S[CMAP_NAMES[w]].push(cmapRGB(w, i / 255));
 }
-fs.writeFileSync("/tmp/pF/cmap_samples.json", JSON.stringify(S));
+const OUT = "/tmp/pF";
+fs.mkdirSync(OUT, { recursive: true });
+fs.writeFileSync(path.join(OUT, "cmap_samples.json"), JSON.stringify(S));
 console.log(bad ? "cmap check: FAILED" : "cmap check: all green");
 process.exit(bad ? 1 : 0);

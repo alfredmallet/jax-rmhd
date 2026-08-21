@@ -26,6 +26,10 @@
 // small helpers
 // ---------------------------------------------------------------------------
 const el = id => document.getElementById(id);
+// a checkbox by id and a select by id, tolerant of a page that builds neither: the
+// controls are shared but not every one of them is on every page.
+const _uiOn = id => { const e = el(id); return !!(e && e.checked); };
+const _uiVal = id => { const e = el(id); return e ? String(e.value) : ""; };
 const statusEl = document.getElementById("status");
 // The one authoritative per-browser/per-platform WebGPU support matrix (W3C WebGPU
 // working group). The two GPU-failure banners link here INSTEAD of naming
@@ -3177,6 +3181,23 @@ function cbarFmt(v) {
   if (a === 0) return "0";
   return (a >= 1e4 || a < 1e-2) ? v.toExponential(1) : v.toPrecision(3);
 }
+// The colorbar as it goes into a SAVED picture: the painted strip at (x, y, w, h) with its
+// three labels under it, at scale `sc`. Both save paths draw it through here -- a display
+// card's stamp over the field (barStamp) and a chart card's band under the plot -- so the
+// bar's geometry inside a file lives in ONE place. `ticks` are the same HTML the on-screen
+// labels carry, hence the entity pass.
+function cbarDraw(c, barCv, ticks, x, y, w, h, sc) {
+  c.drawImage(barCv, x, y, w, h);
+  c.fillStyle = "#d8dee6";
+  c.font = Math.round(9 * sc) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
+  c.textBaseline = "top";
+  const t = (ticks || []).map(s => String(s == null ? "" : s).replace(/&minus;/g, "−"));
+  const ty = y + h + 3 * sc;
+  c.textAlign = "left";   c.fillText(t[0] || "", x, ty);
+  c.textAlign = "center"; c.fillText(t[1] || "", x + w / 2, ty);
+  c.textAlign = "right";  c.fillText(t[2] || "", x + w, ty);
+  c.textAlign = "left";
+}
 
 // ---------------------------------------------------------------------------
 // save / record (FEEDBACK_2026-08-10 item 13)
@@ -3381,9 +3402,130 @@ function appSlug() {
   const s = m && m[1] ? m[1].replace(/[^A-Za-z0-9_-]/g, "") : "";
   return s || "rmhd";
 }
-function shotName(mode, ext) {
-  return "taranis-" + appSlug() + "-" + (DISP_SLUG[mode] || "field") +
-         "-t" + (isFinite(simT) ? simT.toFixed(3) : "0") + "." + ext;
+// one name shape for every file the page writes: page, what it is OF, and the simulation
+// time it was taken at
+const capName = (slug, ext) => "taranis-" + appSlug() + "-" + slug +
+  "-t" + (isFinite(simT) ? simT.toFixed(3) : "0") + "." + ext;
+function shotName(mode, ext) { return capName(DISP_SLUG[mode] || "field", ext); }
+// the chart card's counterpart (IO_PLAN item 2): the CHART_TYPES key is already a slug
+// (energy, spectrum, gen2d), so it goes where a display card's field name goes
+function chartName(kind, ext) { return capName(kind || "chart", ext); }
+
+// ---- the stored-ZIP writer (IO_PLAN, shared by items 3 and 4) ---------------
+// One archive out of N byte arrays. Method 0 (STORED) throughout: a PNG is already
+// deflated and a float field compresses by a few percent, so a deflate implementation
+// would buy nothing and cost a dependency or a worker. `numpy.load` and every unzipper
+// read a stored archive, which is what makes this the .npz writer too.
+//
+// CRC-32, reflected polynomial 0xEDB88320, table built once. (The unreflected 0x04C11DB7
+// is the same polynomial written the other way round and produces a checksum every
+// unzipper rejects -- the first of the two easy bugs here.)
+const _CRC_TAB = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(b) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < b.length; i++) c = _CRC_TAB[(c ^ b[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+// the local time the archive claims, in the DOS pair every member carries
+function _dosStamp(d) {
+  const y = d.getFullYear();
+  return { d: (Math.max(0, y - 1980) & 0x7f) << 9 | (d.getMonth() + 1) << 5 | d.getDate(),
+           t: d.getHours() << 11 | d.getMinutes() << 5 | (d.getSeconds() >> 1) };
+}
+// zipStore(members) -> Blob.  members: [{ name: string, data: Uint8Array }], written in
+// the order given, which is the order they appear in the central directory and so the
+// order a reader lists them in.
+//
+// Layout: N local headers each followed by its bytes, then N central-directory records,
+// then the end-of-central-directory. The second easy bug lives in the central directory:
+// its `offset` field is the BYTE offset of that member's local header in the finished
+// buffer, not the member's index -- so the offsets are recorded as the local pass walks,
+// and the directory is written from those.
+//
+// Names are UTF-8 with general-purpose bit 11 set, always: with the flag clear a reader
+// is entitled to decode the name as CP437, which mangles anything non-ASCII. ZIP64 is
+// not implemented -- every field here is 32-bit, which caps an archive at 4 GB, an order
+// of magnitude above the largest thing this page can produce (a 3D field export).
+function zipStore(members) {
+  const enc = new TextEncoder();
+  const ms = (members || []).map(m => {
+    const data = m.data || new Uint8Array(0);
+    return { name: enc.encode(String(m.name)), data: data, crc: crc32(data) };
+  });
+  let total = 0, cdSize = 0;
+  for (const m of ms) {
+    total += 30 + m.name.length + m.data.length;
+    cdSize += 46 + m.name.length;
+  }
+  const buf = new Uint8Array(total + cdSize + 22);
+  const st = _dosStamp(new Date());
+  let p = 0;
+  const u16 = v => { buf[p++] = v & 255; buf[p++] = (v >>> 8) & 255; };
+  const u32 = v => { u16(v & 0xffff); u16((v >>> 16) & 0xffff); };   // little-endian throughout
+  const raw = b => { buf.set(b, p); p += b.length; };
+  for (const m of ms) {
+    m.at = p;                                    // where this member's local header lands
+    u32(0x04034b50); u16(20); u16(0x800); u16(0);         // sig, version, UTF-8 flag, stored
+    u16(st.t); u16(st.d); u32(m.crc);
+    u32(m.data.length); u32(m.data.length);               // compressed == uncompressed
+    u16(m.name.length); u16(0);
+    raw(m.name); raw(m.data);
+  }
+  const cdAt = p;
+  for (const m of ms) {
+    u32(0x02014b50); u16(20); u16(20); u16(0x800); u16(0);
+    u16(st.t); u16(st.d); u32(m.crc);
+    u32(m.data.length); u32(m.data.length);
+    u16(m.name.length); u16(0); u16(0);                   // name, extra, comment
+    u16(0); u16(0); u32(0);                               // disk, internal, external attrs
+    u32(m.at);
+    raw(m.name);
+  }
+  const cdSz = p - cdAt;                 // read BEFORE the EOCD's own fields advance p
+  u32(0x06054b50); u16(0); u16(0); u16(ms.length); u16(ms.length);
+  u32(cdSz); u32(cdAt); u16(0);          // directory size, its offset, no archive comment
+  return new window.Blob([buf], { type: "application/zip" });
+}
+
+// ---- the run manifest (IO_PLAN, shared by items 3 and 4) -------------------
+// What a folder of pictures -- or a pair of exported fields -- needs beside it to still
+// mean something a month later: the grid, the box, the time, the dissipation, what was
+// being injected, and what the run started from. ONE builder for both exports, so the
+// archive of PNGs and the field export cannot describe the same run differently; `extra`
+// is merged over the result (item 4's axis order and dealiasing note).
+function runManifest(extra) {
+  const q = liveParams();
+  const m = {
+    app: appSlug(),
+    t: isFinite(simT) ? simT : 0,
+    step: solver ? solver.nsteps : 0,
+    grid: { nx: q.nx, ny: q.ny, nz: q.nz || 1 },       // nz/Lz are absent in 2D, as 1 and 0
+    box: { Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0 },
+    dissipation: { diss: q.diss, hyper: q.hyper, auto: autoDissOn() },
+    // eps+- are already 0 while forcing is off (uiEps), so the flag is the checkbox and
+    // the band is quoted only where it means something
+    forcing: _uiOn("cbForce")
+      ? { on: true, epsPlus: q.epsP, epsMinus: q.epsM, locked: _uiOn("cbEpsLock"),
+          shell: q.fshell ? [q.fshell[0], q.fshell[1]] : null, tau: q.tau }
+      : { on: false },
+    ic: { preset: _uiVal("selIC"), demo: _uiVal("selPreset") },
+    seed: q.seed, cfl: q.cfl
+  };
+  if (typeof q.zdiss === "number") m.dissipation.zdiss = q.zdiss;    // 3D only
+  return Object.assign(m, extra || null);
+}
+// ... and the archive member it becomes, so neither export serializes it its own way
+function manifestMember(extra) {
+  return { name: "params.json",
+           data: new TextEncoder().encode(JSON.stringify(runManifest(extra), null, 2)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -3969,6 +4111,81 @@ function mp4Mux(o) {
                 .concat(S.map(c => c.data)).concat([moov]));
 }
 
+// ---- the result strip, shared by both card classes -------------------------
+// The ONE place a finished file is handed over, whichever path made it -- the same
+// discipline the two stop paths already keep (see the note by recToggle). `seconds` is
+// each recording leg's own honest length: leg 1 counts the frames it actually MUXED
+// (dropped ones never made it into the file), leg 2 has no frame count of its own and
+// quotes wall clock; a PNG has no length at all and is quoted by size alone. Nothing is
+// downloaded here: the strip is the whole point.
+//
+// `kind` is the SLOT the strip lives in, and the slots are deliberately separate: a
+// picture and a recording are two different files, so a save must replace only the last
+// save and a take only the last take. One slot would mean a 30 s take dying because the
+// visitor pressed save a second later -- the same file-losing surprise the strip exists
+// to remove (Alfred, 2026-08-12). RES_WHAT is what each slot's dismiss button calls its
+// file; `zip` is the page-level save-all's (IO_PLAN item 3), which is nobody's card.
+const RES_WHAT = { png: "picture", video: "recording", zip: "archive" };
+//
+// `card` is a DisplayCard, a ChartCard, or the page-level `saveAll` host. All this asks
+// of one is the footer host `foot` (always present on both classes, and on the chart card
+// NOT the thing _barBuild rebuilds), a `resEl` with the slot in it, and the `dead` flag
+// destroy() sets -- so a chart's PNG and a save-all's archive are delivered by this code
+// and not by two more copies of it (IO_PLAN items 2 and 3).
+function cardResult(card, kind, blob, name, seconds) {
+  if (!blob || !blob.size) return;            // nothing was captured: say nothing
+  // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
+  // async flush lands here -- and toBlob's callback is just as async, so a card can be
+  // closed between the save press and the picture -- and a strip on a removed footer
+  // would be a file the visitor can never reach. So a closed card keeps the old
+  // behaviour and downloads on the spot: a surprise file is better than a lost one.
+  if (card.dead || !card.foot) { dlBlob(blob, name); return; }
+  cardResClear(card, kind);
+  const s = _mk("div", "recres", card.foot);
+  card.resEl[kind] = s;
+  _mk("span", "recinfo", s).innerHTML = recSizeText(blob.size) +
+    (seconds === undefined ? "" : " · " + recLenText(seconds));
+  const dl = _mk("button", "capbtn", s);
+  dl.innerHTML = "download";
+  dl.title = "download " + name;
+  dl.onclick = () => dlBlob(blob, name);
+  // share is offered only where a file can really be shared (recShareFile); on a desktop
+  // that cannot, the strip is just text and a download, which is what a desktop wants.
+  const file = recShareFile(blob, name);
+  if (file) {
+    const sh = _mk("button", "capbtn", s);
+    sh.innerHTML = "share";
+    sh.title = "send " + name + " to another app";
+    sh.onclick = () => {
+      // AbortError is the visitor closing the sheet -- a decision, not a failure, so it
+      // must not then push the file at them anyway. Anything else (no permission, an
+      // engine that lied about canShare) falls back to the download rather than
+      // swallowing the recording. share() is called SYNCHRONOUSLY in the click: an
+      // engine with strict transient-activation rules (old iOS Safari -- the fallback
+      // leg's own audience) can refuse a share deferred even one microtask, which
+      // would turn every share press into the silent download this strip exists to
+      // avoid. The try/catch folds a synchronous throw into the same rejection path
+      // (adversarial review 2026-08-12, MINOR 2).
+      let p;
+      try { p = navigator.share({ files: [file] }); } catch (e) { p = Promise.reject(e); }
+      Promise.resolve(p).catch(e => { if (!e || e.name !== "AbortError") dlBlob(blob, name); });
+    };
+  }
+  const x = _mk("button", "capbtn recx", s);
+  x.innerHTML = "&times;";
+  x.title = "dismiss this " + (RES_WHAT[kind] || "file");
+  x.onclick = () => cardResClear(card, kind);
+}
+// drop ONE kind's strip -- and with the node go the handlers, and with the handlers the
+// only references this card kept to the blob and the File, so the bytes can be
+// collected. The other slot is untouched: dismissing a picture must not take a
+// recording with it.
+function cardResClear(card, kind) {
+  const s = card.resEl[kind];
+  card.resEl[kind] = null;
+  if (s && s.parentNode) s.parentNode.removeChild(s);
+}
+
 class DisplayCard {
   constructor(ci) {
     const cfg = cards.cfg;
@@ -4295,24 +4512,34 @@ class DisplayCard {
     for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
   }
   // ---- save / record (item 13) ---------------------------------------------
+  // CAPTURE and DELIVERY are split (IO_PLAN item 2): a save-all has to capture several
+  // cards in ONE synchronous pass and deliver a single archive, so the capture resolves to
+  // a blob and hands over nothing.
+  //
   // Re-render first: with WebGPU the canvas holds only its last PRESENTED image, so the
   // capture has to be taken in the same task as a fresh present -- there is no
-  // preserveDrawingBuffer to ask for. Then one 2D composite of the three layers.
-  saveShot() {
+  // preserveDrawingBuffer to ask for. Then one 2D composite of the three layers. Nothing
+  // here may await before the composite, for that same reason.
+  captureShot() {
     this.render();
     const w = this.gw, h = this.gh;
     const cv = document.createElement("canvas");
     cv.width = w; cv.height = h;
     const c = cv.getContext("2d");
-    if (!c || !cv.toBlob) return;
+    if (!c || !cv.toBlob) return Promise.resolve(null);
     c.drawImage(this.cv, 0, 0, w, h);                  // the field
     c.drawImage(this.cvVec, 0, 0, w, h);               // arrows / field lines / box frame
     if (this.barOn()) this.barStamp(c, w, h);
-    // ... and the picture goes where a recording goes: onto the card, in its own slot, with
-    // no length to quote (recResult). Nothing is downloaded until the visitor says so --
-    // on a phone the silent download of a save is as hard to find as the silent download
-    // of a take was.
-    cv.toBlob(b => this.recResult("png", b, shotName(this.barMode, "png")), "image/png");
+    return new Promise(r => cv.toBlob(r, "image/png"));
+  }
+  // ... and the picture goes where a recording goes: onto the card, in its own slot, with
+  // no length to quote (recResult). Nothing is downloaded until the visitor says so -- on a
+  // phone the silent download of a save is as hard to find as the silent download of a take
+  // was. The name is taken at the press, i.e. of the frame that was captured.
+  saveShot() {
+    const p = this.captureShot();
+    const name = shotName(this.barMode, "png");
+    p.then(b => this.recResult("png", b, name));
   }
   // the colorbar, scaled onto the saved image's bottom right over a translucent plate
   barStamp(c, w, h) {
@@ -4320,16 +4547,7 @@ class DisplayCard {
     const px = 6 * sc, x = w - bw - 2 * px, y = h - bh - 3.4 * px;
     c.fillStyle = "rgba(20,22,26,0.72)";
     c.fillRect(x - px, y - px, bw + 2 * px, bh + 4.4 * px);
-    c.drawImage(this.barCv, x, y, bw, bh);
-    c.fillStyle = "#d8dee6";
-    c.font = Math.round(9 * sc) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
-    c.textBaseline = "top";
-    const t = this.barTicks().map(s => String(s).replace(/&minus;/g, "−"));
-    const ty = y + bh + 0.5 * px;
-    c.textAlign = "left";   c.fillText(t[0], x, ty);
-    c.textAlign = "center"; c.fillText(t[1], x + bw / 2, ty);
-    c.textAlign = "right";  c.fillText(t[2], x + bw, ty);
-    c.textAlign = "left";
+    cbarDraw(c, this.barCv, this.barTicks(), x, y, bw, bh, sc);
   }
   // The recorder's live state, read straight off the card as it always was: the frame
   // loop's REC_DEBUG line, needsRender(), destroy() and the devtools legs all ask the card
@@ -4347,71 +4565,10 @@ class DisplayCard {
   recLive() { this.btnRec.innerHTML = "stop"; this.btnRec.classList.add("reclive"); }
   recIdle() { this.btnRec.innerHTML = "rec"; this.btnRec.classList.remove("reclive"); }
 
-  // The ONE place a finished file is handed over, whichever path made it -- the same
-  // discipline the two stop paths already keep (see the note by recToggle). `seconds` is
-  // each recording leg's own honest length: leg 1 counts the frames it actually MUXED
-  // (dropped ones never made it into the file), leg 2 has no frame count of its own and
-  // quotes wall clock; a PNG has no length at all and is quoted by size alone. Nothing is
-  // downloaded here: the strip below is the whole point of the change.
-  //
-  // `kind` ("png" / "video") is the SLOT the strip lives in, and there are deliberately
-  // two: a picture and a recording are two different files, so a save must replace only
-  // the last save and a take only the last take. One slot would mean a 30 s take dying
-  // because the visitor pressed save a second later -- the same file-losing surprise the
-  // strip exists to remove (Alfred, 2026-08-12).
-  recResult(kind, blob, name, seconds) {
-    if (!blob || !blob.size) return;            // nothing was captured: say nothing
-    // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
-    // async flush lands here -- and toBlob's callback is just as async, so a card can be
-    // closed between the save press and the picture -- and a strip on a removed footer
-    // would be a file the visitor can never reach. So a closed card keeps the old
-    // behaviour and downloads on the spot: a surprise file is better than a lost one.
-    if (this.dead || !this.foot) { dlBlob(blob, name); return; }
-    this.recClear(kind);
-    const s = _mk("div", "recres", this.foot);
-    this.resEl[kind] = s;
-    _mk("span", "recinfo", s).innerHTML = recSizeText(blob.size) +
-      (seconds === undefined ? "" : " · " + recLenText(seconds));
-    const dl = _mk("button", "capbtn", s);
-    dl.innerHTML = "download";
-    dl.title = "download " + name;
-    dl.onclick = () => dlBlob(blob, name);
-    // share is offered only where a file can really be shared (recShareFile); on a desktop
-    // that cannot, the strip is just text and a download, which is what a desktop wants.
-    const file = recShareFile(blob, name);
-    if (file) {
-      const sh = _mk("button", "capbtn", s);
-      sh.innerHTML = "share";
-      sh.title = "send " + name + " to another app";
-      sh.onclick = () => {
-        // AbortError is the visitor closing the sheet -- a decision, not a failure, so it
-        // must not then push the file at them anyway. Anything else (no permission, an
-        // engine that lied about canShare) falls back to the download rather than
-        // swallowing the recording. share() is called SYNCHRONOUSLY in the click: an
-        // engine with strict transient-activation rules (old iOS Safari -- the fallback
-        // leg's own audience) can refuse a share deferred even one microtask, which
-        // would turn every share press into the silent download this strip exists to
-        // avoid. The try/catch folds a synchronous throw into the same rejection path
-        // (adversarial review 2026-08-12, MINOR 2).
-        let p;
-        try { p = navigator.share({ files: [file] }); } catch (e) { p = Promise.reject(e); }
-        Promise.resolve(p).catch(e => { if (!e || e.name !== "AbortError") dlBlob(blob, name); });
-      };
-    }
-    const x = _mk("button", "capbtn recx", s);
-    x.innerHTML = "&times;";
-    x.title = "dismiss this " + (kind === "png" ? "picture" : "recording");
-    x.onclick = () => this.recClear(kind);
-  }
-  // drop ONE kind's strip -- and with the node go the handlers, and with the handlers the
-  // only references this card kept to the blob and the File, so the bytes can be
-  // collected. The other slot is untouched: dismissing a picture must not take a
-  // recording with it.
-  recClear(kind) {
-    const s = this.resEl[kind];
-    this.resEl[kind] = null;
-    if (s && s.parentNode) s.parentNode.removeChild(s);
-  }
+  // both delegate to the shared strip (cardResult / cardResClear, above DisplayCard):
+  // a chart card's save lands on exactly the same line, through the same code
+  recResult(kind, blob, name, seconds) { cardResult(this, kind, blob, name, seconds); }
+  recClear(kind) { cardResClear(this, kind); }
 
   showArrows() {
     return !!(this.cbArrow.checked && !this.linesView() && !this.volView() &&
@@ -4491,11 +4648,25 @@ class ChartCard {
     this.selType = _sel(head, chartTypeKeys().map(k => ({ v: k, t: CHART_TYPES[k].label })),
                         "what this chart shows");
     this.selType.value = type;
+    // the display card's capture button, on the header row a chart card has instead of a
+    // caption line (IO_PLAN item 2). It rides with the close button on every retype, below.
+    this.btnSave = _mk("button", "capbtn", head);
+    this.btnSave.innerHTML = "save";
+    this.btnSave.title = "save this chart as a PNG (with its colour scale, where it has one)";
     this.btnClose = _mk("button", "x", head);
     this.btnClose.innerHTML = "&times;";
     this.btnClose.title = "close this chart";
     this.cv = _mk("canvas", "chart", root);
+    // The card's FOOTER, built ONCE and never rebuilt. Two things live on it: the colour
+    // scale of the types that declare one (_barBuild, which replaces only the bar inside
+    // it) and every finished file's result strip (cardResult) -- which is why it cannot be
+    // the bar's own node, as it was: a retype would take a waiting file with it. Built
+    // before the hint, so the card still reads canvas / colorbar / hint.
+    this.foot = _mk("div", "viewfoot", root);
     this.hint = _mk("div", "hint", root);
+    this.resEl = { png: null, video: null };   // the waiting files' strips, one slot each
+    this.dead = false;                    // set by destroy(), so a late blob cannot land
+    this.barD = null; this.barT = null; this.barCv = null;
     this.cx = null;
     this.optEls = [];               // this type's option selects, rebuilt on retype
     this.build();
@@ -4505,6 +4676,7 @@ class ChartCard {
       cardsThrottleReset();
     };
     this.btnClose.onclick = () => cardClose(this);
+    this.btnSave.onclick = () => this.saveShot();
   }
   type() { return this.selType.value; }
   zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
@@ -4611,6 +4783,7 @@ class ChartCard {
         this.rSlice.oninput = () => { this.apply(); redraw(); };
       }
     }
+    this.head.removeChild(this.btnSave); this.head.appendChild(this.btnSave);
     this.head.removeChild(this.btnClose); this.head.appendChild(this.btnClose);
     this.cv.style.aspectRatio = T.w + " / " + T.h;
     this.cx = chartCtx(this.cv, T.w, T.h);
@@ -4628,27 +4801,32 @@ class ChartCard {
   // A chart whose quantity is a COLOUR needs the same legend a display card's field does,
   // so the colorbar is the display card's block verbatim -- `.viewfoot` > `.cbar` (strip +
   // three ticks), painted by cbarPaint through the shared colormap table and labelled by
-  // cbarFmt. Only types that declare `bar(opts)` get one; retyping the card takes it away
-  // again, which is why it is built here and not in the constructor.
+  // cbarFmt. Only types that declare `bar(opts)` get one, and retyping takes it away again
+  // -- which is why the BAR is built here and the FOOTER around it in the constructor: a
+  // file waiting on its result strip lives on that same footer and must survive a retype.
   _barBuild(T) {
-    if (this.foot) {
-      this.root.removeChild(this.foot); this.foot = null; this.barT = null; this.barD = null;
+    if (this.barD) {
+      this.foot.removeChild(this.barD);
+      this.barD = null; this.barT = null; this.barCv = null;
     }
     if (!T.bar) return;
-    // appended, then the hint is re-appended after it -- the same "move it back to last"
-    // idiom the close button uses, so the card reads canvas / colorbar / hint
-    this.foot = _mk("div", "viewfoot", this.root);
-    this.root.removeChild(this.hint); this.root.appendChild(this.hint);
     // the bar div is kept because a type whose colour SCALE is an option (gen2d's `gc`)
     // re-titles it per draw, through `barTi(opts)`; without one the static log wording
     // below stands, which is what every other bar-carrying type means
     const bar = this.barD = _mk("div", "cbar", this.foot);
     bar.title = "colour range of the plotted quantity (log scale, so the middle tick is "
       + "the geometric mean)";
-    const bcv = _mk("canvas", "cbarcv", bar);
+    const bcv = this.barCv = _mk("canvas", "cbarcv", bar);
     const tk = _mk("div", "cbartk", bar);
     this.barT = [_mk("span", null, tk), _mk("span", null, tk), _mk("span", null, tk)];
     cbarPaint(chartCtx(bcv, CBAR_W, CBAR_H), T.cmap || 0);
+    // a result strip is a full-width ROW of this same footer, so a waiting one is moved
+    // back after the bar -- the "move it back to last" idiom the close button uses, here so
+    // that a retype cannot leave the scale stranded under the strip
+    for (const k of ["png", "video"]) {
+      const s = this.resEl[k];
+      if (s && s.parentNode === this.foot) { this.foot.removeChild(s); this.foot.appendChild(s); }
+    }
   }
   // keep the z slider in range / enabled only when this card picks its plane by hand
   apply() {
@@ -4677,11 +4855,58 @@ class ChartCard {
     // the colorbar's labels come off the SAME options the plot was just drawn from, and
     // through the type's own hook -- the card knows it has a bar, never what is on it
     if (this.barT && T.bar) {
-      const t = T.bar(o);
+      const t = this.barTicks(o);
       for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
       if (this.barD && T.barTi) this.barD.title = T.barTi(o);
     }
   }
+  // the three labels of that scale, wherever they are being written: the strip on screen
+  // and the one a save composites into the picture read the same hook (the display card's
+  // barTicks is the same name for the same thing).
+  barTicks(o) {
+    const T = CHART_TYPES[this.type()];
+    return T.bar ? T.bar(o || this.optVals()) : ["", "", ""];
+  }
+  // ---- save (IO_PLAN item 2) -------------------------------------------------
+  // Capture and delivery are split exactly as the display card's are, so a save-all can
+  // capture several cards before delivering one archive. A chart is a PERSISTENT 2D canvas
+  // sized at dpr with the transform set once, so this is its own toBlob and there is
+  // nothing to re-render -- the display card re-renders only because WebGPU keeps no
+  // drawing buffer.
+  //
+  // The one exception is a type with a colour SCALE: that lives in a second canvas in the
+  // footer, which a toBlob of the plot alone would leave out, and the saved heatmap would
+  // lose the only thing that says what its colours mean. So those get a composite -- plot,
+  // then the bar in a band beneath it, on the chart's own background, through the same
+  // cbarDraw the display card's stamp uses.
+  captureShot() {
+    const T = CHART_TYPES[this.type()];
+    const src = this.cv;
+    if (!src.toBlob) return Promise.resolve(null);
+    if (!this.barCv) return new Promise(r => src.toBlob(r, "image/png"));
+    const sc = Math.max(1, src.width / T.w);        // the dpr the canvas was sized at
+    const px = 6 * sc, bw = CBAR_W * sc, bh = CBAR_H * sc;
+    const cv = document.createElement("canvas");
+    cv.width = src.width;
+    cv.height = src.height + Math.round(bh + 4.4 * px);
+    const c = cv.getContext("2d");
+    if (!c || !cv.toBlob) return Promise.resolve(null);
+    c.fillStyle = "#0f1115";                        // chartFrame's plate, under both parts
+    c.fillRect(0, 0, cv.width, cv.height);
+    c.drawImage(src, 0, 0);
+    cbarDraw(c, this.barCv, this.barTicks(), cv.width - bw - 2 * px, src.height + px,
+             bw, bh, sc);
+    return new Promise(r => cv.toBlob(r, "image/png"));
+  }
+  // ... and the file goes where a display card's picture goes: onto the card's own strip,
+  // never straight to the downloader (cardResult).
+  saveShot() {
+    const p = this.captureShot();
+    const name = chartName(this.type(), "png");
+    p.then(b => this.recResult("png", b, name));
+  }
+  recResult(kind, blob, name, seconds) { cardResult(this, kind, blob, name, seconds); }
+  recClear(kind) { cardResClear(this, kind); }
   // ---- pinned ghost spectra (PINCURVE Phase B) -------------------------------
   // A pin is a snapshot of the curves this card is DRAWING -- post specSeries /
   // parKfac -- so it is immune to later changes of the card's own sq / sd selectors:
@@ -4708,7 +4933,13 @@ class ChartCard {
     });
   }
   pinClear() { this.pins.length = 0; }
-  destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
+  // `dead` first, as the display card's destroy sets it: a save pressed a moment ago is
+  // still in toBlob, and cardResult must download that blob rather than append it to a
+  // footer nobody can see.
+  destroy() {
+    this.dead = true;
+    if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
+  }
 }
 
 // ---- registry operations ---------------------------------------------------
@@ -4718,6 +4949,60 @@ function cardsInit(cfg) {
   cards.hostC = el("charts");
   el("btnAddDisp").onclick = () => { addDisplayCard(); cardsSync(); };
   el("btnAddChart").onclick = () => { addChartCard("energy"); cardsSync(); };
+  saveAll.foot = el("saveAllFoot");
+  el("btnSaveAll").onclick = () => saveAllZip();
+}
+
+// ---- save all displays and charts, as one ZIP (IO_PLAN item 3) -------------
+// A ZIP and not N downloads: several <a download> clicks in a row raise Chrome's
+// "site wants to download multiple files" prompt, and on iOS each save is silent with no
+// share sheet -- the exact failure the result strip exists to avoid, once per card. One
+// archive is one file, one strip slot, one share.
+//
+// The strip's host is the page's, not a card's. cardResult asks its `card` for a footer
+// node, a slot in `resEl` and a `dead` flag, and nothing else -- so the save-all satisfies
+// those itself and parks the archive under the button that made it. Borrowing a card's
+// footer would have put a file describing every card behind one card's x, and lost it
+// whenever that card was closed.
+const saveAll = { foot: null, resEl: { zip: null }, dead: false, busy: false };
+
+// Every open card's capture, INITIATED IN ONE TASK. A display card's texture is
+// transient -- captureShot() re-renders and copies synchronously, and only the toBlob is
+// deferred -- so an await between two cards would capture the second from an expired
+// texture. Nothing here awaits; the promises go back to the caller.
+//
+// The two card kinds differ only in what they call themselves, which is the table, not a
+// second loop: names are `disp1-<field>.png` / `chart2-<kind>.png`, in card order.
+function _cardShots() {
+  const kinds = [[cards.disp, "disp", c => DISP_SLUG[c.barMode] || "field"],
+                 [cards.chart, "chart", c => c.type()]];
+  const shots = [];
+  for (const [list, tag, slug] of kinds) {
+    list.forEach((c, i) => shots.push({ name: tag + (i + 1) + "-" + slug(c) + ".png",
+                                        p: c.captureShot() }));
+  }
+  return shots;
+}
+// ... and the archive they become. A card whose capture came back empty (no 2D context)
+// is left out rather than written as a zero-length PNG; params.json is always the last
+// member, so an archive of nothing but the manifest is still a description of the run.
+async function saveAllZip() {
+  if (saveAll.busy) return;                  // a second press mid-capture would double it
+  saveAll.busy = true;
+  try {
+    const shots = _cardShots();
+    const bufs = await Promise.all(shots.map(s => s.p.then(b => b && b.arrayBuffer())));
+    const members = [];
+    shots.forEach((sh, i) => {
+      if (bufs[i]) members.push({ name: sh.name, data: new Uint8Array(bufs[i]) });
+    });
+    members.push(manifestMember());
+    cardResult(saveAll, "zip", zipStore(members), capName("all", "zip"));
+  } catch (e) {
+    showStatus("could not build the archive: " + (e && e.message ? e.message : e), "err");
+  } finally {
+    saveAll.busy = false;
+  }
 }
 // the lowest free chain index (a closed card frees its slot for the next one)
 function _freeCi() {
@@ -4840,7 +5125,7 @@ function chartsReset() {
 //
 // A spec is { topbar: [item...], groups: [group...] }; a group is
 // { id, summary, keep, rows: [row...] }; a row is either an array of items, an
-// object { id, hide, items }, or { k: "hintdiv", id } for a bare hint line.
+// object { id, hide, items }, or { k: "hintdiv", id, cls } for a bare div of its own.
 // Item kinds (every item may carry `ti`, the title attribute):
 //   lab  <label>t</label> (for: the id it labels)      val  <span class="val" id>
 //   sel  <select id> from o: [[value, html], ...]      txt  <span id>t</span>
@@ -4931,7 +5216,9 @@ function controlsBuild(spec) {
     if (g.keep) d.setAttribute("data-keep-open", "");
     _mk("summary", null, d).innerHTML = g.summary;
     for (const r of g.rows) {
-      if (r.k === "hintdiv") { const h = _mk("div", "hint", d); h.id = r.id; continue; }
+      // a full-width div of its own, OUTSIDE any .row: a hint line, or (with cls) the
+      // viewfoot a page-level result strip lands on
+      if (r.k === "hintdiv") { const h = _mk("div", r.cls || "hint", d); h.id = r.id; continue; }
       const row = _mk("div", "row", d);
       if (r.id) row.id = r.id;
       if (r.hide) row.style.display = "none";
@@ -5055,10 +5342,16 @@ const ctrlGrpDisp = extra => ({
     // went with the second slider (its content lives in docs.html's scale-filter section).
     [{ k: "btn", id: "btnAddDisp", t: "+ display" },
      { k: "btn", id: "btnAddChart", t: "+ chart" },
+     { k: "btn", id: "btnSaveAll", t: "save all",
+       ti: "one ZIP: a PNG of every display and chart card, plus a params.json describing "
+         + "the run" },
      { k: "cbl", id: "cbFilter", t: "k⊥ filter", v: false,
        ti: "give every display card a k_perp filter slider: it hides structure below the "
          + "wavenumber you set, in the PICTURE only -- the run, the spectra and the field "
-         + "lines are never filtered" }].concat(extra || [])
+         + "lines are never filtered" }].concat(extra || []),
+    // where the save-all archive waits: a `viewfoot` of the page's own, so the shared
+    // result strip lands under the button that made it (saveAll, above)
+    { k: "hintdiv", cls: "viewfoot", id: "saveAllFoot" }
   ]
 });
 
@@ -5558,7 +5851,7 @@ function autoDissRelax(nu, target, lo, hi) {
 // change at all, which is what stops a converged controller from re-uploading the
 // dissipation array twice a second.
 let autoDissAt = 0;
-function autoDissOn() { const e = el("cbAutoDiss"); return !!(e && e.checked); }
+function autoDissOn() { return _uiOn("cbAutoDiss"); }
 // the spectrum cards' last readback, kept so the controller can ride it instead of
 // paying for a second spectrum pass: the cards fire at ~3.3 Hz and the controller at
 // 2 Hz, so with a card open a fresh-enough entry almost always exists. `sv` keys the
@@ -6305,7 +6598,7 @@ icRegister("kh", {
 // above k_y a = 2.2365 -- picks the winner instead. That is the whole point of the
 // `chain` preset, and the reason it is a control on the IC and not a preset flag: the
 // selection is worth watching at any (a, L_y) a user can dial.
-const icTearBroadOn = () => { const e = el("cbTearBroad"); return !!(e && e.checked); };
+const icTearBroadOn = () => _uiOn("cbTearBroad");
 // The one seeded source the page has (#nSeed, CTRL_SEED), shared with the OU forcing
 // stream so that "same seed, same run" stays a single statement -- Math.random() would
 // make this initial condition irreproducible, which is the one thing an initial condition

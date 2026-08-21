@@ -401,6 +401,15 @@ press the green <b>Run</b>, and change one thing at a time.</p>
   <p><b>+ chart</b> adds one; the drop-down in its header chooses the type, and the
     <b>&times;</b> closes it. You can have several of the same type with different
     options.</p>
+  <!-- DRAFT copy (IO_PLAN item 2): written by the implementing agent, awaiting Alfred's
+       wording pass. -->
+  <p><b>save</b>, next to the <b>&times;</b>, makes a PNG of the graph exactly as it is
+    drawn. On the 2D spectrum &mdash; the one chart whose colours <i>are</i> the quantity
+    &mdash; the colour scale is saved underneath the plot, so the picture still says what
+    its colours mean. The file is named after the page, the chart and the simulation time,
+    for example <code>taranis-rmhd2d-spectrum-t12.500.png</code>, and it waits on the card
+    behind a <b>download</b> button exactly as a display card's picture does (see
+    <i>saving a picture or a video</i>).</p>
   <p><b>energy trace</b> &mdash; energies against time. The option chooses
     <b>E_u, E_b</b> (kinetic and magnetic) or
     <b>E<sup>+</sup>, E<sup>&minus;</sup></b> (the two Elsasser energies, which is what
@@ -666,6 +675,10 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     field lines drawn over it, and the colorbar. The file is named after the page, the
     quantity and the simulation time, for example
     <code>taranis-rmhd2d-vorticity-t12.500.png</code>.</p>
+  <!-- DRAFT copy (IO_PLAN item 2): the chart-card sentence, awaiting Alfred's wording pass. -->
+  <p>Chart cards carry the same <b>save</b> button, in their header: it writes the graph as
+    it is drawn, with its colour scale where the chart has one. There is no <b>rec</b> on a
+    chart.</p>
   <p><b>rec</b> starts recording that card to a short video and turns into <b>stop</b>.
     Press it again to stop, or leave it: it stops itself after 30 seconds so a
     forgotten recording cannot grow without bound. The file is a plain MP4 at 30 frames a
@@ -683,6 +696,19 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     to another app, a <b>share</b> one; share is what you want on a phone. The picture and
     the video keep their own lines, so saving a picture does not take a recording away.
     Nothing is uploaded anywhere: the whole simulation runs on your own machine.</p>
+  <!-- DRAFT copy (IO_PLAN item 3): the save-all paragraph, awaiting Alfred's wording pass. -->
+  <p><b>save all</b>, next to <b>+ display</b> and <b>+ chart</b>, saves everything on
+    screen at once: a PNG of every display card and every chart card, exactly as
+    <b>save</b> would have written each of them one at a time. They arrive as a single ZIP
+    file &mdash; one file to download, and one to share from a phone, instead of one prompt
+    per card &mdash; and the line it lands on is the same one, just under the button rather
+    than on a card. Inside, the pictures are named for the card that made them
+    (<code>disp1-vorticity.png</code>, <code>chart2-spectrum.png</code>), in the order the
+    cards appear on the page.</p>
+  <p>A <code>params.json</code> travels with them, describing the run the pictures came
+    from: the resolution and the box, the simulation time, the dissipation and its
+    exponent, what was being injected and where, and which initial condition it started
+    from. It is there so that a folder of pictures still says what it is a month later.</p>
 </details>
 
 <details>

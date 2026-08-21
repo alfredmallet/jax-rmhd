@@ -92,6 +92,9 @@ a.tab:hover { background: #1d2129; color: #a9c7e8; }
 /* a chart card's ACTION option (the spectrum card's pin / unpin), sized like the
    selects beside it -- not like the close button, which owns the row's right edge */
 .cardhead .optbtn { padding: 2px 7px; font-size: 12px; line-height: 1.2; color: #9aa5b4; }
+/* a chart card's `save`: the display card's capture button, but on the header row this
+   card carries instead of a caption line, so it is sized like the options beside it */
+.cardhead .capbtn { padding: 2px 7px; font-size: 12px; line-height: 1.2; color: #9aa5b4; }
 .cardhead .cbl { display: inline-flex; align-items: center; gap: 3px; color: #9aa5b4; font-size: 12px; }
 /* a short label in front of a header slider (the volume level / opacity knobs and the
    filter handle): sized like the selects beside it, and never squeezed -- the slider is

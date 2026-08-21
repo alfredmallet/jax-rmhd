@@ -182,13 +182,36 @@ ok(!/<script src=|id="topbar"|id="display"/.test(ix), "index.html: nothing but t
 // common.js, not from any markup, so a markup-only sweep would miss the one image the
 // no-WebGPU path depends on.
 const ASSET = "png|jpe?g|gif|svg|ico|css|js|json|webmanifest|mp4|webm";
+// The question this leg asks is "does every file the deployed page LOADS exist and
+// deploy?", so a quoted filename counts only where something loads it -- not wherever a
+// string happens to look like a path. Two contexts, which is all the site has:
+//   - markup: an attribute, `src="..."` / `href="..."` (a stylesheet, a favicon, a
+//     <script>, a link to another page);
+//   - JS: the literal reaches a loader -- assigned to `.src` / `.href` or handed to
+//     `fetch()`, either directly or through the constant it is bound to. That last case
+//     is the one this sweep exists for: `const POSTER = "poster.png"` is named by no
+//     markup at all, and it is the image the no-WebGPU path depends on.
+// Anything else is a filename the page WRITES rather than reads -- `params.json` is a
+// member inside the archive the save-all and the field export build (IO_PLAN) -- and no
+// deploy can drop a file that only ever exists inside a download.
+const AS_ATTR = /(?:\bsrc|\bhref|\burl)\s*=\s*$/i;
+const AS_LOAD = /\.(?:src|href)\s*=\s*$|\b(?:fetch|importScripts)\(\s*$/;
+const AS_BOUND = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*$/;
 const refs = new Map();                          // ref -> the file that names it
 for (const f of fs.readdirSync(dir).filter(f => /\.(html|js)$/.test(f))) {
   const src = fs.readFileSync(path.join(dir, f), "utf8");
-  // markup attributes and JS string literals both reduce to "a quoted local path"
+  const markup = /\.html?$/.test(f);
   for (const m of src.matchAll(new RegExp(`["'\`]([\\w./-]+\\.(?:${ASSET}))(?:[?#][^"'\`]*)?["'\`]`, "g"))) {
     const r = m[1];
     if (r.startsWith("http") || r.startsWith("//") || r.startsWith("../")) continue;
+    const before = src.slice(0, m.index);
+    // a constant bound to the literal counts if its NAME reaches a loader anywhere in
+    // the same file
+    const bound = AS_BOUND.exec(before);
+    const loaded = markup ? AS_ATTR.test(before)
+      : AS_LOAD.test(before) ||
+        (!!bound && new RegExp(`\\.(?:src|href)\\s*=\\s*${bound[1]}\\b|\\bfetch\\(\\s*${bound[1]}\\b`).test(src));
+    if (!loaded) continue;
     if (!refs.has(r)) refs.set(r, f);
   }
 }

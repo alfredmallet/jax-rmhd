@@ -416,7 +416,68 @@ the WebGPU canvas, the overlay canvas and the colorbar into an offscreen 2D canv
 hands it to `toBlob`; the card **re-renders first**, because WebGPU has no
 `preserveDrawingBuffer` — `getCurrentTexture` is transient and the canvas holds only its
 last *presented* image, so the capture has to be taken in the same task as a fresh
-present. `rec` records the field canvas (that canvas alone: the arrows, the field lines
+present.
+
+**Capture and delivery are separate steps, and the result strip is shared** (IO_PLAN item
+2). Three contracts, in the order a later export feature meets them:
+
+- `captureShot()` on **both** card classes returns a `Promise<Blob>` and delivers nothing.
+  A display card's initiates its render and its composite **synchronously** (no `await`
+  before `toBlob` — the texture is transient), so N cards can be captured in one task and
+  only then awaited; that is what "save all as one archive" needs and why the split exists
+  before there is a second caller. `saveShot()` is `captureShot()` + one `recResult`, and is
+  the only thing the per-card button calls.
+- **Nothing hands a finished file to `dlBlob`.** Every file — both recording legs, the
+  display card's picture and now the chart card's — goes through `cardResult(card, kind,
+  blob, name, seconds)`, which parks it on the card's footer behind size/length text and a
+  download (plus `share`, where the engine can share files) button, because on a phone a
+  silent download lands in Files and is hard to send on. `dlBlob` is reached from exactly two
+  places: that strip's own buttons, and `cardResult`'s dead-card branch — a card closed
+  between the press and the deferred `toBlob` downloads its file rather than losing it, which
+  is why `destroy()` sets `dead` on both classes.
+- The strip's host is `card.foot` and it is **always present on both classes**, with the two
+  slots in `card.resEl` (`png` / `video`: a save replaces only the last save). On a chart
+  card the footer is the constructor's and `_barBuild` rebuilds only the colour scale
+  *inside* it — it used to own the whole footer, which would have taken a waiting file with
+  it on every retype. `cardResult`/`cardResClear` are free functions for that reason: two
+  card classes, one implementation.
+
+A chart card's `save` is on its header row (it has no caption line) and needs no re-render —
+a chart is a persistent 2D canvas, sized by `chartCtx` at `dpr`, so `toBlob` already yields
+the physical-pixel image. The exception is a type declaring `bar` (today `gen2d`): its colour
+scale is a *second* canvas, so the capture composites plot + scale onto one canvas through
+`cbarDraw`, the same shared geometry `DisplayCard.barStamp` stamps with. Names come from
+`chartName(kind, ext)` beside `shotName(mode, ext)`, both over one `capName` —
+`taranis-<app>-<what>-t<simT>.<ext>`. Gate: `devtools/checkchartsave.js`.
+
+**One archive, not N downloads** (IO_PLAN item 3). `save all`, beside `+ display` /
+`+ chart` in the displays & charts group, writes every display card's composite PNG, every
+chart card's PNG and a `params.json` into one ZIP. Firing several `<a download>` clicks in
+a row raises Chrome's multi-download prompt and is silent on iOS — the exact failure the
+result strip exists to avoid, once per card. Three contracts:
+
+- `zipStore(members) -> Blob`, `members: [{ name, data: Uint8Array }]`, **member order = the
+  order given**. Local headers, central directory, EOCD, method 0 (stored) throughout, CRC-32
+  on the reflected polynomial `0xEDB88320`; the central directory's `offset` is a **byte**
+  offset into the finished buffer. No deflate: a PNG is already compressed and a float field
+  gains a few percent, so this stays ~80 lines with no dependency and no worker — and a
+  stored archive is what `numpy.load` reads, which makes it the `.npz` writer too (item 4).
+  Names are UTF-8 with general-purpose bit 11 set. No ZIP64, so 4 GB is the cap.
+- `runManifest(extra) -> object` / `manifestMember(extra) -> {name, data}` — the run's
+  description (app, sim time and step, grid, box, dissipation + hyper exponent, forcing
+  state, IC preset, seed, CFL), built from `liveParams()` at the press. **One builder for
+  both exports**, so the archive of pictures and the field export cannot describe the same
+  run differently; `extra` is merged over the result.
+- **Capture ordering is the constraint.** `_cardShots()` calls `captureShot()` on every
+  display card and then every chart card in ONE synchronous pass and returns the promises;
+  `saveAllZip()` awaits nothing until that pass is over. A display card's texture is
+  transient, so an `await` between two cards would capture the second from an expired one.
+
+The archive's result strip is the **page's**, not a card's: `saveAll` is a plain object with
+a `foot`, a `resEl` slot (`zip`) and a `dead` flag, which is all `cardResult` ever asks of a
+card — so the file describing every card is not parked behind one card's × and cannot be lost
+when that card is closed. Its host is a `viewfoot` div in the control group
+(`{ k: "hintdiv", cls: "viewfoot" }`). Gate: `devtools/checkzip.js`. `rec` records the field canvas (that canvas alone: the arrows, the field lines
 and the colorbar are in the PNG only) with a 30 s hard stop, on whichever of **two legs**
 the engine supports.
 
