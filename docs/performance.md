@@ -120,6 +120,20 @@ CPU there; on full-rate-fp64 hardware (A100/GH200/H100) the economics carry over
 | `lsrk_scan=False` (unrolled) | +21% mpi4jax-GPU, +12% jax single-node, **−38% jax multi-node** | per-machine knob, benchmark it |
 | `forcing_shell_noise` | faster single-device, ~5% *slower* on Savio CPU at 32 ranks | opt-in; revisit on GPU |
 | `halo_start` | neutral (≤2%, sub-noise) everywhere measured | see below |
+| `hoist_propagator` | **putzer2 only** — 1.22× (P100) / 1.80× (CPU) slower off on GDI-IF; scheme-dependent memory, see below | default on; turn off only on a memory-bound putzer2 grid |
+| `GRAD_CHUNK` (module constant, not a `Parameters` attribute) | chunk 2 costs 1.25–1.54× the step on XLA:CPU and gains only 1.8–3.3% on the 2080Ti, but gains 3–20% on the P100 | default 1 everywhere; the one per-card tuning worth knowing |
+
+**`hoist_propagator` after Z1/Z2 (2026-08-20).** It only reaches the putzer2 backend now:
+FD-z and 2D use the diagonal backend, which is never hoisted, and z_spectral RMHD at ν = η
+uses the separable backend, whose whole stage stack is ≤0.1 u (hoisted unconditionally in
+effect — there is no trade to make). On putzer2 the memory cost is **scheme-dependent**: at
+lsrk54 the hoisted/unhoisted gap is ~8 u (44.4 vs 36.0 at 128²×32 ν≠η z_spectral; 45.2 vs
+38.2 on the P100's GDI 2D 1024²), at lsrk33 it has collapsed to under 1 u because Z2's
+`w`-form removed the full-grid `sqrt`/`cosh`/`sinh` temporaries the unhoisted stage used to
+carry. And it is a **scheduler** property, not an arithmetic one: on XLA:CPU the GDI 2D 256²
+lsrk33 pair is memory-*neutral* (41.130 u hoisted, 41.091 u unhoisted) where the same pair
+on the P100 costs a real +7.0 u. Size it on the device you will run on. On adaptive
+`cfl_every=1` nothing is frozen, so the knob has no effect at all.
 
 `cfl_every > 1` costs one extra standalone gradient evaluation per block, because the
 stage-0 RHS no longer doubles as the dt source. At 32 ranks that cancels the saving at
@@ -438,18 +452,30 @@ hoist-independent; the stage ExpOps are 0.02–0.10 u against putzer2's 3.4–27
 fixed-dt step 0.94–0.98× and adaptive `cfl_every=1` 0.40–0.47× the pre-Z1 hoisted
 putzer2 step, HLO transcendentals down from 30 exp + 30 cos + 30 sin + 21 sqrt full-grid
 to one perp-plane exp plus exp/cos/sin on (nz,1,1) per stage. ν ≠ η and GDI stay on
-putzer2 — for those the paragraph below still describes what is available:
+putzer2 — for those the paragraph below is the record of what was tried and what shipped:
 
-**Available, not done — the adaptive `cfl_every=1` path.** Nothing is frozen there, so the
-per-stage evaluation stays and only a cheaper evaluation helps. Generic, no memory, any L:
-store `s = sqrt(s2)` at setup (kills the complex sqrt — its 7 sqrt/9 div/18 selects per mode —
+**DONE for putzer2 (Z2, 2026-08-20) — the adaptive `cfl_every=1` path.** Nothing is frozen
+there, so the per-stage evaluation stays and only a cheaper evaluation helps. The generic,
+no-memory, any-L option below is what shipped: store `s = sqrt(s2)` at setup (kills the
+complex sqrt — its 7 sqrt/9 div/18 selects per mode —
 from the step; `tau > 0` so the branch is immaterial and cosh/sinh·z are even anyway) and form
 `w = exp(s·tau)` once, `cosh = (w + 1/w)/2`, `sinh/s = (w − 1/w)/(2s)` with the small-|z|
-Taylor branch kept: 2 complex exps instead of 10 exp/5 cos/5 sin/7 sqrt. Structure-aware, when
+Taylor branch kept and widened ~100× in `|z²|` to cover the `w − 1/w` cancellation
+(docs/numerics.md). Measured stage-body HLO: `sqrt` 14 → 0, `exp` 20 → 8, `cos`/`sin`
+16 → 6, `div` 21 → 5. Step time, adaptive `cfl_every=1`, interleaved medians: GDI 2D 512²
+lsrk33 **0.68×** (fp64) / 0.76× (fp32); RMHD z_spectral ν≠η 128²×32 lsrk33 0.79/0.81× —
+the plan's ≤0.75× target met on the GDI production path, the RMHD corner Amdahl-limited by
+its transform share. It also came with a memory windfall the bar did not ask for (the old
+`_coeffs` materialised full-grid `sqrt`/`cosh`/`sinh` intermediates): −1.4 u on
+`rmhd_zspec_64x16_lsrk33_uneq`, −3.4 on `gdi2d_256_lsrk33` and `gdi3d_64x16_lsrk33`,
+−13.5 on `gdi2d_256_lsrk54`. Two alternatives were measured alongside it and not taken on this
+path. Structure-aware, when
 `m` is real and `s2` real one-signed (RMHD: `m = −νk^{2h}`, `s2 = −kz²` — concrete at setup):
 1 real exp + cos + sin — measured **0.75×** the step; and the Elsasser-separable form
 (`e^{dτ}` on (nkx,nky) ⊗ `e^{±ikzτ}` on (nz,), no change of state variables) **0.62×** — the
-same ratio as hoisting, but for every step including adaptive `cfl_every=1`, at no memory.
+same ratio as hoisting, but for every step including adaptive `cfl_every=1`, at no memory;
+that one IS what Z1 shipped, for the ν = η RMHD case where it applies, which is why it is
+not also a putzer2 option.
 Both change round-off on the putzer2 paths (no bitwise gate pins them; the FD diagonal path is
 untouched). A naive real-trig version that evaluates both `cosh`/`cos` branches under a `where`
 and casts back to complex measured *slower* (114.8 ms/step). The full per-mode
@@ -497,7 +523,7 @@ FD-z rows agree to ≤0.005 u — and costs 1.3–2.1× the time. The 128²×32 
 | gdi3d lsrk33 | 31.57 | 8.31 | 42.01 | 4.86 |
 | gdi3d imexcb2 / cb3e / cb3c | 14.95 | 6.31 | 23.39 | 5.59 / 7.67 / 7.64 |
 
-What the table says, structurally (buffer breakdown in `plans/TARANIS_MEMORY_HANDOFF.md`):
+What the table says, structurally (buffer breakdown in `plans/old/TARANIS_MEMORY_HANDOFF.md`):
 the FD-z IF working set is dominated by the batched gradient transforms (8 u k-space
 stack + ~8 u real-space output — the plan's F1) and the halo-concatenate pair (~4.3 u,
 F2/F3); z_spectral adds the resident putzer2 operator (6 u of args) and, hoisted,
@@ -567,6 +593,12 @@ recovers most of the halo waste on the default path). GDI-IF putzer2 hoist pair
 (Z3 input): unhoisted = 1.22× the hoisted step for 7 u — hoisting still pays on
 GDI-IF after Z2.
 
+`Z_STENCIL_BLOCKS` and the probe's `--z-blocks` no longer exist: the block-stencil path
+was a one-day experiment, all three platforms preferred the padded slab, and it was
+deleted in the plan's docs sweep (2026-08-20; the surviving `z_derivatives` is the
+verbatim pre-experiment code, pinned by an optimized-HLO identity check). The rows
+quoting the flag are kept because they are the measurement that decided it.
+
 **GPU baseline, G2 Savio GTX 2080Ti 11 GB** (jax 0.10.2, job 37775868,
 `bench/memory_probe_gtx2080_baseline_fp{32,64}.json` + `..._fp32_jax4.json`; same grids
 as the P100 profile plus a 512²×64 twin of the OOM candidate):
@@ -596,7 +628,8 @@ old unhoisted 328 = 0.73×). Decision pairs, closing the plan's §9 items (Alfre
 **GRAD_CHUNK stays 1 everywhere** (P100-class cards gain 3–20% from setting 2 — the one
 per-card tuning worth knowing); the z-blocks pair is negative on this card in BOTH
 memory (19.8 vs 17.1 u) and time (+9–14%), so with all three platforms preferring the
-old path **the block-stencil path and Z_STENCIL_BLOCKS are scheduled for deletion**;
+old path **the block-stencil path and Z_STENCIL_BLOCKS were deleted** (docs sweep,
+2026-08-20);
 GDI-IF hoisting still pays (1.22× unhoisted on P100, 2080Ti consistent), so
 **hoist_propagator stays, putzer2-only**. Z1's GPU timing gate final tally: lsrk54
 0.72–0.79× and adaptive 0.72–0.76× meet ≤0.85; lsrk33 fixed-dt 0.89–0.97× does not
@@ -631,7 +664,7 @@ campaign (`acct_campaign.jsonl`, same variants, machine at load ~2–3) agrees w
 1–3% on every row and 4% on the base rows; it is kept as the contention control, not quoted.
 
 Canonical configuration: RMHD 128²×32 (u = 2.03 MiB), GDI 2D 256² (u = 258 KiB), defaults
-(`GRAD_CHUNK=1`, `Z_STENCIL_BLOCKS=False`, `hoist_propagator=True`, `lsrk_scan=True`), fixed
+(`GRAD_CHUNK=1`, the padded z stencil, `hoist_propagator=True`, `lsrk_scan=True`), fixed
 `dt = 1e-3`, no forcing, no particles, `comm_backend="serial"`, single process. The three
 paths are the ones the plan sizes production from:
 
@@ -679,7 +712,7 @@ arena high-water; both numbers are given.
 
 | u | lanes | shape | what |
 |---|---|---|---|
-| 2.125 | 2 | `c64[2,34,128,65]` | the halo-padded z slab of `shared_physics._padded_z_derivatives` — (nz+2)/nz × 2 u, one per RHS instantiation (peeled stage 0, and the stage scan) |
+| 2.125 | 2 | `c64[2,34,128,65]` | the halo-padded z slab of `shared_physics.z_derivatives` — (nz+2)/nz × 2 u, one per RHS instantiation (peeled stage 0, and the stage scan) |
 | 2.000 | 2 | `c64[2,32,128,65]` | LSRK stage-scan carry: `fields` and `delta` |
 | 2.000 | 2 | `c64[2,32,128,65]` | `NonlinearTerm`'s k-space output, one per RHS instantiation |
 | 2.000 | 1 | `c64[2,32,128,65]` | `FDLinearTerm`'s output — the `jnp.stack([df_dz[1],df_dz[0]])` field swap, materialised |

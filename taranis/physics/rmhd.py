@@ -3,7 +3,7 @@ import numpy as np
 from .. import grids
 from .. import _precision
 from . import shared_physics
-from .shared_physics import bracket,grad_fields,z_derivatives,z_stencil_blocks
+from .shared_physics import bracket,grad_fields,z_derivatives
 from .. import comms
 from ..propagators import SeparableL
 
@@ -107,14 +107,8 @@ def FDLinearTerm(state,grads,kgrid,params,halo=None):
         return jnp.zeros_like(state.fields)
     dz=params.dz
     diss=params.z_diss * (dz/2)**4
-    #RMHD only logic: the z-derivatives belong to the opposite equations
-    if shared_physics.Z_STENCIL_BLOCKS:
-        #assembled one z block at a time: the concatenate is the term's own output, the
-        #[::-1] field swap rides it, and neither z derivative becomes a slab
-        blocks = z_stencil_blocks(state.fields,params,halo=halo)
-        return jnp.concatenate([df_dz[::-1] - diss * d4f_dz4 for df_dz,d4f_dz4 in blocks],
-                               axis=1)
     df_dz,d4f_dz4 = z_derivatives(state.fields,params,halo=halo)
+    #RMHD only logic: the z-derivatives belong to the opposite equations
     df_dz_rmhd = jnp.stack([df_dz[1],df_dz[0]])
     return df_dz_rmhd - diss * d4f_dz4
 

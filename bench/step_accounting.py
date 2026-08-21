@@ -244,8 +244,7 @@ def _apply_scopes():
     shared_physics.grad_fields = scoped("GRADF", shared_physics.grad_fields)
     shared_physics.bracket = scoped("BRACKET", shared_physics.bracket)
     rmhd.z_derivatives = scoped("ZSTENCIL", rmhd.z_derivatives)
-    shared_physics._padded_z_derivatives = scoped(
-        "ZSTENCIL", shared_physics._padded_z_derivatives)
+    shared_physics.z_derivatives = scoped("ZSTENCIL", shared_physics.z_derivatives)
     comms.halo_exchange = scoped("HALO", comms.halo_exchange)
     shared_physics.comms = comms
     for cls in (propagators.SeparableExp, propagators.Putzer2Exp, propagators.DiagonalExp,

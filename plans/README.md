@@ -11,8 +11,9 @@ setup) and `CLAUDE.md`.
 measurements, tuning knobs, negative results) and the CI section of
 `docs/RUNNING_TESTS.md`. What remains in `plans/old/` is process — task breakdowns,
 agent handoffs, status markers — kept for provenance but no longer load-bearing. Nothing
-outside `plans/` links into it, so these files can be deleted whenever they stop earning
-their disk space.
+outside `plans/` links into it — with one exception, `docs/performance.md`'s pointer at
+`old/TARANIS_MEMORY_HANDOFF.md` for the XLA buffer breakdown — so these files can be
+deleted whenever they stop earning their disk space.
 
 Where the extracted docs and an old plan disagree, **the docs are right**: several claims
 were corrected on the way out (see below).
@@ -24,13 +25,20 @@ were corrected on the way out (see below).
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
 - **CODE_REVIEW_2026-07-31.md** — full-codebase review. Sections 2–5 are done; section 6
   (repo hygiene) is partly open.
-- **MEMORY_PERF_PLAN.md** — memory and step-time reduction for FD-z (F1–F4) and z_spectral
-  (Z1–Z3), with the GPU assessment (Kaggle P100 via lugus, Savio GTX 2080Ti). Supersedes
-  the two measurement hand-offs it cites, **TARANIS_MEMORY_HANDOFF.md** (XLA buffer audit)
-  and **ZSPECTRAL_PROPAGATOR_NOTES.md** (step-time profile, hoisted propagators), which
-  stay as the record until the plan's docs sweep moves them to `old/`.
 
 ## Finished
+
+- **MEMORY_PERF_PLAN.md** (closed 2026-08-20) — memory and step-time reduction for FD-z
+  (F1–F4) and z_spectral (Z1–Z3), with the two-card GPU assessment (Kaggle P100 via lugus,
+  Savio GTX 2080Ti). Outcome: z_spectral RMHD 62 → 17–18 u, FD-z 30 → 20–23 u, and every
+  path 0.43–0.97× its old step time; all §9 decisions closed (GRAD_CHUNK stays 1,
+  `hoist_propagator` kept and documented putzer2-only, the block stencil deleted). The
+  durable record is in `docs/performance.md` ("Memory: where it goes and what was removed",
+  the accounting section, "Tuning knobs, measured") and `docs/numerics.md` (separable
+  propagator, putzer2 coefficients, the `grads` tuple). **MEMORY_PERF_PLAN_REVIEW.md**
+  stays beside it — the plan cites it. The two measurement hand-offs it superseded,
+  **TARANIS_MEMORY_HANDOFF.md** (XLA buffer audit) and **ZSPECTRAL_PROPAGATOR_NOTES.md**
+  (step-time profile, hoisted propagators), moved to `old/` in the closing docs sweep.
 
 - **PERFORMANCE_PLAN.md** — the original perf findings (F1, F2) and phased task list.
 - **PHASE2_PLAN.md**, **PHASE3_PLAN.md** — execution plans expanding that roadmap.

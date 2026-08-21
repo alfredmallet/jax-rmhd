@@ -10,10 +10,6 @@ QUIESCENT_EPS = 0.1
 # fields per inverse transform in grad_fields; read at trace time, not at import
 GRAD_CHUNK = 1
 
-# z stencil: True computes the derivatives per z block, False pads the slab with the halo
-# planes and slices that. Read at trace time, not at import
-Z_STENCIL_BLOCKS = False
-
 # takes gradient in fourier space
 # expects the kx,ky axes to be the last two (-2,-1)
 def gradk(fk,kgrid):
@@ -67,7 +63,8 @@ def _z_halo(f,params,halo):
         f"z_derivatives: recv_left width={w} != recv_right width={recv_right.shape[1]}"
     return recv_left, recv_right, w
 
-def _padded_z_derivatives(f,params,halo=None):
+# gets the necessary z derivatives, as whole local slabs.
+def z_derivatives(f,params,halo=None):
     # whole local slab padded with the halo planes, then sliced. z axis is axis 1.
     dz=params.dz
     recv_left, recv_right, w = _z_halo(f,params,halo)
@@ -76,38 +73,6 @@ def _padded_z_derivatives(f,params,halo=None):
     return _z_stencils(f_padded[:,w+2:w+2+nz,:,:],f_padded[:,w+1:w+1+nz,:,:],
                        f_padded[:,w:w+nz,:,:],f_padded[:,w-1:w-1+nz,:,:],
                        f_padded[:,w-2:w-2+nz,:,:],dz)
-
-# gets the necessary z derivatives, one contiguous group of z planes at a time.
-def z_stencil_blocks(f,params,halo=None):
-    # (df_dz, d4f_dz4) per contiguous z block, in z order: a consumer that combines the
-    # two derivatives combines them per block and concatenates once.
-    dz=params.dz
-    recv_left, recv_right, w = _z_halo(f,params,halo)
-    nz = f.shape[1]
-    if nz < 4:
-        # too few local planes for an interior slice: the padded slab, as one block
-        return (_padded_z_derivatives(f,params,halo=(recv_left,recv_right)),)
-    # only the outer 2 planes at each end need halo data: give them a 6-plane end block
-    # [halo(2), f(4)] (and its mirror), each block yielding its 2 output planes.
-    lo = jnp.concatenate([recv_left[:,w-2:,:,:],f[:,:4,:,:]],axis=1)
-    hi = jnp.concatenate([f[:,-4:,:,:],recv_right[:,:2,:,:]],axis=1)
-    blocks = [_z_stencils(lo[:,4:6,:,:],lo[:,3:5,:,:],lo[:,2:4,:,:],lo[:,1:3,:,:],lo[:,0:2,:,:],dz)]
-    if nz > 4:
-        # interior planes 2..nz-3: shifted views of f itself, no copy
-        blocks.append(_z_stencils(f[:,4:,:,:],f[:,3:-1,:,:],f[:,2:-2,:,:],
-                                  f[:,1:-3,:,:],f[:,:-4,:,:],dz))
-    blocks.append(_z_stencils(hi[:,4:6,:,:],hi[:,3:5,:,:],hi[:,2:4,:,:],hi[:,1:3,:,:],hi[:,0:2,:,:],dz))
-    return tuple(blocks)
-
-# gets the necessary z derivatives, as whole local slabs.
-def z_derivatives(f,params,halo=None):
-    if not Z_STENCIL_BLOCKS:
-        return _padded_z_derivatives(f,params,halo=halo)
-    blocks = z_stencil_blocks(f,params,halo=halo)
-    if len(blocks) == 1:
-        return blocks[0]
-    return (jnp.concatenate([b[0] for b in blocks],axis=1),
-            jnp.concatenate([b[1] for b in blocks],axis=1))
 
 ############
 # FORCING. #

@@ -29,6 +29,30 @@ the integral of either spectrum equals `diagnostics.energy` exactly, to round-of
 diagnostic that invents its own normalization silently stops being comparable to the
 forcing power and the dissipation rate.
 
+### Gradients are a tuple, one transform at a time
+
+Every equation set's `grad_func` returns a **tuple** of real-space `(2, nz, nx, ny)`
+gradients, one per field — not a stacked `(nfields, 2, …)` array. The reason is memory,
+not taste. An inverse FFT is an opaque kernel, so its input must be materialised whole: a
+single batched `ifft` of `stack([i·kx·f, i·ky·f])` over all four RMHD fields forces an
+8 u k-space array to be live *alongside* the ~8 u of real-space output it produces. Going
+one field — in fact one component — at a time makes the k-space peak 2 u instead, and
+returning a tuple is what keeps the output side from paying the cost back: any
+`stack`/`concatenate` of the results would be a second full copy of the real-space set.
+
+`shared_physics.grad_fields` is the shared implementation; `shared_physics.GRAD_CHUNK`
+(a module constant read at trace time, deliberately not a `Parameters` attribute) sets how
+many fields share one inverse transform. Every value is bitwise identical — this is a
+scheduling knob only — and the default is 1. The arithmetic is unchanged either way;
+what changes is which intermediates XLA has to keep alive.
+
+Ordering does **not** buy anything further. At the RHS peak all eight real gradient
+components are live, and the brackets only need six at a time (`gvort` and `gjpar` are each
+consumed once), but no source-level reordering reaches that: retiring `gvort` early would
+need the `gjpar` inverse transform scheduled after `bracket(gphi, gvort)`, and no statement
+order creates that dependency. Measured at exactly 0.000 u across every reordering tried,
+including a contract-breaking one — the ~2 u belongs to XLA's scheduler.
+
 ## Precision model
 
 `jax_enable_x64` is turned on unconditionally at import (`taranis/__init__.py`) — x64
@@ -234,7 +258,7 @@ to a relative 1e-13 instead.
 
 The integrating factor above is one instance of a general hook. An equation set may
 declare `linear_matrix_func(kgrid, params) → L` in its `EquationRecipe`; `setup_kgrids`
-builds it once and stores it on the `K_Grids` (`lin_L`, plus `lin_m`/`lin_s2` for the 2×2
+builds it once and stores it on the `K_Grids` (`lin_L`, plus `lin_m`/`lin_s` for the 2×2
 backend), and the timesteppers only ever call `apply_exp(arr, τ)` and — from the IMEX
 schemes — `solve_shifted(arr, a) = (I − a·L)⁻¹ arr`. No stepper sees a matrix.
 
@@ -249,8 +273,14 @@ is perpendicular-only); a `SeparableL` NamedTuple selects the separable backend.
 - **diagonal**, `(nfields, nz-or-1, nkx, nky)`: `exp(L·τ)·arr`, elementwise.
 - **putzer2**, `(2, 2, nz-or-1, nkx, nky)`: the closed form
   `exp(Lτ) = e^{mτ}[cosh(sτ)·I + (sinh(sτ)/s)·(L − m·I)]` with `m = tr L/2` and
-  `s² = m² − det L` (Putzer/Sylvester). No eigendecomposition and no eigenvector storage,
-  and it is smooth through the defective points where an eigenbasis does not exist.
+  `s = sqrt(m² − det L)` (Putzer/Sylvester). No eigendecomposition and no eigenvector
+  storage, and it is smooth through the defective points where an eigenbasis does not
+  exist. `s` is formed once at setup (`kgrid.lin_s`) and the two hyperbolic functions
+  come from a single exponential per stage: with `z = s·τ` and `w = e^z`,
+  `cosh z = (w + 1/w)/2` and `sinh(z)/z = (w − 1/w)/(2z)`, so a stage costs 2 complex
+  exps and 1 complex reciprocal per mode rather than the complex `sqrt`/`cosh`/`sinh`
+  it used to (which XLA lowered into ~10 real `exp`, 5 `cos`, 5 `sin`, 7 `sqrt` and
+  9 divides per mode).
 - **separable**, `SeparableL(dperp, dz, kz)`: the exact factorised form for
   `L = d·I + i·kz·σx` with real `d = dperp(k⊥) + dz(kz)` — z_spectral RMHD at ν = η.
   Derivation and properties below.
@@ -261,10 +291,21 @@ Two traps in the 2×2 form, both guarded in `tests/test_linear_propagator.py`:
   general; a real `sqrt` NaNs silently. `cosh(sτ)` and `sinh(sτ)/s` are *even* in `s`, so
   they are single-valued functions of `s²` and the branch of the sqrt does not matter.
 - **`sinh(sτ)/s` is 0/0 at a defective mode**, so it switches to its Taylor series
-  `τ·(1 + z²/6 + z⁴/120 + z⁶/5040)`, `z = sτ`, below a cutoff on `|z²|` (`1e-6` at fp64,
-  `1e-4` at fp32 — the coefficients are evaluated at fp64 and cast). The truncation error
-  there is `|z|⁸/362880`, i.e. far below round-off at either precision, and the branch
-  is taken with a `jnp.where` on a *safe* denominator so the unused branch cannot NaN.
+  `τ·(1 + z²/6 + z⁴/120 + z⁶/5040)`, `z = sτ`, below a cutoff on `|z²|` (`1e-4` at fp64,
+  `1e-2` at fp32 — the coefficients are evaluated at fp64 and cast). The branch is taken
+  with a `jnp.where` on a *safe* denominator so the unused branch cannot NaN.
+
+  The cutoffs are ~100× wider in `|z²|` than the removable singularity alone would need,
+  because the `w`-form above turns the branch into an *accuracy* branch: `w + 1/w` is a
+  sum of two nearly equal numbers, but `w − 1/w` is a **difference** of two nearly equal
+  numbers, and that cancellation grows as z shrinks (relative error ~ eps/|z|² in the
+  quotient). Measured, unbranched `w`-form against a complex128 `sinh(z)/z`: 1.5e-13 (fp64)
+  at the old `|z| = 1e-3` boundary and 4.8e-6 (fp32) at the old `|z| = 1e-2` — at or over
+  the gate — falling to 5.6e-15 and 3.2e-7 at the new boundaries. On the series side the
+  truncation `|z|⁸/362880` is 2.8e-14 at `|z| = 1e-1` and 2.8e-22 at `1e-2`, so the widened
+  branch is covered with room to spare at both precisions. Both coefficients stay *even*
+  in `s` (`w → 1/w` under `s → −s`), so widening the branch does not disturb the
+  branch-independence above.
 
 `setup_kgrids` also asserts that `L(−kx, ky) = conj(L(kx, ky))` on the `ky = 0` and
 Nyquist rows: without it the exponential would break the reality constraint of the rfft2
@@ -275,16 +316,17 @@ so a stage exponent is formed as `exp((L·dt)·γ)` — the floating-point op or
 pre-propagator code, which keeps the LSRK schemes bitwise identical to it on RMHD.
 
 `exp_op(τ)` returns `exp(L·τ)` itself as an `ExpOp` pytree (`DiagonalExp`, `Putzer2Exp`,
-`IdentityExp`) with `.apply(arr)`; `apply_exp(arr, τ)` is literally `exp_op(τ).apply(arr)`.
+`SeparableExp`, `IdentityExp`) with `.apply(arr)`; `apply_exp(arr, τ)` is literally
+`exp_op(τ).apply(arr)`.
 This is what the hoisted path stores: the exponent depends only on `τ = γ·dt`, so over a
 block of steps sharing one dt (fixed dt, or a `cfl_every` block) `run.py` forms each stage's
 ExpOp once (`timestepping.stage_exp_ops`) and the stepper only applies it — the same
 numbers in the same op order, bitwise equal to the per-stage evaluation at fp64
-(`tests/test_hoist_propagator.py`). The cost it removes is the putzer2 coefficient
-evaluation: complex `cosh`/`sinh`/`sqrt`/`exp` per mode per stage, which is ~10 real `exp`,
-5 `cos`, 5 `sin`, 7 `sqrt` and 9 divides per mode once XLA has expanded them, against the 2
-complex exps the mathematics needs (docs/performance.md "Where the z_spectral step's extra
-time goes" has the numbers and the cheaper evaluations not yet taken).
+(`tests/test_hoist_propagator.py`). The cost it removes is the per-stage coefficient
+evaluation — the 2 complex exps + 1 reciprocal of the putzer2 `w`-form above, or the
+separable backend's real `exp`/`cos`/`sin`. It is worth the most on putzer2, which is the
+only backend where the ExpOps are full-grid arrays and so the only one where hoisting has a
+memory price; docs/performance.md has the per-device numbers.
 
 ### The Elsasser-separable backend (z_spectral RMHD, ν = η)
 
@@ -310,7 +352,7 @@ by `z± = φ ± ψ` with eigenvalues `d ± i·kz` — two independent damped wav
 eigenvectors are the constant vectors (1, ±1), independent of k. The implementation
 stays in (φ, ψ) (the Elsasser transform would cost two full-grid adds per apply) and
 stores three small REAL arrays: `lin_dperp` (nkx,nky), `lin_dz` and `lin_kz` (nz,1,1) —
-against putzer2's 6 u of resident complex full-grid `lin_L/lin_m/lin_s2`. Per stage the
+against putzer2's 6 u of resident complex full-grid `lin_L/lin_m/lin_s`. Per stage the
 propagator forms `P = exp(dperp·τ)`, `c = e^{dz·τ}cos(kz·τ)`, `s = e^{dz·τ}sin(kz·τ)`
 and applies `out₀ = P·(c·a₀ + i·(s·a₁))`, `out₁ = P·(i·(s·a₀) + c·a₁)`, the `i·` written
 as the real swap `x + iy → −y + ix`. The backend is hoistable: its whole stage stack is

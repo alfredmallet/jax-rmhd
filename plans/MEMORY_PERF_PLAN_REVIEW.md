@@ -1,6 +1,6 @@
 # Review of MEMORY_PERF_PLAN (5ce902d)
 
-Reviewed against the buffer dumps and probe runs behind `TARANIS_MEMORY_HANDOFF.md`.
+Reviewed against the buffer dumps and probe runs behind `plans/old/TARANIS_MEMORY_HANDOFF.md`.
 Verdict: the plan is sound and in several places better than the hand-off it supersedes.
 Four issues below are substantive — two of them measured, not opinions. Numbered by where
 they land in the plan.

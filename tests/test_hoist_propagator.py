@@ -28,6 +28,11 @@
 #      the knob off; IdentityExp/DiagonalExp apply as apply_exp does, bitwise (the contract
 #      the hoist rests on).
 #   5. the knob round-trips through params.save / from_snapshot.
+#   6. hoist_propagator=False really is the memory-light graph: the unhoisted putzer2
+#      lsrk54 block compiles to strictly less than the hoisted one. The unhoisted stages
+#      1..s-1 must keep forming exp_op from the SCANNED gamma -- forming them outside the
+#      stage scan from static gammas passes every other gate here while growing the
+#      unhoisted graph to the hoisted size, which is what this measurement catches.
 #
 # mpirun-safe: every configuration is single-process-sized and the z_spectral cells are
 # skipped when size > 1 (z_spectral requires size == 1).
@@ -178,6 +183,38 @@ def test_stage_exp_ops_structure():
             c.check(f"{label}: exp_op(tau).apply(arr) == apply_exp(arr, tau) bitwise",
                     np.array_equal(np.asarray(jax.jit(lambda a: prop.exp_op(0.4).apply(a))(arr)),
                                    np.asarray(jax.jit(lambda a: prop.apply_exp(a, 0.4))(arr))))
+
+
+def _block_total_u(schemestr, nsteps=5, **kw):
+    # compiled temp+args+out of one block, in u = one field-sized complex array
+    params, kgrid = ctx(**kw)
+    stepper, scheme = get_scheme(schemestr)
+    m = _advance.lower(make_state(params, ic=_ic), kgrid, params, nsteps,
+                       scheme, stepper).compile().memory_analysis()
+    total = (m.temp_size_in_bytes + m.argument_size_in_bytes + m.output_size_in_bytes)
+    u = (params.nz * params.nx * (params.ny // 2 + 1)
+         * np.dtype(_precision.ctype).itemsize)
+    return total / u
+
+
+# the measured lsrk54 gap is ~8.2-8.8 u across grids from 16^2x8 to 64^2x16 and both
+# precisions; half of it is the margin. At lsrk33 the gap is under 1 u (only 3 stages of
+# ExpOp to hoist) -- there is nothing to assert there, so the gate is lsrk54's.
+_UNHOISTED_MARGIN_U = 4.0
+
+
+def test_unhoisted_graph_stays_memory_light():
+    if mpi_size() > 1:
+        return   # z_spectral is size == 1 only
+    geom = dict(z_spectral=True, diss=(1e-4, 2e-4))   # nu != eta: the putzer2 backend
+    hoisted = _block_total_u("lsrk54", hoist_propagator=True, **geom)
+    unhoisted = _block_total_u("lsrk54", hoist_propagator=False, **geom)
+    with checks() as c:
+        c.check("putzer2 lsrk54: hoist_propagator=False compiles at least "
+                f"{_UNHOISTED_MARGIN_U:.0f} u below hoisted",
+                unhoisted <= hoisted - _UNHOISTED_MARGIN_U,
+                f"hoisted {hoisted:.2f} u, unhoisted {unhoisted:.2f} u, "
+                f"gap {hoisted - unhoisted:.2f} u")
 
 
 def test_knob_round_trips_through_save():

@@ -105,7 +105,7 @@ def _pieces_ms(p, kg, state):
     fields = state.fields
 
     out["rhs (all terms)"] = _median_ms(jax.jit(lambda s, k: rhs(s, k, p)[0]), state, kg)
-    out["grad (gradk+ifft)"] = _median_ms(
+    out["grad (grad_fields)"] = _median_ms(
         jax.jit(lambda s, k: recipe.grad_func(s, k, p)), state, kg)
 
     grads = jax.jit(lambda s, k: recipe.grad_func(s, k, p))(state, kg)

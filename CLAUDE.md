@@ -95,22 +95,36 @@ Equation sets register in `physics/__init__.py::equation_registry`:
 forcing_scale_func=None, halo_start_func=None, linear_matrix_func=None)` per `eqtype`.
 `term_funcs` are summed into the RHS (`construct_rhs`); the k-local LINEAR part is not an
 RHS term — `linear_matrix_func(kgrid, params) -> L` (convention `dt f = L f + N(f)`) is
-built once by `setup_kgrids` into `kgrid.lin_L`/`lin_m`/`lin_s2` (dense) or
-`lin_dperp`/`lin_dz`/`lin_kz` (a `SeparableL` return), and the steppers apply
+built once by `setup_kgrids` into `kgrid.lin_L` (+ `lin_m`/`lin_s` for putzer2, where
+`lin_s = sqrt((tr L/2)^2 - det L)` is precomputed at SETUP — never `lin_s2`, which Z2
+retired) or `lin_dperp`/`lin_dz`/`lin_kz` (a `SeparableL` return; populated INSTEAD of the
+dense trio, never alongside), and the steppers apply
 it only through the `taranis.propagators` hook (`apply_exp`, `solve_shifted`, `scaled`;
 backend: a `SeparableL` → separable, a dense L by shape — diagonal 4-d, putzer2 2x2
 5-d; RMHD returns `SeparableL` for `z_spectral` with `diss[0]==diss[1]`). Never reintroduce
 `kgrid.hdiss` or read `lin_*` from a stepper directly; the op order inside `apply_exp` is
 the RMHD bitwise-equivalence gate (docs/numerics.md). **Term funcs take 5
 positional args** `(state, grads, kgrid, params, halo)` — declare `halo=None` and ignore
-if unused. `halo_start_func` pre-issues the z-halo exchange at the top of the RHS;
+if unused. **`grads` is a TUPLE**, one real-space `(2,nz,nx,ny)` array per field in the
+equation set's `grad_func` order (RMHD: `gphi, gpsi, gvort, gjpar`), never a stacked
+`(nfields,2,…)` array — unpack it, never `.shape`/`grads[:2]` it. It comes from
+`shared_physics.grad_fields(fks, kgrid, params)`, which transforms
+`shared_physics.GRAD_CHUNK` fields per inverse transform (module constant, read at TRACE
+time, not a `Parameters` attribute; the probe's `--grad-chunk` sets it). **`GRAD_CHUNK = 1`
+is the default everywhere** and transforms per COMPONENT with a free per-field restack;
+`>1` batches whole fields per ifft. All values are bitwise identical and `4` reproduces the
+pre-F1 graph byte-exactly, so this is purely a per-device speed/memory knob (measured
+splits: docs/performance.md — CPU wants 1 outright, P100 gains 3–20% from 2, 2080Ti is
+indifferent). `halo_start_func` pre-issues the z-halo exchange at the top of the RHS;
 enabled per backend (`_halo_start_enabled`: off for mpi4jax, on for `"jax"` and `"serial"`
 — serial's exchange is a pure slice, so pre-issuing it cannot change results),
 overridable via `params.halo_start`. When off, `z_derivatives` does its own exchange.
 `comms.halo_exchange(f, params, width=2)`: a pre-issued width narrower than the stencil
 is an assertion failure (`z_derivatives` derives offsets from the received slab).
-`physics/shared_physics.py` holds equation-agnostic helpers (`gradk`, `bracket`,
-z-stencils, O-U forcing mechanics); `physics/rmhd.py` maps them onto (phi,psi).
+`physics/shared_physics.py` holds equation-agnostic helpers (`grad_fields`/`gradk`,
+`bracket`, z-stencils, O-U forcing mechanics — `grad_fields` is the one physics calls;
+`gradk` is the batched k-space gradient it uses at `GRAD_CHUNK > 1`, otherwise a
+bench/test entry point); `physics/rmhd.py` maps them onto (phi,psi).
 
 `physics/<eq>.py` holds ONLY what the solver consumes: the recipe functions and their
 helpers (including `_max_re_lambda`/`_lin_dt_safety`, which `set_timestep` calls).
@@ -188,29 +202,41 @@ over a block — fixed dt, or one `cfl_every` block — `run.py` forms every IF 
 → a tuple of `propagators.ExpOp` pytrees: `Putzer2Exp`/`SeparableExp`/`DiagonalExp`/
 `IdentityExp`, each with `.apply(arr)`) and passes it to the stepper's `exp_ops=` kwarg
 (every stepper in the registry takes it; IMEX ignores it and `stage_exp_ops` returns None
-for them). **The putzer2 and separable backends are hoisted** (`prop.hoistable`) — putzer2's
-ops are 4 complex full-grid arrays per stage (the memory trade below), the separable ops are
-`(nkx,nky) + 2×(nz,1,1)` reals per stage (~free; what hoisting amortises there is the
-per-stage exp/cos/sin evaluation). The diagonal backend is not: one real exp per mode per
-stage, z-broadcast for FD-z — nothing to gain — and leaving it in the stage keeps the FD-z/2D
-fixed-dt graph byte-identical to the pre-hoist solver (gate 6's reference: with a literal
-`gamma` XLA folds `(L·dt)·gamma` differently, 15 elements at 1e-23 in the 64² gate-6 config).
+for them). Whether a backend is hoisted is `prop.hoistable`, and the three answers are
+different in kind:
+
+| backend | selected for | hoisted | per-stage ops | what hoisting buys |
+|---|---|---|---|---|
+| diagonal | FD-z, 2D | **no** | one real exp per mode, z-broadcast | nothing — and staying unhoisted keeps the FD-z/2D fixed-dt graph byte-identical to the pre-hoist solver (gate 6's reference: with a literal `gamma` XLA folds `(L·dt)·gamma` differently, 15 elements at 1e-23 in the 64² gate-6 config) |
+| separable | z_spectral RMHD, ν = η | yes | `(nkx,nky)` + 2×`(nz,1,1)` reals per stage, ~free (≤0.1 u for the whole stack) | amortises the per-stage exp/cos/sin EVALUATION: 1.02–1.13× unhoisted vs 0.94–0.98× hoisted against the old putzer2 fixed-dt step |
+| putzer2 | GDI-IF, ν ≠ η z_spectral RMHD | yes | 4 complex arrays of L's full shape per stage | the real time/memory trade — see below |
+
+**The knob is a putzer2 knob** (§9.3 decision, 2026-08-20): it is the only backend where
+turning it off saves anything, and turning it off there costs time. Measured: z_spectral
+ν ≠ η lsrk54 is 44.4 u hoisted against 36.0 u unhoisted (~8 u over 5 stages — the gate in
+`tests/test_hoist_propagator.py`), while at lsrk33 the same gap is under 1 u (Z2's `w`-form
+removed the full-grid temporaries the unhoisted stage used to carry); GDI-IF is
+1.22× slower unhoisted on the P100 and 1.80× on XLA:CPU. **The memory price is a scheduler
+property, not an arithmetic one** — on XLA:CPU the GDI 2D 256² lsrk33 pair is memory-NEUTRAL
+(41.130 u hoisted, 41.091 u unhoisted: unhoisted, XLA keeps a 4 u copy of the dense `lin_L`
+plus seven 1 u `_coeffs` lanes live inside the stage scan, which costs what the hoisted stage
+coefficients cost), where the same pair on the P100 is a real +7.0 u. Size the trade on the
+device you will run on. Nothing to decide on the separable path (hoisting is ~free and on),
+and nothing to decide on FD-z/2D (the knob does not reach them).
+
 The ExpOps are exactly the arrays `apply_exp` forms, in the same op order — `apply_exp(arr,
 tau)` IS `exp_op(tau).apply(arr)` — so hoisted and unhoisted agree bitwise at fp64 on the test
 grids (`tests/test_hoist_propagator.py`; fp32 has one 1-ulp fusion cell). `exp_ops=None` is
 the legacy graph: the exponent evaluated inside each stage — under `lsrk_scan` inside the
 stage scan, where `gamma` is a scanned value — which is what keeps `hoist_propagator=False`
 memory-light (XLA's own loop-invariant code motion would otherwise hoist ops formed outside
-the stage scan with static `gamma`; do not "simplify" the unhoisted branch into that form).
-Cost of True on putzer2 (GDI-IF, ν≠η RMHD): 4 complex arrays of L's full shape per stage —
-the knob to turn off on a memory-bound grid; win 0.62× the step at fixed dt / `cfl_every>1`
-(the putzer2 complex sqrt/cosh/sinh per stage were ~34 of the 38 ms z_spectral premium;
-docs/performance.md "Where the z_spectral step's extra time goes"); nothing on adaptive
-`cfl_every=1` (nothing is frozen). On the separable backend (ν=η z_spectral RMHD) the cost
-is ≤0.1 u and the adaptive step needs no hoisting anyway (0.40–0.47× the old putzer2 step —
-docs/performance.md). Every `run.py` block function computes the ops OUTSIDE its
-step scan (`_hoisted_exp_ops` after `_block_dt`, or from `_fixed_dt(params)`) — keep it
-there, that placement is the whole point.
+the stage scan with static `gamma`; do not "simplify" the unhoisted branch into that form —
+`test_unhoisted_graph_stays_memory_light` is the guard, and it fails at exactly 0.00 u of gap
+under that restructure). Every `run.py` block function computes the ops OUTSIDE its step scan
+(`_hoisted_exp_ops` after `_block_dt`, or from `_fixed_dt(params)`) — keep it there, that
+placement is the whole point. On adaptive `cfl_every=1` nothing is frozen, so nothing is
+hoisted on any backend; that is the path Z2's cheaper putzer2 coefficients and Z1's separable
+backend address instead.
 
 `params.cfl_every` (default 1) recomputes the adaptive dt (and its CFL allreduce) once
 per N-step block: `run._cfl_block` computes dt from the block's start state and passes

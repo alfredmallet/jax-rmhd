@@ -1,7 +1,7 @@
 # MEMORY_PERF_PLAN — memory and step-time reduction, FD-z and z_spectral
 
-Written 2026-08-19 from the two hand-offs it supersedes, `plans/TARANIS_MEMORY_HANDOFF.md`
-(XLA buffer audit, HEAD `c71a3cb`) and `plans/ZSPECTRAL_PROPAGATOR_NOTES.md` (step-time
+Written 2026-08-19 from the two hand-offs it supersedes, `plans/old/TARANIS_MEMORY_HANDOFF.md`
+(XLA buffer audit, HEAD `c71a3cb`) and `plans/old/ZSPECTRAL_PROPAGATOR_NOTES.md` (step-time
 profile + hoisted propagators), plus this session's CB-IMEX and unrolled-loop probe. Those
 two files stay as the measurement record; this file is the plan. Execution per the standing
 flow (§8): Fable overseer, opus implementers, fresh-Fable adversarial review per phase.
@@ -786,3 +786,58 @@ fuse into the `delta` update), the real-space bracket working set with optimal o
 (6 gradient components + 2 accumulators ≈ 8 u; a real full-grid array is ~1 u), one k-space
 transform scratch (~1 u), 4 halo planes (≪ 1 u): ≈ 15 u. After F1–F4 the remaining gap to
 it is the `rhs`-assembly and output-aliasing slack.
+
+## Closed 2026-08-20
+
+§7 row 6 (docs sweep) complete; every row of §7 is now done and every §9 decision is
+recorded above. This section is the index, not the record — the record is in the docs.
+
+**Final numbers** (probe `total_u`, per-device; the two GPU points are the ones production
+sizes from):
+
+| path | before | after | step time |
+|---|---|---|---|
+| RMHD z_spectral ν=η, any IF scheme | 30–70 u on GPU, 39.8–62 u on CPU (scheme- and hoist-dependent) | **17.3 u** on both cards, 18.4 u on CPU — scheme-, hoist- and dt-independent | 0.72–0.98× fixed dt, **0.43–0.47×** adaptive `cfl_every=1` |
+| RMHD z_spectral ν≠η (putzer2) | 54.2 u | 43.3 u (P100) | 0.79–0.81× |
+| RMHD FD-z | 28–30 u | **20.1 u** (P100) / 17.1 u (2080Ti) / 22.7 u (CPU) | 0.91× (2080Ti); 0.80–0.88× on CPU, from F3's `cond` removal |
+| GDI 2D (IF/putzer2) | 53.6 u (P100, 1024²) | 45.2 u (P100) | 0.68× fp64 / 0.76× fp32 adaptive (CPU, 512²) |
+
+The headline operational result is the recorded OOM flip: hoisted z_spectral lsrk54 at
+512²×128 fp32, which OOM'd the 11 GB 2080Ti at baseline, now runs in 2.4 GB.
+
+**What shipped:** F1 (per-field gradient transforms, `grads` is a tuple), F3 (stage 0 peeled
+out of the LSRK scan), Z1 (the Elsasser-separable propagator backend), Z2 (the `w`-form
+putzer2 coefficients + widened Taylor branch). F4 was measured and dropped (0.000 u from any
+source-level reordering). F2 landed behind `Z_STENCIL_BLOCKS` for one day and was **deleted**
+in this sweep, all three platforms preferring the padded slab; the surviving `z_derivatives`
+is the verbatim pre-F2 code, and the deletion was gated on optimized-HLO instruction-stream
+identity of `block_of_steps` (FD-z, lsrk33/lsrk54/imexcb3e) against the pre-deletion tree.
+
+**Where the record now lives:**
+
+- `docs/performance.md` — "Memory: where it goes and what was removed" (the CPU §1 table,
+  the P100/2080Ti baseline and postFZ tables, the decisions); "Memory and time accounting
+  after MEMORY_PERF_PLAN (2026-08-20)" (per-lane attribution and the ablation ladder, CPU
+  and P100); "Tuning knobs, measured" (the `hoist_propagator` and `GRAD_CHUNK` rows and the
+  post-Z1/Z2 hoist nuance); "Where the z_spectral step's extra time goes" (the Z1/Z2 DONE
+  markers on what that section proposed); "Production guidance".
+- `docs/numerics.md` — "Gradients are a tuple, one transform at a time"; "The linear
+  propagator" (backend selection, `lin_s`, the putzer2 `w`-form and its widened Taylor
+  cutoffs); "The Elsasser-separable backend (z_spectral RMHD, ν = η)".
+- `CLAUDE.md` — "Hoisted stage propagators" (the three-backend table and the putzer2-only
+  knob), the `grads`/`GRAD_CHUNK` contract under the term-funcs section, the `K_Grids`
+  `lin_*` entries.
+- Committed probe JSONs: `bench/memory_probe_{laptop,laptop128,p100,gtx2080}_*.json`
+  at baseline and postFZ; `bench/step_accounting*.json`.
+- Tests that pin the results: `tests/test_grad_memory.py` (F1), `tests/test_z_stencils.py`
+  (the padded stencil against an independent reference), `tests/test_separable_propagator.py`
+  (Z1), `tests/test_linear_propagator.py` (Z2 coefficients),
+  `tests/test_hoist_propagator.py::test_unhoisted_graph_stays_memory_light` (the F3 review
+  note's designed guard: unhoisted putzer2 lsrk54 must compile ≥ 4 u below hoisted; verified
+  by mutation to fail at 0.00 u of gap under the forbidden static-gamma restructure).
+
+**Open, deliberately:** the FD-z ~15–17 u target of §2 and Appendix C's floor assume a
+6-component bracket working set that no source order reaches on the CPU backend (F4); the
+GPU schedulers already do better than the CPU one there, so the gap is a scheduler question,
+not a code one. `imexcb3f`'s unrolled [3R] loop (§6) is still 2.2× the [2R] steppers and
+still not worth scanning unless someone runs cb3f.

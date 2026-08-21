@@ -1,7 +1,6 @@
 # z_derivatives (4th-order centered d/dz + 5-point d4/dz4 hyperdissipation stencil,
-# shared_physics.z_derivatives) in isolation, plus the bitwise gates pinning the
-# per-block stencil (shared_physics.Z_STENCIL_BLOCKS=True) to the padded-slab default,
-# whose reference copy is kept private below.
+# shared_physics.z_derivatives) in isolation, plus the bitwise gates pinning it and
+# rmhd.FDLinearTerm to the independently written-out padded-slab reference below.
 # pytest: single-process (stub, periodic self-halo). Savio driver:
 # `mpirun -n N python tests/test_z_stencils.py` for N in 1,2,4 (nz values below are
 # all divisible by 4).
@@ -9,8 +8,6 @@ from _rmhd_testing import (bootstrap, checks, fit_order, fresh_params, make_stat
                            mpi_size, multimode_ic)
 
 bootstrap()
-
-import contextlib
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +17,7 @@ import pytest
 import taranis as jr
 from taranis import _precision, comms
 from taranis.grids import local_z_coords
-from taranis.physics import equation_registry, shared_physics
+from taranis.physics import equation_registry
 from taranis.physics.shared_physics import z_derivatives
 
 # nz sweep for the convergence study: kept away from both ends -- small enough that
@@ -30,8 +27,8 @@ from taranis.physics.shared_physics import z_derivatives
 _NZS = (8, 16, 32)
 
 
-# nz_local values swept by the bitwise gates: 2 and 3 take z_derivatives' padded
-# fallback branch, 4 is the empty-interior edge, 8 and 16 have a real interior.
+# nz_local values swept by the bitwise gates: 2 and 3 are the narrowest slabs the
+# width-2 halo admits, 8 and 16 the production range.
 _NZ_LOCALS = (2, 3, 4, 8, 16)
 
 
@@ -41,8 +38,8 @@ def _cos2z_field(params):
 
 
 # --------------------------------------------------------------- padded reference
-# Private copy of the padded-slab stencil and of the FDLinearTerm that stacked the
-# field swap separately: what the slice-based versions must reproduce bitwise.
+# Private copy of the padded-slab stencil and of the FDLinearTerm built on it: what
+# the shipped functions must reproduce bitwise.
 
 def _padded_z_derivatives(f, params, halo=None):
     dz = params.dz
@@ -79,27 +76,13 @@ def _random_fields(params, seed=0):
                        dtype=_precision.ctype)
 
 
-@contextlib.contextmanager
-def _z_blocks(value):
-    """shared_physics.Z_STENCIL_BLOCKS set for the block, restored after."""
-    old = shared_physics.Z_STENCIL_BLOCKS
-    shared_physics.Z_STENCIL_BLOCKS = value
-    try:
-        yield
-    finally:
-        shared_physics.Z_STENCIL_BLOCKS = old
-
-
 def _bitwise_pair(f, params, halo, c, label):
-    # both settings of the constant must reproduce the padded reference bitwise
     old = _padded_z_derivatives(f, params, halo=halo)
-    for blocks in (False, True):
-        with _z_blocks(blocks):
-            new = z_derivatives(f, params, halo=halo)
-        for name, a, b in (("df/dz", new[0], old[0]), ("d4f/dz4", new[1], old[1])):
-            c.check(f"{label} [Z_STENCIL_BLOCKS={blocks}]: {name} bitwise equal to the "
-                    "padded reference", bool(jnp.array_equal(a, b)),
-                    f"max|diff|={float(jnp.max(jnp.abs(a - b))):.3e}")
+    new = z_derivatives(f, params, halo=halo)
+    for name, a, b in (("df/dz", new[0], old[0]), ("d4f/dz4", new[1], old[1])):
+        c.check(f"{label}: {name} bitwise equal to the padded reference",
+                bool(jnp.array_equal(a, b)),
+                f"max|diff|={float(jnp.max(jnp.abs(a - b))):.3e}")
 
 
 def test_z_derivatives_bitwise_matches_padded_reference():
@@ -131,7 +114,7 @@ def test_z_derivatives_bitwise_wide_halo_and_serial_backend():
 @pytest.mark.multidev
 def test_z_derivatives_bitwise_under_four_way_z_sharding():
     # 4-way z decomposition through the real collective path (comm_backend="jax",
-    # ppermute halo inside shard_map): the slice stencil must still be bitwise.
+    # ppermute halo inside shard_map): the stencil must still be bitwise.
     from jax.sharding import PartitionSpec as P
     with checks() as c:
         for nz_local in (4, 8):
@@ -146,8 +129,7 @@ def test_z_derivatives_bitwise_under_four_way_z_sharding():
                                                 (spec,), (spec, spec)))(fg)
 
             old_d1, old_d4 = run(_padded_z_derivatives)
-            with _z_blocks(True):
-                new_d1, new_d4 = run(z_derivatives)
+            new_d1, new_d4 = run(z_derivatives)
             c.check(f"nz_local={nz_local}: input really split over 4 devices",
                     len(fg.addressable_shards) == 4
                     and fg.addressable_shards[0].data.shape[1] == nz_local,
@@ -159,12 +141,11 @@ def test_z_derivatives_bitwise_under_four_way_z_sharding():
                         f"max|diff|={float(jnp.max(jnp.abs(a - b))):.3e}")
 
 
-def _fdz_end_fields(term_funcs, nsteps, backend, blocks):
+def _fdz_end_fields(term_funcs, nsteps, backend):
     # 20 fixed-dt FD-z steps with the RMHD recipe's term_funcs replaced. Each call builds
     # its OWN Parameters: params is a static jit argument hashed by identity, so the
     # variants cannot share a traced executable (an in-process A/B that reuses one
-    # Parameters silently reuses the first variant's compile -- and the trace cache does
-    # not see Z_STENCIL_BLOCKS at all).
+    # Parameters silently reuses the first variant's compile).
     from taranis.run import block_of_steps, _refresh_forcing_scale
     from taranis.timestepping import get_scheme
     params = fresh_params(nz=8 * mpi_size(), comm_backend=backend)
@@ -172,19 +153,17 @@ def _fdz_end_fields(term_funcs, nsteps, backend, blocks):
     recipe = equation_registry["RMHD"]
     equation_registry["RMHD"] = recipe._replace(term_funcs=term_funcs)
     try:
-        with _z_blocks(blocks):
-            state = _refresh_forcing_scale(make_state(params, ic=multimode_ic), kgrid, params)
-            stepper, scheme = get_scheme("lsrk33")
-            end = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))(
-                state, kgrid, params, nsteps, scheme, stepper)
-            return np.asarray(end.fields)
+        state = _refresh_forcing_scale(make_state(params, ic=multimode_ic), kgrid, params)
+        stepper, scheme = get_scheme("lsrk33")
+        end = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))(
+            state, kgrid, params, nsteps, scheme, stepper)
+        return np.asarray(end.fields)
     finally:
         equation_registry["RMHD"] = recipe
 
 
 def test_fdz_solver_bitwise_over_20_steps():
-    # end-to-end: 3D FD-z RMHD output is the same at both settings of the constant, and
-    # equal to the private padded reference.
+    # end-to-end: 3D FD-z RMHD output equals the private padded reference's.
     from taranis.physics import rmhd
     shipped = equation_registry["RMHD"].term_funcs
     reference = tuple(_padded_fd_linear_term if t is rmhd.FDLinearTerm else t
@@ -194,59 +173,15 @@ def test_fdz_solver_bitwise_over_20_steps():
             if backend == "serial" and mpi_size() > 1:
                 continue
             tag = f"backend={backend or 'default'}"
-            old = _fdz_end_fields(reference, 20, backend, False)
+            old = _fdz_end_fields(reference, 20, backend)
             c.check(f"{tag}: reference end fields finite and nonzero",
                     bool(np.all(np.isfinite(old)) and np.max(np.abs(old)) > 0))
-            for blocks in (False, True):
-                new = _fdz_end_fields(shipped, 20, backend, blocks)
-                ndiff = int(np.count_nonzero(new != old))
-                c.check(f"{tag} [Z_STENCIL_BLOCKS={blocks}]: fields bitwise equal to the "
-                        "padded reference after 20 steps", ndiff == 0,
-                        f"{ndiff}/{new.size} differ, "
-                        f"max|diff|={float(np.max(np.abs(new - old))):.3e}")
-
-
-def test_z_stencil_blocks_is_read_at_trace_time():
-    # flipping the constant AFTER import must change the traced graph: the padded default
-    # concatenates the slab to nz+2w planes, the block path only builds 6-plane end blocks.
-    params = fresh_params(nz=8 * mpi_size())
-    f = _random_fields(params, seed=11)
-    nz_local = f.shape[1]
-    padded_shape = f"x{nz_local + 4}x"
-    end_block_shape = "x6x"
-    text = {}
-    for blocks in (False, True):
-        with _z_blocks(blocks):
-            # a fresh lambda per setting: jit caches on the callable, never on globals
-            text[blocks] = jax.jit(lambda x: z_derivatives(x, params)).lower(f).as_text()
-    # ... and the solver graph must follow, not just z_derivatives: the block path frees
-    # the two padded halves, so its compiled footprint is strictly smaller.
-    from taranis.run import block_of_steps
-    from taranis.timestepping import get_scheme
-    stepper, scheme = get_scheme("lsrk33")
-    total = {}
-    for blocks in (False, True):
-        with _z_blocks(blocks):
-            p = fresh_params(nz=8 * mpi_size())   # own identity: no trace-cache collision
-            kgrid = jr.setup_kgrids(p)
-            state = make_state(p, ic=multimode_ic)
-            m = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5)).lower(
-                state, kgrid, p, 5, scheme, stepper).compile().memory_analysis()
-            total[blocks] = (m.temp_size_in_bytes + m.argument_size_in_bytes
-                             + m.output_size_in_bytes)
-    with checks() as c:
-        c.check("Z_STENCIL_BLOCKS defaults to the padded path",
-                shared_physics.Z_STENCIL_BLOCKS is False,
-                f"default is {shared_physics.Z_STENCIL_BLOCKS!r}")
-        c.check("the two settings lower to different graphs",
-                text[False] != text[True])
-        c.check(f"default padded slab present ({padded_shape}) and no end blocks",
-                padded_shape in text[False] and end_block_shape not in text[False])
-        c.check(f"block path has end blocks ({end_block_shape}) and no padded slab",
-                end_block_shape in text[True] and padded_shape not in text[True])
-        c.check("the solver's compiled footprint shrinks when the constant is set",
-                total[True] < total[False],
-                f"padded {total[False]} B, blocks {total[True]} B")
+            new = _fdz_end_fields(shipped, 20, backend)
+            ndiff = int(np.count_nonzero(new != old))
+            c.check(f"{tag}: fields bitwise equal to the padded reference after 20 steps",
+                    ndiff == 0,
+                    f"{ndiff}/{new.size} differ, "
+                    f"max|diff|={float(np.max(np.abs(new - old))):.3e}")
 
 
 def test_z_derivative_convergence_order():
