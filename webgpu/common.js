@@ -446,6 +446,12 @@ const SQ = (typeof GPUBufferUsage !== "undefined")
 // buffers, but there are single digits of them, they are kilobytes each (the biggest is
 // the field-line sample block), and the alternative -- a lifetime rule tied to the solver
 // -- would reintroduce exactly the per-rebuild bookkeeping this removes.
+//
+// THAT ARGUMENT IS AN ARGUMENT ABOUT SIZE, so it is also the rule for what may use this:
+// nothing MEGABYTE-sized may be read through readBuf. The field export (IO_PLAN item 4)
+// reads a whole real-space field -- 1 MB at 2D 512^2, 16 MB per field at the largest 3D
+// grid, 256^2 x 64 -- and a no-eviction pool would strand tens of MB for the life of the
+// page after one press. It uses readBufOnce below, which allocates and destroys.
 const _stagePool = new Map();
 async function readBuf(device, buf, byteLen) {
   let free = _stagePool.get(byteLen);
@@ -467,6 +473,26 @@ async function readBuf(device, buf, byteLen) {
     // would turn one failure into every later readback's)
     try { st.destroy(); } catch (e2) {}
     throw err;
+  }
+}
+// ... and the UNPOOLED read, for the one caller whose buffers are too big to keep: a
+// staging buffer per call, destroyed as soon as the bytes are copied out, on the failure
+// path too. Same shape as readBuf otherwise, and the copy is encoded and submitted BEFORE
+// the first await -- so two of these started in one task read the same instant of the
+// simulation even if the frame loop steps in between.
+async function readBufOnce(device, buf, byteLen) {
+  const st = device.createBuffer(
+    { size: byteLen, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const e = device.createCommandEncoder();
+  e.copyBufferToBuffer(buf, 0, st, 0, byteLen);
+  device.queue.submit([e.finish()]);
+  try {
+    await st.mapAsync(GPUMapMode.READ);
+    const out = new Float32Array(st.getMappedRange().slice(0));
+    st.unmap();
+    return out;
+  } finally {
+    try { st.destroy(); } catch (e2) {}
   }
 }
 
@@ -3528,6 +3554,73 @@ function manifestMember(extra) {
            data: new TextEncoder().encode(JSON.stringify(runManifest(extra), null, 2)) };
 }
 
+// ---- the field export: .npy members, .npz archive (IO_PLAN item 4) ---------
+// `.npz` is a ZIP of `.npy` members, so the writer above IS the archive writer and the
+// only new format here is `.npy` v1.0: the 6-byte magic, a version pair, a 16-bit header
+// length, an ASCII python-dict header padded so the DATA starts 64-byte aligned, then the
+// raw little-endian values. One function for all five members -- the fields and the
+// coordinate vectors differ only in their shape tuple.
+//
+// A 1-element shape is spelled `(8,)` and a longer one `(4, 8, 16)`: numpy writes the
+// trailing comma on a 1-tuple and a reader that eval()s the header needs it.
+const _LE = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
+function npyBytes(data, shape) {
+  const dims = shape.length === 1 ? (shape[0] | 0) + "," : shape.map(n => n | 0).join(", ");
+  const head = "{'descr': '<f4', 'fortran_order': False, 'shape': (" + dims + "), }";
+  // pad with spaces so magic(6) + version(2) + length(2) + header lands on a multiple of 64
+  const pad = (64 - ((10 + head.length + 1) % 64)) % 64;
+  const hdr = head + " ".repeat(pad) + "\n";
+  const out = new Uint8Array(10 + hdr.length + data.length * 4);
+  out.set([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59, 1, 0]);        // \x93NUMPY, v1.0
+  out[8] = hdr.length & 255; out[9] = (hdr.length >>> 8) & 255;
+  for (let i = 0; i < hdr.length; i++) out[10 + i] = hdr.charCodeAt(i);
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.length * 4);
+  out.set(bytes, 10 + hdr.length);
+  // `<f4` is little-endian by definition; every engine this page runs on is too, but
+  // labelling host bytes as `<f4` on a big-endian one would be a silently wrong file.
+  if (!_LE) {
+    const at = 10 + hdr.length;
+    for (let i = at; i < out.length; i += 4) {
+      const a = out[i], b = out[i + 1];
+      out[i] = out[i + 3]; out[i + 1] = out[i + 2]; out[i + 2] = b; out[i + 3] = a;
+    }
+  }
+  return out;
+}
+// One time slice of the real-space state as an archive: the two potentials, the
+// coordinate vectors that go with them (so `plt.pcolormesh(x, y, phi.T)` needs no grid
+// rebuilt at the other end) and the shared run manifest, which carries the axis order and
+// the dealiasing note as well as the time.
+//
+// The array axis order IS the buffer layout read literally -- `ix*ny + iy` in 2D,
+// `(iz*nx + ix)*ny + iy` in 3D -- which is also what setICFromReal consumes.
+function npzFields(phi, psi, g) {
+  const three = g.nz > 1;
+  const shape = three ? [g.nz, g.nx, g.ny] : [g.nx, g.ny];
+  const axes = three ? "phi[iz, ix, iy] and psi[iz, ix, iy], C order, at x = x[ix], "
+                     + "y = y[iy], z = z[iz]"
+                     : "phi[ix, iy] and psi[ix, iy], C order, at x = x[ix], y = y[iy]";
+  // the grid setIC uses: it stops one cell short of the far face, which is what makes
+  // the box periodic
+  const coord = (n, L) => {
+    const a = new Float32Array(n);
+    for (let i = 0; i < n; i++) a[i] = i * L / n;
+    return a;
+  };
+  const members = [{ name: "phi.npy", data: npyBytes(phi, shape) },
+                   { name: "psi.npy", data: npyBytes(psi, shape) },
+                   { name: "x.npy", data: npyBytes(coord(g.nx, g.Lx), [g.nx]) },
+                   { name: "y.npy", data: npyBytes(coord(g.ny, g.Ly), [g.ny]) }];
+  if (three) members.push({ name: "z.npy", data: npyBytes(coord(g.nz, g.Lz), [g.nz]) });
+  members.push(manifestMember({ export: {
+    kind: "fields", dtype: "<f4", order: "C", shape: shape, axes: axes,
+    dealiased: "the 2/3 rule is applied to the initial condition and to the nonlinear "
+      + "term at every step, so these fields have no content above the dealiasing cutoff: "
+      + "the spectrum is exactly zero there and must not be read as a measured rolloff"
+  } }));
+  return zipStore(members);
+}
+
 // ---------------------------------------------------------------------------
 // the MP4 muxer (leg 1 of the recorder)
 // ===========================================================================
@@ -4125,7 +4218,8 @@ function mp4Mux(o) {
 // visitor pressed save a second later -- the same file-losing surprise the strip exists
 // to remove (Alfred, 2026-08-12). RES_WHAT is what each slot's dismiss button calls its
 // file; `zip` is the page-level save-all's (IO_PLAN item 3), which is nobody's card.
-const RES_WHAT = { png: "picture", video: "recording", zip: "archive" };
+const RES_WHAT = { png: "picture", video: "recording", zip: "archive",
+                   npz: "field export" };
 //
 // `card` is a DisplayCard, a ChartCard, or the page-level `saveAll` host. All this asks
 // of one is the footer host `foot` (always present on both classes, and on the chart card
@@ -4951,6 +5045,7 @@ function cardsInit(cfg) {
   el("btnAddChart").onclick = () => { addChartCard("energy"); cardsSync(); };
   saveAll.foot = el("saveAllFoot");
   el("btnSaveAll").onclick = () => saveAllZip();
+  el("btnSaveFields").onclick = () => saveFieldsNpz();
 }
 
 // ---- save all displays and charts, as one ZIP (IO_PLAN item 3) -------------
@@ -4964,7 +5059,12 @@ function cardsInit(cfg) {
 // those itself and parks the archive under the button that made it. Borrowing a card's
 // footer would have put a file describing every card behind one card's x, and lost it
 // whenever that card was closed.
-const saveAll = { foot: null, resEl: { zip: null }, dead: false, busy: false };
+// The two slots are separate for the reason every pair of slots here is: an archive of
+// pictures and a field export are different files, and pressing one must not throw the
+// other away. `busy` guards the archive, `fbusy` the export -- one per action, so a slow
+// 3D field read does not lock the save-all button out.
+const saveAll = { foot: null, resEl: { zip: null, npz: null }, dead: false,
+                  busy: false, fbusy: false };
 
 // Every open card's capture, INITIATED IN ONE TASK. A display card's texture is
 // transient -- captureShot() re-renders and copies synchronously, and only the toBlob is
@@ -5002,6 +5102,53 @@ async function saveAllZip() {
     showStatus("could not build the archive: " + (e && e.message ? e.message : e), "err");
   } finally {
     saveAll.busy = false;
+  }
+}
+
+// ---- download the fields: real-space phi and psi as .npz (IO_PLAN item 4) --
+// The display chain already lands a real-space field in dispR, but on no spare path: the
+// uniforms driving it are a card's LIVE mode, carrying that card's band filter and
+// display offset, so borrowing one would corrupt its picture until the next apply(). The
+// export has its own PINNED pair of Mode uniforms and its own prepDisp bind groups
+// (built in _makeChain, written once and never again) and runs at a frame boundary -- a
+// button press is its own task -- rather than inside a render. No new pipeline, kernel or
+// WGSL: it is the display chain's own stages, differently bound. It is not free, though:
+// two Mode uniforms and two bind groups per chain, and a staging buffer per field.
+//
+// Both fields go through ONE compute pass and both readbacks are submitted before the
+// first await, so phi and psi are the same instant of the run even while it steps. psi
+// runs second because its prep zeroes the k-scratch the phi half used, which by then has
+// been transformed out of it. Chain 0's real-space scratch is what the pass overwrites;
+// every render rebuilds that scratch from the state before reading it, so a card sharing
+// the chain shows the same picture on its next frame.
+async function readFieldPair(s, ci) {
+  const d = s.device, D = s.chain(ci | 0), n = s.nr * 4;
+  const enc = d.createCommandEncoder();
+  const p = enc.beginComputePass();
+  s.encodeExport(p, D);
+  p.end();
+  d.queue.submit([enc.finish()]);
+  const phi = readBufOnce(d, D.buf.dispR, n), psi = readBufOnce(d, D.buf.dispR2, n);
+  return Promise.all([phi, psi]);
+}
+async function saveFieldsNpz() {
+  if (saveAll.fbusy || !solver) return;      // a second press mid-read would double it
+  saveAll.fbusy = true;
+  try {
+    // the solver and its grid are read BEFORE the await: a rebuild mid-read swaps the
+    // global, and the array in hand is the old grid's. (A rebuild also destroys the
+    // buffer being mapped, so that read rejects into the catch below -- which is the
+    // honest outcome, not a field described by the wrong resolution.)
+    const s = solver, q = s.p;
+    const [phi, psi] = await readFieldPair(s, 0);
+    cardResult(saveAll, "npz",
+               npzFields(phi, psi, { nx: q.nx, ny: q.ny, nz: q.nz || 1,
+                                     Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0 }),
+               capName("fields", "npz"));
+  } catch (e) {
+    showStatus("could not export the fields: " + (e && e.message ? e.message : e), "err");
+  } finally {
+    saveAll.fbusy = false;
   }
 }
 // the lowest free chain index (a closed card frees its slot for the next one)
@@ -5378,6 +5525,10 @@ const ctrlGrpDisp = extra => ({
      { k: "btn", id: "btnSaveAll", t: "save all",
        ti: "one ZIP: a PNG of every display and chart card, plus a params.json describing "
          + "the run" },
+     { k: "btn", id: "btnSaveFields", t: "save fields",
+       ti: "one .npz of the data: the real-space potentials phi and psi at this instant "
+         + "as float32 arrays, with their coordinate vectors and a params.json -- read it "
+         + "with numpy.load" },
      { k: "cbl", id: "cbFilter", t: "k⊥ filter", v: false,
        ti: "give every display card a k_perp filter slider: it hides structure below the "
          + "wavenumber you set, in the PICTURE only -- the run, the spectra and the field "

@@ -16,7 +16,8 @@
 //      solver2d.js's only top-level ones, the page loads it after physics.js and before
 //      its own script, the 3D page does not load it at all, and no module syntax reaches
 //      any of it (Chrome blocks module scripts from file://).
-//   5  the verbatim move: each definition's text equals the BASE commit's, byte for byte.
+//   5  the verbatim move: each definition's text equals the BASE commit's, byte for byte
+//      -- `class Solver` after ONE recorded allowance (IO_PLAN item 4) is stripped.
 //   6  reusability: solver2d.js's free identifiers resolve against common.js + physics.js
 //      + builtins ALONE -- never against rmhd2d.html's inline script, which is the whole
 //      reason a second page can load it.
@@ -41,6 +42,61 @@ const RNG_SHA = "340f43548a5ed68fcefda6f8e08080075bbd011c247813d93803c8f63519d13
 const ADDED = { "rmhd2d.html": [], "rmhd3d.html": [] };
 // the three definitions that moved, by their header line
 const DEFS = ["function makeGrid(p) {", "function buildShaders(g) {", "class Solver {"];
+
+// THE ONE SANCTIONED EDIT to `class Solver` since the move: IO_PLAN item 4's field
+// export (webgpu/README.md, "The fields themselves, as `.npz`"). It adds two
+// PINNED Mode uniforms and their two prepDisp bind groups to _makeChain, plus the
+// encodeExport method -- buffers and bind groups only, which is why leg 2's WGSL
+// byte-identity does not move with it. Recorded here as the exact inserted LINES, in
+// dispoffsets.js's spirit: leg 5 strips them and then still demands the base text byte
+// for byte, so any OTHER change to the class fails, and a block that has stopped being
+// there fails as a STALE ALLOWANCE rather than quietly widening the leg.
+const IO4_INSERTS = [
+  ["      // the FIELD EXPORT's pair (IO_PLAN item 4): plain phi and plain psi, no band, no",
+   "      // offset, no colormap. Written once below and never again -- setDisplayMode does",
+   "      // not touch them -- which is what lets an export run without disturbing whatever",
+   "      // this card is showing.",
+   "      modeX: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),",
+   "      modeX2: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),"],
+  ["    d.queue.writeBuffer(B.modeX, 0, modeWords(DISP_PHI, 0, 0, null));",
+   "    d.queue.writeBuffer(B.modeX2, 0, modeWords(DISP_PSI, 0, 0, null));"],
+  ["      // the export's two preps: phi through the chain's first component, psi through the",
+   "      // second (the same two-slot pattern contPrep uses -- each writes the OTHER",
+   "      // component's scratch as its throwaway outk2)",
+   "      prepDispX: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.modeX, B.dispK2]),",
+   "      prepDispX2: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeX2, B.dispK]),"],
+  ["  // the field export (IO_PLAN item 4): plain phi -> dispR and plain psi -> dispR2, each",
+   "  // through its own PINNED Mode uniform, so no live display uniform is written. Same",
+   "  // three stages the display uses; the psi leg runs second because its prep zeroes dispK,",
+   "  // which the phi leg has finished with by then. `readFieldPair` (common.js) owns the",
+   "  // rest -- the 3D chain's version of this is the same six lines with one stage more.",
+   "  encodeExport(p, D) {",
+   "    const legs = [[D.bg.prepDispX, D.bg.colsInvDisp, D.bg.rowsC2RDisp],",
+   "                  [D.bg.prepDispX2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2]];",
+   "    for (const leg of legs) {",
+   "      p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, leg[0]);",
+   "      p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));",
+   "      p.setPipeline(this.pl.colsInv); p.setBindGroup(0, leg[1]);",
+   "      p.dispatchWorkgroups(this.g.nky);",
+   "      p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, leg[2]);",
+   "      p.dispatchWorkgroups(this.g.nx);",
+   "    }",
+   "  }",
+   ""]
+];
+// the text with those insertions taken back out, plus whichever blocks were not found
+function io4Strip(txt) {
+  const lines = txt.split("\n"), miss = [];
+  for (const blk of IO4_INSERTS) {
+    let at = -1;
+    for (let i = 0; i + blk.length <= lines.length && at < 0; i++) {
+      if (blk.every((l, j) => lines[i + j] === l)) at = i;
+    }
+    if (at < 0) miss.push(blk[blk.length - 1].trim().slice(0, 48) || "(blank)");
+    else lines.splice(at, blk.length);
+  }
+  return { txt: lines.join("\n"), miss: miss };
+}
 
 let bad = 0;
 const ok = (name, pass, note) => {
@@ -268,11 +324,24 @@ console.log("5. the move is verbatim: each definition byte-identical to " + BASE
 if (bd) {
   const baseInline = inline(read(path.join(bd, "rmhd2d.html")));
   for (const h of DEFS) {
-    const a = defText(baseInline, h), b = defText(SOLVER, h);
+    const a = defText(baseInline, h), raw = defText(SOLVER, h);
+    // `class Solver` is compared with the ONE recorded allowance stripped; the other two
+    // definitions are still compared raw, and must never need one.
+    const st = raw === null ? null
+             : h === "class Solver {" ? io4Strip(raw) : { txt: raw, miss: [] };
+    const b = st && st.txt;
     ok("  " + h.replace(/ \{$/, "") + ": byte-identical to its text at " + BASE,
        a !== null && b !== null && a === b,
        a === null ? "not found at " + BASE : b === null ? "not found in solver2d.js"
          : a === b ? a.split("\n").length + " lines" : "differs");
+    if (h !== "class Solver {") continue;
+    // ... and the allowance is neither stale nor vacuous: every recorded block is really
+    // in the file, and stripping them really did change something
+    ok("    ... and the IO_PLAN item 4 allowance is the WHOLE of the difference",
+       !!st && st.miss.length === 0 && raw !== a && b === a,
+       !st ? "no text" : st.miss.length ? "blocks not found: " + st.miss.join(" | ")
+         : raw === a ? "the allowance is vacuous -- nothing to strip"
+         : IO4_INSERTS.reduce((n, blk) => n + blk.length, 0) + " lines allowed");
   }
 }
 

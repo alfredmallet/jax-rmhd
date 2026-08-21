@@ -411,12 +411,20 @@ class Solver {
       // pinned to the sigma chain's second vector: z- for sigma_c, b for sigma_r
       // (rewritten per card by setDisplayMode -- see dispSigmaMate)
       modeM: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      // the FIELD EXPORT's pair (IO_PLAN item 4): plain phi and plain psi, no band, no
+      // offset, no colormap. Written once below and never again -- setDisplayMode does
+      // not touch them -- which is what lets an export run without disturbing whatever
+      // this card is showing.
+      modeX: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      modeX2: d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       // pinned to each contour set's potential (phi or psi)
       modeC: contPer(() => d.createBuffer({ size: MODE_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     };
     // the default pin (a fresh chain is mode 0); setDisplayMode rewrites it with the
     // mate of whatever mode the card asks for, so the pair can never disagree
     d.queue.writeBuffer(B.modeM, 0, modeWords(DISP_ZMINUS, 0, 0, null));
+    d.queue.writeBuffer(B.modeX, 0, modeWords(DISP_PHI, 0, 0, null));
+    d.queue.writeBuffer(B.modeX2, 0, modeWords(DISP_PSI, 0, 0, null));
     const tex = d.createTexture({
       size: [this.g.nx, this.g.ny], format: "rgba8unorm",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
@@ -429,6 +437,11 @@ class Solver {
     const bg = {
       prepDisp: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.mode, B.dispK2]),
       prepDispM: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.modeM, B.dispK2]),
+      // the export's two preps: phi through the chain's first component, psi through the
+      // second (the same two-slot pattern contPrep uses -- each writes the OTHER
+      // component's scratch as its throwaway outk2)
+      prepDispX: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK, B.modeX, B.dispK2]),
+      prepDispX2: bgOf(this.pl.prepDisp, [P.fields, P.gridA, B.dispK2, B.modeX2, B.dispK]),
       colsInvDisp: bgOf(this.pl.colsInv, [B.dispK, B.dispTmp]),
       colsInvDisp2: bgOf(this.pl.colsInv, [B.dispK2, B.dispTmp2]),
       rowsC2RDisp: bgOf(this.pl.rowsC2R, [B.dispTmp, B.dispR]),
@@ -785,6 +798,24 @@ class Solver {
     p.setPipeline(this.pl.rowsC2R);
     p.setBindGroup(0, half ? D.bg.rowsC2RDisp2H1 : D.bg.rowsC2RDisp2);
     p.dispatchWorkgroups(this.g.nx);
+  }
+
+  // the field export (IO_PLAN item 4): plain phi -> dispR and plain psi -> dispR2, each
+  // through its own PINNED Mode uniform, so no live display uniform is written. Same
+  // three stages the display uses; the psi leg runs second because its prep zeroes dispK,
+  // which the phi leg has finished with by then. `readFieldPair` (common.js) owns the
+  // rest -- the 3D chain's version of this is the same six lines with one stage more.
+  encodeExport(p, D) {
+    const legs = [[D.bg.prepDispX, D.bg.colsInvDisp, D.bg.rowsC2RDisp],
+                  [D.bg.prepDispX2, D.bg.colsInvDisp2, D.bg.rowsC2RDisp2]];
+    for (const leg of legs) {
+      p.setPipeline(this.pl.prepDisp); p.setBindGroup(0, leg[0]);
+      p.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
+      p.setPipeline(this.pl.colsInv); p.setBindGroup(0, leg[1]);
+      p.dispatchWorkgroups(this.g.nky);
+      p.setPipeline(this.pl.rowsC2R); p.setBindGroup(0, leg[2]);
+      p.dispatchWorkgroups(this.g.nx);
+    }
   }
 
   // the contour overlay's potentials (REFINE_PLAN I2.4, J2.2): ONE extra inverse

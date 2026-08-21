@@ -1,10 +1,10 @@
 // GATE: the stored-ZIP writer and what it is used for (plans-webgpu/IO_PLAN.md).
 //
 // Section A is the writer alone (`zipStore`), section B the save-all button (item 3) on
-// both booted pages. Item 4's field export writes .npy members into the same archive and
-// belongs in section D, which is stubbed out below with the two helpers it needs already
-// factored: `py()` runs a python script over a written file, `zipInfo()` is the external
-// reader every leg asserts through.
+// both booted pages, and section D the field export (item 4) on both -- the same archive
+// writer carrying `.npy` members, read back by `numpy.load` rather than by us. `py()`
+// runs a python script over a written file; `zipInfo()` and `npzInfo()` are the two
+// external readers every leg asserts through.
 //
 // A ZIP is a format with real readers, so nothing here parses our own bytes with our own
 // code -- that would only prove the writer agrees with itself. Every archive is written
@@ -20,6 +20,14 @@
 // which is the one thing here that is easy to write wrongly and impossible to see in the
 // output: a display card's texture is transient, so every card must be captured in the
 // SAME task, and the gate checks the interleaving rather than the count.
+//
+// Section D is the same discipline over the field export. Two things in it can only be
+// tested from outside: the AXIS ORDER (a silently transposed field is the classic way to
+// waste an afternoon, so the check feeds a field that is not symmetric in x and y through
+// the real button and compares the whole array against one numpy builds itself), and the
+// PINNED third and fourth Mode uniforms -- the export must not write a live display
+// card's mode, which is asserted by tracing every Mode-uniform write across an export
+// with two loaded cards open and finding none.
 //
 // Run: node devtools/checkzip.js [dir]
 "use strict";
@@ -382,17 +390,373 @@ async function pageLegs(name) {
 }
 
 // ===========================================================================
-// D. field export (.npz) -- IO_PLAN item 4, not built yet
+// D. field export -- real-space phi and psi as .npz (item 4)
 // ===========================================================================
-// When it lands: build the .npz through the same `zipStore`, write it with `zipInfo` for
-// the ZIP-level asserts, then a second python leg over the same file with `py()` and
-// numpy.load for dtype, shape, axis order and values. Nothing above needs to change.
+// The second external reader. `.npz` is a ZIP of `.npy`, so every archive here goes
+// through zipInfo first (it is a ZIP or it is nothing) and then through numpy, which is
+// the reader the file exists for. numpy reports dtype, shape and C-contiguity; the raw
+// member bytes carry the two things numpy hides -- the .npy header text and where the
+// data starts -- and both are asserted.
+//
+// The fields are injected as the FLAT BUFFER INDEX, so the array numpy should see is
+// exactly `arange(n).reshape(shape)` in C order and the check compares every element
+// against one it builds itself. That is the axis-order leg: a transposed field, a
+// Fortran-order flag or a swapped shape tuple each fail on almost every element rather
+// than at one lucky index, and the readable probe printed beside it (phi[2, 1] in 2D,
+// phi[1, 2, 3] in 3D) is deliberately at an index that is NOT symmetric in x and y.
+const NPZ_PY = `
+import sys, json, zipfile
+import numpy as np
+f, spec = sys.argv[1], json.loads(sys.argv[2])
+zf = zipfile.ZipFile(f)
+z = np.load(f)
+out = {"files": list(z.files), "arrays": {}, "npy": {}}
+names = [k for k in ("phi", "psi", "x", "y", "z") if k + ".npy" in zf.namelist()]
+for k in names:
+    a = z[k]
+    out["arrays"][k] = {"dtype": a.dtype.str, "shape": list(a.shape),
+                        "c": bool(a.flags["C_CONTIGUOUS"])}
+    raw = zf.read(k + ".npy")
+    hl = raw[8] + 256 * raw[9]
+    out["npy"][k] = {"magic": raw[:6].decode("latin1"), "ver": [raw[6], raw[7]],
+                     "hlen": hl, "data": 10 + hl,
+                     "head": raw[10:10 + hl].decode("latin1")}
+# the two fields, element by element, against C-order arange
+for i, k in enumerate(("phi", "psi")):
+    a, off = z[k], spec["off"][i]
+    want = (np.arange(a.size, dtype=np.float64) + off).astype(np.float32).reshape(a.shape)
+    p = tuple(spec["probe"])
+    out["arrays"][k]["wrong"] = int(np.count_nonzero(a != want))
+    out["arrays"][k]["probe"] = [list(p), float(a[p]), float(want[p])]
+# ... and the coordinate vectors, exactly i*L/n at float32
+for k, n, L in zip(("x", "y", "z"), spec["n"], spec["L"]):
+    if k in out["arrays"]:
+        want = (np.arange(n, dtype=np.float64) * L / n).astype(np.float32)
+        out["arrays"][k]["wrong"] = int(np.count_nonzero(z[k] != want))
+out["manifest"] = zf.read("params.json").decode("utf-8")
+print(json.dumps(out))
+`;
+function npzInfo(bytes, spec, tag) {
+  const f = path.join(TMP, (tag || "f") + ".npz");
+  fs.writeFileSync(f, Buffer.from(bytes));
+  try { return JSON.parse(py(NPZ_PY, [f, JSON.stringify(spec)])); }
+  catch (e) { return { err: String(e.stderr || e.message).trim().split("\n").pop() }; }
+}
+
+// Known bytes through the REAL path. readBufOnce's staging buffers are the only MAP_READ
+// buffers the page creates from here on, so filling them by creation order (phi first,
+// psi second) puts a field the check knows exactly where the export reads one -- and it
+// does so WITHOUT the check touching the export: the uniforms, the pass, the packing and
+// the archive are all the page's own.
+const INJECT = `function(){ const d = solver.device, orig = d.createBuffer.bind(d);
+  globalThis.NSTAGE = 0;
+  d.createBuffer = function (o) {
+    const b = orig(o);
+    if (o.usage & GPUBufferUsage.MAP_READ) {
+      const k = globalThis.NSTAGE++;
+      b.getMappedRange = function () {
+        const n = o.size / 4, a = new Float32Array(n);
+        for (let i = 0; i < n; i++) a[i] = i + 1e6 * k;
+        return a.buffer;
+      };
+    }
+    return b;
+  }; }`;
+
+// every Mode-uniform write of every EXISTING display chain, by chain and buffer name
+// (checkoff.js's tracer). `UW` is cleared by hand, so a leg can bracket one action.
+const MTRACE = `function(){ const d = solver.device, orig = d.queue.writeBuffer.bind(d.queue);
+  globalThis.UW = [];
+  d.queue.writeBuffer = function (b, off, data) {
+    for (let ci = 0; ci < solver.disp.length; ci++) {
+      const D = solver.disp[ci];
+      if (!D) continue;
+      for (const k of Object.keys(D.buf)) {
+        const v = D.buf[k], at = Array.isArray(v) ? v.indexOf(b) : (v === b ? 0 : -1);
+        if (at < 0) continue;
+        globalThis.UW.push([ci + ":" + k + (Array.isArray(v) ? "[" + at + "]" : ""),
+          Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))]);
+      }
+    }
+    return orig(b, off, data); }; }`;
+// ... and the pinned pair, caught where it is written: a chain builds its uniforms before
+// the solver has a name for it, so this traces the writes of ONE chain() call and resolves
+// the buffers to names afterwards, out of the chain it just built.
+const PINNED = `function(ci){
+  const d = solver.device, orig = d.queue.writeBuffer.bind(d.queue), W = [];
+  d.queue.writeBuffer = function (b, off, data) {
+    W.push([b, Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))]);
+    return orig(b, off, data); };
+  let D;
+  try { D = solver.chain(ci); } finally { d.queue.writeBuffer = orig; }
+  const w = {};
+  for (const e of W) for (const k of Object.keys(D.buf)) if (D.buf[k] === e[0] && !w[k]) w[k] = e[1];
+  return { w: w, has: Object.keys(D.buf).filter(k => k.indexOf("mode") === 0).sort(),
+           bgs: Object.keys(D.bg).filter(k => k.indexOf("prepDisp") === 0).sort() }; }`;
+// one Mode uniform's 32 bytes, read the way modeWords wrote them
+const modeOf = a => {
+  const b = Uint8Array.from(a || []).buffer;
+  if (b.byteLength !== 32) return { bytes: b.byteLength };
+  const u = new Uint32Array(b), f = new Float32Array(b);
+  return { bytes: 32, mode: u[0], zslice: u[1], cmap: u[2],
+           klo: f[4], khi: f[5], sx: f[6], sy: f[7] };
+};
+// the page-level strip, in its OWN slot
+const fstrip = env => env.run(`function(){ const s = saveAll.resEl.npz;
+  const rows = saveAll.foot.children.filter(x => (x.className || "").indexOf("recres") >= 0);
+  return { on: !!s, rows: rows.length, zip: !!saveAll.resEl.zip,
+           foot: !!s && s.parentNode === saveAll.foot,
+           txt: s ? s.children.filter(x => x.kind === "span").map(x => x.innerHTML).join("") : "",
+           btns: s ? s.children.filter(x => x.kind === "button").map(x => x.innerHTML) : [] }; }`);
+
+async function fieldLegs(name) {
+  console.log("\n=== D. field export (" + name + ") ===");
+  const env = await boot(name);          // a page of its own: section B's archives are
+  if (!env.run("function(){ return !!solver; }")) {   // application/zip too
+    ok(name + ": solver came up", false); return env;
+  }
+  const slug = name.replace(".html", "");
+  const three = env.is3d;
+
+  // ---- 1. the button ------------------------------------------------------
+  const where = env.run(`function(){ const b = el("btnSaveFields"), row = b && b.parentNode;
+    return { on: !!b, t: (b && b.innerHTML) || "", ti: (b && b.title) || "",
+             withSave: !!row && row.children.indexOf(el("btnSaveAll")) >= 0,
+             after: !!row && row.children.indexOf(b) > row.children.indexOf(el("btnSaveAll")),
+             inBar: !!row && row === el("topbar"),
+             grp: !!row && !!row.parentNode && row.parentNode.id }; }`);
+  ok("a save-fields button sits in the displays & charts group, after save all",
+     where.on && where.withSave && where.after && !where.inBar && where.grp === "grpDisp",
+     JSON.stringify(where));
+  ok("  ... and its title says what the file is and how to read it",
+     /\.npz/.test(where.ti) && /numpy\.load/.test(where.ti) && /phi/.test(where.ti),
+     where.ti);
+
+  // ---- 2. the pinned pair, as a fresh chain writes it ---------------------
+  // Chain 0 is built at boot, so the pin is caught on a chain built ON PURPOSE here.
+  const K = env.run("function(){ return [DISP_PHI, DISP_PSI, MODE_BYTES]; }");
+  const pin = env.run(PINNED, 2);
+  ok("every display chain carries a THIRD and FOURTH Mode uniform for the export",
+     pin.has.join(",") === "mode,modeC,modeM,modeX,modeX2" &&
+     pin.bgs.join(",") === "prepDisp,prepDispM,prepDispX,prepDispX2",
+     pin.has.join(",") + " / " + pin.bgs.join(","));
+  const px = modeOf(pin.w.modeX), pp = modeOf(pin.w.modeX2);
+  ok("  ... pinned to PLAIN phi and PLAIN psi",
+     px.mode === K[0] && pp.mode === K[1] && px.bytes === K[2] && pp.bytes === K[2],
+     JSON.stringify([px.mode, pp.mode]) + " want " + JSON.stringify([K[0], K[1]]));
+  ok("  ... with the k_perp band, the display offset and the colormap all OFF",
+     [px, pp].every(m => m.klo === 0 && m.khi === 0 && m.sx === 0 && m.sy === 0 &&
+                         m.cmap === 0 && m.zslice === 0),
+     JSON.stringify([px, pp]));
+
+  // ---- 3. the file, through the real button -------------------------------
+  const g = env.run(`function(){ const q = solver.p;
+    return { nx: q.nx, ny: q.ny, nz: q.nz || 1, Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0,
+             nr: solver.nr, t: simT, name: capName("fields", "npz") }; }`);
+  env.run(INJECT);
+  const nDl0 = env.caps.downloads.length, live0 = env.live.buffers;
+  await env.run("function(){ return saveFieldsNpz(); }");
+  await settle();
+  const npz = lastZip(env);
+  const want = ["phi.npy", "psi.npy", "x.npy", "y.npy"]
+    .concat(three ? ["z.npy"] : []).concat(["params.json"]);
+  ok("the press produces one .npz and downloads nothing",
+     !!npz && env.caps.downloads.length === nDl0,
+     (npz ? npz.size + " B" : "no file") + ", " +
+       (env.caps.downloads.length - nDl0) + " downloads");
+  if (!npz) return env;
+  // ... which is first of all a valid stored ZIP, read by zipfile
+  const zi = zipInfo(npz.bytes, slug + "-npz");
+  ok("  ... a valid stored ZIP: testzip() clean, every member's CRC recomputed",
+     !zi.err && zi.bad === null && zi.members.every(m => m.method === 0 && m.crcok),
+     zi.err || zi.members.length + " members");
+  ok("  ... holding phi, psi, the coordinate vectors and params.json, in that order",
+     !zi.err && zi.members.map(m => m.name).join(",") === want.join(","),
+     zi.err || zi.members.map(m => m.name).join(","));
+
+  // ---- 4. what numpy sees --------------------------------------------------
+  const probe = three ? [1, 2, 3] : [2, 1];
+  const info = npzInfo(npz.bytes, { off: [0, 1e6], probe: probe,
+                                    n: [g.nx, g.ny, g.nz], L: [g.Lx, g.Ly, g.Lz] },
+                       slug + "-fields");
+  const A = info.arrays || {};
+  ok("numpy.load opens it and finds the arrays by name",
+     !info.err && (info.files || []).join(",") ===
+       want.map(n => n.replace(/\.npy$/, "")).join(","),
+     info.err || (info.files || []).join(","));
+  const shape = three ? [g.nz, g.nx, g.ny] : [g.nx, g.ny];
+  ok("  ... phi and psi are float32 '<f4', C-contiguous, shaped " +
+       (three ? "(nz, nx, ny)" : "(nx, ny)"),
+     !info.err && ["phi", "psi"].every(k => A[k] && A[k].dtype === "<f4" && A[k].c &&
+                                            A[k].shape.join(",") === shape.join(",")),
+     info.err || JSON.stringify(["phi", "psi"].map(k => A[k] && [A[k].dtype, A[k].shape])));
+  // THE axis-order leg: the buffer index read literally, every element
+  ok("  ... and every element is the buffer index read literally -- the axis order holds",
+     !info.err && A.phi && A.phi.wrong === 0 && A.psi && A.psi.wrong === 0,
+     info.err || "phi " + (A.phi && A.phi.wrong) + " wrong, psi " +
+       (A.psi && A.psi.wrong) + " wrong of " + g.nr);
+  ok("  ... at an index that is NOT symmetric in x and y: phi[" + probe.join(", ") + "]",
+     !info.err && A.phi && A.phi.probe[1] === A.phi.probe[2],
+     info.err || (A.phi && (A.phi.probe[1] + " want " + A.phi.probe[2])));
+
+  // ---- 5. the coordinate vectors ------------------------------------------
+  const axes = ["x", "y"].concat(three ? ["z"] : []);
+  const lens = { x: g.nx, y: g.ny, z: g.nz };
+  ok("  ... the coordinate vectors are 1-D float32, one per axis, the right length",
+     !info.err && axes.every(k => A[k] && A[k].dtype === "<f4" &&
+                                  A[k].shape.join(",") === String(lens[k])) &&
+     (three || !A.z),
+     info.err || JSON.stringify(axes.map(k => A[k] && A[k].shape)));
+  ok("  ... and every entry is EXACTLY i*L/n, so pcolormesh needs no grid rebuilt",
+     !info.err && axes.every(k => A[k] && A[k].wrong === 0),
+     info.err || axes.map(k => k + ":" + (A[k] && A[k].wrong)).join(" "));
+
+  // ---- 6. the .npy header --------------------------------------------------
+  const H = info.npy || {};
+  ok("every .npy member is v1.0 and starts its DATA on a 64-byte boundary",
+     !info.err && want.slice(0, -1).every(n => {
+       const h = H[n.replace(/\.npy$/, "")];
+       return h && h.magic === "\x93NUMPY" && h.ver.join(",") === "1,0" && h.data % 64 === 0;
+     }),
+     info.err || want.slice(0, -1).map(n => { const h = H[n.replace(/\.npy$/, "")];
+       return n + "@" + (h && h.data); }).join(" "));
+  ok("  ... every header declares '<f4' and fortran_order: False",
+     !info.err && Object.keys(H).every(k => /'descr': '<f4'/.test(H[k].head) &&
+                                            /'fortran_order': False/.test(H[k].head)),
+     info.err || (H.phi && H.phi.head.trim()));
+  // the shape tuple's two spellings: numpy writes the trailing comma on a 1-tuple
+  ok("  ... the shape tuple is spelt (" + shape.join(", ") + ") and, on a vector, (" +
+       g.nx + ",)",
+     !info.err && H.phi && H.phi.head.indexOf("'shape': (" + shape.join(", ") + "), }") >= 0 &&
+     H.x && H.x.head.indexOf("'shape': (" + g.nx + ",), }") >= 0,
+     info.err || [H.phi && H.phi.head.trim(), H.x && H.x.head.trim()].join("  |  "));
+
+  // ---- 7. the manifest -----------------------------------------------------
+  const man = info.err ? null : JSON.parse(info.manifest);
+  ok("params.json is the shared run manifest, carrying the sim time it was taken at",
+     !!man && man.app === slug && man.t === g.t && man.grid.nx === g.nx &&
+     man.grid.nz === g.nz,
+     man && JSON.stringify({ app: man.app, t: man.t, grid: man.grid }));
+  ok("  ... plus the AXIS ORDER, so a reader never has to guess it",
+     !!man && !!man.export && man.export.dtype === "<f4" && man.export.order === "C" &&
+     man.export.shape.join(",") === shape.join(",") &&
+     man.export.axes.indexOf(three ? "phi[iz, ix, iy]" : "phi[ix, iy]") === 0,
+     man && man.export && man.export.axes);
+  ok("  ... and the note that the state is DEALIASED, spectrum and all",
+     !!man && !!man.export && /2\/3/.test(man.export.dealiased) &&
+     /spectrum/.test(man.export.dealiased),
+     man && man.export && man.export.dealiased);
+
+  // ---- 8. the staging buffers are destroyed, never pooled ------------------
+  // The plan's one memory rule. _stagePool has no eviction by design, so a field read
+  // through it would strand 4 MB per field here (16 MB at the largest 3D grid) for the
+  // life of the page. Two things say it did not: the pool has no entry that big, and the
+  // device's live buffer count is exactly back where it started.
+  const pool = env.run(`function(){ const o = {};
+    _stagePool.forEach((v, k) => { o[k] = v.length; }); return o; }`);
+  const big = Object.keys(pool).filter(k => Number(k) >= 1e6);
+  ok("a " + (g.nr * 4 / 1e6).toFixed(1) + " MB field read leaves NO multi-MB entry in _stagePool",
+     big.length === 0, "pool sizes: " + (Object.keys(pool).join(",") || "(empty)"));
+  ok("  ... because its staging buffer was destroyed: the live buffer count is unmoved",
+     env.live.buffers === live0, env.live.buffers - live0 + " buffers left over");
+
+  // ---- 9. the strip, and its own slot --------------------------------------
+  const st = fstrip(env);
+  ok("the export waits on the page's result strip, with download / share / dismiss",
+     st.on && st.foot && st.btns.join(",") === "download,share,&times;", JSON.stringify(st));
+  ok("  ... quoting its size", st.txt === env.run("function(n){ return recSizeText(n); }", npz.size),
+     st.txt);
+  // an archive of pictures and a field export are different files: one slot each
+  await env.run("function(){ return saveAllZip(); }");
+  await settle();
+  const st2 = fstrip(env);
+  ok("  ... and save-all does not take it away: two files, two slots, two rows",
+     st2.on && st2.zip && st2.rows === 2, JSON.stringify(st2));
+  const nDl1 = env.caps.downloads.length;
+  env.run(`function(){ const s = saveAll.resEl.npz;
+    s.children.filter(x => x.kind === "button" && x.innerHTML === "download")[0].onclick(); }`);
+  const dl = env.caps.downloads[env.caps.downloads.length - 1];
+  ok("  ... the download button writes taranis-<app>-fields-t<simT>.npz, once",
+     env.caps.downloads.length === nDl1 + 1 && dl.name === g.name && dl.blob === npz,
+     (dl && dl.name) + " want " + g.name);
+
+  // ---- 10. an export does NOT disturb a live display card ------------------
+  // The failure the plan warns about: B.mode and B.modeM are a card's LIVE uniforms, so
+  // an export that borrowed one would corrupt that card until its next apply(). Two cards
+  // are loaded up with non-default modes (and, where the page offers them, a band and an
+  // offset), every Mode-uniform write is traced, and the export must produce NONE.
+  const set = env.run(`function(){
+    while (cards.disp.length < 2) addDisplayCard();
+    cardsSync();
+    const f = el("cbFilter"); if (f) { f.checked = true; if (f.onchange) f.onchange(); }
+    const A = cards.disp[0], B = cards.disp[1];
+    A.selField.value = String(DISP_PSI); B.selField.value = String(DISP_ZMINUS);
+    if (A.selCont) A.selCont.value = String(DISP_PHI);
+    if (A.rBLo) A.rBLo.value = "2";
+    if (B.rBLo) B.rBLo.value = "3";
+    if (A.rOffX) { A.rOffX.value = "0.25"; A.rOffY.value = "-0.125"; }
+    A.apply(); B.apply();
+    return { modes: [solver.chain(A.ci).mode, solver.chain(B.ci).mode],
+             band: [A.band(), B.band()],
+             off: A.offset(), hasOff: !!A.rOffX,
+             ci: [A.ci, B.ci], cont: solver.chain(A.ci).cont.slice() }; }`);
+  ok("two cards loaded up: non-default modes, a k_perp band" +
+       (set.hasOff ? " and a display offset" : " (this page has no offset)"),
+     set.modes[0] !== 0 && set.modes[1] !== 0 && set.modes[0] !== set.modes[1] &&
+     set.band[0][0] > 0 && set.band[1][0] > 0 && set.cont[0] > 0 &&
+     (!set.hasOff || (set.off[0] !== 0 && set.off[1] !== 0)),
+     JSON.stringify(set));
+  env.run(MTRACE);
+  const before = env.run(`function(){ return cards.disp.map(c => {
+    const D = solver.chain(c.ci);
+    return { mode: D.mode, cont: D.cont.slice(), band: c.band(), off: c.offset() }; }); }`);
+  env.run("function(){ globalThis.UW = []; }");
+  await env.run("function(){ return saveFieldsNpz(); }");
+  await settle();
+  const wrote = env.run("function(){ return globalThis.UW.map(u => u[0]); }");
+  const after = env.run(`function(){ return cards.disp.map(c => {
+    const D = solver.chain(c.ci);
+    return { mode: D.mode, cont: D.cont.slice(), band: c.band(), off: c.offset() }; }); }`);
+  ok("an export writes NO Mode uniform of any live chain -- not mode, not modeM, not modeC",
+     wrote.length === 0, wrote.join(",") || "none");
+  ok("  ... so both cards' modes, contours, bands and offsets are byte for byte unmoved",
+     JSON.stringify(before) === JSON.stringify(after),
+     JSON.stringify(before) + " -> " + JSON.stringify(after));
+  // ... and the export still worked with two loaded cards open
+  const again = (() => { const z = lastZip(env);
+    return z ? zipInfo(z.bytes, slug + "-again") : { err: "no file" }; })();
+  ok("  ... and the export ran anyway, with two loaded cards open: same member list",
+     !again.err && again.members.map(m => m.name).join(",") === want.join(","),
+     again.err || again.members.map(m => m.name).join(","));
+
+  // ---- 11. a failed read must not wedge the button -------------------------
+  const boom = await env.run(`function(){
+    const orig = readFieldPair;
+    globalThis.readFieldPair = function () { return Promise.reject(new Error("device lost")); };
+    return Promise.resolve(saveFieldsNpz()).then(function () {
+      globalThis.readFieldPair = orig;
+      const s = el("status");
+      return { busy: saveAll.fbusy, cls: s.className, msg: s.textContent }; }); }`);
+  ok("a failed read reports it and releases the button",
+     boom.busy === false && boom.cls === "err" && /could not export the fields/.test(boom.msg),
+     JSON.stringify(boom));
+  const nz = zips(env).length;
+  await env.run("function(){ return saveFieldsNpz(); }");
+  await settle();
+  ok("  ... and the next press works", zips(env).length === nz + 1,
+     (zips(env).length - nz) + " archives");
+
+  ok("the page raised no stub failures", env.fails.length === 0, env.fails.join(" | "));
+  return env;
+}
 
 (async () => {
   const env = await boot("rmhd2d.html");
   writerLegs(env);
   await pageLegs("rmhd2d.html");
   await pageLegs("rmhd3d.html");
+  await fieldLegs("rmhd2d.html");
+  await fieldLegs("rmhd3d.html");
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* leave it */ }
   console.log("\n" + (bad ? "FAIL" : "PASS") + "  zip: " + pass + " checks passed, " +
               bad + " failed");

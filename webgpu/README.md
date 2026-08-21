@@ -98,7 +98,8 @@ programmatically; do not try to hand-edit a 180 kB line).
   forward/inverse kernels, which both pages emitted as byte-identical twins), the generic
   reductions (CFL, energy tail,
   max-reduce), device bring-up and the **pooled readback** (`readBuf`, whose staging
-  buffers are keyed by byte length and reused rather than allocated per call), the
+  buffers are keyed by byte length and reused rather than allocated per call, plus
+  `readBufOnce` for the megabyte-sized reads that must not be pooled), the
   **colormap table** (`CMAP_COEF` / `cmapRGB`, the one
   source both the WGSL and the editor preview read), the **display quantity table**
   (`DISP_FIELDS`, physics.js's modes with their definitions — one table, both pages), the
@@ -477,7 +478,53 @@ The archive's result strip is the **page's**, not a card's: `saveAll` is a plain
 a `foot`, a `resEl` slot (`zip`) and a `dead` flag, which is all `cardResult` ever asks of a
 card — so the file describing every card is not parked behind one card's × and cannot be lost
 when that card is closed. Its host is a `viewfoot` div in the control group
-(`{ k: "hintdiv", cls: "viewfoot" }`). Gate: `devtools/checkzip.js`. `rec` records the field canvas (that canvas alone: the arrows, the field lines
+(`{ k: "hintdiv", cls: "viewfoot" }`). Gate: `devtools/checkzip.js`.
+
+**The fields themselves, as `.npz`** (IO_PLAN item 4). `save fields`, next to `save all`,
+writes ONE time slice of the real-space state: `phi.npy`, `psi.npy`, the coordinate
+vectors `x.npy` / `y.npy` (and `z.npy` in 3D) and the same `params.json`, in a stored ZIP
+— which is all an `.npz` is, so `zipStore` is the writer and `npyBytes` is the only new
+format (`.npy` v1.0: magic, version, a 16-bit header length, an ASCII dict padded so the
+DATA starts **64-byte aligned**, then raw little-endian values). One writer for all five
+members; the shape tuple is the only thing that differs. Four contracts:
+
+- **The array axis order IS the buffer layout read literally**: `(nx, ny)` in 2D from
+  `ix*ny + iy`, `(nz, nx, ny)` in 3D from `(iz*nx + ix)*ny + iy`, C order, `<f4`. That is
+  byte for byte what `setICFromReal` consumes, which is what would make "load fields" a
+  small follow-up rather than a rewrite. It is stated in `params.json` (`export.axes`) and
+  in `docs.html`, and it is the leg the gate exists for — a silently transposed field is
+  the classic way to waste someone's afternoon.
+- **The export owns a THIRD and FOURTH Mode uniform per display chain** (`modeX`,
+  `modeX2`, with `prepDispX` / `prepDispX2`), **pinned** to plain `phi` and plain `psi`
+  with no band, no offset and no colormap: written once in `_makeChain` and **never
+  again**. `B.mode` and `B.modeM` are a card's LIVE display uniforms — written only by
+  `setDisplayMode`, carrying that card's band filter and display offset — and the contour
+  path's `modeC` feeds `dispK2`, never `dispR`. Borrowing any of them would corrupt that
+  card until its next `apply()`. No new pipeline, kernel or WGSL: the export is the
+  display chain's own stages, differently bound, which is why the emitted WGSL of both
+  pages is byte-identical across this feature. It is **not** allocation-free.
+- **`Solver.encodeExport(pass, chain)` is the one per-app piece** — the 2D and 3D display
+  chains differ by exactly one stage (`prepDisp → colsInv → rowsC2R` against
+  `prepDisp → zInv → colsInv → rowsC2R`), so each app spends six lines on it and the
+  uniform pin, the readback, the packing, the delivery and the whole UI live once in
+  `common.js` (`readFieldPair`, `npzFields`, `saveFieldsNpz`). Both fields go through ONE
+  compute pass and both readbacks are submitted before the first `await`, so `phi` and
+  `psi` are the same instant of the run even while it steps; the `psi` leg runs second
+  because its prep zeroes the k-scratch the `phi` leg used. It runs at a **frame boundary**
+  (a button press is its own task), never inside a render.
+- **A field readback must NOT be pooled.** `_stagePool` has no eviction, deliberately,
+  because every other pooled size is kilobytes; a field is 1 MB at 2D 512², 4 MB per field
+  at 3D 128²×64 and **16 MB** at the largest offered grid, 256²×64, so one export through
+  `readBuf` would strand tens of MB for the life of the page. `readBufOnce` allocates its
+  staging buffer and `destroy()`s it when the read resolves — the rule is written at the
+  pool as well as here. Measured archives: 2.10 MB at 2D 512², 8.40 MB at 2D 1024²,
+  33.56 MB at 3D 256²×64.
+
+The export has its **own** slot on the page strip (`saveAll.resEl.npz`, `RES_WHAT.npz`)
+and its own busy flag: an archive of pictures and a field export are different files, so
+pressing one must not throw the other away. Name: `capName("fields", "npz")`. Gate:
+`devtools/checkzip.js` section D, which verifies the file **externally** — `zipfile` for
+the archive, `numpy.load` for dtype, shape, axis order and values. `rec` records the field canvas (that canvas alone: the arrows, the field lines
 and the colorbar are in the PNG only) with a 30 s hard stop, on whichever of **two legs**
 the engine supports.
 

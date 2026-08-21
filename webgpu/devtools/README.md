@@ -329,8 +329,8 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   dead node. It also pins the capture/deliver split both card classes now expose
   (`captureShot()` resolves to the blob and delivers nothing — what save-all will use) and
   that the display card's own save still goes through the shared strip.
-- `checkzip.js [dir]` — the stored-ZIP writer and the save-all button (IO_PLAN, the
-  writer plus item 3; item 4's `.npz` leg extends the same file at section D). Section A
+- `checkzip.js [dir]` — the stored-ZIP writer, the save-all button and the field export
+  (IO_PLAN: the writer, item 3 and item 4, sections A, B and D). Section A
   drives `zipStore` inside a booted page and reads every archive back with **python's
   `zipfile`** rather than with our own parser — `testzip()`, stored method, per-member CRC
   recomputed from the extracted bytes, names, order and header offsets. The adversarial
@@ -348,6 +348,27 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `captureShot` and every display card's `render` are instrumented, `saveAllZip()` is started
   and deliberately not awaited, and the log is read back in the same task — so an `await`
   between two cards fails here rather than silently capturing an expired texture.
+  Section D is the field export (`.npz`) on both booted pages, read back by **`numpy.load`**
+  — the reader the file exists for — as well as by `zipfile`. Its two load-bearing legs are
+  the ones nothing inside the page could check for itself. **Axis order:** the export's two
+  staging buffers are filled with the FLAT BUFFER INDEX through the real button (they are
+  the only `MAP_READ` buffers the page creates once the leg is armed, so creation order is
+  phi then psi), so the array numpy should see is exactly `arange(n).reshape(shape)` in C
+  order and every element is compared against one numpy builds itself — a transpose, a
+  `fortran_order` flag or a swapped shape tuple fails on nearly every element, with a
+  readable probe at an index deliberately NOT symmetric in x and y printed beside it. **The
+  pinned uniforms:** a chain is built ON PURPOSE with `queue.writeBuffer` traced, so the
+  third and fourth Mode uniforms are caught being pinned to plain phi / plain psi with band,
+  offset and colormap all zero; then two cards are loaded up with non-default modes, a
+  k⊥ band and (2D) a display offset, every Mode-uniform write is traced across an export,
+  and the export must produce **none** — which is the leg that catches an export that
+  overwrote `B.mode`. The rest: the member list and order, `<f4` / C-contiguity / shape,
+  the coordinate vectors exactly `i*L/n` on every axis, the `.npy` header (v1.0 magic, data
+  on a 64-byte boundary, `fortran_order: False`, and both shape-tuple spellings — a 1-tuple
+  carries the trailing comma), the manifest's sim time, axis order and dealiasing note, one
+  strip slot of its own beside save-all's, and the memory rule: after a multi-MB read
+  `_stagePool` holds no entry that big and the stub's live buffer count is exactly back
+  where it started, so the staging buffer was destroyed rather than pooled.
 - `checkonepage.js [dir]` — the ONEPAGE_PLAN gates, on both booted pages. Phase A: the
   control panel hidden at boot, the params toggle's `localStorage` memory across two boots
   in one process (stubenv's store is per-PROCESS on purpose, so that IS a return visit),
@@ -534,7 +555,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   and no `type="module"` / `import` / `export` anywhere in the three js files or the two
   inline scripts (Chrome blocks module scripts from `file://`). Then the move itself,
   VERBATIM: each definition's text — located by its header line and its closing brace at
-  column 0 — byte for byte against `git show <base>:webgpu/rmhd2d.html`. Then reusability:
+  column 0 — byte for byte against `git show <base>:webgpu/rmhd2d.html`, `class Solver`
+  after ONE recorded allowance is stripped (`IO4_INSERTS`: the exact lines IO_PLAN item 4's
+  field export inserted — two pinned Mode uniforms, their two `prepDisp` bind groups and
+  `encodeExport`, buffers and bind groups only, which is why the WGSL leg above does not
+  move with it). The allowance is the `dispoffsets.js` idiom: it is stripped and the base
+  text is then still demanded byte for byte, so any OTHER change to the class fails, and a
+  companion leg fails it as STALE if a recorded block has stopped being there or as VACUOUS
+  if there was nothing to strip. Then reusability:
   `names.mjs` resolves `solver2d.js` against common.js + physics.js + builtins ALONE, never
   against `rmhd2d.html`'s inline script, which is what says a second page can load it. Then
   `pages.yml` — solver2d.js in the MISSING list and in the cache-bust sed, and the

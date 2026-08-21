@@ -763,6 +763,35 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     from: the resolution and the box, the simulation time, the dissipation and its
     exponent, what was being injected and where, and which initial condition it started
     from. It is there so that a folder of pictures still says what it is a month later.</p>
+
+  <!-- DRAFT copy (IO_PLAN item 4): the field-export paragraphs, awaiting Alfred's wording pass. -->
+  <p><b>save fields</b>, beside it, saves the <i>data</i> rather than a picture of it: the
+    two potentials &phi; and &psi; as they stand at that instant, in real space, as
+    ordinary <code>float32</code> arrays. The file is an <code>.npz</code> &mdash; a numpy
+    archive, which is a plain ZIP you can also just unpack &mdash; named like the pictures,
+    for example <code>taranis-rmhd2d-fields-t12.500.npz</code>. It is one moment, not a
+    time series. Expect about 2 MB from a 512&sup2; 2D run and around 30 MB from the
+    largest 3D box, so on a phone it is worth watching which one you press.</p>
+  <p>Three lines read it, and the coordinate vectors are in the file so you do not have to
+    rebuild the grid:</p>
+  <p><code>import numpy as np</code><br>
+    <code>d = np.load("taranis-rmhd2d-fields-t12.500.npz")</code><br>
+    <code>plt.pcolormesh(d["x"], d["y"], d["phi"].T)</code></p>
+  <p><b>The axis order.</b> In 2D <code>phi</code> and <code>psi</code> have shape
+    <code>(nx, ny)</code>: <code>phi[i, j]</code> is the value at <code>x[i]</code>,
+    <code>y[j]</code>. In 3D they have shape <code>(nz, nx, ny)</code> &mdash; <b>z
+    first</b> &mdash; so <code>d["phi"][k]</code> is the whole horizontal plane at height
+    <code>z[k]</code>. That is why the snippet above transposes before plotting:
+    <code>pcolormesh</code> wants the first axis to be the vertical one. The same
+    <code>params.json</code> is in the archive and states the order too, so a file found
+    later still explains itself.</p>
+  <p><b>One thing to know before you take a spectrum of it.</b> The run is
+    <i>dealiased</i>: two thirds of the way to the grid's finest wavenumber, everything is
+    deliberately set to zero and kept there, which is what stops a spectral code folding
+    the small scales it cannot represent back onto the large ones. So the saved field has
+    no content at all above that cutoff. A spectrum of it will fall off a cliff there, and
+    that cliff is the numerical method, not the physics &mdash; do not read it as a
+    dissipation range.</p>
 </details>
 
 <details>
