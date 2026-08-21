@@ -959,6 +959,28 @@ is the batched op — is wrong: batching the inverses makes them worse, so the a
 to `irfft2`/`irfftn` itself and not to how many components share an op. Whether the GPU agrees
 is still the open half of the trade.
 
+### P100 addendum (512²×128 fp32, `bench/step_accounting_p100.json`)
+
+The same driver on the Kaggle P100 (3 rounds, nrep 21; memory totals reproduce the
+committed postFZ probe rows exactly: 20.096 / 17.309 / 45.244 u). Time shares from the
+same ablation vocabulary, minima over rounds:
+
+| part | FD-z lsrk54 (317.9 ms) | z_spec lsrk54 (294.3 ms) | GDI-2D lsrk33 (4.8 ms) |
+|---|---|---|---|
+| both transforms (`notrans`) | 52.6% | **88.7%** | 79.3% |
+| inverse transforms (`noifft`) | 43.3% | 76.7% | 68.5% |
+| z stencil + FD term (`nozarith`/`nofdlin`) | 16.3–22.7% | — | — |
+| propagator | ~2.4% | ≤0 (non-monotone) | ~6% |
+| RHS in total (`nonlin`) | 87.2% | 92.4% | 81.8% |
+
+The GPU agrees with the CPU verdict — transform-bound everywhere, the propagator gone
+from the accounting — with z_spectral even more transform-dominated (88.7%) and the
+whole z_spectral step FASTER than FD-z (294 vs 318 ms, no stencil/halo to pay).
+Non-monotone ablations occur on GPU too (`nofft` on FD-z lands 10% ABOVE base,
+`noprop` on z_spectral 5% above): the same read-from-the-ladder rule applies. The
+forced-case and snapshot-peak GPU numbers run as a separate driver invocation
+(`--paths zspec_forced,snapshot_peak`) — pending.
+
 ### Reproduce
 
 The whole accounting is packaged as the git-tracked driver `bench/step_accounting.py`, with a
