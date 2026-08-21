@@ -48,17 +48,35 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "taranis-zip-"));
 const py = (code, args) =>
   execFileSync("python3", ["-c", code].concat(args || []), { encoding: "utf8" });
 
+// Every ZIP field this writer emits is written TWICE -- once in the member's local header
+// and once in the central directory -- and `zipfile` reads only the second. That is not a
+// detail: it is why a wrong compressed size or version in a LOCAL header passes every
+// zipfile leg while Info-ZIP refuses the archive. So the reader also unpacks each 30-byte
+// local header by hand (the one place bytes are read directly, and only to compare the two
+// copies against each other) and hands both back.
 const ZIP_PY = `
-import sys, json, zipfile, binascii
+import sys, json, struct, zipfile, binascii
+raw = open(sys.argv[1], "rb").read()
 z = zipfile.ZipFile(sys.argv[1])
 out = {"bad": z.testzip(), "members": []}
 for i in z.infolist():
     d = z.read(i.filename)
+    o = i.header_offset
+    sig, vex, fl, meth, tt, dd, crc, csz, usz, nl, el = struct.unpack("<IHHHHHIIIHH", raw[o:o + 30])
+    wd = ((max(0, i.date_time[0] - 1980)) << 9) | (i.date_time[1] << 5) | i.date_time[2]
+    wt = (i.date_time[3] << 11) | (i.date_time[4] << 5) | (i.date_time[5] // 2)
     m = {"name": i.filename, "method": i.compress_type, "crc": i.CRC,
-         "size": i.file_size, "offset": i.header_offset, "flag": i.flag_bits,
-         "crcok": binascii.crc32(d) == i.CRC}
+         "size": i.file_size, "csize": i.compress_size, "offset": i.header_offset,
+         "flag": i.flag_bits, "vex": i.extract_version, "vcr": i.create_version,
+         "date": list(i.date_time), "crcok": binascii.crc32(d) == i.CRC,
+         "loc": {"sig": sig, "vex": vex, "flag": fl, "method": meth, "crc": crc,
+                 "csize": csz, "size": usz, "extralen": el,
+                 "name": raw[o + 30:o + 30 + nl].decode("utf-8"),
+                 "dateok": dd == wd and tt == wt}}
     if i.filename.endswith((".json", ".txt")) and i.file_size <= 65536:
         m["text"] = d.decode("utf-8")
+    if i.file_size <= 64:
+        m["hex"] = binascii.hexlify(d).decode()
     out["members"].append(m)
 print(json.dumps(out))
 `;
@@ -69,6 +87,35 @@ function zipInfo(bytes, tag) {
   fs.writeFileSync(f, Buffer.from(bytes));
   try { return JSON.parse(py(ZIP_PY, [f])); }
   catch (e) { return { err: String(e.stderr || e.message).trim().split("\n").pop() }; }
+}
+// STORED means the compressed size IS the uncompressed one -- in the central directory
+// AND in the local header, which is where zipfile never looks: it extracts a stored member
+// by `file_size` and ignores `compress_size` entirely. So the predicate reads both copies,
+// and Info-ZIP below is the third opinion that refuses the archive outright.
+const storedOk = m => m.method === 0 && m.csize === m.size &&
+                      m.loc.method === 0 && m.loc.csize === m.loc.size && m.loc.size === m.size;
+
+// ---- the SECOND external reader --------------------------------------------
+// The plan's argument for an external verifier is that our own reader would share our own
+// bugs -- and one reader has blind spots for the same reason. `compress_size` on a stored
+// member is exactly such a spot: zipfile ignores it, Info-ZIP rejects the whole archive
+// ("ucsize 11 <> csize 0 for STORED entry", then a bad CRC). So every archive that
+// matters here goes through `unzip -t` as well, which extracts every member to nothing,
+// recomputes its CRC and cross-checks the local header against the central directory.
+// Where the binary is absent the legs SAY they were skipped rather than passing quietly.
+const UNZIP = (() => {
+  try { execFileSync("unzip", ["-v"], { stdio: "ignore" }); return true; } catch (e) { return false; }
+})();
+let skipped = 0;
+function okUnzip(name, bytes, tag) {
+  if (!UNZIP) { skipped++; console.log("  SKIP  " + name + "   [no unzip binary on this box]"); return; }
+  const f = path.join(TMP, (tag || "u") + "-t.zip");
+  fs.writeFileSync(f, Buffer.from(bytes));
+  let out, good;
+  try { out = execFileSync("unzip", ["-t", f], { encoding: "utf8" }); good = true; }
+  catch (e) { out = String((e.stdout || "") + (e.stderr || "")); good = false; }
+  ok(name, good && /No errors detected/.test(out),
+     out.split("\n").map(s => s.trim()).filter(Boolean).pop());
 }
 
 // ---- the booted page -------------------------------------------------------
@@ -121,8 +168,8 @@ function writerLegs(env) {
   const i1 = zipInfo(build([{ name: "hello.txt", text: "hello" }]), "one");
   ok("a one-member archive passes testzip(), stored, with a matching CRC",
      !i1.err && i1.bad === null && i1.members.length === 1 &&
-     i1.members[0].method === 0 && i1.members[0].crcok && i1.members[0].text === "hello",
-     JSON.stringify(i1.members[0] || i1.err));
+     storedOk(i1.members[0]) && i1.members[0].crcok && i1.members[0].text === "hello",
+     JSON.stringify((i1.members || [])[0] || i1.err));
   // the CRC of "hello" is a published number: 0x3610a686. A writer on the UNREFLECTED
   // polynomial produces a different one and this is where it shows.
   ok("  ... and the CRC is the reflected-polynomial one (crc32(\"hello\") = 0x3610a686)",
@@ -143,8 +190,45 @@ function writerLegs(env) {
      i2.err || i2.members.map(m => m.name).join(","));
   ok("  ... a zero-length member is a member: size 0, CRC 0, stored",
      !i2.err && i2.members[1].size === 0 && i2.members[1].crc === 0 &&
-     i2.members[1].method === 0 && i2.members[1].text === "",
+     storedOk(i2.members[1]) && i2.members[1].text === "",
      i2.err || JSON.stringify(i2.members[1]));
+  // STORED's own contract, and the field zipfile alone would never notice: with method 0
+  // the compressed size IS the uncompressed one, in the local header and in the central
+  // directory both. Info-ZIP refuses an archive where they disagree; the leg after this
+  // one is that reader saying so.
+  ok("  ... and every member declares compressed == uncompressed, which is what STORED MEANS",
+     !i2.err && i2.members.every(storedOk),
+     i2.err || i2.members.map(m => m.csize + "/" + m.size).join(" "));
+  okUnzip("  ... and Info-ZIP -- a second reader, with different blind spots -- tests it clean",
+          build(spec), "mixed");
+  // the two header fields nothing else here reads. 2.0 is the version that introduced the
+  // fields this writer uses; a 0 there is legal-ish and meaningless, and the DOS stamp is
+  // what every unzipper writes on the extracted file, so a day 0 becomes a file dated
+  // "the zeroth" or nothing at all.
+  ok("  ... version-needed and version-made-by are both 2.0 in every header",
+     !i2.err && i2.members.every(m => m.vex === 20 && m.vcr === 20 && m.loc.vex === 20),
+     i2.err || i2.members.map(m => m.vex + "/" + m.vcr + "/" + m.loc.vex).join(" "));
+  // the other half of every field: zipfile reads the central directory and nothing else,
+  // so a wrong LOCAL header is invisible to it (that is exactly how a stored member can
+  // declare 0 compressed bytes and still pass). Both copies must say the same thing.
+  ok("  ... and each member's LOCAL header repeats the central directory exactly",
+     !i2.err && i2.members.every(m => m.loc.sig === 0x04034b50 && m.loc.vex === m.vex &&
+       m.loc.flag === m.flag && m.loc.method === m.method && m.loc.crc === m.crc &&
+       m.loc.size === m.size && m.loc.csize === m.csize && m.loc.name === m.name &&
+       m.loc.extralen === 0 && m.loc.dateok),
+     i2.err || i2.members.map(m => JSON.stringify(m.loc)).join(" "));
+  // the clock the PAGE reads (stubenv stubs Date, so this is the one _dosStamp saw), in
+  // the same six fields the DOS pair decodes to
+  const now = env.run(`function(){ const d = new Date();
+    return [d.getFullYear(), d.getMonth() + 1, d.getDate(),
+            d.getHours(), d.getMinutes(), d.getSeconds()]; }`);
+  const asMs = a => Date.UTC(a[0], a[1] - 1, a[2], a[3], a[4], a[5]);
+  const stamp = i2.err ? null : i2.members[0].date;
+  ok("  ... and the DOS date/time stamp is the local clock at the press, to the 2 s DOS tick",
+     !!stamp && stamp[1] >= 1 && stamp[1] <= 12 && stamp[2] >= 1 && stamp[2] <= 31 &&
+     stamp[3] < 24 && stamp[4] < 60 && stamp[5] < 60 &&
+     Math.abs(asMs(now) - asMs(stamp)) <= 2000,
+     stamp && stamp.join("-") + "  (page clock " + now.join("-") + ")");
   ok("  ... a non-ASCII name survives as UTF-8, with general-purpose bit 11 set",
      !i2.err && i2.members[2].name === spec[2].name && (i2.members[2].flag & 0x800) !== 0,
      i2.err || i2.members[2].name + " flag 0x" + (i2.members[2].flag || 0).toString(16));
@@ -170,6 +254,57 @@ function writerLegs(env) {
      iBig.members[1].size === 70000 && iBig.members[1].crcok &&
      iBig.members[2].text === "last" && iBig.members[2].offset === 30 + 9 + 5 + 30 + 7 + 70000,
      iBig.err || JSON.stringify(iBig.members.map(m => [m.name, m.size, m.offset])));
+  okUnzip("  ... and Info-ZIP tests the 70 kB archive clean too", buildBig(70000), "big");
+
+  // 5. a member whose data is NOT a byte array. `length` on a Float32Array is its ELEMENT
+  //    count and `Uint8Array.set` value-CONVERTS, so the naive writer emits 3 bytes of
+  //    rounded values, declares size 3 and CRCs the same wrong bytes -- a perfectly valid
+  //    archive holding the wrong data, which no reader anywhere can flag. Every caller
+  //    today passes a Uint8Array; this is the shared primitive, so the next one might not.
+  const flo = env.run(`function(){
+    const a = new Float32Array([1.5, 2.5, 3.5]);
+    const b = zipStore([{ name: "f.bin", data: a }]);
+    return { bytes: Array.from(b.bytes),
+             hex: Array.from(new Uint8Array(a.buffer)).map(v => (v + 256).toString(16).slice(1)).join("") }; }`);
+  const iF = zipInfo(flo.bytes, "float");
+  ok("a Float32Array member is written as its BYTES: 12 of them, not 3 rounded values",
+     !iF.err && iF.bad === null && iF.members.length === 1 && storedOk(iF.members[0]) &&
+     iF.members[0].size === 12 && iF.members[0].crcok && iF.members[0].hex === flo.hex,
+     iF.err || (iF.members[0].size + " B, " + iF.members[0].hex + " want " + flo.hex));
+  okUnzip("  ... and that archive tests clean", flo.bytes, "float");
+  // ... while something with no unambiguous byte meaning is refused rather than guessed at
+  const guess = env.run(`function(){ const out = [];
+    for (const d of ["hello", [1, 2, 3], 7]) {
+      try { zipStore([{ name: "x", data: d }]); out.push("no throw"); }
+      catch (e) { out.push(e.message); }
+    }
+    return out; }`);
+  ok("  ... and a string, a plain array or a number is refused, never encoded on a guess",
+     guess.every(m => /typed array or an ArrayBuffer/.test(m)), guess.join(" | "));
+  // an ArrayBuffer IS bytes, so it is taken
+  const abuf = env.run(`function(){ const a = new Uint8Array([9, 8, 7]);
+    return Array.from(zipStore([{ name: "b.bin", data: a.buffer }]).bytes); }`);
+  const iAB = zipInfo(abuf, "abuf");
+  ok("  ... and a bare ArrayBuffer is taken as the bytes it is",
+     !iAB.err && iAB.members.length === 1 && iAB.members[0].size === 3 &&
+     iAB.members[0].hex === "090807", iAB.err || JSON.stringify(iAB.members[0]));
+
+  // 6. a name past the 16-bit name-length field. 70004 bytes writes 4468, and both readers
+  //    then refuse the whole archive -- so the writer must refuse it first, and it must do
+  //    so on the UTF-8 BYTE length: 40000 two-byte characters is a 40000-character string
+  //    and an 80000-byte name.
+  const nm = env.run(`function(){
+    const t = n => { try { const b = zipStore([{ name: n, data: new Uint8Array(4) }]);
+                           return { threw: false, size: b.bytes.length }; }
+                     catch (e) { return { threw: true, msg: e.message }; } };
+    return { long: t("a".repeat(70004)), utf8: t("\\u00e9".repeat(40000)),
+             edge: t("\\u00e9".repeat(30000)) }; }`);
+  ok("a member name past 64 kB is refused by the writer, with the length in the message",
+     nm.long.threw && /70004/.test(nm.long.msg), JSON.stringify(nm.long));
+  ok("  ... on its UTF-8 byte length: 40000 two-byte characters is an 80000-byte name",
+     nm.utf8.threw && /80000/.test(nm.utf8.msg), JSON.stringify(nm.utf8));
+  ok("  ... and a 60000-byte name is still written, because it FITS the field",
+     !nm.edge.threw && nm.edge.size > 60000, JSON.stringify(nm.edge));
 }
 
 // ===========================================================================
@@ -267,8 +402,10 @@ async function pageLegs(name) {
   // ---- 5. what is inside it -------------------------------------------------
   const info = zipInfo(zip.bytes, slug);
   ok("the archive passes python's testzip(), stored throughout",
-     !info.err && info.bad === null && info.members.every(m => m.method === 0 && m.crcok),
+     !info.err && info.bad === null && info.members.every(m => storedOk(m) && m.crcok),
      info.err || info.members.length + " members");
+  okUnzip("  ... and Info-ZIP tests the REAL archive clean, member by member",
+          zip.bytes, slug + "-unzip");
   ok("  ... one PNG per card, named disp<n>-<field> / chart<n>-<kind>, in card order",
      !info.err && info.members.slice(0, -1).map(m => m.name).join(",") === want.join(","),
      info.err || (info.members.map(m => m.name).join(",") + "  want " + want.join(",")));
@@ -316,6 +453,37 @@ async function pageLegs(name) {
      man.forcing.shell.join(",") === live.shell.join(",") && man.forcing.tau === live.tau &&
      man.ic.preset === live.ic && man.ic.demo === live.demo,
      man && JSON.stringify([man.forcing, man.ic]));
+  ok("  ... and a preset whose content IS its name carries nothing else",
+     !!man && man.ic.phi === undefined && man.ic.psi === undefined,
+     man && JSON.stringify(man.ic));
+
+  // ---- 6b. an expression IC is its two FORMULAS ----------------------------
+  // The one preset whose entire content is typed rather than named (IO_PLAN item 1).
+  // `"ic": {"preset": "expr"}` alone names a run nobody could reproduce -- which is the
+  // manifest's stated purpose failing on the one IC that needs it most. Driven through
+  // the real controls and read back out of the real archive.
+  const EPHI = "sin(2*pi*x/Lx)*cos(2*pi*y/Ly)", EPSI = "0.25*cos(2*pi*x/Lx)";
+  env.run(`function(a){ const s = el("selIC"); s.value = "expr"; if (s.onchange) s.onchange();
+    for (const r of [["tExprP", a[0]], ["tExprM", a[1]]]) {
+      const e = el(r[0]); e.value = r[1]; if (e.oninput) e.oninput();
+    } }`, [EPHI, EPSI]);
+  await env.run("function(){ return saveAllZip(); }");
+  await settle();
+  const manE = (() => { const i = zipInfo(lastZip(env).bytes, slug + "-expr");
+    return i.err ? null : JSON.parse(i.members[i.members.length - 1].text); })();
+  ok("an expression IC records BOTH formulas in the manifest, not just the word 'expr'",
+     !!manE && manE.ic.preset === "expr" && manE.ic.phi === EPHI && manE.ic.psi === EPSI,
+     manE && JSON.stringify(manE.ic));
+  // an empty box means exactly zero, which is a statement about the run and is recorded
+  env.run(`function(){ const e = el("tExprM"); e.value = ""; if (e.oninput) e.oninput(); }`);
+  await env.run("function(){ return saveAllZip(); }");
+  await settle();
+  const manE2 = (() => { const i = zipInfo(lastZip(env).bytes, slug + "-expr2");
+    return i.err ? null : JSON.parse(i.members[i.members.length - 1].text); })();
+  ok("  ... an empty box is recorded as the empty formula it is (exactly zero)",
+     !!manE2 && manE2.ic.phi === EPHI && manE2.ic.psi === "",
+     manE2 && JSON.stringify(manE2.ic));
+  env.run(`function(){ const s = el("selIC"); s.value = "modes"; if (s.onchange) s.onchange(); }`);
 
   // it must FOLLOW the page, not a snapshot taken at boot: turn forcing off, move the
   // dissipation, and save again
@@ -384,6 +552,26 @@ async function pageLegs(name) {
   await settle();
   ok("  ... and the next press works",
      zips(env).length === nZ2 + 1 && stripOf(env).on, (zips(env).length - nZ2) + " archives");
+
+  // ---- 10. the re-entry guard -----------------------------------------------
+  // `saveAll.busy` is what stops a double press building the archive twice off the same
+  // cards -- two files and two strip slots for one press-worth of intent, on a phone where
+  // a double tap is the norm. It is only visible from two calls in ONE task (the second
+  // press lands before the first has awaited its captures), so that is what this does:
+  // zipStore is counted, both promises awaited, and exactly one archive must come out.
+  const nZ3 = zips(env).length;
+  const twice = await env.run(`function(){ const zs = zipStore; let n = 0;
+    globalThis.zipStore = function (m) { n++; return zs(m); };
+    const a = saveAllZip(), b = saveAllZip();          // same task, no await between them
+    return Promise.all([a, b]).then(function () {
+      globalThis.zipStore = zs;
+      return { n: n, busy: saveAll.busy }; }); }`);
+  await settle();
+  ok("two presses in one task build ONE archive: the re-entry guard holds",
+     twice.n === 1 && zips(env).length === nZ3 + 1 && twice.busy === false,
+     twice.n + " zipStore calls, " + (zips(env).length - nZ3) + " archives");
+  ok("  ... and one strip row, not two files fighting over the slot",
+     stripOf(env).rows === 1 && stripOf(env).on, JSON.stringify(stripOf(env)));
 
   ok("the page raised no stub failures", env.fails.length === 0, env.fails.join(" | "));
   return env;
@@ -568,8 +756,10 @@ async function fieldLegs(name) {
   // ... which is first of all a valid stored ZIP, read by zipfile
   const zi = zipInfo(npz.bytes, slug + "-npz");
   ok("  ... a valid stored ZIP: testzip() clean, every member's CRC recomputed",
-     !zi.err && zi.bad === null && zi.members.every(m => m.method === 0 && m.crcok),
+     !zi.err && zi.bad === null && zi.members.every(m => storedOk(m) && m.crcok),
      zi.err || zi.members.length + " members");
+  okUnzip("  ... and Info-ZIP tests the .npz clean: numpy is not its only reader",
+          npz.bytes, slug + "-npz-unzip");
   ok("  ... holding phi, psi, the coordinate vectors and params.json, in that order",
      !zi.err && zi.members.map(m => m.name).join(",") === want.join(","),
      zi.err || zi.members.map(m => m.name).join(","));
@@ -759,6 +949,6 @@ async function fieldLegs(name) {
   await fieldLegs("rmhd3d.html");
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* leave it */ }
   console.log("\n" + (bad ? "FAIL" : "PASS") + "  zip: " + pass + " checks passed, " +
-              bad + " failed");
+              bad + " failed" + (skipped ? ", " + skipped + " skipped (no unzip binary)" : ""));
   process.exit(bad ? 1 : 0);
 })();

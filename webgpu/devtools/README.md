@@ -41,6 +41,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   shared is what was written" is only a checkable statement when there is something to
   compare; its callback stays DEFERRED, as a browser's is, which is what lets a consumer
   close the card between the press and the picture and drive the dead-card branch honestly.
+  Its 2D context logs both kinds of mark a composite is made of: `ctx.__draws` (every
+  `drawImage` with its destination rectangle) and, since 2026-08-20, `ctx.__texts` (every
+  `fillText` with the alignment, baseline and font in force) — which is what lets a gate
+  assert a saved colorbar's tick GEOMETRY off the real file instead of calling the drawing
+  code with a hand-built context.
   A fourth argument carries the boot knobs: `{noGpu: true}` removes `navigator.gpu`, so
   `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
@@ -350,6 +355,18 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   dead node. It also pins the capture/deliver split both card classes now expose
   (`captureShot()` resolves to the blob and delivers nothing — what save-all will use) and
   that the display card's own save still goes through the shared strip.
+  **The label geometry (2026-08-20).** `cbarDraw` is the one piece of arithmetic item 2's
+  refactor owns and nothing pinned it: the strip's rectangle, the tick baseline `3*sc`
+  under it, the left / centre / right anchors on its own edges and the `9*sc` monospace
+  were all free to move in every saved picture at once. stubenv now logs every `fillText`
+  with the alignment and font in force (`ctx.__texts`), and both callers are asserted
+  through the REAL file — the chart card's band under the plot and the display card's
+  stamp over the field, which is the identity that makes `cbarDraw` one function rather
+  than two. The gen2d legs also run BOTH ways round: with a panel on the card its three
+  labels are real numbers in the composite, and with none (before `generate`) the save
+  composites **no bar at all** rather than a ramp under three blank labels claiming a range
+  the picture does not have. The panel is injected directly — a real generate sweep belongs
+  to `check2dspec`.
 - `checkzip.js [dir]` — the stored-ZIP writer, the save-all button and the field export
   (IO_PLAN: the writer, item 3 and item 4, sections A, B and D). Section A
   drives `zipStore` inside a booted page and reads every archive back with **python's
@@ -390,6 +407,26 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   strip slot of its own beside save-all's, and the memory rule: after a multi-MB read
   `_stagePool` holds no entry that big and the stub's live buffer count is exactly back
   where it started, so the staging buffer was destroyed rather than pooled.
+  **Two readers, not one (2026-08-20).** `zipfile` reads the CENTRAL DIRECTORY and nothing
+  else, and it ignores `compress_size` on a stored member entirely — so a writer declaring
+  0 compressed bytes in a local header passed every leg above while Info-ZIP refused the
+  archive outright (`ucsize 11 <> csize 0 for STORED entry`, then a bad CRC). Three things
+  close that: `compress_size == file_size` is asserted per member; the python reader now
+  also unpacks each 30-byte LOCAL header by hand and every field is compared against the
+  central directory's copy (version, flag, method, CRC, both sizes, name, DOS stamp); and
+  every archive that matters additionally goes through **`unzip -t`**, a second reader with
+  different blind spots — skipped with a printed SKIP, never a silent pass, where the
+  binary is absent. Section A also pins the writer's INPUT contract: a `Float32Array`
+  member is written as its bytes (12, not 3 value-converted ones — a corruption no reader
+  could ever flag, since the CRC would match), a string / plain array / number is refused
+  rather than encoded on a guess, a bare `ArrayBuffer` is taken, and a member name past the
+  16-bit name-length field throws on its UTF-8 BYTE length (40000 two-byte characters is an
+  80000-byte name) while a 60000-byte one is still written. Plus version-needed 2.0 and the
+  DOS date/time stamp against the PAGE's clock (stubenv stubs `Date`), the save-all
+  re-entry guard (two presses in one task ⇒ exactly one `zipStore` call and one strip row),
+  and the manifest's expression IC: with `preset: "expr"` both formulas are in
+  `params.json`, read out of the real archive — the word `expr` alone names a run nobody
+  could reproduce.
 - `checkonepage.js [dir]` — the ONEPAGE_PLAN gates, on both booted pages. Phase A: the
   control panel hidden at boot, the params toggle's `localStorage` memory across two boots
   in one process (stubenv's store is per-PROCESS on purpose, so that IS a return visit),
@@ -421,6 +458,16 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   404 on the deployed site while `file://` still works locally. That is exactly how the
   favicons shipped broken — `.gitignore`'s blanket `*.png` swallowed them, poster.png
   being the only exception — and an existence-only check would have passed.
+  **Known limit of that sweep (noted 2026-08-20).** "Something loads it" is decided by the
+  TEXT immediately before the literal — an attribute name in markup, or `.src =` /
+  `.href =` / `fetch(` / a `const` whose name reaches one of those in the same file. Any
+  other way of naming a file is invisible to it: `setAttribute("href", …)`, a path
+  assembled from pieces or built in a template literal, a name crossing files through
+  anything but a bound constant, or a loader idiom not in that list. This is deliberately
+  a whitelist — counting every quoted string that looks like a path would flag
+  `params.json` and every other name the page WRITES rather than reads — so its failure
+  mode is a new asset deploying unchecked, never a false alarm. Widen the two regexes when
+  a new loader idiom appears; do not widen them to "any string with a dot in it".
 - `checkiso.js [dir]` — the ISO_PLAN gates. Phases A (box-unit aspect), B (the volume
   raymarch) and C (the collision preset) plus the two
   disciplines the whole plan runs under: every emitted kernel of both pages parses

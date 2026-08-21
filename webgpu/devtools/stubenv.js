@@ -466,7 +466,13 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     o.measureText = t => ({ width: 0.62 * fontPx() * t.length,
                             actualBoundingBoxAscent: 0.72 * fontPx(), actualBoundingBoxDescent: 0 });
     o.fillRect = (x, y, w, h) => { if (!st.buf) { st.w = w | 0; st.h = h | 0; st.buf = new Uint8ClampedArray(4 * st.w * st.h); } };
+    // ... and fillText LOGS what was written where, in the alignment and font in force at
+    // the time: a saved colorbar's tick labels are geometry (cbarDraw places them a fixed
+    // distance under the strip), and geometry is only checkable when it is recorded.
+    o.__texts = [];
     o.fillText = (t, cx, cy) => {
+      o.__texts.push({ t: String(t), x: cx, y: cy, align: o.textAlign, font: o.font,
+                       base: o.textBaseline });
       if (!st.buf) return;
       const s = fontPx(), hw = 0.3 * s, hh = 0.36 * s;
       for (let py = 0; py < st.h; py++) for (let px = 0; px < st.w; px++) {

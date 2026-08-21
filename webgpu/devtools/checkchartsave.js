@@ -146,11 +146,39 @@ async function page(name) {
   const env = await page("rmhd3d.html");
 
   // ---- 7. the composite: a `bar` type must save its colour scale -------------
-  // gen2d is the one type that declares `bar`, and it is 3D-only. It needs no data for
-  // this: what is under test is that the SECOND canvas -- the one this.cv.toBlob() cannot
-  // see -- ends up in the file, at the geometry the card itself draws it at.
+  // gen2d is the one type that declares `bar`, and it is 3D-only. What is under test is
+  // that the SECOND canvas -- the one this.cv.toBlob() cannot see -- ends up in the file,
+  // at the geometry the card itself draws it at.
   console.log("\n=== the bar composite (rmhd3d.html, gen2d) ===");
   const g = cardOf(env, "gen2d");
+
+  // ---- 7a. before `generate` there is no range, so no bar is composited ------
+  // gen2d's hook returns three empty strings until there is a panel. A colour ramp under
+  // three blank labels states a range the picture does not have, so the save leaves it
+  // out and the plot's own "press generate" is what the file says.
+  const nC0 = composites(env).length, nB0 = env.caps.blobs.length;
+  const empty = env.run("function(c){ return { data: !!gen2d.data, ticks: c.barTicks() }; }", g);
+  env.run("function(c){ c.btnSave.onclick(); }", g);
+  await settle();
+  const bare = env.caps.blobs[nB0];
+  const plot = env.run("function(c){ return { w: c.cv.width, h: c.cv.height }; }", g);
+  ok("a gen2d saved before `generate` has an empty scale, and composites no colour bar",
+     !empty.data && empty.ticks.join("") === "" && composites(env).length === nC0 &&
+     !!bare && bare.size === 4 * plot.w * plot.h,
+     JSON.stringify(empty.ticks) + ", " + (bare && bare.size) + " B vs the plot's " +
+       4 * plot.w * plot.h);
+  env.run("function(c){ c.recClear('png'); }", g);
+
+  // ---- 7b. with a panel on it, the scale goes into the file ------------------
+  // A generate sweep is minutes of synthetic solver (check2dspec drives that); what this
+  // needs is a PANEL, so the card is handed one directly and asked for its own ticks.
+  const ticks = env.run(`function(c){
+    gen2d.data = { rows: [[1, 2, 0], [0.5, 0.5, 0]], crows: null, nzb: 1, parKfac: 1,
+                   t: 1.5, bands: [{ kc: 1 }, { kc: 2 }] };
+    return c.barTicks(); }`, g);
+  ok("  ... and with a panel on the card its three labels are real numbers",
+     ticks.length === 3 && ticks.every(s => s && s.length) && ticks[0] !== ticks[2],
+     ticks.join(" .. "));
   const before = composites(env).length;
   const nDl = env.caps.downloads.length, nBl = env.caps.blobs.length;
   env.run("function(c){ c.btnSave.onclick(); }", g);
@@ -177,6 +205,32 @@ async function page(name) {
   ok("  ... and the bytes that came out are that composite, not the plot alone",
      !!blob && blob.size === 4 * comp.width * comp.height,
      blob && blob.size + " B vs " + (comp && 4 * comp.width * comp.height));
+
+  // ---- the LABEL GEOMETRY, which is the one piece of arithmetic the shared cbarDraw
+  // owns. Nothing else pins it: the strip's rectangle, the labels' baseline 3*sc under
+  // it, their left / centre / right anchors on that rectangle and the 9*sc font are what
+  // a later edit would move in every saved picture at once, silently. stubenv logs every
+  // fillText with the alignment and font in force, so this reads them off the REAL file's
+  // canvas rather than calling cbarDraw with a hand-built context.
+  const px = 6 * sc, bw = CB.w * sc, bh = CB.h * sc;
+  const bx = geom.w - bw - 2 * px, by = geom.h + px;
+  const rect = comp ? comp.__cx2d.__draws[1].at : [];
+  ok("  ... the strip itself is drawn at (w - bar - 2*px, plot height + px), bar-sized",
+     rect.length === 4 && rect[0] === bx && rect[1] === by && rect[2] === bw && rect[3] === bh,
+     JSON.stringify(rect) + " want " + JSON.stringify([bx, by, bw, bh]));
+  const tx = comp ? comp.__cx2d.__texts : [];
+  ok("  ... its three labels sit 3*sc UNDER the strip, on one baseline",
+     tx.length === 3 && tx.every(t => t.y === by + bh + 3 * sc && t.base === "top"),
+     tx.map(t => t.y).join(",") + " want " + (by + bh + 3 * sc));
+  ok("  ... anchored left / centre / right on the strip's own edges",
+     tx.length === 3 && tx[0].x === bx && tx[0].align === "left" &&
+     tx[1].x === bx + bw / 2 && tx[1].align === "center" &&
+     tx[2].x === bx + bw && tx[2].align === "right",
+     tx.map(t => t.align + "@" + t.x).join(" "));
+  ok("  ... in the 9*sc monospace, carrying the card's own tick text",
+     tx.length === 3 && tx.every(t => t.font.indexOf(Math.round(9 * sc) + "px ui-monospace") === 0) &&
+     tx.map(t => t.t).join("|") === ticks.map(s => s.replace(/&minus;/g, "−")).join("|"),
+     tx.map(t => t.t).join("|") + "  " + (tx[0] && tx[0].font));
   const st = stripOf(env, g);
   ok("  ... delivered to the strip, under the plot's own colour scale, with no download",
      st.on && st.foot && st.rows === 1 && st.barFirst &&
@@ -200,8 +254,31 @@ async function page(name) {
   // ---- 8. the display card's own path is unchanged ---------------------------
   const d = env.run("function(){ return cards.disp[0]; }");
   const nDlD = env.caps.downloads.length;
+  const nCD = composites(env).length;
   env.run("function(d){ d.btnSave.onclick(); }", d);
   await settle();
+  // the other caller of the shared cbarDraw: the stamp over the bottom right of the field.
+  // Its plate is the card's own (w - bar - 2*px, h - bar - 3.4*px) at sc = w/400, and the
+  // labels are the SAME 3*sc under the strip -- the identity that makes cbarDraw one
+  // function rather than two.
+  const dc = composites(env)[nCD];
+  const dg = env.run("function(d){ return { w: d.gw, h: d.gh, on: d.barOn(),"
+    + " ticks: d.barTicks() }; }", d);
+  const dsc = Math.max(1, dg.w / 400), dpx = 6 * dsc;
+  const dbw = CB.w * dsc, dbh = CB.h * dsc;
+  const dbx = dg.w - dbw - 2 * dpx, dby = dg.h - dbh - 3.4 * dpx;
+  const drect = dc ? (dc.__cx2d.__draws[2] || {}).at || [] : [];
+  const dtx = dc ? dc.__cx2d.__texts : [];
+  ok("  ... the display card's stamp puts the same strip at its own bottom-right plate",
+     dg.on && drect.length === 4 && drect[0] === dbx && drect[1] === dby &&
+     drect[2] === dbw && drect[3] === dbh,
+     JSON.stringify(drect) + " want " + JSON.stringify([dbx, dby, dbw, dbh]));
+  ok("  ... with its labels 3*sc under it, left / centre / right, through the same cbarDraw",
+     dtx.length === 3 && dtx.every(t => t.y === dby + dbh + 3 * dsc) &&
+     dtx[0].x === dbx && dtx[1].x === dbx + dbw / 2 && dtx[2].x === dbx + dbw &&
+     dtx.map(t => t.align).join(",") === "left,center,right" &&
+     dtx.every(t => t.font.indexOf(Math.round(9 * dsc) + "px ui-monospace") === 0),
+     dtx.map(t => t.align + "@" + t.x + "," + t.y).join(" "));
   const stD = env.run(`function(d){ const s = d.resEl.png;
     return { on: !!s, foot: !!s && s.parentNode === d.foot }; }`, d);
   ok("the display card still delivers its save to the same strip, through the same code",

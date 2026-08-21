@@ -3485,11 +3485,29 @@ function _dosStamp(d) {
 // is entitled to decode the name as CP437, which mangles anything non-ASCII. ZIP64 is
 // not implemented -- every field here is 32-bit, which caps an archive at 4 GB, an order
 // of magnitude above the largest thing this page can produce (a 3D field export).
+//
+// A member's data is BYTES, and `zipBytes` is what makes that true of whatever came in:
+// a typed array's `length` is its ELEMENT count and `Uint8Array.set` value-CONVERTS, so a
+// Float32Array written as it stands would land as its values rounded to bytes, with a
+// matching CRC over the same wrong data -- a valid archive no reader could flag. A view
+// is therefore re-read over its own byte range and anything that is not one is refused,
+// because a string or a plain array has no byte meaning this function may pick for it.
+function zipBytes(d) {
+  if (d == null) return new Uint8Array(0);
+  if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+  if (Object.prototype.toString.call(d) === "[object ArrayBuffer]") return new Uint8Array(d);
+  throw new Error("zip member data must be a typed array or an ArrayBuffer");
+}
 function zipStore(members) {
   const enc = new TextEncoder();
   const ms = (members || []).map(m => {
-    const data = m.data || new Uint8Array(0);
-    return { name: enc.encode(String(m.name)), data: data, crc: crc32(data) };
+    const data = zipBytes(m.data);
+    const name = enc.encode(String(m.name));
+    // the name length is a 16-bit field in both headers, so a longer name would be
+    // written truncated modulo 65536 and every reader would refuse the archive
+    if (name.length > 0xffff)
+      throw new Error("zip member name is " + name.length + " bytes, past the 16-bit limit");
+    return { name: name, data: data, crc: crc32(data) };
   });
   let total = 0, cdSize = 0;
   for (const m of ms) {
@@ -3532,6 +3550,15 @@ function zipStore(members) {
 // being injected, and what the run started from. ONE builder for both exports, so the
 // archive of PNGs and the field export cannot describe the same run differently; `extra`
 // is merged over the result (item 4's axis order and dealiasing note).
+// What the run started FROM, which for one preset is not a name. An expression IC's whole
+// content is the two typed formulas (IO_PLAN item 1 uploads them as they stand), so
+// recording `expr` alone would describe nothing -- the exact failure this manifest exists
+// to prevent. A drawn `custom` IC cannot be serialized compactly and stays a bare name.
+function _icRecord() {
+  const preset = _uiVal("selIC"), r = { preset: preset, demo: _uiVal("selPreset") };
+  if (preset === IC_EXPR) { r.phi = icExprSrc("tExprP"); r.psi = icExprSrc("tExprM"); }
+  return r;
+}
 function runManifest(extra) {
   const q = liveParams();
   const m = {
@@ -3547,7 +3574,7 @@ function runManifest(extra) {
       ? { on: true, epsPlus: q.epsP, epsMinus: q.epsM, locked: _uiOn("cbEpsLock"),
           shell: q.fshell ? [q.fshell[0], q.fshell[1]] : null, tau: q.tau }
       : { on: false },
-    ic: { preset: _uiVal("selIC"), demo: _uiVal("selPreset") },
+    ic: _icRecord(),
     seed: q.seed, cfl: q.cfl
   };
   if (typeof q.zdiss === "number") m.dissipation.zdiss = q.zdiss;    // 3D only
@@ -5240,7 +5267,13 @@ class ChartCard {
     const T = CHART_TYPES[this.type()];
     const src = this.cv;
     if (!src.toBlob) return Promise.resolve(null);
-    if (!this.barCv) return new Promise(r => src.toBlob(r, "image/png"));
+    // A bar with no labels on it is a scale with no range: gen2d before `generate` has no
+    // panel, so its hook returns three empty strings. Composited it would put a colour
+    // ramp under the plot claiming a range the picture does not have -- so it is left out
+    // entirely, and the plot's own "press generate" is what the file says.
+    const ticks = this.barTicks();
+    if (!this.barCv || !ticks.some(s => s))
+      return new Promise(r => src.toBlob(r, "image/png"));
     const sc = Math.max(1, src.width / T.w);        // the dpr the canvas was sized at
     const px = 6 * sc, bw = CBAR_W * sc, bh = CBAR_H * sc;
     const cv = document.createElement("canvas");
@@ -5251,8 +5284,7 @@ class ChartCard {
     c.fillStyle = "#0f1115";                        // chartFrame's plate, under both parts
     c.fillRect(0, 0, cv.width, cv.height);
     c.drawImage(src, 0, 0);
-    cbarDraw(c, this.barCv, this.barTicks(), cv.width - bw - 2 * px, src.height + px,
-             bw, bh, sc);
+    cbarDraw(c, this.barCv, ticks, cv.width - bw - 2 * px, src.height + px, bw, bh, sc);
     return new Promise(r => cv.toBlob(r, "image/png"));
   }
   // ... and the file goes where a display card's picture goes: onto the card's own strip,
