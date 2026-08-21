@@ -3291,8 +3291,10 @@ function recCodec(w, h) {
 // and, with the first chunk, a decoderConfig.description holding the avcC payload -- the
 // SPS/PPS the stsd box needs. Without it we would get Annex-B and no avcC, and nothing
 // would play; the recording bails to leg 2 if a first chunk ever arrives without one.
-const recWCConfig = cv =>
-  ({ codec: recCodec(cv.width, cv.height), width: cv.width, height: cv.height,
+// It takes a SIZE, not a canvas: since IO_PLAN item 5 the frame being encoded is not
+// always one canvas -- an all-displays take configures the encoder for the COMPOSITE.
+const recWCConfig = (w, h) =>
+  ({ codec: recCodec(w, h), width: w, height: h,
      framerate: REC_FPS, bitrate: REC_BITRATE, bitrateMode: "constant",
      avc: { format: "avc" } });
 let recWCOff = false;                    // set when this engine proves the leg unusable
@@ -3328,15 +3330,18 @@ function recBufProbe() {
 // button's visibility is decided in the card's constructor, before the canvas has been
 // sized -- so a size the encoder dislikes is caught by the probe instead, which is
 // exactly the path an unsupported config already takes.
-const recWCSupported = cv =>
-  typeof window !== "undefined" && !recWCOff && !!window.VideoEncoder && !!window.VideoFrame && !!cv;
+// `src` is whatever the take will read pixels off -- a card's canvas, or (item 5) the
+// composite geometry of several: this asks about the ENGINE, and only that there is
+// something to record at all.
+const recWCSupported = src =>
+  typeof window !== "undefined" && !recWCOff && !!window.VideoEncoder && !!window.VideoFrame && !!src;
 // VideoEncoder.isConfigSupported is async, so the probe cannot happen inside a click
 // handler's synchronous part: it runs on the first press, is cached per config, and a
 // rejection (or a throw, on an engine whose isConfigSupported is missing or fussy) means
 // a silent fall back to leg 2 rather than a dead button.
-function recWCProbe(cv) {
-  if (!(cv.width > 0) || !(cv.height > 0)) return Promise.resolve(null);
-  const cfg = recWCConfig(cv), key = cfg.codec + " " + cfg.width + "x" + cfg.height;
+function recWCProbe(w, h) {
+  if (!(w > 0) || !(h > 0)) return Promise.resolve(null);
+  const cfg = recWCConfig(w, h), key = cfg.codec + " " + cfg.width + "x" + cfg.height;
   let p = recProbes.get(key);
   if (!p) {
     p = Promise.resolve()
@@ -3624,6 +3629,145 @@ function npzFields(phi, psi, g) {
 // ---------------------------------------------------------------------------
 // the MP4 muxer (leg 1 of the recorder)
 // ===========================================================================
+// the tiler: N display cards -> ONE video frame (IO_PLAN item 5)
+// ===========================================================================
+// A recording of every open display card is ONE recorder with N sources, one slot clock
+// and one file -- two independent recorders would drift, and a side-by-side that dropped
+// a frame on one side only is worse than no recording at all. Everything below is the
+// GEOMETRY and the PIXELS of that; the slot clock, the pool and the encode chain are the
+// Recorder's, unchanged, with N = 1 (a card's own `rec`) as the one-tile case of the
+// same code rather than a second implementation.
+//
+// The layout record the whole item is written in terms of:
+//   { n, sw, sh, step, tw, th, cols, rows, w, h, tiles: [{ card, x, y, label }], bpr }
+// `sw`/`sh` are one SOURCE canvas in pixels, `tw`/`th` one tile in the composite (the
+// source, point-sampled by `step`), `w`/`h` the composite frame, and each tile's `x`/`y`
+// its top-left pixel in it.
+const REC_LBL_PAD = 8;                   // a label patch's inset inside its own tile
+const REC_LBL_PX = 18;                   // ... and its type size
+// One row or one column, whichever comes out closer to square. With CARD_MAX_DISP = 3
+// tiles that is the whole rule and there are never ragged or empty tiles. All the cards
+// show the same run, so their canvases match by construction -- ASSERT that rather than
+// scale: sources of different sizes are a bug upstream, not a layout to solve, and this
+// returns null instead of silently letterboxing one of them.
+function recTiles(cards) {
+  const cs = (cards || []).filter(c => c && !c.dead && c.cv && c.cv.width > 0 && c.cv.height > 0);
+  const n = cs.length;
+  if (!n) return null;
+  const sw = cs[0].cv.width, sh = cs[0].cv.height;
+  for (const c of cs) if (c.cv.width !== sw || c.cv.height !== sh) return null;
+  // the two candidate shapes, compared on how far from square each comes out. A tie goes
+  // to the ROW: two square panels side by side is the case this feature exists for.
+  const ratio = (w, h) => Math.max(w, h) / Math.min(w, h);
+  const cols = ratio(sw, n * sh) < ratio(n * sw, sh) ? 1 : n;
+  return recLay(cs, sw, sh, cols, 1);
+}
+// the layout record itself, given the tile grid and the point-sampling step
+function recLay(cs, sw, sh, cols, step) {
+  const n = cs.length, rows = Math.ceil(n / cols);
+  const tw = Math.max(1, Math.floor(sw / step)), th = Math.max(1, Math.floor(sh / step));
+  const tiles = cs.map((c, i) => ({ card: c, x: (i % cols) * tw, y: Math.floor(i / cols) * th,
+                                    label: null }));
+  return { n: n, sw: sw, sh: sh, step: step, tw: tw, th: th, cols: cols, rows: rows,
+           w: cols * tw, h: rows * th, tiles: tiles, bpr: 0 };
+}
+// ... and the same tiles at HALF size, which is what the press falls back to when the
+// encoder refuses the full composite (three 1024s in a row is 3072 px wide, past what
+// some mobile encoders take). Halving the TILES, never the card list: dropping a card to
+// fit would be a silent cap on what the visitor asked for.
+function recHalve(L) {
+  return L && L.step === 1 ? recLay(L.tiles.map(t => t.card), L.sw, L.sh, L.cols, 2) : null;
+}
+// A tile's label, rendered ONCE at recording start into a small opaque RGBA patch that
+// the composite blits in per frame. There is no 2D context on the bytes path and a
+// per-frame canvas round trip for text is exactly the main-thread cost RECASYNC removed,
+// so the text is drawn here, on a canvas that lives for one call. An engine (or a
+// harness) without a usable 2D context simply gets no labels -- degrade silently.
+// `fmt` is the frame's own byte order: the canvas hands back RGBA, so BGRX needs the two
+// channels swapped, once, here rather than per pixel per frame.
+function recLabelPatch(text, fmt) {
+  try {
+    if (typeof document === "undefined") return null;
+    const cv = document.createElement("canvas");
+    const c = cv.getContext("2d");
+    if (!c || !c.getImageData) return null;
+    const font = "600 " + REC_LBL_PX + "px ui-sans-serif, system-ui, sans-serif";
+    c.font = font;
+    const tw = Math.ceil(c.measureText(text).width);
+    const pw = tw + 2 * REC_LBL_PAD, ph = Math.round(1.9 * REC_LBL_PX);
+    cv.width = pw; cv.height = ph;
+    const cx = cv.getContext("2d");
+    cx.font = font; cx.textBaseline = "middle"; cx.textAlign = "left";
+    cx.fillStyle = "#14161a";                          // an opaque plate: the blit is a
+    cx.fillRect(0, 0, pw, ph);                         // memcpy, not an alpha composite
+    cx.fillStyle = "#f0f2f5";
+    cx.fillText(text, REC_LBL_PAD, ph / 2);
+    const d = cx.getImageData(0, 0, pw, ph).data;
+    const b = new Uint8Array(pw * ph * 4);
+    const swap = fmt === "BGRX";
+    for (let i = 0; i < pw * ph; i++) {
+      const s = 4 * i;
+      b[s] = swap ? d[s + 2] : d[s]; b[s + 1] = d[s + 1]; b[s + 2] = swap ? d[s] : d[s + 2];
+      b[s + 3] = 255;                                  // the X channel: opaque, always
+    }
+    return { w: pw, h: ph, bytes: b };
+  } catch (e) { return null; }
+}
+// give every tile its field name, once, at start. Only a MULTI-source take is labelled:
+// a card's own recording is of one field the visitor picked and has never carried text,
+// and item 5 does not change what `rec` produces.
+function recLabels(L, fmt) {
+  if (!L || L.n < 2) return L;
+  for (const t of L.tiles) {
+    const m = t.card.barMode >= 0 ? t.card.barMode : t.card.sel();
+    t.label = recLabelPatch(DISP_SLUG[m] || "field", fmt);
+  }
+  return L;
+}
+// one patch into the frame, clipped to the frame's own edges
+function recBlitPatch(out, row, p, x, y, h) {
+  const w4 = 4 * Math.min(p.w, (row - 4 * x) / 4 | 0);
+  if (w4 <= 0) return;
+  for (let py = 0; py < p.h && y + py < h; py++)
+    out.set(p.bytes.subarray(py * p.w * 4, py * p.w * 4 + w4), (y + py) * row + 4 * x);
+}
+// THE COMPOSITE. Each source's mapped bytes copied row-wise into one frame buffer at its
+// tile offset, then that tile's label blitted over it -- N memcpy loops and no 2D canvas,
+// which is what keeps the WebCodecs leg on the path RECASYNC put it on. `ranges` are the
+// mapped ArrayBuffers, in tile order.
+//
+// The one-tile, tight-row, unlabelled slot -- a card's own `rec` -- hands the mapped
+// range straight to the VideoFrame constructor with no copy at all, exactly as it always
+// did: one tile covering the whole frame IS the composite, and the fast case of it.
+function recCompose(L, ranges) {
+  const row = L.w * 4;
+  if (L.n === 1 && L.step === 1 && L.bpr === row && !L.tiles[0].label)
+    return new Uint8Array(ranges[0]);
+  const out = new Uint8Array(row * L.h);
+  for (let i = 0; i < L.n; i++) {
+    const t = L.tiles[i], x0 = 4 * t.x;
+    if (L.step === 1) {
+      const src = new Uint8Array(ranges[i]);
+      for (let y = 0; y < L.th; y++)
+        out.set(src.subarray(y * L.bpr, y * L.bpr + 4 * L.tw), (t.y + y) * row + x0);
+    } else {
+      // POINT-SAMPLED down to half size: every other pixel of every other row, one
+      // 32-bit pixel at a time. The alternative is a resample per frame through a canvas
+      // or the GPU -- the cost this leg exists to avoid -- and the result strip says the
+      // tiles were downscaled rather than pretending they are full resolution.
+      const s32 = new Uint32Array(ranges[i]), d32 = new Uint32Array(out.buffer);
+      const sp = L.bpr / 4, dp = row / 4, dx = x0 / 4;
+      for (let y = 0; y < L.th; y++) {
+        const so = y * L.step * sp, dof = (t.y + y) * dp + dx;
+        for (let x = 0; x < L.tw; x++) d32[dof + x] = s32[so + x * L.step];
+      }
+    }
+    if (t.label) recBlitPatch(out, row, t.label, t.x + REC_LBL_PAD, t.y + REC_LBL_PAD, L.h);
+  }
+  return out;
+}
+
+// ===========================================================================
 // Recorder -- the capture legs of a display card (render audit, 2026-08-12)
 // ===========================================================================
 // This was ~400 lines and fifteen methods inside DisplayCard, more than half of a class
@@ -3640,12 +3784,45 @@ function npzFields(phi, psi, g) {
 // The card keeps `wc` / `rec` / `recBusy` / `recStop` as getters onto this object, so the
 // frame loop's REC_DEBUG readout, destroy() and every devtools leg that reads a card's
 // live recording state carry on reading exactly what they read before.
+//
+// Since IO_PLAN item 5 a recorder has a HOST and N SOURCES. The host owns the button, the
+// result strip and the `dead` flag -- a display card, or the page-level all-displays host
+// (`recAll`, which is nobody's card) -- and the sources are the display cards whose
+// canvases the take reads. A card's own `rec` is `host = the card, sources = [the card]`,
+// i.e. the one-tile case of this code and not a separate path: everything below is
+// written over `recTiles`' layout, whose N = 1 geometry is the frame a card has always
+// recorded.
 class Recorder {
-  constructor(card) {
-    this.card = card;
+  constructor(host, srcs) {
+    this.host = host;
+    // the cards this recorder would capture RIGHT NOW (a live take freezes its own list
+    // into W.tiles at start: see recStartWC)
+    this.srcs = srcs || (() => [host]);
     this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
     this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
     this.recBusy = false;                 // a config probe is in flight
+  }
+  // The ONE canvas the canvas-side paths can use: leg 2 records a canvas STREAM and the
+  // watchdog builds a VideoFrame from a canvas, and neither can composite several WebGPU
+  // canvases without a 2D context to do it in. So a multi-source take has none, and every
+  // caller that needs one degrades on `null` -- which is how "the all-displays recording
+  // is offered only where leg 1 runs" is expressed once instead of branch by branch.
+  soloCv() { const s = this.srcs(); return s.length === 1 && s[0].cv ? s[0].cv : null; }
+  // the frame sizes this press will accept, in order: the composite as it stands and, if
+  // the encoder refuses it, the same tiles at HALF size (IO_PLAN item 5 -- three 1024s in
+  // a row is 3072 px wide, past what some mobile encoders take). A single-source take
+  // offers only its own size: halving one card's recording would change what `rec` has
+  // always produced, and leg 2 is that press's fallback.
+  recCandidates() {
+    const L = recTiles(this.srcs());
+    return !L ? [] : (L.n > 1 ? [L, recHalve(L)] : [L]);
+  }
+  // walk them in order, first accepted config wins; null when the engine refuses them all
+  recProbe(cands, i) {
+    const L = cands[i || 0];
+    if (!L) return Promise.resolve(null);
+    return recWCProbe(L.w, L.h)
+      .then(cfg => cfg ? { cfg: cfg, lay: L } : this.recProbe(cands, (i || 0) + 1));
   }
   // toggle: start recording the field canvas, or stop the live recording -- on whichever
   // leg the engine supports (WebCodecs preferred; see the note by REC_FPS). The 30 s
@@ -3655,17 +3832,36 @@ class Recorder {
   recToggle() {
     if (this.wc || this.rec) { this.recEnd(); return; }
     if (this.recBusy) return;                   // a probe is already in flight
-    if (recWCSupported(this.card.cv)) {
+    const cands = this.recCandidates();
+    if (recWCSupported(cands[0])) {
       this.recBusy = true;
-      recWCProbe(this.card.cv).then(cfg => {
+      this.recProbe(cands).then(r => {
         this.recBusy = false;
-        if (this.card.dead || this.wc || this.rec) return;
-        if (cfg && recWCSupported(this.card.cv)) this.recStartWC(cfg);
-        else if (recSupported(this.card.cv)) this.recStartMR();
+        if (this.host.dead || this.wc || this.rec) return;
+        // a composite exists only on the bytes path -- there is nothing to composite
+        // INTO on the canvas path -- and `recBufOff` is settled by the probe above
+        if (r && recWCSupported(r.lay) && (r.lay.n === 1 || (!recBufOff && device)))
+          this.recStartWC(r.cfg, r.lay);
+        else if (recSupported(this.soloCv())) this.recStartMR();
+        else this.recRefused(cands[0]);
       });
       return;
     }
-    if (recSupported(this.card.cv)) this.recStartMR();
+    if (recSupported(this.soloCv())) this.recStartMR();
+    else this.recRefused(cands[0]);
+  }
+  // nothing could start. A card's `rec` button is simply absent on such an engine, so
+  // this is the multi-source press talking: say what refused it rather than leaving a
+  // button that does nothing (the no-silent-failure half of the no-silent-caps rule).
+  recRefused(L) {
+    const n = L ? L.n : this.srcs().length;
+    if (n < 2) return;
+    this.host.recIdle();
+    showStatus(L
+      ? "this browser's video encoder cannot take " + L.w + "×" + L.h +
+        " (or cannot encode from a buffer): record the cards one at a time"
+      : "these display cards are not the same size, so they cannot be tiled into one video",
+      "err");
   }
   recEnd() {
     if (this.wc) this.recStopWC(false);
@@ -3680,11 +3876,12 @@ class Recorder {
     // recToggle: a press whose probe then fails to start anything (a WebCodecs-only
     // engine that dislikes this canvas size) must not have thrown away the one file the
     // visitor still had (adversarial review 2026-08-12, MINOR 1).
-    this.card.recClear("video");
+    this.host.recClear("video");
+    const cv = this.soloCv();                  // leg 2 is single-source by construction
     const mime = recMime(), chunks = [];
-    const r = new window.MediaRecorder(this.card.cv.captureStream(REC_FPS),
+    const r = new window.MediaRecorder(cv.captureStream(REC_FPS),
                                        mime ? { mimeType: mime } : undefined);
-    const name = shotName(this.card.barMode, recExt(mime));
+    const name = shotName(this.host.barMode, recExt(mime));
     // this leg hands back an opaque container built by the engine, so the frames in it are
     // not ours to count: wall clock from start() to onstop is the only length it can
     // honestly quote (leg 1, which writes the file itself, counts samples instead)
@@ -3693,19 +3890,24 @@ class Recorder {
     r.onstop = () => {
       clearTimeout(this.recStop);
       this.rec = null; this.recStop = 0;
-      this.card.recIdle();
-      this.card.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
+      this.host.recIdle();
+      this.host.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
                      (Date.now() - t0) / 1000);
     };
     this.rec = r;
     r.start();
-    this.card.recLive();
+    this.host.recLive();
     this.recStop = setTimeout(() => { if (this.rec === r) r.stop(); }, REC_MAX_MS);
   }
 
   // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
-  recStartWC(cfg) {
-    this.card.recClear("video");               // same rule as recStartMR: replace on START
+  // `L` is the take's LAYOUT (recTiles, possibly halved by the probe): its tiles are the
+  // sources, FROZEN here. A card opened mid-take is not in this recording -- the encoder
+  // is configured for one frame size and the composite geometry cannot move under it --
+  // and a card CLOSED mid-take ends the take with the file written (recAll.cardGone).
+  recStartWC(cfg, L) {
+    this.host.recClear("video");               // same rule as recStartMR: replace on START
+    recLabels(L, REC_BUF_FMT[canvasFormat]);   // one patch per tile, rendered ONCE (item 5)
     // ONE clock sample feeds the cadence fields: `due` is the wall-clock time of the next
     // capture slot (recCapture). `lastRaf`/`maxGap` are DIAGNOSTIC only since round 2 --
     // the watchdog parks on visibility, not on a heartbeat -- and `rafN`/`wdN` count which
@@ -3715,7 +3917,13 @@ class Recorder {
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
                 tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
-                w: this.card.cv.width, h: this.card.cv.height, name: shotName(this.card.barMode, "mp4"),
+                // the frame the encoder is configured for is the COMPOSITE (item 5), and
+                // `sw`/`sh` are one source canvas: for a card's own take they are equal,
+                // which is the same single frame this always recorded. `cv` is the ONE
+                // canvas the sync paths may read, or null when there are several.
+                lay: L, tiles: L.tiles, sw: L.sw, sh: L.sh, w: L.w, h: L.h,
+                cv: this.soloCv(),
+                name: L.n > 1 ? capName("displays", "mp4") : shotName(this.host.barMode, "mp4"),
                 // ---- RECASYNC_PLAN (2026-08-12): the GPU-readback capture path --------
                 // `bufOn` is decided ONCE per take from the settled probe latch, so a
                 // recording never changes paths under its own feet; `fmt` is the
@@ -3725,7 +3933,8 @@ class Recorder {
                 // path first uses it, which is also what keeps the sync path's stop
                 // exactly as it was. `gone` is set when the pool is destroyed: a map
                 // resolving after that must find it and do nothing.
-                bufOn: !recBufOff && !!this.card.ctx && !!device, fmt: REC_BUF_FMT[canvasFormat],
+                bufOn: !recBufOff && L.tiles.every(t => !!t.card.ctx) && !!device,
+                fmt: REC_BUF_FMT[canvasFormat],
                 pool: null, bpr: 0, pad: false, pend: 0, onDrain: null, gone: false,
                 chain: null, tL: 0,         // max capture->encode lag in ms (recdebug)
               };
@@ -3758,7 +3967,7 @@ class Recorder {
     // hidden page or under the editor view (the park condition lives in recTick). Its
     // extra render() then costs only where there is no visible display to stutter.
     W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
-    this.card.recLive();
+    this.host.recLive();
     this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
   }
   // The ONE place a recording frame is encoded, whichever feeder brought it (RECRAF_PLAN,
@@ -3793,7 +4002,7 @@ class Recorder {
       init.format = src.format; init.codedWidth = src.w; init.codedHeight = src.h;
       f = new window.VideoFrame(src.bytes, init);
     } else {
-      f = new window.VideoFrame(this.card.cv, init);
+      f = new window.VideoFrame(W.cv, init);
     }
     const t2 = performance.now();
     // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
@@ -3809,33 +4018,48 @@ class Recorder {
     return true;                            // fed: the callers' rafN/wdN tallies key on this
   }
   // ---- the buffer capture path (RECASYNC_PLAN, 2026-08-12) --------------------
-  // The hot half: copy this card's canvas texture into a free staging buffer and submit,
+  // The hot half: copy each source canvas's texture into a free staging buffer and submit,
   // all synchronously in the render's own task (getCurrentTexture is transient), then let
   // go. Microseconds of command encoding instead of the 15-17 ms a VideoFrame-from-canvas
   // cost the phone -- the readback itself happens on the GPU's clock and lands in
   // recEncodeMapped a beat later, which is fine: the timestamps are ours, not the map's.
+  //
+  // ALL-OR-NOTHING (IO_PLAN item 5): every source is checked before ANYTHING is committed,
+  // and the pool hands out a slot's worth of buffers at once, so a slot is captured whole
+  // or dropped whole and `W.n` does not advance either way. A composite missing one tile
+  // would show a stale panel beside a live one -- a picture that lies about the run, which
+  // the RECRAF/RECASYNC honesty rule does not cover and would not excuse. Fewer frames,
+  // never a lying sample table AND never a lying frame.
   recCaptureBuf(W) {
     const t1 = performance.now();
-    // the canvas can be resized under a live take (a preset or a grid change rebuilds the
-    // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
-    // a validation error rather than a frame. Drop the slot instead -- the honest-length
-    // rule again -- and let the take end at the size it started.
-    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { W.drop++; return; }
+    // a canvas can be resized under a live take (a preset or a grid change rebuilds the
+    // cards) and a card can be closed: the encoder is configured for W.w x W.h, so a copy
+    // of the new size would be a validation error rather than a frame. Drop the slot
+    // instead -- the honest-length rule again -- and let the take end at the size it
+    // started. (A closed card ENDS an all-displays take; this covers the slot in between.)
+    for (const t of W.tiles)
+      if (t.card.dead || t.card.cv.width !== W.sw || t.card.cv.height !== W.sh) { W.drop++; return; }
     if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
     let s = null;
     for (const e of W.pool) if (!e.busy) { s = e; break; }
-    // all three buffers are still waiting on their maps: the readback is genuinely behind,
-    // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
+    // every slot in the pool is still waiting on its maps: the readback is genuinely
+    // behind, so this slot is lost exactly as an encoder-backpressure slot is. Nothing
+    // waits.
     if (!s) { W.drop++; return; }
     try {
+      // ONE command encoder for the whole slot: N copies, one submit, so the sources are
+      // read at one point of the frame rather than spread across N submissions.
       const ce = device.createCommandEncoder();
-      ce.copyTextureToBuffer({ texture: this.card.ctx.getCurrentTexture() },
-                             { buffer: s.b, bytesPerRow: W.bpr, rowsPerImage: W.h },
-                             { width: W.w, height: W.h, depthOrArrayLayers: 1 });
+      W.tiles.forEach((t, i) =>
+        ce.copyTextureToBuffer({ texture: t.card.ctx.getCurrentTexture() },
+                               { buffer: s.b[i], bytesPerRow: W.bpr, rowsPerImage: W.sh },
+                               { width: W.sw, height: W.sh, depthOrArrayLayers: 1 }));
       device.queue.submit([ce.finish()]);
     } catch (e) {
       // an engine that accepted the configure but not the copy: fall back to the sync
-      // canvas path for the rest of this take rather than lose every remaining frame
+      // canvas path for the rest of this take rather than lose every remaining frame.
+      // A composite has no sync path (W.cv is null), so there it simply keeps dropping --
+      // and the file it writes is short and honest rather than half-composited.
       W.bufOn = false; W.drop++;
       return;
     }
@@ -3847,32 +4071,55 @@ class Recorder {
     // something to rely on, VideoEncoder requires monotonic timestamps, and mp4Mux writes
     // a UNIFORM stts (checkmp4 asserts equal deltas) -- so index, timestamp and keyframe
     // are all assigned at ENCODE time, inside one promise chain whose steps cannot
-    // interleave. Whichever capture's bytes arrive first is simply frame n: a dropped or
+    // interleave. Whichever SLOT's bytes arrive first is simply frame n: a dropped or
     // failed capture leaves fewer frames and NO hole in the sample table.
-    s.b.mapAsync(GPUMapMode.READ).then(
-      () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
-      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
+    //
+    // The slot's N maps are joined before it takes its place in the chain (allSettled,
+    // not all: a slot whose maps half-failed must still be waited out, or a buffer left
+    // mapped would be handed to a later slot).
+    Promise.allSettled(s.b.map(b => b.mapAsync(GPUMapMode.READ))).then(rs => {
+      if (rs.every(r => r.status === "fulfilled")) {
+        W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); });
+      } else {
+        this.recSlotFree(s, rs.map(r => r.status === "fulfilled"));
+        if (!W.gone) W.drop++;
+        this.recPend(W);
+      }
+    });
   }
-  // three staging buffers, made on the first capture of a take (a take that never captures
-  // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
-  // multiple of 256: at every preset size the row is already aligned, but the box is
-  // user-sizable, so the padded case is real and recEncodeMapped compacts it.
+  // REC_POOL slots deep, each slot holding one staging buffer PER SOURCE, made on the
+  // first capture of a take (a take that never captures -- pressed and stopped inside one
+  // slot -- allocates nothing). Three slots is still "a couple of frames of readback
+  // latency is normal, three is genuinely behind"; N sources make each slot N buffers, so
+  // a composite take costs N times the staging memory and drops slots on exactly the same
+  // rule. bytesPerRow must be a multiple of 256: at every preset size the row is already
+  // aligned, but the box is user-sizable, so the padded case is real and recCompose
+  // compacts it.
   recPoolMake(W) {
     const pool = [];
     try {
-      W.bpr = Math.ceil(W.w * 4 / 256) * 256;
-      W.pad = W.bpr !== W.w * 4;
+      W.bpr = Math.ceil(W.sw * 4 / 256) * 256;
+      W.pad = W.bpr !== W.sw * 4;
+      W.lay.bpr = W.bpr;                       // the composite reads rows at this pitch
       for (let i = 0; i < REC_POOL; i++)
-        pool.push({ b: device.createBuffer({ size: W.bpr * W.h,
-                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), busy: false });
+        pool.push({ b: W.tiles.map(() => device.createBuffer({ size: W.bpr * W.sh,
+                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })), busy: false });
       W.pool = pool;
       return true;
     } catch (e) {
       // no memory: sync path -- and the buffers a mid-loop throw DID create go back
       // (adversarial review 2026-08-12, MINOR 3)
-      for (const p of pool) { try { p.b.destroy(); } catch (err) {} }
+      for (const p of pool) for (const b of p.b) { try { b.destroy(); } catch (err) {} }
       W.bufOn = false; W.pool = null; return false;
     }
+  }
+  // a slot goes back to the pool: unmap whatever really mapped (`got` null = all of them,
+  // the ordinary path after an encode) and clear the busy flag ONCE, when every buffer in
+  // it has settled -- a half-freed slot handed out again would map an already-mapped
+  // buffer.
+  recSlotFree(s, got) {
+    s.b.forEach((b, i) => { if (!got || got[i]) { try { b.unmap(); } catch (e) {} } });
+    s.busy = false;
   }
   // one capture accounted for, whichever way it ended. When the last one lands, a stop
   // that is waiting on the drain can go on to flush and mux.
@@ -3880,23 +4127,15 @@ class Recorder {
     if (W.pend > 0) W.pend--;
     if (!W.pend && W.onDrain) W.onDrain();
   }
-  // the ASYNC TAIL, running as one step of the chain: the map resolved, so this capture's
-  // bytes exist. On the aligned row the mapped range is handed to the VideoFrame
-  // constructor as it is (the constructor copies), on the padded one the rows are
-  // compacted into a tight buffer first. Then unmap, and the buffer is free again.
+  // the ASYNC TAIL, running as one step of the chain: this slot's maps resolved, so every
+  // source's bytes exist. recCompose stitches them into the one frame the encoder is
+  // configured for -- which, for a single-source take on an aligned row, is the mapped
+  // range itself, handed to the constructor exactly as it always was. Then unmap, and the
+  // slot is free again.
   recEncodeMapped(W, s, tCap) {
     if (W.gone) return;                     // torn down while this sat in the chain
     try {
-      const ab = s.b.getMappedRange();
-      const row = W.w * 4;
-      let bytes;
-      if (W.pad) {
-        bytes = new Uint8Array(row * W.h);
-        const src = new Uint8Array(ab);
-        for (let y = 0; y < W.h; y++) bytes.set(src.subarray(y * W.bpr, y * W.bpr + row), y * row);
-      } else {
-        bytes = new Uint8Array(ab);
-      }
+      const bytes = recCompose(W.lay, s.b.map(b => b.getMappedRange()));
       // capture-submit to encode: the "arrives a beat late" number, ?recdebug's `lag`
       const lag = performance.now() - tCap;
       if (lag > W.tL) W.tL = lag;
@@ -3909,15 +4148,14 @@ class Recorder {
       // 2026-08-12, MINOR 1)
       W.drop++; W.bufOn = false;
     }
-    try { s.b.unmap(); } catch (e) {}
-    s.busy = false;
+    this.recSlotFree(s, null);
   }
   // the pool's ONE teardown, called from every route a recording ends by. `gone` first:
   // the buffers are about to stop existing, so a map still in flight (and the rejection
   // destroy() hands it) must find a recording that wants nothing more from it.
   recPoolFree(W) {
     W.gone = true;
-    for (const e of (W.pool || [])) { try { e.b.destroy(); } catch (err) {} }
+    for (const e of (W.pool || [])) for (const b of e.b) { try { b.destroy(); } catch (err) {} }
     W.pool = null;
   }
   // wait for the captures still in flight before the file is written (RECASYNC_PLAN 5).
@@ -3987,8 +4225,14 @@ class Recorder {
   recTick(W) {
     if (this.wc !== W || W.done) return;
     if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
+    // ... and it feeds only what it can BUILD A FRAME FROM: the sync path takes a
+    // VideoFrame from ONE canvas, and there is no 2D context on this leg to composite
+    // several into. So an all-displays take is not fed while the page is hidden or the
+    // editor is up; it records fewer frames of wall clock, which is the standing honest
+    // failure and not a stretched or half-composited one (IO_PLAN item 5).
+    if (!W.cv) return;
     if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
-    this.card.render();      // same reason as saveShot: getCurrentTexture is transient
+    W.tiles[0].card.render();  // same reason as saveShot: getCurrentTexture is transient
     if (this.recEncodeFrame(W)) W.wdN++;
     // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
     // "the longest stretch NOBODY fed" -- without this, an editor-view stint would report
@@ -4009,7 +4253,7 @@ class Recorder {
     W.done = true;
     clearInterval(W.timer); clearTimeout(this.recStop);
     this.wc = null; this.recStop = 0;
-    this.card.recIdle();
+    this.host.recIdle();
     const fin = () => {
       try { W.enc.close(); } catch (e) {}
       this.recPoolFree(W);      // the staging buffers go here, on every route (RECASYNC 5)
@@ -4017,8 +4261,11 @@ class Recorder {
       // the length is the samples that ended up IN the file over the fixed 30 fps the
       // sample table declares -- honest under the drop-frame guard, where a slow machine
       // records fewer seconds of wall clock than the clip lasts
-      if (mp4) this.card.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
-                              W.chunks.length / REC_FPS);
+      // ... and the note is the one thing the strip has to SAY about a composite: tiles
+      // the encoder made us halve are not the resolution the cards are showing (item 5)
+      if (mp4) this.host.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
+                              W.chunks.length / REC_FPS,
+                              W.lay.step > 1 ? "tiles at half size" : "");
     };
     // flush() delivers the frames the encoder is still holding, so it has to complete
     // before the mux -- and its rejection is not a reason to lose the file either.
@@ -4055,8 +4302,17 @@ class Recorder {
     // (RECASYNC_PLAN 5, "all routes"): the file is being thrown away, so there is nothing
     // to drain -- captures still in flight resolve into a torn-down W and do nothing.
     this.recPoolFree(W);
-    if (recSupported(this.card.cv) && !this.card.dead) this.recStartMR();
-    else this.card.recIdle();
+    // leg 2 records a canvas STREAM, so it can only take over a single-source take. An
+    // all-displays take has nowhere to go: it goes idle and says so, because the action
+    // was offered on the strength of a leg that has just proved unusable, and (recWCOff
+    // being latched) cardsSync will stop offering it.
+    if (recSupported(this.soloCv()) && !this.host.dead) this.recStartMR();
+    else {
+      this.host.recIdle();
+      if (W.lay.n > 1)
+        showStatus("this browser's video encoder produced no playable MP4: " +
+                   "record the cards one at a time", "err");
+    }
   }
 }
 
@@ -4226,7 +4482,11 @@ const RES_WHAT = { png: "picture", video: "recording", zip: "archive",
 // NOT the thing _barBuild rebuilds), a `resEl` with the slot in it, and the `dead` flag
 // destroy() sets -- so a chart's PNG and a save-all's archive are delivered by this code
 // and not by two more copies of it (IO_PLAN items 2 and 3).
-function cardResult(card, kind, blob, name, seconds) {
+// `note` is one more clause on the same line, for a file that is not simply what the
+// button implies: today only an all-displays recording whose tiles the encoder made us
+// halve (IO_PLAN item 5), which the visitor has to be told about rather than left to
+// discover in the file.
+function cardResult(card, kind, blob, name, seconds, note) {
   if (!blob || !blob.size) return;            // nothing was captured: say nothing
   // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
   // async flush lands here -- and toBlob's callback is just as async, so a card can be
@@ -4238,7 +4498,8 @@ function cardResult(card, kind, blob, name, seconds) {
   const s = _mk("div", "recres", card.foot);
   card.resEl[kind] = s;
   _mk("span", "recinfo", s).innerHTML = recSizeText(blob.size) +
-    (seconds === undefined ? "" : " · " + recLenText(seconds));
+    (seconds === undefined ? "" : " · " + recLenText(seconds)) +
+    (note ? " · " + note : "");
   const dl = _mk("button", "capbtn", s);
   dl.innerHTML = "download";
   dl.title = "download " + name;
@@ -4661,7 +4922,7 @@ class DisplayCard {
 
   // both delegate to the shared strip (cardResult / cardResClear, above DisplayCard):
   // a chart card's save lands on exactly the same line, through the same code
-  recResult(kind, blob, name, seconds) { cardResult(this, kind, blob, name, seconds); }
+  recResult(kind, blob, name, seconds, note) { cardResult(this, kind, blob, name, seconds, note); }
   recClear(kind) { cardResClear(this, kind); }
 
   showArrows() {
@@ -4697,7 +4958,8 @@ class DisplayCard {
   //   - a live take, which reads the texture THIS render produced (RECRAF); a skipped
   //     frame would hand the encoder an expired one.
   needsRender() {
-    return this.dirty || this.seenMark !== stateMark() || !!this.wc || !!this.rec;
+    return this.dirty || this.seenMark !== stateMark() || !!this.wc || !!this.rec ||
+           recAllHas(this);          // ... or the all-displays take reads it (item 5)
   }
   // The overlay canvas carries the arrow field AND (3D, lines view) the box frame and the
   // projected field lines, whose readbacks land at different rates -- so ONE method owns
@@ -4728,6 +4990,7 @@ class DisplayCard {
   }
   destroy() {
     this.dead = true;                     // set BEFORE the stop: recResult reads it
+    recAllGone(this);                     // an all-displays take that reads it ends here
     this.recorder.destroy();              // a live take writes what it has -- see Recorder
     if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
   }
@@ -4999,7 +5262,7 @@ class ChartCard {
     const name = chartName(this.type(), "png");
     p.then(b => this.recResult("png", b, name));
   }
-  recResult(kind, blob, name, seconds) { cardResult(this, kind, blob, name, seconds); }
+  recResult(kind, blob, name, seconds, note) { cardResult(this, kind, blob, name, seconds, note); }
   recClear(kind) { cardResClear(this, kind); }
   // ---- pinned ghost spectra (PINCURVE Phase B) -------------------------------
   // A pin is a snapshot of the curves this card is DRAWING -- post specSeries /
@@ -5046,6 +5309,7 @@ function cardsInit(cfg) {
   saveAll.foot = el("saveAllFoot");
   el("btnSaveAll").onclick = () => saveAllZip();
   el("btnSaveFields").onclick = () => saveFieldsNpz();
+  recAll.init(el("btnRecAll"), el("recAllFoot"));
 }
 
 // ---- save all displays and charts, as one ZIP (IO_PLAN item 3) -------------
@@ -5065,6 +5329,70 @@ function cardsInit(cfg) {
 // 3D field read does not lock the save-all button out.
 const saveAll = { foot: null, resEl: { zip: null, npz: null }, dead: false,
                   busy: false, fbusy: false };
+
+// ---- record every open display, as ONE video (IO_PLAN item 5) ---------------
+// The same shape one row down: a host that is nobody's card, holding the button, the
+// footer the finished file waits on and the `dead` flag cardResult asks for. It records
+// EVERY open display card -- there is no selection UI and none is needed, since
+// CARD_MAX_DISP is 3 and the visitor composes the recording by opening the displays they
+// want. What makes it one recording rather than N is that it is one Recorder with N
+// sources: one slot clock, one timestamp ladder, one encoder, one file (Recorder, above).
+//
+// Its own footer, not save-all's: the two are different files with different lifetimes,
+// and the strip's slots are per host.
+const recAll = {
+  foot: null, resEl: { video: null }, dead: false, btn: null, recorder: null,
+  // the sources: every open display card, in card order, read at the press. A take
+  // freezes them (Recorder.recStartWC) -- what is being recorded cannot change under a
+  // fixed frame size.
+  init(btn, foot) {
+    this.btn = btn; this.foot = foot;
+    this.recorder = new Recorder(this, () => cards.disp.slice());
+    btn.onclick = () => this.recorder.recToggle();
+  },
+  live() { return !!(this.recorder && (this.recorder.wc || this.recorder.rec)); },
+  recLive() { if (this.btn) { this.btn.innerHTML = "stop"; this.btn.classList.add("reclive"); } },
+  recIdle() { if (this.btn) { this.btn.innerHTML = "rec all"; this.btn.classList.remove("reclive"); } },
+  recResult(kind, blob, name, seconds, note) { cardResult(this, kind, blob, name, seconds, note); },
+  recClear(kind) { cardResClear(this, kind); },
+  // the frame loop's one slot clock over every source (renderCards)
+  recCapture() { if (this.recorder) this.recorder.recCapture(); },
+  // offered only with TWO or more display cards -- with one it would duplicate that
+  // card's own `rec` -- and only where leg 1 runs at all: leg 2 records a canvas STREAM,
+  // which cannot cover several WebGPU canvases without compositing through a 2D canvas,
+  // so on a WebCodecs-less engine the action is simply absent and single-card recording
+  // is untouched (the standing degrade-silently rule).
+  sync() {
+    const b = this.btn;
+    if (!b) return;
+    const eng = typeof window !== "undefined" && !recWCOff &&
+                !!window.VideoEncoder && !!window.VideoFrame;
+    b.style.display = eng ? "" : "none";
+    if (!eng || this.live()) return;
+    const L = recTiles(cards.disp);
+    b.disabled = !L || L.n < 2;
+    b.title = b.disabled
+      ? "record every open display as one video -- open a second display card first"
+      : "record all " + L.n + " displays as one MP4: " + L.n + " tiles, " +
+        L.w + "×" + L.h + " (stops itself after 30 s)";
+  }
+};
+// is this card a source of the LIVE all-displays take? Its texture has to be fresh for
+// the slot, so the render gate has to know (DisplayCard.needsRender).
+function recAllHas(card) {
+  const W = recAll.recorder && recAll.recorder.wc;
+  return !!W && W.tiles.some(t => t.card === card);
+}
+// ... and what happens when one of its cards is CLOSED mid-take: the take ends and the
+// file is written. The composite geometry is fixed at the encoder's frame size, so a
+// vanished source could only be papered over with a stale or blank tile -- a picture that
+// lies -- and stopping silently would lose the take. The strip is the page's, so the file
+// survives the card that went (which is the reason it is not parked on a card's footer).
+function recAllGone(card) {
+  if (!recAllHas(card)) return;
+  recAll.recorder.recEnd();
+  showStatus("a display card was closed: the all-displays recording stopped and was saved", "info");
+}
 
 // Every open card's capture, INITIATED IN ONE TASK. A display card's texture is
 // transient -- captureShot() re-renders and copies synchronously, and only the toBlob is
@@ -5211,6 +5539,7 @@ function cardClose(c) {
 function cardsSync() {
   // the last display card cannot be closed -- shown, not just enforced
   for (const d of cards.disp) d.btnClose.disabled = cards.disp.length <= CARD_MIN_DISP;
+  recAll.sync();          // ... and "record every display" needs two of them (item 5)
   for (const d of cards.disp) d.apply();
   for (const c of cards.chart) { c.apply(); if (c.type() === "cut") c.draw(null); }
   cardsThrottleReset();
@@ -5529,13 +5858,22 @@ const ctrlGrpDisp = extra => ({
        ti: "one .npz of the data: the real-space potentials phi and psi at this instant "
          + "as float32 arrays, with their coordinate vectors and a params.json -- read it "
          + "with numpy.load" },
+     // IO_PLAN item 5: one video of EVERY open display, side by side in one frame. Live
+     // only with two or more display cards (with one it would duplicate that card's own
+     // `rec`) and only where the WebCodecs leg runs -- recAll.sync writes both, and its
+     // title says what the file will be.
+     { k: "btn", id: "btnRecAll", t: "rec all",
+       ti: "record every open display as one video" },
      { k: "cbl", id: "cbFilter", t: "k⊥ filter", v: false,
        ti: "give every display card a k_perp filter slider: it hides structure below the "
          + "wavenumber you set, in the PICTURE only -- the run, the spectra and the field "
          + "lines are never filtered" }].concat(extra || []),
     // where the save-all archive waits: a `viewfoot` of the page's own, so the shared
     // result strip lands under the button that made it (saveAll, above)
-    { k: "hintdiv", cls: "viewfoot", id: "saveAllFoot" }
+    { k: "hintdiv", cls: "viewfoot", id: "saveAllFoot" },
+    // ... and one of its own for the all-displays recording: two files with two
+    // lifetimes, so two slots on two hosts rather than one footer holding both
+    { k: "hintdiv", cls: "viewfoot", id: "recAllFoot" }
   ]
 });
 
@@ -8093,6 +8431,12 @@ function renderCards(paused) {
     }
     try { d.recCapture(); } catch (e) { console.error(e); }
   }
+  // ... and ONE slot clock over the whole loop (IO_PLAN item 5): the all-displays take
+  // reads every card's texture in this same synchronous task, after they have all
+  // rendered and before any await, for exactly the reason the per-card capture rides the
+  // render. Its own slot cadence, its own drops -- a slot it cannot capture WHOLE it
+  // drops whole. Same catch, same blast radius as above.
+  try { recAll.recCapture(); } catch (e) { console.error(e); }
   return n;
 }
 async function loop() {
@@ -8157,13 +8501,16 @@ async function loop() {
     // feeder is putting frames in the file and how stretched the loop is. This is how a
     // phone, which has no devtools console, reports whether the watchdog fired on a
     // visible page (wd must stay 0 there) and whether the loop gap explains a stutter.
-    if (REC_DEBUG) for (const d of cards.disp) {
-      const W = d.wc;
+    // one line per live recording -- the all-displays take is ONE recording, so it is one
+    // more line and not one per source (IO_PLAN item 5)
+    if (REC_DEBUG) for (const W of cards.disp.map(d => d.wc)
+                          .concat([recAll.recorder && recAll.recorder.wc])) {
       // `lag` (RECASYNC, 2026-08-12) is the buffer path's own number: capture submit to
       // encode, i.e. how late the GPU's bytes arrive. Tens of ms are FINE -- the frame is
       // stamped by index, not by arrival -- and it is here only so a phone can say whether
       // the readback is keeping up at all. It stays 0 on the sync canvas path.
-      if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
+      if (W) el("readout").textContent += "\nrec" + (W.lay.n > 1 ? "×" + W.lay.n : "") +
+        ": raf " + W.rafN + "  wd " + W.wdN +
         "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms" +
         "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1) +
         "  lag " + Math.round(W.tL) + " ms";

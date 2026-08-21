@@ -312,8 +312,29 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   sync samples exactly on the forced indices, equal pts deltas of 1000 media ticks,
   `r_frame_rate 30/1`, size and codec preserved, and `ffmpeg -v error -f null -` decoding
   with zero stderr. Three cases — a square 512×512 take, the non-square 1024×256 wide box,
-  and a one-frame file — plus the refusals (no samples / no avcC) and the codec-string
-  level table. This is the gate that says the recording will play on a phone.
+  and a one-frame file, and (IO_PLAN item 5) the 1024×512 COMPOSITE frame of two 512²
+  tiles — plus the refusals (no samples / no avcC) and the codec-string level table,
+  which now includes the two composite sizes. This is the gate that says the recording will play on a phone.
+- `checkrecall.js [dir]` — multi-display recording (IO_PLAN item 5), on both booted pages.
+  Section A is the tiler and the compositor alone, with no page, GPU or encoder involved:
+  the row/column choice (a tie goes to the row), the wide-box column, mismatched card
+  sizes refusing to tile rather than scaling one, the halved fallback halving the TILES
+  once, and then synthetic byte patterns composited with **every output row read back at
+  its expected offset** — both layouts, padded and tight source rows, the point-sampled
+  half size, the one-tile fast path returning the mapped range itself, and the label patch
+  landing at its tile's inset and clipping at the frame edge. Section B drives the action:
+  the offer rule (one card → not offered, two and three → offered with the composite size
+  in the title, no WebCodecs → absent and the per-card `rec` untouched), a two-card take
+  from the first `copyTextureToBuffer` to a downloaded `ftyp+mdat+moov`, the pool as
+  REC_POOL SLOTS of one buffer per source, every source rendering on the loop's pass, and
+  the four failure modes: an all-or-nothing slot driven twice (one source resized under
+  the take, then one source's map REJECTED — each time the whole slot goes, `W.n` does not
+  move and no half-captured slot enters the pool), the file's `stts` read back as a
+  SINGLE uniform run afterwards, the `isConfigSupported` refusal halving the tiles with
+  the card list intact and the strip saying `tiles at half size` (and a refusal of both
+  sizes starting nothing and saying why), a source card closed mid-take ending the take
+  with the file on the PAGE's strip, and the single-card `rec` path asserted unchanged —
+  one tile, its own canvas size, its own name, no label, its file on the card's footer.
 - `checkchartsave.js [dir]` — the chart card's `save` button (IO_PLAN item 2), on both
   booted pages. Every leg asserts on the FILE, never on a handler having run: the press
   produces a PNG whose bytes are the chart canvas (the stub sizes a PNG as 4·w·h of the

@@ -608,6 +608,56 @@ avcC there is no playable progressive file to write. The button is shown when **
 leg can run and is simply absent otherwise. Filenames are
 `taranis-<page>-<field>-t<time>.{png,mp4,webm}`.
 
+**Every open display, one video** (IO_PLAN item 5). `rec all`, beside `save all` in the
+displays & charts group, records *every* open display card into ONE file. There is no
+selection UI and none is needed — `CARD_MAX_DISP` is 3, so "all of them" is at most three
+tiles and the visitor composes the recording by opening the displays they want. The
+motivating case is z⁺ and z⁻ side by side in an imbalanced run, where the reading depends
+on the two panels being the **same frames**; two files an editor has to line up lose
+exactly that. Five contracts:
+
+- **One recorder, N sources, one slot clock.** `Recorder` takes a HOST (the button, the
+  result strip, `dead`) and a SOURCE list, and a card's own `rec` is the N = 1 case of the
+  same code — the layout `recTiles` returns for one card *is* the frame `rec` has always
+  encoded, down to `recCompose` handing that slot's mapped range to the `VideoFrame`
+  constructor with no copy. Two recorders would drift: one `W.n`, one timestamp ladder,
+  one `VideoEncoder`, one mp4. The feeder is `renderCards`' existing loop with one capture
+  **after** it — same synchronous task, after every card has rendered and before any
+  await, for the reason the per-card capture rides the render. A source of a live take
+  reports `needsRender()` true, so the gate cannot skip the texture the slot is about to
+  read.
+- **All-or-nothing slots.** Every source is checked before anything is committed, and the
+  staging pool hands out a SLOT (one buffer per source) rather than a buffer, so a slot is
+  captured whole or dropped whole and `W.n` does not advance either way; the slot's N maps
+  are joined (`allSettled`) before it takes its place in the ordered encode chain. This is
+  the RECRAF/RECASYNC honesty rule with one clause added: fewer frames, never a lying
+  sample table **and** never a composite whose panels are from different moments. A
+  composite take costs N × `REC_POOL` staging buffers.
+- **Composite at encode time.** `recCompose` copies each source's mapped bytes row-wise
+  into one frame buffer at its tile offset and blits that tile's label patch — N memcpy
+  loops, no 2D canvas on this leg. Layout is one **row or one column, whichever comes out
+  closer to square** (a tie goes to the row: side by side is the case this exists for);
+  all cards show the same run, so equal `cv` sizes are **asserted**, not scaled — mismatched
+  sources return no layout at all.
+- **Probe the composite size, halve the TILES.** The press asks `isConfigSupported` for the
+  composite config and, if refused, for the same tiles at half size (point-sampled in the
+  same row loop; a per-frame resample is the cost this leg exists to avoid) — and the
+  result strip's line then says `tiles at half size`. The card list is never truncated to
+  fit, and an encoder that refuses both sizes starts nothing and says so rather than
+  failing silently.
+- **Leg 1 only, and one canvas or none.** Leg 2 records a canvas *stream*, which cannot
+  cover several WebGPU canvases without compositing through a real 2D canvas, so the
+  action is offered only where the WebCodecs leg runs (`recAll.sync`, which also disables
+  it below two cards) and single-card recording is untouched everywhere else. `W.cv` is
+  the one canvas the sync paths may read — null for a composite — which is also why the
+  watchdog does not feed a composite take on a hidden page: it would have to build a
+  VideoFrame from a canvas that does not exist, so the take simply records fewer frames.
+  Labels are rendered ONCE at start into small opaque RGBA patches (`recLabelPatch`, in
+  the frame's own byte order) and blitted per frame; a card's own take is unlabelled, as
+  it always was. **A source card closed mid-take ends the take and writes the file** — the
+  encoder's frame size cannot move, so a vanished source could only be papered over with a
+  stale tile, and the strip is the page's, so the file survives the card that went.
+
 `devtools/stubenv.js` stubs `toBlob`, `captureStream`, `MediaRecorder`, `VideoEncoder` /
 `VideoFrame` / `EncodedVideoChunk`, `Blob` (keeping the *bytes*), `URL.createObjectURL`,
 and `setInterval` as a hand-driven pump (`env.tick(n)`) with `env.fireTimeout(ms)` for the
@@ -622,7 +672,15 @@ and the handoff in both directions are covered.
 the script cuts it into samples and builds the avcC (the only Annex-B code in the project,
 and it is in the test), and ffprobe/ffmpeg check the result — top-level boxes, sync samples
 exactly on the forced indices, equal pts deltas, `30/1`, and a decode with zero errors, for
-a square canvas, the 1024×256 wide box and a one-frame file.
+a square canvas, the 1024×256 wide box, a one-frame file and the 1024×512 two-tile
+composite. `devtools/checkrecall.js` is item 5's own gate: the tiler and `recCompose`
+alone (synthetic patterns in, one composite out, every row read back at its expected
+offset, both layouts, padded and tight rows, the halved tiles, the label blit and its
+clipping), then the action on both booted pages — the offer rule, a two-card take from
+first copy to muxed file, an all-or-nothing slot driven twice (a resized source, a
+rejected map) with the file's `stts` read back as a single uniform run, the
+`isConfigSupported` refusal halving the tiles without truncating the card list, a card
+closed mid-take, and the single-card path asserted unchanged.
 
 **Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
 field lines), φ contours (= the streamlines), or **both at once** (ψ + φ — the alignment
