@@ -192,7 +192,7 @@ canvas.chart { display: block; width: 100%; height: auto; background: #0f1115;
    are what they were, and the shrink to 80 is what buys the phone its single line. */
 .row .ctlg > input[type=range] { flex: 1 1 160px; min-width: 80px; max-width: 160px; }
 .row .ctlg > .val { flex: none; }
-select, input[type=number], button { background: #1d2129; color: #d8dee6;
+select, input[type=number], input[type=text], button { background: #1d2129; color: #d8dee6;
     border: 1px solid #333a45; border-radius: 4px; padding: 4px 8px; font: inherit;
     max-width: 100%; }
 button { cursor: pointer; }
@@ -209,7 +209,10 @@ th, td { border: 1px solid #2b303a; padding: 3px 9px; text-align: left; }
 th { background: #1d2129; color: #9aa5b4; font-weight: 600; }
 .pass { color: #7fd18b; } .fail { color: #ff8b8b; } .note { color: #9aa5b4; }
 hr { border: none; border-top: 1px solid #262b34; margin: 16px 0 10px; }
-.hint { color: #7a8494; font-size: 11.5px; margin-top: 6px; }
+/* overflow-wrap because the expression error line is the first .hint whose text the
+   USER writes: a long unbroken identifier has no break opportunity and would run out of
+   a 360px panel. */
+.hint { color: #7a8494; font-size: 11.5px; margin-top: 6px; overflow-wrap: anywhere; }
 a { color: #7aa7d8; } a:hover { color: #a9c7e8; }
 
 /* narrow window (phone / half-screen): one column, cards full width */

@@ -7497,6 +7497,7 @@ function exprErr(msg, i) { return { err: msg + " at character " + (i + 1), at: i
 // the source index every later stage points its errors at.
 const EXPR_NUM = /^(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/;
 const EXPR_NAME = /^[A-Za-z_][A-Za-z0-9_]*/;
+const EXPR_GLUE = /[A-Za-z0-9_.]/;       // what counts as stuck to the end of a bad number
 function exprTokens(src) {
   const out = [], n = src.length;
   for (let i = 0; i < n;) {
@@ -7505,9 +7506,15 @@ function exprTokens(src) {
     if ((c >= "0" && c <= "9") || (c === "." && src[i + 1] >= "0" && src[i + 1] <= "9")) {
       const m = EXPR_NUM.exec(src.slice(i))[0], nx = src[i + m.length];
       // a letter or a second point glued to the end of a number ("1e", "2x") is a typo,
-      // not an implicit product: say so where the number starts
+      // not an implicit product: say so where the number starts. Quote the WHOLE glued
+      // run, exponent sign included -- "1e+" is a number the user finished typing badly,
+      // and reporting it as '1e' quotes less than they wrote.
       if (nx !== undefined && (EXPR_NAME.test(nx) || nx === ".")) {
-        return exprErr("bad number '" + m + nx + "'", i);
+        let j = i + m.length;
+        while (j < n && (EXPR_GLUE.test(src[j])
+                         || ((src[j] === "+" || src[j] === "-")
+                             && (src[j - 1] === "e" || src[j - 1] === "E")))) j++;
+        return exprErr("bad number '" + src.slice(i, j) + "'", i);
       }
       out.push({ k: "num", s: m, v: parseFloat(m), i: i });
       i += m.length; continue;
@@ -7599,13 +7606,16 @@ function exprCompile(src, env) {
     ops[ops.length - 1].n++;
     want = true;
   }
-  if (want) return exprErr("the expression ends where a value was expected", last);
-  while (ops.length) {
-    const o = ops.pop();
+  // An unclosed '(' outranks "ends where a value was expected": both are true of "(" and
+  // "(1+", and the paren is the one the user can act on. Innermost first, and it points
+  // at the paren rather than at the end of the line.
+  for (let k = ops.length - 1; k >= 0; k--) {
+    const o = ops[k];
     if (o.k === "(") return exprErr("unclosed '('", o.i);
     if (o.k === "call") return exprErr("unclosed '" + o.s + "('", o.i);
-    flush(o);
   }
+  if (want) return exprErr("the expression ends where a value was expected", last);
+  while (ops.length) flush(ops.pop());        // only operators left; the scan took the rest
   return { code: Int32Array.from(code), arg: Float64Array.from(arg),
            stack: new Float64Array(Math.max(1, maxd)), src: String(src) };
 }
@@ -7674,9 +7684,11 @@ function exprField(p, g) {
       v[0] = ix * dx;
       for (let iy = 0; iy < ny; iy++, m++) {
         v[1] = iy * dy;
-        const r = exprEval(p, v);
-        if (!isFinite(r)) { nbad++; if (!bad) bad = [v[0], v[1], v[2]]; }
-        out[m] = r;
+        // store FIRST, then test what was stored: `out` is float32, so a double as
+        // ordinary as exp(100) = 2.7e43 passes isFinite and is +Infinity the instant it
+        // lands. Testing the double would wave that straight into the forward FFT.
+        out[m] = exprEval(p, v);
+        if (!isFinite(out[m])) { nbad++; if (!bad) bad = [v[0], v[1], v[2]]; }
       }
     }
   }

@@ -118,11 +118,31 @@ console.log("2. every error path is a message with the right character position"
     ["2(x)", "expected an operator before '('", 1],
     ["x $ y", "unexpected character '$'", 2],
     ["1e", "bad number '1e'", 0],
+    // the quote is what the USER typed, not the prefix the number matcher stopped at
+    ["1e+", "bad number '1e+'", 0],
+    ["1e-", "bad number '1e-'", 0],
+    ["1e+x", "bad number '1e+x'", 0],
     ["x + 2x", "bad number '2x'", 4],
+    ["1x2", "bad number '1x2'", 0],
+    ["1..", "bad number '1..'", 0],
+    // an open paren still on the stack outranks "ends where a value was expected":
+    // both are true here, and only one of them is actionable
+    ["(", "unclosed '('", 0],
+    ["(1+", "unclosed '('", 0],
+    ["sin(1+", "unclosed 'sin('", 0],
+    ["1+2*(3", "unclosed '('", 4],
     ["(1,2)", "',' outside a function call", 2],
     ["sin()", "expected a value before ')'", 4],
     ["sin(,1)", "expected a value before ','", 4]
   ];
+  // ... and the two messages that are NOT displaced by the paren rule: with nothing open,
+  // a trailing operator is still reported as a missing value, at the operator
+  for (const c of [["1+", 1], ["x +", 2], ["", 0]]) {
+    const r = A2.compile(c[0], A2.envOf(G2));
+    ok("a trailing operator with no open paren still says a value was expected ("
+       + JSON.stringify(c[0]) + ")",
+       !!r.err && /ends where a value was expected/.test(r.err) && r.at === c[1], r.err);
+  }
   let nthrow = 0, nmsg = 0, nat = 0, note = "";
   for (const c of ERRS) {
     let r;
@@ -228,6 +248,36 @@ console.log("5. the non-finite guard");
   const g = guard("sin(2*pi*x/Lx)", A2, G2);
   ok("a finite field trips nothing", g.nbad === 0 && g.bad === null);
 
+  // -- finite as a double, Infinity as the float32 that is actually STORED ----
+  // The field is a Float32Array, so the guard has to test the value after the write,
+  // not the double before it: exp(100) = 2.7e43 is a perfectly good double and is
+  // +Infinity the moment it lands, and a guard reading `r` waves it through into the
+  // forward FFT. |f| > 3.4028235e38 is the whole of the extra ground covered here.
+  const o1 = guard("exp(100)", A2, G2);
+  ok("exp(100) overflows float32 and is caught at EVERY point",
+     o1.nbad === G2.nx * G2.ny && o1.bad !== null && o1.bad[0] === 0 && o1.bad[1] === 0,
+     o1.nbad + " non-finite of " + (G2.nx * G2.ny) + ", first at (" + o1.bad + ")");
+  const o2 = guard("10^40", A2, G2);
+  ok("10^40 likewise", o2.nbad === G2.nx * G2.ny, o2.nbad + " non-finite");
+  const o3 = guard("0-exp(100)", A2, G2);
+  ok("... and -Infinity too, not just +", o3.nbad === G2.nx * G2.ny, o3.nbad + " non-finite");
+  // the PARTIAL case, which is what a plausible sharp profile looks like: on G2,
+  // x = ix*Lx/nx = 0, 1/3, 2/3, 1, 4/3, 5/3, and exp(100*x) passes float32 at the
+  // first three (up to 9.2e28) and overflows at the last three -- ny points each,
+  // first at x = 1 in the layout's own order
+  const o4 = guard("exp(x*100)", A2, G2);
+  ok("exp(x*100) overflows on PART of the grid and names the first point",
+     o4.nbad === 3 * G2.ny && o4.bad[0] === G2.Lx * 3 / G2.nx && o4.bad[1] === 0,
+     o4.nbad + " non-finite of " + (G2.nx * G2.ny) + ", first at (" + o4.bad + ")");
+  // just under the float32 ceiling: still a number, still uploaded
+  const o5 = guard("3e38", A2, G2);
+  ok("3e38 is under the float32 ceiling and trips nothing", o5.nbad === 0 && o5.bad === null);
+  const o6 = guard("1e-60", A2, G2);
+  ok("an underflow to zero is a NUMBER, not a refusal", o6.nbad === 0, o6.nbad + " non-finite");
+  const o7 = guard("exp(z*100)", A3, G3);
+  ok("3D overflows report the offending z", o7.nbad > 0 && o7.bad[2] === G3.Lz / G3.nz,
+     o7.nbad + " non-finite, first at (" + o7.bad + ")");
+
   // ... and the refusal: the field is not handed on, and the line says so
   const ref = A2.icField("1/x", G2, "phi");
   ok("a non-finite field is REFUSED, not uploaded", ref.f === null
@@ -239,6 +289,18 @@ console.log("5. the non-finite guard");
   const perr = A2.icField("sn(x)", G2, "phi");
   ok("a parse error is reported and nothing is uploaded",
      perr.f === null && /unknown name 'sn'/.test(perr.note), perr.note);
+
+  // ... and the refusal covers the float32 overflows, with the same count-and-place line
+  const ro = A2.icField("exp(100)", G2, "phi");
+  ok("an all-Infinity float32 field is REFUSED, not uploaded",
+     ro.f === null && /not uploaded/.test(ro.note)
+     && /24 non-finite values/.test(ro.note) && /x = 0\.00/.test(ro.note), ro.note);
+  const rp = A2.icField("exp(x*100)", G2, "phi");
+  ok("a PARTLY infinite field is refused too, and names its first point",
+     rp.f === null && /12 non-finite values/.test(rp.note)
+     && /x = 1\.00/.test(rp.note) && /y = 0\.00/.test(rp.note), rp.note);
+  const rq = A2.icField("10\u005e40", G2, "phi");
+  ok("10^40 the same", rq.f === null && /not uploaded/.test(rq.note), rq.note);
 }
 
 // ===========================================================================
@@ -303,6 +365,23 @@ console.log("6. the periodicity detector: per axis, worst seam named");
      "tol = " + A2.tol);
   ok("a jump above 1e-3 of range says something",
      note("sin(2*pi*x/Lx)+0.01*x/Lx") !== "");
+
+  // -- a field with NO range: nothing to normalize by, and nothing to say ---
+  // The normalizer falls back from the range to the magnitude and then to 1 precisely
+  // because a constant is a legal expression. Divide by a bare `hi - lo` instead and
+  // every ratio here is NaN or Infinity: NaN loses both comparisons, so the seam
+  // survives the threshold test AND picks the "kinked" branch, and phi = 1 reports
+  // "slope jumps NaN of range per cell".
+  for (const c of ["1", "0", "pi", "0*x", "0-1"]) {
+    ok("a constant field (" + c + ") is perfectly periodic -- empty note", note(c) === "",
+       JSON.stringify(note(c)).slice(0, 70));
+  }
+  // floor(x/Lx) is the case the code's own comment cites: exactly 0 on the whole grid
+  // (x never reaches Lx) and 1 on the far face, so it has zero range and a real jump
+  const nfl = note("floor(x/Lx)");
+  ok("floor(x/Lx) has zero range on the grid but a REAL x seam, reported as a number",
+     /x seam/.test(nfl) && /jump 1\.0 of range/.test(nfl) && !/NaN|Infinity/.test(nfl),
+     nfl.slice(0, 60));
 
   // -- 3D: the z seam is checked and named --------------------------------
   const GZ = { nx: 32, ny: 32, nz: 16, Lx: 2 * Math.PI, Ly: 2 * Math.PI, Lz: 8 };
@@ -444,17 +523,39 @@ function appLegs(env, tag, is3d) {
 // The parser runs INSIDE stubenv's vm context, where `Math` belongs to the outer realm:
 // every Math.sin the evaluator makes is a cross-context call V8 cannot inline. That is
 // an artifact of the harness and not of the app, and it is most of what is timed below,
-// so the tax is measured first and the browser-side figure quoted with it. The gate's
-// own assertion is a ceiling on the RAW number, which is what catches a regression
-// (reverting the opcode switch to a table of closures moves it 2.3x).
-const NSIN = 2e7;
+// so the tax is measured first and the browser-side figure quoted with it.
+//
+// The ASSERTION is a ratio, never an absolute millisecond ceiling. Two calibration loops
+// run in the same process and the same vm realm, immediately before the thing they bound
+// -- one cross-realm Math.sin, one of plain double arithmetic -- and the build's time is
+// compared to a budget built out of THEM. A busy machine inflates the calibration and the
+// measurement together, so the ratio holds where a wall-clock ceiling cries wolf (the
+// reviewer measured 4.5x inflation under contention against 2.9x of headroom). What the
+// ratio still catches is an ALGORITHMIC regression: reinstating the closure table the
+// opcode switch replaced costs 2.3x, and HEADROOM below leaves less than that.
+const NSIN = 2e7, NARITH = 2e7, ARITH_OPS = 6;
+// Each leg's cost as a MULTIPLE of its calibrated budget, measured on a quiet laptop.
+// The calibration loop is a unit of this machine's current speed, not a model of the
+// interpreter -- the dispatch leg is legitimately ~9x it (a switch, two typed-array
+// loads and a bounds check per op against a straight-line flop), and pinning that
+// multiple is the point. HEADROOM is what a leg may exceed its reference by before this
+// is called a regression: 1.7x, wide enough for another CPU and another V8, and still
+// well under the 2.3x that reinstating the closure table costs.
+const REF = { disp: 9.4, build: 1.75 }, HEADROOM = 1.7;
 function mathTax() {
   const spin = env2.run(`function(){ return function (n) {
     let a = 0;
     for (let i = 0; i < n; i++) a += Math.sin(i * 1e-7);
     return a;
   }; }`);
-  spin(1e6);                                                // warm
+  // plain double arithmetic in the same realm: ARITH_OPS flops per iteration, no call,
+  // no allocation. This is the unit the interpreter's dispatch is priced in.
+  const spinA = env2.run(`function(){ return function (n) {
+    let a = 0.5, b = 1.25;
+    for (let i = 0; i < n; i++) { a = a + b * 0.5; b = b - a * 0.25; a = a * 0.9999; b = b / 1.0001; }
+    return a + b;
+  }; }`);
+  spin(1e6); spinA(1e6);                                    // warm
   const tv = process.hrtime.bigint();
   spin(NSIN);
   const inVm = Number(process.hrtime.bigint() - tv) / 1e6;
@@ -462,24 +563,38 @@ function mathTax() {
   let a = 0;
   for (let i = 0; i < NSIN; i++) a += Math.sin(i * 1e-7);
   const nat = Number(process.hrtime.bigint() - t0) / 1e6;
-  return { inVm: inVm, nat: nat, ratio: inVm / nat, a: a };
+  const ta = process.hrtime.bigint();
+  const b = spinA(NARITH);
+  const arith = Number(process.hrtime.bigint() - ta) / 1e6;
+  return { inVm: inVm, nat: nat, ratio: inVm / nat, a: a, b: b,
+           // ns per cross-realm sin, and ns per plain arithmetic op, both in the vm
+           sinNs: 1e6 * inVm / NSIN, opNs: 1e6 * arith / (NARITH * ARITH_OPS) };
 }
-function cost(A, g, src, want, ceil, tax) {
+// One build, priced against the calibration rather than against the clock. The op mix is
+// read off the COMPILED program, not hand-counted: `code.length` is exactly the stack ops
+// per point, and the transcendental calls are counted from the source (a `^` would be
+// priced as arithmetic, which none of these strings has).
+const EXPR_TRANS = /\b(?:sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|log|log10|sqrt|pow)\s*\(/g;
+function cost(A, g, src, want, tax) {
   const p = A.compile(src, A.envOf(g));
   A.field(p, g);                                            // warm
   const t0 = process.hrtime.bigint();
   const r = A.field(p, g);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   const n = g.nx * g.ny * g.nz;
-  // the four transcendental calls per point at the vm's rate vs the native one: the rest
-  // of the program is plain arithmetic and pays the vm's general ~2.7x, so this is a
-  // BOUND on the browser cost, not a prediction of it
-  const trans = 4 * n * (tax.inVm - tax.nat) / NSIN;
+  const ntr = (src.match(EXPR_TRANS) || []).length, nop = p.code.length - ntr;
+  const budget = n * (ntr * tax.sinNs + nop * tax.opNs) / 1e6;
+  // the transcendental calls at the vm's rate vs the native one: the rest of the program
+  // is plain arithmetic and pays the vm's general ~2.7x, so this is a BOUND on the
+  // browser cost, not a prediction of it
+  const trans = ntr * n * (tax.inVm - tax.nat) / NSIN;
   ok("build " + g.nx + "x" + g.ny + (g.nz > 1 ? "x" + g.nz : "") + ": " + ms.toFixed(0)
      + " ms in the stub, < " + (ms - trans).toFixed(0) + " ms with a native Math (plan: "
-     + want + ")", r.nbad === 0 && ms < ceil,
+     + want + ")", r.nbad === 0 && ms < HEADROOM * REF.build * budget,
      (1e6 * ms / n).toFixed(0) + " ns/point raw, " + (n / 1e6).toFixed(2)
-     + "e6 points, ceiling " + ceil + " ms");
+     + "e6 points, " + (ms / budget).toFixed(2) + "x its calibrated budget of "
+     + budget.toFixed(0) + " ms (reference " + REF.build + "x, ceiling "
+     + (HEADROOM * REF.build).toFixed(2) + "x)");
 }
 
 setTimeout(() => {
@@ -489,9 +604,10 @@ setTimeout(() => {
   console.log("8. cost of one build (one button press, not a frame)");
   const tax = mathTax();
   ok("the stub's cross-realm Math is the instrument, and it is measured",
-     tax.ratio > 1 && tax.a !== 0,
-     (1e6 * tax.inVm / NSIN).toFixed(0) + " ns/sin in the vm vs "
-     + (1e6 * tax.nat / NSIN).toFixed(0) + " ns native -- " + tax.ratio.toFixed(1) + "x");
+     tax.ratio > 1 && tax.a !== 0 && tax.b !== 0 && tax.opNs > 0,
+     tax.sinNs.toFixed(0) + " ns/sin in the vm vs "
+     + (1e6 * tax.nat / NSIN).toFixed(0) + " ns native -- " + tax.ratio.toFixed(1)
+     + "x; plain arithmetic " + tax.opNs.toFixed(2) + " ns/op in the vm");
   // the interpreter's OWN rate, with no transcendental in the program: 17 stack ops of
   // plain arithmetic, so this is the dispatch cost and nothing else
   {
@@ -501,17 +617,22 @@ setTimeout(() => {
     const t = process.hrtime.bigint();
     A2.field(p, g);
     const ms = Number(process.hrtime.bigint() - t) / 1e6;
-    ok("the RPN interpreter's own dispatch rate", ms < 600,
+    // 17 stack ops per point, priced at the calibration loop's own arithmetic rate: the
+    // gap between them IS the dispatch cost, and it is what a slower dispatch inflates
+    const budget = 1024 * 1024 * 17 * tax.opNs / 1e6;
+    ok("the RPN interpreter's own dispatch rate", ms < HEADROOM * REF.disp * budget,
        ms.toFixed(0) + " ms for 1.05e6 x 17 ops = " + (1e6 * ms / (1.05e6 * 17)).toFixed(1)
-       + " ns/op in the vm");
+       + " ns/op in the vm, " + (ms / budget).toFixed(2) + "x the calibration loop's "
+       + tax.opNs.toFixed(2) + " ns/op (reference " + REF.disp + "x, ceiling "
+       + (HEADROOM * REF.disp).toFixed(1) + "x)");
   }
   // 29 stack ops of which 4 are transcendental: the shape a real IC has
   const SRC2 = "sin(2*pi*x/Lx)*cos(2*pi*y/Ly) + 0.3*sin(4*pi*x/Lx)*sin(6*pi*y/Ly)";
   const SRC3 = "sin(2*pi*x/Lx)*cos(2*pi*y/Ly)*sin(2*pi*z/Lz) + 0.3*cos(4*pi*x/Lx)*sin(2*pi*y/Ly)";
   cost(A2, { nx: 1024, ny: 1024, nz: 1, Lx: 4 * Math.PI, Ly: 2 * Math.PI, Lz: 0 },
-       SRC2, "tens of ms", 1500, tax);
+       SRC2, "tens of ms", tax);
   cost(A3, { nx: 256, ny: 256, nz: 64, Lx: 2 * Math.PI, Ly: 2 * Math.PI, Lz: 16 },
-       SRC3, "~200 ms", 8000, tax);
+       SRC3, "~200 ms", tax);
   console.log(bad ? "\ncheckexpr: " + bad + " FAILED" : "\ncheckexpr: all checks passed");
   process.exit(bad ? 1 : 0);
 }, 0);

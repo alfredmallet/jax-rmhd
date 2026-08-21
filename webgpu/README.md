@@ -869,6 +869,9 @@ anything that touches it (IO_PLAN item 1; the parser and everything around it li
 - **Warn, never block.** A non-periodic expression is reported per axis, by the seam it
   fails on and with the number, and then runs. A **non-finite** one is the one refusal: a
   NaN through the forward FFT reaches every mode and the run is silently dead from step 0.
+  The guard tests the **float32 that is stored**, not the double that was computed —
+  `exp(100)` is an unremarkable double and an `Infinity` the instant it lands in the
+  field, so a guard reading the double would wave it straight through.
 
 The preset registers through `icRegister` like an equilibrium does and skips
 `icZetaFields` — what is typed has to mean what it says, which is also why the amplitude
