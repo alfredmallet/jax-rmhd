@@ -56,6 +56,19 @@ relative L2; 20% on the statistical check). The 3D page adds the exp(L·τ) prop
 the forcing envelope on the kz = ±2π/Lz planes, and two energy-budget rows for the
 spectra.
 
+Two further rows run at the resolution the page is **currently set to**, not at the
+reference grid: **forward transform at `<nx>×<ny>[×<nz>]`, analytic** and **roundtrip at
+`<res>`**. The recorded vectors exercise a 32-point (2D) and an 8/16-point (3D) transform
+line only; these check the shipped FFT at the line lengths production actually uses, which
+is what any rewrite of `fftKernel` has to stay green against. There is no reference file:
+`fftAnalyticCase` (common.js) fills real space with three cosines at fixed integer
+wavenumbers (|k| ≤ 3, every k_y > 0, none at a Nyquist — so each lands in exactly one stored
+rfft bin on every grid the pages offer) and computes in float64 the unnormalized spectrum
+they must produce: `amp·nr/2·exp(i·phase)` in three bins, exact zeros elsewhere. The rows go
+through the production pipelines (the nonlinear term's transform chain) on the LIVE solver —
+`realNL`/`nlk` are RHS scratch the next step rewrites, so the paused run keeps its state —
+at the same 1e-5 tolerance; the fp32 floor of the comparison is ~3e-8.
+
 To regenerate the vectors after changing the physics:
 
 ```
@@ -64,6 +77,48 @@ PYTHONPATH=<repo root> TARANIS_PRECISION=64 python3 webgpu/gen_refvectors.py
 
 then re-inline the JSON into `rmhd2d.html` (it sits on a single marked line — splice it
 programmatically; do not try to hand-edit a 180 kB line).
+
+## Benchmark (`?bench`)
+
+Adding `?bench` to either app's URL grows a **bench** panel under the readout — a developer
+entry point like `?recdebug`, not a control: without the flag the panel does not exist and
+`window.bench` is undefined. It answers the one question the app's own `steps/s` cannot:
+*what* a step's time is spent on (FFTPERF_PLAN, `plans-webgpu/`).
+
+Each button runs one campaign and appends one JSON record to the textarea (phones have no
+console — copy-paste is the transport); the same functions are on `window.bench` (`whole`,
+`kernels`, `ladder`, `chains` on 3D, `all`, with `cfg` for K / R / reps). Every cell is
+timed the same way: submit the batch, `await onSubmittedWorkDone()`, `performance.now()`
+around it, R+1 reps with the first discarded, median and min reported. The frame loop is held
+off while a campaign runs, so nothing renders or reads back inside a timed window; there is no
+controller and no `timestamp-query`.
+
+- **whole step** — K back-to-back `solver.step` calls at the panel's `cfl_every`, drained
+  once at the end. K submits, not one: the per-step encode and the OU noise draw are inside
+  the timed region, exactly as in the frame loop — read it as a step *as the app runs it*,
+  not as pure GPU time. The record carries ms/step and, from the page's own dispatch list,
+  the buffer bytes one step binds and reads/writes (the table in FFTPERF_PLAN Appendix A) as
+  GB/s, and butterflies as G butterflies/s.
+- **per kernel** — each kernel alone: `reps` dispatches of one pipeline in one compute
+  pass, on the solver's own buffers at the dispatch shape the step gives it (FFT kernels at
+  their own chain's lane count — 8 for the gradient chain, 2 for the nonlinear one), µs per
+  dispatch.
+- **FFT ladder** — each FFT kernel three ways: the shipped kernel; one with the `cos`/`sin`
+  twiddle lines replaced by constants (`consttw`); one that keeps only the load and the
+  store (`copy`). Read them as `T_mem` = copy (memory traffic, strided reads included),
+  `T_bf` = consttw − copy (butterflies, barriers, workgroup-memory round trips) and
+  `T_tw` = full − consttw (the transcendentals); `1.0·x` folds under any compiler, so `T_bf`
+  is a lower bound and `T_tw` an upper one. A share is a share of that cell on that device —
+  never compare against another device's.
+- **grad chain** (3D) — the eight-lane gradient chain against four two-lane calls: the
+  gradient-chunking question, measured without chunking code. The two-lane cell
+  re-transforms lanes 0–1 four times, so a working set that fits the last-level cache
+  flatters it; it is a proxy.
+
+A campaign pauses the run; the per-kernel, ladder and chain campaigns leave the buffers as
+garbage (kernels run out of order on the live state), so each ends by re-applying the
+initial condition — fields, forcing state and scalars. One variant per page load, nothing
+else running, plugged in.
 
 ## Files
 
@@ -95,7 +150,10 @@ programmatically; do not try to hand-edit a 180 kB line).
   WGSL and `Solver`; 2D's are `solver2d.js`, which it loads third.
 - `common.js` — the shared pieces that carry no equation: RNG, reference-vector
   flatteners, the FFT kernel template and the **rfft row pair** (`fftRowPair`: the y
-  forward/inverse kernels, which both pages emitted as byte-identical twins), the generic
+  forward/inverse kernels, which both pages emitted as byte-identical twins) with the
+  `?bench` harness's `probe` emissions and the harness itself (timing, the ladder, the
+  panel; each page keeps its own bench spec — which kernels, over which buffers, at which
+  dispatch shape — next to its solver), the analytic transform case of the self-test, the generic
   reductions (CFL, energy tail,
   max-reduce), device bring-up and the **pooled readback** (`readBuf`, whose staging
   buffers are keyed by byte length and reused rather than allocated per call, plus

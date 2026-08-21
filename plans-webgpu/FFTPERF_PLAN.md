@@ -105,8 +105,13 @@ accumulates one JSON record per run — copy-paste is the transport. A console A
 
 **What it measures.** Three things, all by saturating the queue and timing the drain:
 
-1. *Whole step*: encode `K` steps (`solver.step`, `cflEvery` = the page's setting, display
-   off) in one submit, `await onSubmittedWorkDone()`, median of `R` reps, ms/step. Plus the
+1. *Whole step*: `K` back-to-back `solver.step` calls (`cflEvery` = the page's setting,
+   the frame loop held off so nothing renders or reads back meanwhile), one
+   `await onSubmittedWorkDone()` at the end, median of `R` reps, ms/step. [As landed: K
+   submits with one drain, not K steps in one submit — `step` owns its submit and its
+   per-step tail, and an encode-only step would be a second copy of it. So the number
+   includes the per-step JS encode and the OU noise draw, exactly as the app's loop does;
+   read it as "a step as the app runs it", not as pure GPU time.] Plus the
    same with `solver.step`'s forcing off — not a decision input, a consistency check against
    the solver's own structure.
 2. *Per kernel, isolated*: one pipeline (`rowsC2R`, `colsInv`, `zInv`, `rowsR2C`, `colsFwd`,
@@ -120,7 +125,9 @@ accumulates one JSON record per run — copy-paste is the transport. A console A
    - `probe: "copy"` — `load` and `store` only, no stages: the kernel's memory-traffic floor
      (the strided column/z reads included, which is the point).
    - `probe: "consttw"` — every stage, every barrier, every butterfly, with `wc = 1.0`,
-     `ws = 0.0` in place of `cos`/`sin` (the multiply stays, so only the transcendentals go).
+     `ws = 0.0` in place of `cos`/`sin`. The multiply is kept in the text, but `1.0·x` folds
+     under any compiler, so `T_bf` is a LOWER bound on the butterfly cost and `T_tw` an upper
+     bound on the transcendentals' — read the ladder with that sign in mind.
    - default — the shipped text, byte for byte.
    A pipeline's `auto` layout is its own, so the bench builds its own bind groups for the
    variants over the same buffers.
@@ -195,7 +202,7 @@ which case both are reported and §9 decides):
 | `T_tw ≥ 15%` of the kernel on the kernels that carry the step (by (2), the per-kernel share of the whole step) | **A goes ahead** (§5). 15%, not 0: a table costs one cached load per butterfly, so expect to recover most but not all of `T_tw`. |
 | `T_bf ≥ 30%` | **B goes ahead** (§6). Radix-4 removes about half of `T_bf` (half the stages) and a quarter of `T_tw`; the threshold is set where that half-share is worth a rewrite of the one kernel everything depends on. |
 | `T_mem ≥ 70%` | both dead. Recorded in this file with the numbers, the audit's closure confirmed, and the column-stride note stands as the only route. |
-| batch-2 gradient chain ≤ 1.03× the batch-8 time | **C goes ahead** (§7) on both pages. Above 1.03× on any device: C is dropped; the memory it would save is recorded. |
+| batch-2 gradient chain ≤ 1.03× the batch-8 time | **C goes ahead** (§7) on both pages. Above 1.03× on any device: C is dropped; the memory it would save is recorded. The Phase 1 cell re-transforms lanes 0–1 four times (no per-pair bind groups exist yet), so a two-lane working set that fits a laptop's last-level cache flatters batch-2; it is a proxy, and 2C's own timing gate re-measures with the real per-pair bind groups. |
 
 Both A and B can be true; then A lands first (the table is what radix-4's three twiddles
 index) and B is measured against post-A.
@@ -399,13 +406,39 @@ gates; uncommitted work has been lost that way).
 
 ## Appendix A — bytes per step, for the bench's GB/s (checkable by hand)
 
-`cx = nm·8` (one complex field), `rx = nr·4` (one real field). Per 2D transform of `b` lanes:
-rows real→complex read `b·rx`, write `b·cx`; cols read and write `b·cx` each; inverse the
-mirror. Per stage (2D): `prepGrads` read `2cx` write `8cx`; inverse 8 lanes `8·(2cx) +
-8·(cx + rx)`; `bracket` read `8rx` write `2rx`; forward 2 lanes `2·(rx + cx) + 2·(2cx)`;
-`nlAssemble` read `2cx + 2·nm·16` write `2cx`; `forcingAdd` read/write ~`4cx`; `stage` read
-`4cx + nm·16` write `4cx`. Per step: 3 stages + `energyPartial` read `2cx + nm·16` + the
-small kernels. 3D adds the z pass (`2·b·cx` per transform) and reads `gridZ` instead of a
-full-grid `gridB` in `stage`. The bench sums this from the page's own dispatch list so a
-kernel added later is counted; `checkbench.js` leg (iv) pins the sum for two grids against
-the numbers this formula gives by hand.
+The count is **buffer bytes bound and read or written by each dispatch** (not cache traffic,
+not the CFL pair, not `tick`/`ou`/`scale`, not the `clearBuffer(delta)`). Units: `cx = nm·8`
+(one complex field), `rx = nr·4` (one real field); the static grids are `grA = grB = nm·16`
+in 2D and `nmp·16` in 3D (`gridA`/`gridB` are perpendicular-only there), `grZ = nz·16`
+(3D only). Per stage, with lane counts as the step dispatches them:
+
+| kernel | 2D | 3D |
+|---|---|---|
+| `prepGrads` | read `2cx + grA`, write `8cx` | read `2cx + grA`, write `8cx` |
+| `zInv` ×8 | — | `16cx` |
+| `colsInv` ×8 | `16cx` | `16cx` |
+| `rowsC2R` ×8 | read `8cx`, write `8rx` | same |
+| `bracket` | read `8rx`, write `2rx` | same |
+| `rowsR2C` ×2 | read `2rx`, write `2cx` | same |
+| `colsFwd` ×2 | `4cx` | `4cx` |
+| `zFwd` ×2 | — | `4cx` |
+| `nlAssemble` | read `2cx + grA + grB`, write `2cx` | read `2cx + grA + grB + grZ`, write `2cx` |
+| `forcingAdd` | read `frc 2cx + rhs 2cx`, write `rhs 2cx` = `6cx` | `frc` 4 arrays of `nmp·8`, plus `rhs` on two kz planes for both fields read and written: `32·nmp + 64·nmp` |
+| `stage` | read `fields 2cx + delta 2cx + rhs 2cx + grB`, write `fields 2cx + delta 2cx` = `10cx + grB` | `10cx + grB + grZ` |
+
+Per step: three stages plus `energyPartial` (read `2cx + grA + grB` in 2D, `+ grZ` in 3D).
+The two hand numbers `checkbench.js` leg (iv) pins:
+
+- **2D 256²**: `nm = 33,024`, `nr = 65,536`, `cx = 264,192`, `rx = 262,144`, `grA = 528,384`.
+  Per stage 3,170,304 + 4,227,072 + 4,210,688 + 2,621,440 + 1,052,672 + 1,056,768 +
+  2,113,536 + 1,585,152 + 3,170,304 = 23,207,936; ×3 = 69,623,808; + `energyPartial`
+  1,585,152 = **71,208,960 B/step**. Butterflies: 11,827,200.
+- **3D 128²×64**: `nmp = 8,320`, `nm = 532,480`, `nr = 1,048,576`, `cx = 4,259,840`,
+  `rx = 4,194,304`, `grA = 133,120`, `grZ = 1,024`. Per stage 42,731,520 + 68,157,440 +
+  68,157,440 + 67,633,152 + 41,943,040 + 16,908,288 + 17,039,360 + 17,039,360 + 17,306,624 +
+  798,720 + 42,732,544 = 400,447,488; ×3 = 1,201,342,464; + `energyPartial` 8,786,944 =
+  **1,210,129,408 B/step**. Butterflies: 213,934,080.
+
+The bench sums the same table from the page's own dispatch list so a kernel added later is
+counted; a disagreement between the check's literal and the function is a change to one of
+them that the other did not follow.

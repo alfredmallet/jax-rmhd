@@ -563,15 +563,15 @@ function applyControls() {
 //
 // `stepIO` is the step's dispatch list with the bytes each dispatch moves, in
 // FFTPERF_PLAN appendix A's terms: cx = one complex field, rx = one real field, gr = one
-// grid buffer, and a transform of b lanes reads and writes b of them per pass. It is
+// grid buffer (gridA and gridB are one each), and a transform of b lanes reads and writes
+// b of them per pass. A buffer a kernel both reads and writes is counted twice. It is
 // summed by benchStepIO into the record's bytes-per-step (and, through `bf`, its
 // butterflies); the CFL reduction and the per-step scalar kernels are not in the list.
 function benchSpec2D(s) {
   s = s || solver;
   const g = s.g, nx = g.nx, ny = g.ny, nky = g.nky, nm = g.nm, nr = s.nr;
   const B = s.buf, P = s.pl, G = s.bg;
-  const cx = nm * 8, rx = nr * 4, gr = nm * 16;
-  const bl = N => (N / 2) * log2i(N);            // butterflies in one line of N points
+  const cx = nm * 8, rx = nr * 4, gr = nm * 16, bl = benchLineBf;
   const ffts = [
     { name: "rowsC2R", key: "rowsC2R", lanes: 8, pipe: P.rowsC2R, bg: G.rowsC2RGrads,
       bufs: [B.specTmp, B.realGrads], d: [8 * nx] },
@@ -591,16 +591,16 @@ function benchSpec2D(s) {
       { name: "stage", pipe: P.stage, bg: G.stage[0], d: [Math.ceil(2 * nm / 64)] }
     ]),
     stepIO: [
-      { name: "prepGrads", n: 3, bytes: 10 * cx },
+      { name: "prepGrads", n: 3, bytes: 2 * cx + gr + 8 * cx },
       { name: "colsInv:8", n: 3, bytes: 8 * (2 * cx), bf: 8 * nky * bl(nx) },
       { name: "rowsC2R:8", n: 3, bytes: 8 * (cx + rx), bf: 8 * nx * bl(ny) },
       { name: "bracket", n: 3, bytes: 10 * rx },
       { name: "rowsR2C:2", n: 3, bytes: 2 * (rx + cx), bf: 2 * nx * bl(ny) },
       { name: "colsFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nky * bl(nx) },
-      { name: "nlAssemble", n: 3, bytes: 4 * cx + 2 * gr },
-      { name: "forcingAdd", n: 3, bytes: 4 * cx },
-      { name: "stage", n: 3, bytes: 8 * cx + gr },
-      { name: "energyPartial", n: 1, bytes: 2 * cx + gr }
+      { name: "nlAssemble", n: 3, bytes: 2 * cx + 2 * gr + 2 * cx },
+      { name: "forcingAdd", n: 3, bytes: 2 * cx + 2 * cx + 2 * cx },
+      { name: "stage", n: 3, bytes: 10 * cx + gr },
+      { name: "energyPartial", n: 1, bytes: 2 * cx + 2 * gr }
     ]
   };
 }
@@ -659,9 +659,7 @@ async function runSelfTest() {
   }
 
   // --- the same two transforms at the page's selected resolution ------------
-  // On the LIVE solver, not a second one at that grid: realNL / nlk are RHS scratch, so
-  // the run's state survives untouched, and a throwaway 1024^2 solver would double the
-  // page's largest allocation. The test button has already paused the loop.
+  // Runs on the live solver; realNL / nlk are RHS scratch, rewritten by the next step.
   {
     const sv = solver;
     if (sv) for (const r of await fftAnalyticRows(sv, fftEnc(sv))) rows.push(r);

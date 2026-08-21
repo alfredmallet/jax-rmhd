@@ -593,7 +593,7 @@ function contLevelEncode(p, s, D, nPart, i) {
 // silent until the first dispatch)
 function shaderModuleFactory(device) {
   return (code, name) => {
-    const m = device.createShaderModule({ code });
+    const m = device.createShaderModule({ code, label: name });
     if (m.getCompilationInfo) {
       m.getCompilationInfo().then(info => {
         for (const msg of info.messages) {
@@ -8551,6 +8551,8 @@ async function loop() {
     await new Promise(r => requestAnimationFrame(r));
     while (graveyard.length) graveyard.pop().destroy();
     if (!solver) continue;
+    if (benchBusy) continue;      // a ?bench campaign owns the queue: no steps, no render,
+                                  // no stats readback inside its timed window
     const t0 = performance.now();
     let n = 0;
     if (running) {
@@ -8760,15 +8762,12 @@ const FFT_ANALYTIC_MODES = [
   { kx: -2, ky: 3, kz: 1, amp: -0.4, phase: 0.7 },
   { kx: 3, ky: 2, kz: -2, amp: 0.25, phase: -1.9 }
 ];
-// input[r] = sum_j amp_j*cos(2pi(kx*ix/nx + ky*iy/ny + kz*iz/nz) + phase_j) in the real
-// layout r = (iz*nx + ix)*ny + iy, and `expect` its UNNORMALIZED forward transform in the
-// rfft layout m = (iz*nkx + ix)*nky + iy (nkx = nx, nky = ny/2+1) -- numpy's convention,
-// which is the pages'. cos(th + ph) = (e^{i(th+ph)} + e^{-i(th+ph)})/2 and sum_r
-// e^{i2pi(k-K).x} = nr*delta(k,K), so the +k half puts amp*nr/2*e^{i*phase} in bin
-// (kx mod nx, ky, kz mod nz) and the -k half falls at -ky, which the half spectrum does
-// not store: three nonzero bins, `bins`, and exact zeros everywhere else. `nz` absent or
-// 1 is the 2D case, where kz drops out of both the input and the bin. Everything is
-// accumulated in float64 and rounded once, on the store into the f32 arrays.
+// `input[r]` is the three cosines summed on the real grid, layout r = (iz*nx + ix)*ny + iy,
+// and `expect` the UNNORMALIZED forward transform in the rfft layout m = (iz*nkx + ix)*nky
+// + iy (nkx = nx, nky = ny/2+1): each mode holds amp*nr/2*e^{i*phase} in the single bin
+// (kx mod nx, ky, kz mod nz), listed in `bins`, and every other bin is an exact zero. `nz`
+// absent or 1 is the 2D case, where kz drops out of both the input and the bin. Both
+// arrays are accumulated in float64 and rounded once, on the store into f32.
 function fftAnalyticCase(g) {
   const nx = g.nx, ny = g.ny, nz = g.nz || 1, d3 = nz > 1;
   const nky = ny / 2 + 1, nr = nz * nx * ny, nm = nz * nx * nky;
@@ -8797,24 +8796,27 @@ function fftAnalyticCase(g) {
   return { modes: modes, input: input, expect: expect, bins: bins };
 }
 
-// ... and the two rows it feeds, at the resolution the page is running (FFTPERF_PLAN
-// Phase 0): the analytic forward spectrum and the roundtrip, both through the production
-// pipelines. `enc.fwd` / `enc.inv` are the page's own nonlinear-term transform chains,
-// encoded on the solver's realNL / nlk buffers -- scratch that the RHS rewrites from
-// `fields` on every step, so a live solver keeps its state and needs no restore.
+// ... and the two rows it feeds, at the resolution the page is running: the analytic
+// forward spectrum and the roundtrip, both through the production pipelines. `enc.fwd` /
+// `enc.inv` are the page's own nonlinear-term transform chains, encoded on the solver's
+// realNL / nlk scratch. A resolution change during either readback retires `s`, and the
+// rows it was going to add are dropped rather than read off destroyed buffers.
 async function fftAnalyticRows(s, enc) {
   const d = s.device, g = s.g, B = s.buf;
   const c = fftAnalyticCase(g);
   const res = g.nx + "x" + g.ny + (g.nz > 1 ? "x" + g.nz : "");
   const note = "the running " + res + " solver; 3 cosine modes, " + c.bins.length + " nonzero bins";
+  const gone = () => { console.warn("self-test: solver rebuilt during the " + res + " transform rows"); return []; };
   d.queue.writeBuffer(B.realNL, 0, c.input);
   let e = d.createCommandEncoder(), p = e.beginComputePass();
   enc.fwd(p); p.end(); d.queue.submit([e.finish()]);
   const got = await readBufOnce(d, B.nlk, g.nm * 8);
+  if (solver !== s) return gone();
   const rows = [testRow("forward transform at " + res + ", analytic", relL2(got, c.expect), 1e-5, note)];
   e = d.createCommandEncoder(); p = e.beginComputePass();
   enc.inv(p); p.end(); d.queue.submit([e.finish()]);
   const back = await readBufOnce(d, B.realNL, s.nr * 4);
+  if (solver !== s) return gone();
   rows.push(testRow("roundtrip at " + res, relL2(back.subarray(0, s.nr), c.input), 1e-5, note));
   return rows;
 }
@@ -8875,7 +8877,9 @@ function wireTestButton(fn) {
 //
 // Every cell is timed the same way: submit the whole batch, await onSubmittedWorkDone(),
 // performance.now() around it; R + 1 reps, the first discarded, median and min reported.
-// Nothing here steers anything -- no controller, no stepsPerFrame, no timestamp-query.
+// Nothing here steers anything -- no controller, no stepsPerFrame, no timestamp-query --
+// and `benchBusy` holds loop() off for the campaign's whole duration, so nothing steps,
+// renders or reads stats inside a timed window.
 //
 // The per-kernel and ladder campaigns run kernels on the SOLVER'S OWN buffers, so the
 // fields are garbage afterwards; each of those campaigns ends by calling solver.setIC().
@@ -8936,6 +8940,9 @@ function benchVariant(S, c, probe) {
            bg: device.createBindGroup({ layout: pipe.getBindGroupLayout(0),
              entries: c.bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) }) };
 }
+// butterflies in one transform line of N points, the unit both pages' stepIO lists
+// count in
+const benchLineBf = N => (N / 2) * log2i(N);
 // bytes moved and butterflies performed by ONE step, summed from the page's own
 // per-step dispatch list (FFTPERF_PLAN appendix A). The CFL reduction and the per-step
 // scalar kernels (tick, OU, scale) are not in the list and are not counted.
@@ -9046,12 +9053,12 @@ function benchEmit(rec) {
   console.log(line);
   return rec;
 }
-// run one campaign: pause the loop first (the self-test button's idiom). Nothing is
-// restored beyond the fields -- see the panel's hint.
+// run one campaign: pause the run, and hold the frame loop off for the whole campaign.
+// Nothing is restored beyond what setIC re-applies -- see the panel's hint.
 async function benchGo(fn) {
   if (benchBusy) return null;
   benchBusy = true;
-  running = false;
+  setRunning(false);
   el("benchstatus").textContent = "running…";
   let rec = null;
   try {
@@ -9076,7 +9083,8 @@ function benchBuild(page) {
   _mk("summary", null, d).textContent = "bench";
   _mk("div", "hint", d).textContent =
     "pauses the run. the per-kernel, ladder and chain campaigns leave the fields garbage "
-    + "and end by re-applying the built-in IC. one JSON record per run below -- copy it out.";
+    + "and end by re-applying the initial condition: fields, forcing state and scalars. "
+    + "one JSON record per run below -- copy it out.";
   const row = _mk("div", "row", d);
   const st = _mk("div", "hint", d);
   st.id = "benchstatus";

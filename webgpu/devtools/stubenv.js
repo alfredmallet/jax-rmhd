@@ -16,6 +16,8 @@
 //   env.run("function(){ ... }", args...)   evaluate in the page's context
 //   env.getEl(id) / env.els / env.allEls    the element model
 //   env.fails / env.fail(msg)               accumulated stub-level failures
+//   env.gpu / env.gpuReset()                the device activity log (see below)
+//   env.frame()                             fire the parked rAF callbacks: one loop frame
 "use strict";
 const fs = require("fs"), vm = require("vm"), path = require("path");
 const MAXWG = 65535;
@@ -502,6 +504,15 @@ module.exports = function makeEnv(dir, page, demo, opts) {
 
   // ---- WebGPU stub -----------------------------------------------------------
   const live = { buffers: 0, textures: 0 };
+  // What the device was asked to do, so a consumer can compare a caller's own idea of a
+  // pipeline / dispatch shape / bind group against the one the app encoded:
+  //   gpu.shaders     every createShaderModule, {label, code}
+  //   gpu.dispatches  every compute dispatch, {pipe, bg, d: [x, y, z]}
+  //   gpu.renders     render passes begun
+  //   gpu.drains      queue.onSubmittedWorkDone calls
+  // A pipeline also carries its module's text on `__code`, and a bind group its entries'
+  // buffers on `__buffers`. `env.gpuReset()` empties the log.
+  const gpu = { shaders: [], dispatches: [], renders: 0, drains: 0 };
   // mapAsync is normally what it always was -- an immediately resolved promise, which is
   // what every ordinary readback (readBuf) expects. The recorder's GPU-readback capture
   // path (RECASYNC_PLAN, 2026-08-12) is the one caller whose whole behaviour is the
@@ -542,15 +553,21 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     return q.length;
   }
   function mkPass(kind) {
+    if (kind === "render") gpu.renders++;
     return {
       setPipeline(p) { if (!p) fail(kind + ": setPipeline(undefined)"); this._p = p; },
-      setBindGroup(i, b) { if (!b) fail(kind + ": setBindGroup(" + i + ") undefined after " + (this._p && this._p.__name)); },
+      setBindGroup(i, b) {
+        if (!b) fail(kind + ": setBindGroup(" + i + ") undefined after " + (this._p && this._p.__name));
+        if (i === 0) this._bg = b;
+      },
       dispatchWorkgroups(x, y, z) {
         for (const [n, v] of [["x", x], ["y", y === undefined ? 1 : y], ["z", z === undefined ? 1 : z]]) {
           if (!(v >= 1) || !isFinite(v) || v !== Math.floor(v))
             fail(kind + ": bad dispatch " + n + " = " + v + " (" + (this._p && this._p.__name) + ")");
           if (v > MAXWG) fail(kind + ": dispatch " + n + " = " + v + " > 65535 (" + (this._p && this._p.__name) + ")");
         }
+        gpu.dispatches.push({ pipe: this._p, bg: this._bg,
+                              d: [x, y === undefined ? 1 : y, z === undefined ? 1 : z] });
       },
       draw() {}, end() {}
     };
@@ -558,8 +575,11 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   const device = {
     createBuffer: mkBuf,
     createTexture: () => { live.textures++; return { createView: () => ({ __v: 1 }), destroy() { live.textures--; } }; },
-    createSampler: () => ({}), createShaderModule: o => ({ code: o.code }),
-    createComputePipeline: o => ({ __name: o.compute.module && o.compute.module.__name, getBindGroupLayout: () => ({}) }),
+    createSampler: () => ({}),
+    createShaderModule(o) { const m = { code: o.code, label: o.label }; gpu.shaders.push(m); return m; },
+    createComputePipeline: o => ({ __name: o.compute.module && o.compute.module.label,
+                                   __code: o.compute.module && o.compute.module.code,
+                                   getBindGroupLayout: () => ({}) }),
     createRenderPipeline: () => ({ getBindGroupLayout: () => ({}) }),
     createBindGroup(o) {
       if (!o.layout) fail("bind group with no layout");
@@ -567,7 +587,7 @@ module.exports = function makeEnv(dir, page, demo, opts) {
         if (!e.resource) fail("bind group entry " + e.binding + ": undefined resource");
         else if ("buffer" in e.resource && !e.resource.buffer) fail("bind group entry " + e.binding + ": undefined buffer");
       });
-      return { __bg: 1 };
+      return { __bg: 1, __buffers: o.entries.map(e => e.resource && e.resource.buffer) };
     },
     createCommandEncoder: () => ({
       beginComputePass: () => mkPass("compute"),
@@ -602,10 +622,14 @@ module.exports = function makeEnv(dir, page, demo, opts) {
         const n = data.byteLength !== undefined ? data.byteLength : data.length * 4;
         if (off + n > b.size) fail("writeBuffer overflows: " + (off + n) + " > " + b.size);
       },
-      submit() {}, onSubmittedWorkDone: async () => {}
+      submit() {}, onSubmittedWorkDone: async () => { gpu.drains++; }
     },
     addEventListener() {}, lost: { then() {} }
   };
+  // the parked rAF callbacks, and the one call that fires them
+  const rafQ = [];
+  const frame = () => { const q = rafQ.splice(0); for (const cb of q) cb(1000); return q.length; };
+
   // `__cfg` keeps the configure descriptor: the display cards' canvases are configured
   // COPY_SRC | RENDER_ATTACHMENT for the recorder's capture path (RECASYNC_PLAN,
   // 2026-08-12), and that is a thing a leg can then assert rather than take on trust.
@@ -673,7 +697,10 @@ module.exports = function makeEnv(dir, page, demo, opts) {
       }
     },
     performance: { now: (function () { let t = 1000; return () => (t += 250); })() },
-    requestAnimationFrame: () => {},
+    // rAF PARKS its callback instead of running it: nothing advances unless a consumer
+    // calls env.frame(), which fires the parked callbacks and so puts one frame through
+    // the page's own loop().
+    requestAnimationFrame: cb => rafQ.push(cb),
     Path2D: Path2DStub,
     console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8Array, Uint8ClampedArray,
     // the ZIP writer's UTF-8 member names and the manifest's bytes (IO_PLAN)
@@ -700,7 +727,9 @@ module.exports = function makeEnv(dir, page, demo, opts) {
 
   const run = (src, ...a) => vm.runInContext("(" + src + ")", sandbox)(...a);
   return { sandbox, run, getEl, els, allEls, descendants, fails, fail, live, caps,
-           tick, fireTimeout, advance, share, store,
+           tick, fireTimeout, advance, share, store, frame, gpu,
+           gpuReset: () => { gpu.shaders.length = 0; gpu.dispatches.length = 0;
+                             gpu.renders = 0; gpu.drains = 0; },
            // RECASYNC_PLAN (2026-08-12): the recorder's async capture path, hand-driven --
            // `holdMaps(true)` parks mapAsync resolutions, `maps(rev, n)` releases them,
            // `mapsPending()` counts what is still in flight, and `bufFrames(true)` gives

@@ -51,6 +51,15 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `{search: "?bench"}` sets the page's `location.search` verbatim (default: the third
   argument's `?demo=NAME`), which is how a gate reaches the URL-only developer flags the
   apps read off it — `?bench`, `?recdebug`.
+  Since FFTPERF_PLAN phase 0 the device keeps an activity log on `env.gpu` (emptied by
+  `env.gpuReset()`): `shaders` every `createShaderModule` as `{label, code}`, `dispatches`
+  every compute dispatch as `{pipe, bg, d}`, and counters for render passes (`renders`) and
+  queue drains (`drains`); a compute pipeline also carries its module's WGSL on `__code` and
+  its label on `__name`, and a bind group its entries' buffers on `__buffers`. So a gate can
+  say that a caller's idea of a pipeline, an extent or a bind group is the one the app
+  encoded, rather than that the call did not throw. `requestAnimationFrame` PARKS its
+  callback (it always was inert); `env.frame()` fires the parked ones, which is one frame
+  through the page's own `loop()`.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
   kernel to text for byte-diffing against a pre-phase baseline (capture the baseline from
   clean git HEAD first). `kdiff.py` diffs two dumps kernel-by-kernel. The optional JSON
@@ -757,22 +766,35 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   chart card is asserted.
 - `checkbench.js [dir]` — the FFTPERF_PLAN phase 0 gate: the `?bench` harness and
   `fftKernel`'s probe seam. Five legs. The FLAG gates the panel — no `#benchpanel` element
-  and no `window.bench` without it, both on both pages — and with it every campaign is
-  driven under the stub, whose dispatch and bind-group validation is what says the pages'
-  bench specs name real shapes; one JSON record per run must land in the textarea carrying
-  the page, the GPU, the resolution, the bytes/butterflies per step and, per FFT kernel,
-  the three ladder times with their shares. Then the EMISSION: `fftKernel` / `fftRowPair`
-  with no probe are byte-identical to `fixtures/fftkernel_f83386e.json` — every offered
-  line length, both directions, with and without `lpb` — which is the leg that pins the
-  kernel text from here on (2A and 2B regenerate the capture by booting that tree's page
-  under stubenv and replaying the fixture's `cases`; anything else that moves the text
-  fails). Then the PROBES: `consttw` differs from the default in exactly the two twiddle
+  and no `window.bench` without it, both on both pages, with `FFT_PROBE` null on a page
+  that has just booted — and with it every campaign is driven under the stub; one JSON
+  record per run must land in the textarea carrying the page, the GPU, the resolution, the
+  bytes/butterflies per step and, per FFT kernel, the three ladder times with their shares.
+  Then the WIRING, off the stub's dispatch log: for every spec cell, the pipeline and bind
+  group it names must be one the solver's own `step()` dispatched, at the spec's extent and
+  lane count, with the FFT cells' `bufs` equal to that bind group's buffers in binding
+  order — and every byte-table entry dispatched exactly `n` times, with nothing dispatched
+  the table has neither counted nor excused. Then the LOOP: with frames driven from inside
+  the queue drains, a campaign must encode no display chain, read no stats, and leave the
+  hero button paused — and the next frame after it must draw again. Then the REPS: one cell
+  drains R+1 times and reports the median and min of what it kept, against a clock whose
+  first rep is the cheap one, so a kept warm-up rep shows up as the min. Then the EMISSION:
+  `fftKernel` / `fftRowPair` with no probe are byte-identical to
+  `fixtures/fftkernel_f83386e.json` — every offered line length, both directions, with and
+  without `lpb` — and so is the text the Solver COMPILES for each FFT pipeline, at the
+  self-test grid and, through the page's live solver, at the default preset (the fixture's
+  `pipelines`). That is the pair of legs that pins the kernel text from here on (2A and 2B
+  regenerate the capture by booting that tree's pages under stubenv, replaying the fixture's
+  `cases` and reading each pipeline's `__code`; anything else that moves the text fails).
+  Then the PROBES: `consttw` differs from the default in exactly the two twiddle
   lines and keeps every barrier, `copy` has no stage loop at all and still carries the load
-  and store bodies verbatim, and all three parse. Then BYTES: the per-step sum reproduces a
+  and store bodies verbatim, all three parse, and a build that THROWS still hands the seam
+  back. Then BYTES: the per-step sum reproduces a
   hand-computed number for 2D 256² and 3D 128²×64 exactly, with the appendix-A arithmetic
   written out in the check. Last, `fftAnalyticCase` — the self-test's analytic reference —
   returns three nonzero bins at the flat indices it reports, zeros everywhere else, and
-  each bin holding `amp·nr/2·exp(i·phase)`.
+  each bin holding `amp·nr/2·exp(i·phase)`; and `fftAnalyticRows` adds two rows on a live
+  solver and none at all when a parked readback resolves after the solver was rebuilt.
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`). The shared set is PER PAGE
   (rmhd2d loads common + physics + solver2d, rmhd3d loads common + physics), and
