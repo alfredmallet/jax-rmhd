@@ -1,0 +1,361 @@
+{
+ "tag": "p100-special",
+ "profile": "laptop",
+ "mode": "memory",
+ "paths": [
+  "zspec_forced",
+  "snapshot_peak"
+ ],
+ "device": "gpu:Tesla P100-PCIE-16GB",
+ "backend": "gpu",
+ "jax": "0.11.1",
+ "precision": "32",
+ "rounds": 3,
+ "nrep": 21,
+ "utc": "2026-08-21T00:51:29Z",
+ "memory": [
+  {
+   "path": "zspec_forced",
+   "mode": "memory",
+   "scheme": "lsrk54",
+   "nblock": 5,
+   "params": {
+    "nx": 128,
+    "ny": 128,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "nz": 32,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "Lz": 6.283185307179586,
+    "z_spectral": true,
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "forcing": true,
+    "forcing_mode": "elsasser",
+    "forcing_power_elsasser": [
+     0.5,
+     0.5
+    ],
+    "forcing_tau": 1.0,
+    "fshell": [
+     1,
+     3
+    ],
+    "forcing_seed": 1
+   },
+   "oom": false,
+   "error": null,
+   "scoped": true,
+   "u_bytes": 2129920,
+   "mem_analysis": {
+    "temp": 28238816,
+    "args": 4901792,
+    "out": 4526144
+   },
+   "temp_u": 13.258,
+   "args_u": 2.301,
+   "out_u": 2.125,
+   "total_bytes": 37666752,
+   "total_u": 17.685,
+   "lane_table": {
+    "lanes": [
+     {
+      "u": 2.0,
+      "offset": 4261376,
+      "shape": "c64[65,2,32,128]{3,2,1,0}",
+      "n_values": 12,
+      "value": "wrapped_transpose",
+      "scopes": [
+       "carry/other"
+      ]
+     },
+     {
+      "u": 2.0,
+      "offset": 1536,
+      "shape": "c64[2,32,128,65]{2,1,0,3}",
+      "n_values": 9,
+      "value": "while.28{2}",
+      "scopes": [
+       "carry/other"
+      ]
+     },
+     {
+      "u": 1.969,
+      "offset": 8521216,
+      "shape": "f32[2,32,128,128]{3,2,1,0}",
+      "n_values": 10,
+      "value": "input_concatenate_fusion",
+      "scopes": [
+       "BRACKET",
+       "NONLINEARTERM"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 12781056,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 8,
+      "value": "wrapped_transpose.21",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 17040896,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 8,
+      "value": "wrapped_transpose.8",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 10651136,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 9,
+      "value": "wrapped_transpose.18",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 19170816,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 6,
+      "value": "wrapped_transpose.16",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 14910976,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 8,
+      "value": "wrapped_transpose.19",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 6391296,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 5,
+      "value": "wrapped_transpose.15",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 21300736,
+      "shape": "c64[65,32,128]{2,1,0}",
+      "n_values": 2,
+      "value": "fft.232.0",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 1.0,
+      "offset": 2131456,
+      "shape": "c64[32,128,65]{2,1,0}",
+      "n_values": 3,
+      "value": "wrapped_transpose.7",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 0.985,
+      "offset": 25495040,
+      "shape": "f32[32,128,128]{2,1,0}",
+      "n_values": 1,
+      "value": "fft.258.0",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 0.985,
+      "offset": 23397888,
+      "shape": "f32[32,128,128]{2,1,0}",
+      "n_values": 1,
+      "value": "fft.254.0",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     },
+     {
+      "u": 0.985,
+      "offset": 21267968,
+      "shape": "f32[32,128,128]{2,1,0}",
+      "n_values": 1,
+      "value": "fft.192.0",
+      "scopes": [
+       "IFFTinv",
+       "GRADF",
+       "GRAD"
+      ]
+     }
+    ],
+    "n_lanes": 54,
+    "lane_max_sum_u": 17.288,
+    "args_allocs": [
+     {
+      "u": 2.0,
+      "what": "page 0, parameter 1, shape |c64[2,32,128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.125,
+      "what": "page 0, parameter 9, shape |pred[32,128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.125,
+      "what": "page 0, parameter 2, shape |c64[2,2,128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.016,
+      "what": "page 0, parameter 8, shape |f32[128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.016,
+      "what": "page 0, parameter 7, shape |f32[128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.016,
+      "what": "page 0, parameter 11, shape |f32[128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.004,
+      "what": "page 0, parameter 14, shape |pred[128,65]| at ShapeIndex {}:"
+     },
+     {
+      "u": 0.0,
+      "what": "page 0, parameter 5, shape |f32[128,1]| at ShapeIndex {}:"
+     }
+    ],
+    "out_allocs": [
+     {
+      "u": 2.0,
+      "what": "page 0, maybe-live-out:"
+     },
+     {
+      "u": 0.125,
+      "what": "page 0, maybe-live-out:"
+     },
+     {
+      "u": 0.0,
+      "what": "page 0, output shape is |(f64[], c64[2,32,128,65], c64[2,2,128,65], u32[2], f32["
+     },
+     {
+      "u": 0.0,
+      "what": "page 0, maybe-live-out:"
+     }
+    ]
+   },
+   "plain_total_u": 17.685,
+   "scope_neutral": true
+  },
+  {
+   "path": "snapshot_peak",
+   "mode": "snapshot_peak",
+   "scheme": "lsrk54",
+   "nblock": 5,
+   "params": {
+    "nx": 128,
+    "ny": 128,
+    "Lx": 6.283185307179586,
+    "Ly": 6.283185307179586,
+    "cfl_safety": 0.5,
+    "adaptive_timestep": false,
+    "dt": 0.001,
+    "comm_backend": "serial",
+    "nz": 32,
+    "dims": 3,
+    "eqtype": "RMHD",
+    "Lz": 6.283185307179586,
+    "z_spectral": true,
+    "eqpars": {
+     "diss": [
+      0.0001,
+      0.0001
+     ],
+     "hyper": 2,
+     "z_diss_k": 1e-06
+    },
+    "forcing": true,
+    "forcing_mode": "elsasser",
+    "forcing_power_elsasser": [
+     0.5,
+     0.5
+    ],
+    "forcing_tau": 1.0,
+    "fshell": [
+     1,
+     3
+    ],
+    "forcing_seed": 1
+   },
+   "oom": false,
+   "error": null,
+   "u_bytes": 2129920,
+   "stages": {
+    "after_block_1": {
+     "bytes_in_use": 4904192,
+     "peak_bytes_in_use": 41929984,
+     "bytes_limit": 12794724352
+    },
+    "after_save": {
+     "bytes_in_use": 4904192,
+     "peak_bytes_in_use": 41929984,
+     "bytes_limit": 12794724352
+    },
+    "after_block_2": {
+     "bytes_in_use": 5170432,
+     "peak_bytes_in_use": 42196224,
+     "bytes_limit": 12794724352
+    }
+   },
+   "peak_bytes": 42196224,
+   "peak_u": 19.811,
+   "peak_stage": "after_block_2"
+  }
+ ],
+ "timing": []
+}

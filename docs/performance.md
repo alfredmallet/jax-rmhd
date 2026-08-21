@@ -981,6 +981,36 @@ Non-monotone ablations occur on GPU too (`nofft` on FD-z lands 10% ABOVE base,
 forced-case and snapshot-peak GPU numbers run as a separate driver invocation
 (`--paths zspec_forced,snapshot_peak`) — pending.
 
+### The same accounting on the P100 (2026-08-20, `bench/step_accounting_p100{,_special}.json`)
+
+Same driver, `--mode both --profile p100 --rounds 3`, fp32, 512²×128 (GDI 1024²), on the
+Kaggle P100. Memory totals reproduce the committed postFZ probe exactly (FD-z 20.096,
+z_spectral 17.309, GDI 45.244 u). Time, min-over-rounds ablation ladder:
+
+| part | FD-z lsrk54 (318 ms) | z_spectral lsrk54 (294 ms) | GDI 1024² lsrk33 (4.8 ms) |
+|---|---|---|---|
+| transforms (`notrans`) | 53% | **89%** | 79% |
+| — inverse (`noifft`) | 43% | 77% | 68% |
+| z stencil + halo (`nozarith`/`nofdlin`) | 16–23% | — | — |
+| propagator apply + formation | ≤2.4% | ≈0% | ~6% + ~6% |
+| stepper skeleton (`norhs_noprop`) | 6.5% | 7.0% | 8.0% |
+
+The CPU conclusion — every path is transform-bound, the propagator has left the
+accounting — holds on GPU and is stronger: z_spectral is 89% transforms, and its
+apparent premium over FD-z is now negative (294 vs 318 ms; the z-stencil costs more
+than the rfftn z-pass on this card). The non-monotone-ablation warning reproduces
+(`nofft` +10%, `nohalo` −2% land on the wrong side of base): read forward-transform
+shares by `notrans − noifft` here too.
+
+**The two special cases settle the production-sizing questions.** (i) Elsasser forcing,
+which costs +2.41 u on CPU, costs ~+0.4 u on the P100 (`zspec_forced` totals 17.69 u at
+128²×32) — the scheduler absorbs the O-U temporaries. (ii) The snapshot-peak sequence
+(block → `save_snapshot` → block) puts the device high-water at 19.81 u, reached in the
+step AFTER the save — checkpointing never sets the peak; the device cost of a snapshot
+is zero (the transfer is host-side). Together: the max isotropic fp32 z_spectral box on
+a 16 GB P100 is **576³ with forcing and snapshots on** (~14 GB peak), with 512³ leaving
+~5 GB of margin.
+
 ### Reproduce
 
 The whole accounting is packaged as the git-tracked driver `bench/step_accounting.py`, with a
