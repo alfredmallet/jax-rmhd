@@ -48,7 +48,7 @@ import numpy as np
 import taranis as jr
 from taranis import _precision, propagators
 from taranis.run import block_of_steps
-from taranis.timestepping import get_scheme, stage_exp_ops, lsrk_advance, rk_advance
+from taranis.timestepping import get_scheme, stage_exp_ops
 
 _advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
 

@@ -225,14 +225,14 @@ def main():
           f"{res['spec']['flops']/res['fd']['flops']:.2f}x flops; "
           f"hoisted: {res['spec']['hoisted']/res['fd']['hoisted']:.2f}x wall")
 
-    print(f"\n== isolated pieces (ms per call; each jitted alone) ==")
+    print("\n== isolated pieces (ms per call; each jitted alone) ==")
     print(f"{'piece':24s} {'fd':>9s} {'spec':>9s} {'spec/fd':>9s} {'delta':>9s}")
     for name in res["fd"]["pieces"]:
         a, b = res["fd"]["pieces"][name], res["spec"]["pieces"][name]
         ratio = b / a if a > 0 else float("inf")
         print(f"{name:24s} {a:9.3f} {b:9.3f} {ratio:9.2f} {b-a:+9.3f}")
 
-    print(f"\n== propagator attribution: same grid, L swapped between backends ==")
+    print("\n== propagator attribution: same grid, L swapped between backends ==")
     print(f"{'z mode':10s} {'L backend':12s} {'ms/step':>10s}")
     attrib = {}
     for label, zs in (("fd", False), ("spec", True)):
@@ -247,7 +247,7 @@ def main():
           f"diag {attrib[('spec','diag')]-attrib[('fd','diag')]:+.2f} ms, "
           f"putzer {attrib[('spec','putzer')]-attrib[('fd','putzer')]:+.2f} ms/step")
 
-    print(f"\n== ablation ladder inside the z_spectral step (each row drops one piece) ==")
+    print("\n== ablation ladder inside the z_spectral step (each row drops one piece) ==")
     ps, kgs, sts = _case(NX, NZ, True, hoist=False)
     lad = _ablation_ms(ps, kgs, sts)
     prev = None

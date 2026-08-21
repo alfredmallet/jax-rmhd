@@ -372,7 +372,6 @@ def _device_peak():
 
 
 def _setup(params, scheme_name):
-    import jax
     import jax.numpy as jnp
     import numpy as np
     import taranis as tr
@@ -427,7 +426,6 @@ def run_timing(path, params, scheme_name, nblock, variant="base", nrep=21):
     cache is keyed on function and avals, so a second variant in the same process would
     silently re-report the first."""
     import jax
-    import numpy as np
     out = {"path": path, "mode": "timing", "scheme": scheme_name, "nblock": nblock,
            "variant": variant, "nrep": nrep, "params": params, "oom": False, "error": None}
     try:
