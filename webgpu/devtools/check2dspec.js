@@ -42,15 +42,18 @@
 const fs = require("fs"), os = require("os"), path = require("path"), vm = require("vm");
 const { spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
+const OFF = require("./dispoffsets");
 const dir = path.resolve(process.argv[2] || path.join(__dirname, ".."));
 const root = path.resolve(dir, "..");
 // This plan's base commit. (ea8c927, the ISO feedback touch-up main sits on, is UI only
 // and emits the same WGSL byte for byte -- so pinning the earlier commit is the stricter
 // statement, not a looser one.)
 const BASE = "ad080a2";
-// what the feature is allowed to ADD to the emission, and nothing else: two kernels, both
-// on the 3D page, both compiled only if the generate button is ever pressed.
-const ADDED = { "rmhd2d.html": [], "rmhd3d.html": ["prepGradsBand", "specParBand"] };
+// what the emission is allowed to have GAINED since BASE, and nothing else: this feature's
+// two kernels, both on the 3D page, both compiled only if the generate button is ever
+// pressed -- plus, on the 2D page, EIGF_PLAN's `eigfGather` (1b57875), which is not this
+// plan's and is named here only because the list is exact (its own gate is checkeigf.js).
+const ADDED = { "rmhd2d.html": ["eigfGather"], "rmhd3d.html": ["prepGradsBand", "specParBand"] };
 // the selftest grid's instances (16 x 16 x 8: NM = 1152, NMP = 144, NZB = 4) -- the size
 // the WGSL interpreter runs in milliseconds
 const K_GRADS = "selftest :: prepGrads", K_GRADSB = "selftest :: prepGradsBand";
@@ -203,11 +206,14 @@ function legEmission(state) {
     const base = dumpKernels(bd, page, "base").k;
     state.base[page] = base;
     const cur = state.cur[page] || {};
-    const moved = [], gone = [], added = new Set();
+    const moved = [], gone = [], shifted = [], added = new Set();
     for (const k of new Set(Object.keys(base).concat(Object.keys(cur)))) {
       if (base[k] === cur[k]) continue;
       if (base[k] === undefined) added.add(k.split(" :: ")[1]);
       else if (cur[k] === undefined) gone.push(k);
+      // ... except prepDisp, which BASE predates the 2D display offset by (dispoffsets.js):
+      // base's own text plus that commit and nothing else is not a change.
+      else if (OFF.isMove(page, k, base[k], cur[k])) shifted.push(k);
       else moved.push(k);
     }
     ok(page + ": the idle-path emission is " + BASE + "'s, kernel for kernel",
@@ -215,11 +221,19 @@ function legEmission(state) {
        moved.length || gone.length
          ? moved.length + " changed, " + gone.length + " vanished; first: " + (moved[0] || gone[0])
          : Object.keys(cur).length + " kernels, byte-identical");
+    // ... and the allowance is spent EXACTLY: every emission it names carries the offset,
+    // so the block going missing fails here rather than passing as "nothing changed"
+    const wantS = OFF.moved(page, Object.keys(cur));
+    ok("  ... but for " + OFF.COMMIT + "'s display offset, at every " + OFF.KERNEL
+       + " emission" + (wantS.length ? "" : " (none on this page)"),
+       shifted.slice().sort().join(",") === wantS.slice().sort().join(","),
+       shifted.length + " of " + wantS.length);
     const gk = Object.keys(cur).filter(k => / :: prepGrads$/.test(k));
     ok("  ... including the kernel the RHS steps through, prepGrads, at every preset",
        gk.length >= 4 && gk.every(k => base[k] === cur[k]), gk.length + " emissions");
     const gotA = [...added].sort().join(", "), wantA = ADDED[page].join(", ");
-    ok("  ... and what it ADDS is exactly the sweep's two kernels", gotA === wantA, gotA || "none");
+    ok("  ... and what it ADDS is exactly [" + (wantA || "nothing") + "]",
+       gotA === wantA, gotA || "none");
   }
 }
 
@@ -1201,7 +1215,7 @@ async function legChoreography(state) {
   ok("a gen2d card builds with its five controls (generate / panel / lane / colour / theory)",
      card && card.optEls.length === 5 && ids === "gen,gp,gq,gc,gov", ids);
   ok("  ... and a colorbar, because on this chart the plotted quantity IS the colour",
-     env.run("function(c){ return !!c.foot && !!c.barT && c.barT.length === 3; }", card));
+     env.run("function(c){ return !!c.barD && !!c.barCv && !!c.barT && c.barT.length === 3; }", card));
   // it was "overlays" while it also drew the anisotropy card's measured curves; with those
   // gone (second round) it toggles the three theory slopes alone, and says so
   ok("  ... the theory-slopes box is a checkbox reading on/off, starts OFF, and is no longer "
@@ -1316,9 +1330,11 @@ async function legChoreography(state) {
      env.run(`function(){
        const c = cards.chart.filter(x => x.type() === "gen2d")[0];
        c.selType.value = "energy"; c.selType.onchange();
-       const away = c.optEls.length + ":" + !!c.foot;
+       // the BAR is what a retype takes away; the footer under it is permanent since
+       // IO_PLAN item 2, because a file waiting on its result strip lives there too
+       const away = c.optEls.length + ":" + !!c.barD;
        c.selType.value = "gen2d"; c.selType.onchange();
-       return away === "1:false" && c.optEls.length === 5 && !!c.foot && !!gen2d.data; }`));
+       return away === "1:false" && c.optEls.length === 5 && !!c.barD && !!gen2d.data; }`));
   ok("both boots raised no failures", env.fails.length === 0 && env2.fails.length === 0,
      env.fails.concat(env2.fails).join(" | "));
 }

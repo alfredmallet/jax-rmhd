@@ -89,6 +89,11 @@ module.exports = function makeEnv(dir, page, demo, opts) {
       let at = 0;
       for (const p of keep) { this.bytes.set(p, at); at += p.byteLength; }
     }
+    // ... and the way back to those bytes, as a real Blob offers it: the save-all archive
+    // (IO_PLAN item 3) is built by reading each captured PNG back out. A blob with no
+    // kept parts reads as its own length of zeros, so a consumer still gets the size.
+    this.arrayBuffer = () => Promise.resolve(
+      (this.bytes || new Uint8Array(this.size)).slice().buffer);
     caps.blobs[caps.blobs.length - 1] = this;
   }
   // a deterministic "PNG": the real signature, so a consumer can say the bytes that came
@@ -354,7 +359,13 @@ module.exports = function makeEnv(dir, page, demo, opts) {
         const j = this.options.indexOf(c); if (j >= 0) this.options.splice(j, 1);
         return c;
       },
-      getContext: k => (k === "2d" ? ctx2d() : gpuCanvasCtx())
+      // a canvas has ONE 2d context, as a real one does, so what was drawn into it is
+      // still there on the next getContext -- which is what lets a consumer read a
+      // composite's draw log off the canvas element that was handed to toBlob
+      getContext(k) {
+        if (k !== "2d") return gpuCanvasCtx();
+        return this.__cx2d || (this.__cx2d = ctx2d());
+      }
     };
     Object.defineProperty(e, "value", {
       get() { return this._value; },
@@ -445,11 +456,23 @@ module.exports = function makeEnv(dir, page, demo, opts) {
                      "putImageData", "drawImage"]) {
       o[m] = (...a) => { for (const v of a) if (typeof v === "number" && !isFinite(v)) fail("non-finite arg to " + m); };
     }
+    // drawImage additionally LOGS its source and destination rectangle: a composite (both
+    // save paths) is only checkable as "the colorbar canvas really went into the picture"
+    // when what was drawn where is recorded rather than merely finiteness-checked.
+    const chk = o.drawImage;
+    o.__draws = [];
+    o.drawImage = (src, ...a) => { chk(src, ...a); o.__draws.push({ src: src, at: a }); };
     const fontPx = () => { const m = /(\d+(?:\.\d+)?)px/.exec(o.font); return m ? parseFloat(m[1]) : 10; };
     o.measureText = t => ({ width: 0.62 * fontPx() * t.length,
                             actualBoundingBoxAscent: 0.72 * fontPx(), actualBoundingBoxDescent: 0 });
     o.fillRect = (x, y, w, h) => { if (!st.buf) { st.w = w | 0; st.h = h | 0; st.buf = new Uint8ClampedArray(4 * st.w * st.h); } };
+    // ... and fillText LOGS what was written where, in the alignment and font in force at
+    // the time: a saved colorbar's tick labels are geometry (cbarDraw places them a fixed
+    // distance under the strip), and geometry is only checkable when it is recorded.
+    o.__texts = [];
     o.fillText = (t, cx, cy) => {
+      o.__texts.push({ t: String(t), x: cx, y: cy, align: o.textAlign, font: o.font,
+                       base: o.textBaseline });
       if (!st.buf) return;
       const s = fontPx(), hw = 0.3 * s, hh = 0.36 * s;
       for (let py = 0; py < st.h; py++) for (let px = 0; px < st.w; px++) {
@@ -648,6 +671,8 @@ module.exports = function makeEnv(dir, page, demo, opts) {
     requestAnimationFrame: () => {},
     Path2D: Path2DStub,
     console, Math, JSON, Float32Array, Float64Array, Uint32Array, Uint8Array, Uint8ClampedArray,
+    // the ZIP writer's UTF-8 member names and the manifest's bytes (IO_PLAN)
+    TextEncoder,
     Map, Set, Error, Promise, Number, String, Array, Object, isFinite, parseInt, parseFloat,
     setTimeout: setTimeoutStub, clearTimeout: clearTimeoutStub,
     setInterval: setIntervalStub, clearInterval: clearIntervalStub, Date: DateStub,

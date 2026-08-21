@@ -209,8 +209,14 @@ console.log("\n2. a NON-square canvas: the 2D wide box");
 caseMux("wide box", 1024, 256, 2);
 console.log("\n3. edge case: a single frame");
 caseMux("one frame", 320, 180, 1, 1);
+// IO_PLAN item 5: an all-displays recording is ONE file whose frame is the composite of
+// two 512^2 tiles side by side. The muxer sees nothing new -- which is the claim -- so
+// what this case pins is that the composite SIZE survives the mux and that the sample
+// table is still the uniform, all-sync-honest one a phone will play.
+console.log("\n4. the multi-display COMPOSITE frame: two 512x512 tiles side by side");
+caseMux("composite", 1024, 512, 2);
 
-console.log("\n4. refusals and the codec string");
+console.log("\n5. refusals and the codec string");
 {
   const S = samplesOf(fs.readFileSync(TMP + "/checkmp4-320x180.h264"));
   ok("no samples -> no file", mp4Mux({ width: 8, height: 8, fps: FPS, avcC: S.avcC, chunks: [] }) === null);
@@ -221,6 +227,13 @@ console.log("\n4. refusals and the codec string");
   ok("512x512 asks for Baseline level 3.0", recCodec(512, 512) === "avc1.42001e", recCodec(512, 512));
   ok("1024x256 asks for the same level", recCodec(1024, 256) === "avc1.42001e", recCodec(1024, 256));
   ok("a 4K frame moves the level up", recCodec(3840, 2160) === "avc1.420033", recCodec(3840, 2160));
+  // ... and so does a composite: two 512^2 tiles are 2048 macroblocks (level 3.1) and
+  // three 1024^2 in a row are 12288 (level 5.0). The level is picked from the frame the
+  // encoder is really configured for, which since item 5 is the composite, not one card.
+  ok("a two-tile composite asks for level 3.1", recCodec(1024, 512) === "avc1.42001f",
+     recCodec(1024, 512));
+  ok("three 1024 tiles in a row ask for level 5.0", recCodec(3072, 1024) === "avc1.420032",
+     recCodec(3072, 1024));
   ok("the app records at " + FPS + " fps", REC_FPS === FPS, String(REC_FPS));
 }
 

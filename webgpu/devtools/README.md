@@ -4,6 +4,11 @@ Node/python scripts built during REFINE_PLAN phases F–G to verify the apps wit
 GPU. Saved here so later phases (and fresh sandboxes) don't rebuild them. Safe to
 leave untracked or commit — they are dev-only, nothing in the apps loads them.
 
+- `dispoffsets.js` — the one allowance the three prepDisp pins share: 268100f ("webgpu
+  perp offsets") gave the 2D card its display offset, which moves the Mode struct line
+  and inserts the translation phase. `applied(base)` is base's prepDisp text plus exactly
+  that, so `checkiso`, `checkeigf` and `check2dspec` keep their older base commits and
+  still fail on any OTHER change to prepDisp — or on the offset going missing.
 - `stubenv.js` — the shared stub: a DOM + WebGPU stub good enough to run a real app
   page (the classic `<script src>` files the page's own markup names, in document order —
   common.js + physics.js, plus solver2d.js on the 2D page — then its inline script) under
@@ -36,6 +41,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   shared is what was written" is only a checkable statement when there is something to
   compare; its callback stays DEFERRED, as a browser's is, which is what lets a consumer
   close the card between the press and the picture and drive the dead-card branch honestly.
+  Its 2D context logs both kinds of mark a composite is made of: `ctx.__draws` (every
+  `drawImage` with its destination rectangle) and, since 2026-08-20, `ctx.__texts` (every
+  `fillText` with the alignment, baseline and font in force) — which is what lets a gate
+  assert a saved colorbar's tick GEOMETRY off the real file instead of calling the drawing
+  code with a hand-built context.
   A fourth argument carries the boot knobs: `{noGpu: true}` removes `navigator.gpu`, so
   `initGPU` takes its first failure path and the no-WebGPU poster fallback runs for real.
 - `dumpwgsl2.js <dir> <page> "" <out.txt> ['{"pm":10}']` — emit every generated WGSL
@@ -248,7 +258,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
 - `checkeigf.js [dir]` — the EIGF_PLAN gate: the 2D eigenfunction chart card
   (|ψ̂(x,k_y)|, |φ̂(x,k_y)| against x). Six sections. The discipline first — every emitted
   kernel parses, `names.mjs` clean, `dup.py` showing no clone reaching into the shared
-  core, every kernel that existed at the base commit byte-identical with the additions
+  core, every kernel that existed at the base commit byte-identical — but for `prepDisp`
+  on the 2D page, which the base predates the display offset by (`dispoffsets.js`, 268100f),
+  and which must carry it at EVERY preset — with the additions
   being EXACTLY `[eigfGather]` on the 2D page and nothing at all on the 3D one, and the RNG
   reference (64 `Gauss(7)` draws, hashed) unmoved against a value recorded from the base
   tree before a line was written. Then the gather kernel EXECUTED (wgsl_reflect's WGSL
@@ -305,8 +317,116 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   sync samples exactly on the forced indices, equal pts deltas of 1000 media ticks,
   `r_frame_rate 30/1`, size and codec preserved, and `ffmpeg -v error -f null -` decoding
   with zero stderr. Three cases — a square 512×512 take, the non-square 1024×256 wide box,
-  and a one-frame file — plus the refusals (no samples / no avcC) and the codec-string
-  level table. This is the gate that says the recording will play on a phone.
+  and a one-frame file, and (IO_PLAN item 5) the 1024×512 COMPOSITE frame of two 512²
+  tiles — plus the refusals (no samples / no avcC) and the codec-string level table,
+  which now includes the two composite sizes. This is the gate that says the recording will play on a phone.
+- `checkrecall.js [dir]` — multi-display recording (IO_PLAN item 5), on both booted pages.
+  Section A is the tiler and the compositor alone, with no page, GPU or encoder involved:
+  the row/column choice (a tie goes to the row), the wide-box column, mismatched card
+  sizes refusing to tile rather than scaling one, the halved fallback halving the TILES
+  once, and then synthetic byte patterns composited with **every output row read back at
+  its expected offset** — both layouts, padded and tight source rows, the point-sampled
+  half size, the one-tile fast path returning the mapped range itself, and the label patch
+  landing at its tile's inset and clipping at the frame edge. Section B drives the action:
+  the offer rule (one card → not offered, two and three → offered with the composite size
+  in the title, no WebCodecs → absent and the per-card `rec` untouched), a two-card take
+  from the first `copyTextureToBuffer` to a downloaded `ftyp+mdat+moov`, the pool as
+  REC_POOL SLOTS of one buffer per source, every source rendering on the loop's pass, and
+  the four failure modes: an all-or-nothing slot driven twice (one source resized under
+  the take, then one source's map REJECTED — each time the whole slot goes, `W.n` does not
+  move and no half-captured slot enters the pool), the file's `stts` read back as a
+  SINGLE uniform run afterwards, the `isConfigSupported` refusal halving the tiles with
+  the card list intact and the strip saying `tiles at half size` (and a refusal of both
+  sizes starting nothing and saying why), a source card closed mid-take ending the take
+  with the file on the PAGE's strip, and the single-card `rec` path asserted unchanged —
+  one tile, its own canvas size, its own name, no label, its file on the card's footer.
+- `checkchartsave.js [dir]` — the chart card's `save` button (IO_PLAN item 2), on both
+  booted pages. Every leg asserts on the FILE, never on a handler having run: the press
+  produces a PNG whose bytes are the chart canvas (the stub sizes a PNG as 4·w·h of the
+  canvas that wrote it), it lands on the card's own result strip with download / share /
+  dismiss, and **nothing is downloaded by the press** — the house rule the chart card had
+  no footer to honour. Then the four traps: the `bar` type (`gen2d`, 3D only) composites
+  onto a canvas taller than its plot with BOTH the plot and the colour-scale canvas drawn
+  into it (stubenv logs every `drawImage`) in a band of the shared `cbarDraw` geometry;
+  the name is `taranis-<app>-<chart>-t<simT>.png` and the download hands back the same
+  blob that was captured; a retype — including `gen2d → energy → gen2d` — keeps the
+  waiting strip and puts the rebuilt scale back **above** it; and a card closed between
+  the press and the deferred `toBlob` downloads its picture instead of appending it to a
+  dead node. It also pins the capture/deliver split both card classes now expose
+  (`captureShot()` resolves to the blob and delivers nothing — what save-all will use) and
+  that the display card's own save still goes through the shared strip.
+  **The label geometry (2026-08-20).** `cbarDraw` is the one piece of arithmetic item 2's
+  refactor owns and nothing pinned it: the strip's rectangle, the tick baseline `3*sc`
+  under it, the left / centre / right anchors on its own edges and the `9*sc` monospace
+  were all free to move in every saved picture at once. stubenv now logs every `fillText`
+  with the alignment and font in force (`ctx.__texts`), and both callers are asserted
+  through the REAL file — the chart card's band under the plot and the display card's
+  stamp over the field, which is the identity that makes `cbarDraw` one function rather
+  than two. The gen2d legs also run BOTH ways round: with a panel on the card its three
+  labels are real numbers in the composite, and with none (before `generate`) the save
+  composites **no bar at all** rather than a ramp under three blank labels claiming a range
+  the picture does not have. The panel is injected directly — a real generate sweep belongs
+  to `check2dspec`.
+- `checkzip.js [dir]` — the stored-ZIP writer, the save-all button and the field export
+  (IO_PLAN: the writer, item 3 and item 4, sections A, B and D). Section A
+  drives `zipStore` inside a booted page and reads every archive back with **python's
+  `zipfile`** rather than with our own parser — `testzip()`, stored method, per-member CRC
+  recomputed from the extracted bytes, names, order and header offsets. The adversarial
+  cases are the ones that hide a format bug: an empty archive (22 bytes of EOCD, nothing to
+  hide an error behind), a single member, a zero-length member, a non-ASCII name (UTF-8,
+  general-purpose bit 11), and a member past 64 kB with a member after it — which is where a
+  field written at the wrong width shows. `crc32("hello") == 0x3610a686` pins the reflected
+  polynomial, and the offset walk pins byte offsets against member indices. Section B is the
+  button on both booted pages, asserting on the FILE: one archive, one strip slot on the
+  page's own `viewfoot`, and **zero `<a download>` clicks at save time** — the multi-download
+  burst the archive exists to replace. It pins the member names and card order, the
+  `params.json` manifest parsed out of the real archive and compared field by field with the
+  page's own `liveParams()` (then again after forcing is switched off and the diss slider
+  moved, so a manifest frozen at boot fails), and the **capture ordering**: every card's
+  `captureShot` and every display card's `render` are instrumented, `saveAllZip()` is started
+  and deliberately not awaited, and the log is read back in the same task — so an `await`
+  between two cards fails here rather than silently capturing an expired texture.
+  Section D is the field export (`.npz`) on both booted pages, read back by **`numpy.load`**
+  — the reader the file exists for — as well as by `zipfile`. Its two load-bearing legs are
+  the ones nothing inside the page could check for itself. **Axis order:** the export's two
+  staging buffers are filled with the FLAT BUFFER INDEX through the real button (they are
+  the only `MAP_READ` buffers the page creates once the leg is armed, so creation order is
+  phi then psi), so the array numpy should see is exactly `arange(n).reshape(shape)` in C
+  order and every element is compared against one numpy builds itself — a transpose, a
+  `fortran_order` flag or a swapped shape tuple fails on nearly every element, with a
+  readable probe at an index deliberately NOT symmetric in x and y printed beside it. **The
+  pinned uniforms:** a chain is built ON PURPOSE with `queue.writeBuffer` traced, so the
+  third and fourth Mode uniforms are caught being pinned to plain phi / plain psi with band,
+  offset and colormap all zero; then two cards are loaded up with non-default modes, a
+  k⊥ band and (2D) a display offset, every Mode-uniform write is traced across an export,
+  and the export must produce **none** — which is the leg that catches an export that
+  overwrote `B.mode`. The rest: the member list and order, `<f4` / C-contiguity / shape,
+  the coordinate vectors exactly `i*L/n` on every axis, the `.npy` header (v1.0 magic, data
+  on a 64-byte boundary, `fortran_order: False`, and both shape-tuple spellings — a 1-tuple
+  carries the trailing comma), the manifest's sim time, axis order and dealiasing note, one
+  strip slot of its own beside save-all's, and the memory rule: after a multi-MB read
+  `_stagePool` holds no entry that big and the stub's live buffer count is exactly back
+  where it started, so the staging buffer was destroyed rather than pooled.
+  **Two readers, not one (2026-08-20).** `zipfile` reads the CENTRAL DIRECTORY and nothing
+  else, and it ignores `compress_size` on a stored member entirely — so a writer declaring
+  0 compressed bytes in a local header passed every leg above while Info-ZIP refused the
+  archive outright (`ucsize 11 <> csize 0 for STORED entry`, then a bad CRC). Three things
+  close that: `compress_size == file_size` is asserted per member; the python reader now
+  also unpacks each 30-byte LOCAL header by hand and every field is compared against the
+  central directory's copy (version, flag, method, CRC, both sizes, name, DOS stamp); and
+  every archive that matters additionally goes through **`unzip -t`**, a second reader with
+  different blind spots — skipped with a printed SKIP, never a silent pass, where the
+  binary is absent. Section A also pins the writer's INPUT contract: a `Float32Array`
+  member is written as its bytes (12, not 3 value-converted ones — a corruption no reader
+  could ever flag, since the CRC would match), a string / plain array / number is refused
+  rather than encoded on a guess, a bare `ArrayBuffer` is taken, and a member name past the
+  16-bit name-length field throws on its UTF-8 BYTE length (40000 two-byte characters is an
+  80000-byte name) while a 60000-byte one is still written. Plus version-needed 2.0 and the
+  DOS date/time stamp against the PAGE's clock (stubenv stubs `Date`), the save-all
+  re-entry guard (two presses in one task ⇒ exactly one `zipStore` call and one strip row),
+  and the manifest's expression IC: with `preset: "expr"` both formulas are in
+  `params.json`, read out of the real archive — the word `expr` alone names a run nobody
+  could reproduce.
 - `checkonepage.js [dir]` — the ONEPAGE_PLAN gates, on both booted pages. Phase A: the
   control panel hidden at boot, the params toggle's `localStorage` memory across two boots
   in one process (stubenv's store is per-PROCESS on purpose, so that IS a return visit),
@@ -328,11 +448,26 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   canonical, `location.replace`, the no-JS link, and the two strings `pages.yml` seds.
   Phase 8 (2026-08-13) sweeps every quoted local asset path out of `*.html` AND `*.js` —
   poster.png is named only by `common.js`, so markup alone is not the whole site — and
-  asserts each one both EXISTS and is TRACKED BY GIT. The second leg is the point:
+  asserts each one both EXISTS and is TRACKED BY GIT. A path counts only where something
+  LOADS it (2026-08-20): a markup `src=`/`href=` attribute, or a JS literal that reaches
+  `.src`/`.href`/`fetch()` directly or through the constant it is bound to, which is how
+  poster.png is reached. A filename the page WRITES rather than reads is not an asset —
+  `params.json` is a member inside the archive the exports build (IO_PLAN), and no deploy
+  can drop a file that only ever exists inside a download. The second leg is the point:
   `pages.yml` deploys `cp -r webgpu/.` from a fresh clone, so an uncommitted file is a
   404 on the deployed site while `file://` still works locally. That is exactly how the
   favicons shipped broken — `.gitignore`'s blanket `*.png` swallowed them, poster.png
   being the only exception — and an existence-only check would have passed.
+  **Known limit of that sweep (noted 2026-08-20).** "Something loads it" is decided by the
+  TEXT immediately before the literal — an attribute name in markup, or `.src =` /
+  `.href =` / `fetch(` / a `const` whose name reaches one of those in the same file. Any
+  other way of naming a file is invisible to it: `setAttribute("href", …)`, a path
+  assembled from pieces or built in a template literal, a name crossing files through
+  anything but a bound constant, or a loader idiom not in that list. This is deliberately
+  a whitelist — counting every quoted string that looks like a path would flag
+  `params.json` and every other name the page WRITES rather than reads — so its failure
+  mode is a new asset deploying unchecked, never a false alarm. Widen the two regexes when
+  a new loader idiom appears; do not widen them to "any string with a dot in it".
 - `checkiso.js [dir]` — the ISO_PLAN gates. Phases A (box-unit aspect), B (the volume
   raymarch) and C (the collision preset) plus the two
   disciplines the whole plan runs under: every emitted kernel of both pages parses
@@ -343,7 +478,8 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   kernel by kernel, which is what "render-path only" has to mean. The DISPLAY kernels that
   moved, and the ones Phase B adds, are listed in the file and asserted to be exactly that
   list (a stale expectation fails too), and the three volume-length kernels are asserted to
-  be the slice target's own template text at `NR`. The aspect legs boot
+  be the slice target's own template text at `NR`. The band's gated-off leg compares against
+  base plus the 2D display offset (`dispoffsets.js`, 268100f) and nothing else. The aspect legs boot
   the real rmhd3d page and drive the `L_z` select itself, so the whole path (select →
   rebuild → `cubeQuads` → `cubeFrame`) is measured: the z:x edge ratio tracks `Lz/Lx` at
   every option, y:x does not move, the 0.92 autoscale still fits the elongated box and
@@ -402,7 +538,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   band-gated `prepGrads` sweep (Phase A) and its coordinate binning kernel (Phase B). Seven
   legs. The emission first: every kernel parses, `names.mjs` clean, `dup.py` showing no
   clone inside a file, and both pages' WHOLE dump byte-identical to the plan's base commit
-  with exactly two kernels ADDED (`prepGradsBand`, `specParBand`) and none removed — which
+  — but for the 2D `prepDisp`, which the base predates the display offset by
+  (`dispoffsets.js`, 268100f), and which must carry it at every preset —
+  with exactly two kernels ADDED (`prepGradsBand`, `specParBand`, plus EIGF_PLAN's
+  `eigfGather` on the 2D page, 1b57875) and none removed — which
   is both halves of the plan's WGSL rule, the stepping `prepGrads` the RHS runs and the
   idle-path emission around it. Then the two new kernels as TEXT: each is the unbanded
   template's own lines plus an explicitly listed set (a line that changed and is not on the
@@ -484,7 +623,14 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   and no `type="module"` / `import` / `export` anywhere in the three js files or the two
   inline scripts (Chrome blocks module scripts from `file://`). Then the move itself,
   VERBATIM: each definition's text — located by its header line and its closing brace at
-  column 0 — byte for byte against `git show <base>:webgpu/rmhd2d.html`. Then reusability:
+  column 0 — byte for byte against `git show <base>:webgpu/rmhd2d.html`, `class Solver`
+  after ONE recorded allowance is stripped (`IO4_INSERTS`: the exact lines IO_PLAN item 4's
+  field export inserted — two pinned Mode uniforms, their two `prepDisp` bind groups and
+  `encodeExport`, buffers and bind groups only, which is why the WGSL leg above does not
+  move with it). The allowance is the `dispoffsets.js` idiom: it is stripped and the base
+  text is then still demanded byte for byte, so any OTHER change to the class fails, and a
+  companion leg fails it as STALE if a recorded block has stopped being there or as VACUOUS
+  if there was nothing to strip. Then reusability:
   `names.mjs` resolves `solver2d.js` against common.js + physics.js + builtins ALONE, never
   against `rmhd2d.html`'s inline script, which is what says a second page can load it. Then
   `pages.yml` — solver2d.js in the MISSING list and in the cache-bust sed, and the
@@ -564,6 +710,30 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's
   REF block quotes (regenerate it there from this output), then eta- and b0-survey
   tables. `n` = Fourier modes, default 384; 768 reproduces every printed digit.
+- `checkexpr.js [dir]` — the IO_PLAN item 1 gate: the expression IC. Eight sections, both
+  pages booted, because the name set differs between them. The parser first, in units —
+  precedence and the two readings the plan pins by name (`^` right-associative and binding
+  tighter than unary minus, so `-x^2` is `-(x^2)` and `2^3^2` is `2^9`), asserted on the
+  emitted RPN and not only on its value; then every error path, each checked to RETURN
+  rather than throw and to point at the right character (the message quotes a 1-based
+  position, `at` carries the 0-based index it came from); then `z` / `Lz` rejected on the
+  2D page and resolving on the 3D one. Evaluation is compared against the index formula
+  `(iz*nx + ix)*ny + iy` written out longhand HERE, never read back off the thing under
+  test. The non-finite guard is driven with `1/x`, `log(y)` and `sqrt(-1)`, counting the
+  offenders and locating the first. The periodicity detector gets the plan's three cases
+  (`sin(2*pi*x/Lx)` periodic, `x*y` not, `abs(x-Lx/2)` continuous but kinked at exactly
+  the analytic `2h`) plus the one that decided the algorithm: a COSINE is even about the
+  seam, so a slope test built from one-sided differences taken INSIDE the grid reads
+  `h^2 f''` there and calls a perfectly smooth field kinked — the check pins it at
+  round-off over an nz sweep, which is only true because the expression is evaluated one
+  cell OUTSIDE each face. Section 7 drives the REAL app: the preset selectable, both boxes
+  and the help line shown, the amp rows left hidden, a typed expression reaching
+  `setICFromReal` with the right values, `1/x` arriving as `null` instead, the warning line
+  naming the seam it failed on, and the line dying with its preset. Section 8 times one
+  build at 1024² and at 256²×64 — and measures the HARNESS first: stubenv's `Math` belongs
+  to the outer realm, so every `Math.sin` is a cross-context call ~10x a native one, which
+  is most of what the raw number contains. The interpreter's own dispatch rate is timed
+  separately on a transcendental-free program.
 - `dup.py` — token-normalized >=10-line clone detector over the shared core
   (common.js/physics.js/solver2d.js) + extracted app scripts (the standing-rule
   duplication audit); callers pass the file list explicitly. Run it over the extracted
@@ -577,7 +747,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   honest. The result strips are audited as rows of their own: they only exist after a save or
   a take, so the script hands a card a finished file of BOTH kinds through `recResult` (two
   files, two slots, two rows) and measures the widest version of each (download + share +
-  dismiss).
+  dismiss). Since IO_PLAN item 2 a CHART card has the same footer and the same strip, so it
+  is handed a picture too — on a `bar` type, where the strip shares a footer with a colorbar
+  — making three strip rows per page; its `save` button lives on the card HEADER (a chart
+  has no caption line), so it is measured among that row's items and its presence on every
+  chart card is asserted.
 - `names.mjs [dir]` — cross-file identifier resolution check (no redeclares, no frees);
   needs acorn (`npm i acorn`, or `ACORN=<path-to-acorn.mjs>`). The shared set is PER PAGE
   (rmhd2d loads common + physics + solver2d, rmhd3d loads common + physics), and

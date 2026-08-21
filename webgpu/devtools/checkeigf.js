@@ -36,6 +36,7 @@
 const fs = require("fs"), os = require("os"), path = require("path");
 const { spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
+const OFF = require("./dispoffsets");
 const dir = path.resolve(process.argv[2] || path.join(__dirname, ".."));
 const root = path.resolve(dir, "..");
 // EIGF_PLAN's base commit (the plan file's own header says 70ec5a8, which is this tree's
@@ -235,17 +236,27 @@ const cur = {};
   else for (const page of ["rmhd2d.html", "rmhd3d.html"]) {
     const base = dumpKernels(bd, page, "base").k;
     const keys = new Set(Object.keys(base).concat(Object.keys(cur[page])));
-    const moved = [], gone = [], added = new Set();
+    const moved = [], gone = [], shifted = [], added = new Set();
     for (const k of keys) {
       if (base[k] === cur[page][k]) continue;
       if (base[k] === undefined) { added.add(k.split(" :: ")[1]); continue; }
       if (cur[page][k] === undefined) { gone.push(k); continue; }
+      // ... except prepDisp, which BASE predates the 2D display offset by (dispoffsets.js):
+      // base's own text plus that commit and nothing else is not a move.
+      if (OFF.isMove(page, k, base[k], cur[page][k])) { shifted.push(k); continue; }
       moved.push(k);
     }
     ok(page + ": every kernel that existed at " + BASE + " is byte-identical",
        moved.length === 0 && gone.length === 0,
        moved.length + " moved, " + gone.length + " vanished" +
        (moved.length ? " (" + moved[0] + ")" : ""));
+    // ... and the allowance is spent EXACTLY: every emission it names carries the offset,
+    // so the block going missing fails here rather than passing as "nothing moved"
+    const wantS = OFF.moved(page, Object.keys(cur[page]));
+    ok("  ... but for " + OFF.COMMIT + "'s display offset, at every " + OFF.KERNEL
+       + " emission" + (wantS.length ? "" : " (none on this page)"),
+       shifted.slice().sort().join(",") === wantS.slice().sort().join(","),
+       shifted.length + " of " + wantS.length);
     // ... and the additions are EXACTLY the expected list: a stale expectation must fail
     // too, or the next kernel slips in behind this one
     const want = ADDED[page].slice().sort().join(",");

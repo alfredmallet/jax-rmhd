@@ -98,7 +98,8 @@ programmatically; do not try to hand-edit a 180 kB line).
   forward/inverse kernels, which both pages emitted as byte-identical twins), the generic
   reductions (CFL, energy tail,
   max-reduce), device bring-up and the **pooled readback** (`readBuf`, whose staging
-  buffers are keyed by byte length and reused rather than allocated per call), the
+  buffers are keyed by byte length and reused rather than allocated per call, plus
+  `readBufOnce` for the megabyte-sized reads that must not be pooled), the
   **colormap table** (`CMAP_COEF` / `cmapRGB`, the one
   source both the WGSL and the editor preview read), the **display quantity table**
   (`DISP_FIELDS`, physics.js's modes with their definitions — one table, both pages), the
@@ -416,7 +417,128 @@ the WebGPU canvas, the overlay canvas and the colorbar into an offscreen 2D canv
 hands it to `toBlob`; the card **re-renders first**, because WebGPU has no
 `preserveDrawingBuffer` — `getCurrentTexture` is transient and the canvas holds only its
 last *presented* image, so the capture has to be taken in the same task as a fresh
-present. `rec` records the field canvas (that canvas alone: the arrows, the field lines
+present.
+
+**Capture and delivery are separate steps, and the result strip is shared** (IO_PLAN item
+2). Three contracts, in the order a later export feature meets them:
+
+- `captureShot()` on **both** card classes returns a `Promise<Blob>` and delivers nothing.
+  A display card's initiates its render and its composite **synchronously** (no `await`
+  before `toBlob` — the texture is transient), so N cards can be captured in one task and
+  only then awaited; that is what "save all as one archive" needs and why the split exists
+  before there is a second caller. `saveShot()` is `captureShot()` + one `recResult`, and is
+  the only thing the per-card button calls.
+- **Nothing hands a finished file to `dlBlob`.** Every file — both recording legs, the
+  display card's picture and now the chart card's — goes through `cardResult(card, kind,
+  blob, name, seconds)`, which parks it on the card's footer behind size/length text and a
+  download (plus `share`, where the engine can share files) button, because on a phone a
+  silent download lands in Files and is hard to send on. `dlBlob` is reached from exactly two
+  places: that strip's own buttons, and `cardResult`'s dead-card branch — a card closed
+  between the press and the deferred `toBlob` downloads its file rather than losing it, which
+  is why `destroy()` sets `dead` on both classes.
+- The strip's host is `card.foot` and it is **always present on both classes**, with the two
+  slots in `card.resEl` (`png` / `video`: a save replaces only the last save). On a chart
+  card the footer is the constructor's and `_barBuild` rebuilds only the colour scale
+  *inside* it — it used to own the whole footer, which would have taken a waiting file with
+  it on every retype. `cardResult`/`cardResClear` are free functions for that reason: two
+  card classes, one implementation.
+
+A chart card's `save` is on its header row (it has no caption line) and needs no re-render —
+a chart is a persistent 2D canvas, sized by `chartCtx` at `dpr`, so `toBlob` already yields
+the physical-pixel image. The exception is a type declaring `bar` (today `gen2d`): its colour
+scale is a *second* canvas, so the capture composites plot + scale onto one canvas through
+`cbarDraw`, the same shared geometry `DisplayCard.barStamp` stamps with. Names come from
+`chartName(kind, ext)` beside `shotName(mode, ext)`, both over one `capName` —
+`taranis-<app>-<what>-t<simT>.<ext>`. Gate: `devtools/checkchartsave.js`.
+
+**One archive, not N downloads** (IO_PLAN item 3). `save all`, beside `+ display` /
+`+ chart` in the displays & charts group, writes every display card's composite PNG, every
+chart card's PNG and a `params.json` into one ZIP. Firing several `<a download>` clicks in
+a row raises Chrome's multi-download prompt and is silent on iOS — the exact failure the
+result strip exists to avoid, once per card. Three contracts:
+
+- `zipStore(members) -> Blob`, `members: [{ name, data: Uint8Array }]`, **member order = the
+  order given**. Local headers, central directory, EOCD, method 0 (stored) throughout, CRC-32
+  on the reflected polynomial `0xEDB88320`; the central directory's `offset` is a **byte**
+  offset into the finished buffer. No deflate: a PNG is already compressed and a float field
+  gains a few percent, so this stays ~80 lines with no dependency and no worker — and a
+  stored archive is what `numpy.load` reads, which makes it the `.npz` writer too (item 4).
+  Names are UTF-8 with general-purpose bit 11 set. No ZIP64, so 4 GB is the cap.
+- `runManifest(extra) -> object` / `manifestMember(extra) -> {name, data}` — the run's
+  description (app, sim time and step, grid, box, dissipation + hyper exponent, forcing
+  state, IC preset, seed, CFL), built from `liveParams()` at the press. **One builder for
+  both exports**, so the archive of pictures and the field export cannot describe the same
+  run differently; `extra` is merged over the result.
+- **Capture ordering is the constraint.** `_cardShots()` calls `captureShot()` on every
+  display card and then every chart card in ONE synchronous pass and returns the promises;
+  `saveAllZip()` awaits nothing until that pass is over. A display card's texture is
+  transient, so an `await` between two cards would capture the second from an expired one.
+
+The archive's result strip is the **page's**, not a card's: `saveAll` is a plain object with
+a `foot`, a `resEl` slot (`zip`) and a `dead` flag, which is all `cardResult` ever asks of a
+card — so the file describing every card is not parked behind one card's × and cannot be lost
+when that card is closed. Its host is a `viewfoot` div in the control group
+(`{ k: "hintdiv", cls: "viewfoot" }`). Gate: `devtools/checkzip.js`.
+
+**The fields themselves, as `.npz`** (IO_PLAN item 4). `save fields`, next to `save all`,
+writes ONE time slice of the real-space state: `phi.npy`, `psi.npy`, the coordinate
+vectors `x.npy` / `y.npy` (and `z.npy` in 3D) and the same `params.json`, in a stored ZIP
+— which is all an `.npz` is, so `zipStore` is the writer and `npyBytes` is the only new
+format (`.npy` v1.0: magic, version, a 16-bit header length, an ASCII dict padded so the
+DATA starts **64-byte aligned**, then raw little-endian values). One writer for all five
+members; the shape tuple is the only thing that differs. Five contracts:
+
+- **The array axis order IS the buffer layout read literally**: `(nx, ny)` in 2D from
+  `ix*ny + iy`, `(nz, nx, ny)` in 3D from `(iz*nx + ix)*ny + iy`, C order, `<f4`. That is
+  byte for byte what `setICFromReal` consumes, which is what would make "load fields" a
+  small follow-up rather than a rewrite. It is stated in `params.json` (`export.axes`) and
+  in `docs.html`, and it is the leg the gate exists for — a silently transposed field is
+  the classic way to waste someone's afternoon.
+- **The export owns a THIRD and FOURTH Mode uniform per display chain** (`modeX`,
+  `modeX2`, with `prepDispX` / `prepDispX2`), **pinned** to plain `phi` and plain `psi`
+  with no band, no offset and no colormap: written once in `_makeChain` and **never
+  again**. `B.mode` and `B.modeM` are a card's LIVE display uniforms — written only by
+  `setDisplayMode`, carrying that card's band filter and display offset — and the contour
+  path's `modeC` feeds `dispK2`, never `dispR`. Borrowing any of them would corrupt that
+  card until its next `apply()`. No new pipeline, kernel or WGSL: the export is the
+  display chain's own stages, differently bound, which is why the emitted WGSL of both
+  pages is byte-identical across this feature. It is **not** allocation-free.
+- **`Solver.encodeExport(pass, chain)` is the one per-app piece** — the 2D and 3D display
+  chains differ by exactly one stage (`prepDisp → colsInv → rowsC2R` against
+  `prepDisp → zInv → colsInv → rowsC2R`), so each app spends six lines on it and the
+  uniform pin, the readback, the packing, the delivery and the whole UI live once in
+  `common.js` (`readFieldPair`, `npzFields`, `saveFieldsNpz`). Both fields go through ONE
+  compute pass and both readbacks are submitted before the first `await`, so `phi` and
+  `psi` are the same instant of the run even while it steps; the `psi` leg runs second
+  because its prep zeroes the k-scratch the `phi` leg used. It runs at a **frame boundary**
+  (a button press is its own task), never inside a render.
+- **A field readback must NOT be pooled.** `_stagePool` has no eviction, deliberately,
+  because every other pooled size is kilobytes; a field is 1 MB at 2D 512², 4 MB per field
+  at 3D 128²×64 and **16 MB** at the largest offered grid, 256²×64, so one export through
+  `readBuf` would strand tens of MB for the life of the page. `readBufOnce` allocates its
+  staging buffer and `destroy()`s it when the read resolves — the rule is written at the
+  pool as well as here. Measured archives: 2.10 MB at 2D 512², 8.40 MB at 2D 1024²,
+  33.56 MB at 3D 256²×64.
+- **What the export actually costs in memory is FOUR times the archive, not one.** At the
+  largest 3D grid the press holds, all at once: the two fields `readBufOnce` copies out of
+  the mapped range (2 × 16.8 MB), the two `.npy` members `npyBytes` copies them into again
+  (2 × 16.8 MB), the finished ZIP buffer `zipStore` assembles (33.6 MB) and the `Blob`
+  copy of it (33.6 MB) — **≈134 MB of host memory** (measured 128 MiB in the node
+  harness), on top of 33.6 MB of GPU staging while the two reads are in flight. Everything
+  after the await is one uninterrupted main-thread block: two full-array copies, a CRC-32
+  pass per member over ~34 MB, and one whole-archive copy (≈180 ms in node, more on a
+  phone). That is the number the on-device memory check is sized against — not the 33.6 MB
+  of the file.
+
+The export has its **own** slot on the page strip (`saveAll.resEl.npz`, `RES_WHAT.npz`)
+and its own busy flag: an archive of pictures and a field export are different files, so
+pressing one must not throw the other away. Name: `capName("fields", "npz")`. Gate:
+`devtools/checkzip.js` sections D and E, which verify the file **externally** — `zipfile`
+for the archive, `numpy.load` for dtype, shape, axis order and values, with every
+expectation built from the solver's grid rather than from the file's own header. Section E
+reruns those legs on a grid whose axes are **not** equal (the 2D `wide` box, 256×64 over
+4π × 2π, and a 3D 64²×128), because on the square boot grids a transposed axis order is
+invisible however carefully it is asserted. `rec` records the field canvas (that canvas alone: the arrows, the field lines
 and the colorbar are in the PNG only) with a 30 s hard stop, on whichever of **two legs**
 the engine supports.
 
@@ -500,6 +622,68 @@ avcC there is no playable progressive file to write. The button is shown when **
 leg can run and is simply absent otherwise. Filenames are
 `taranis-<page>-<field>-t<time>.{png,mp4,webm}`.
 
+**Every open display, one video** (IO_PLAN item 5). `rec all`, beside `save all` in the
+displays & charts group, records *every* open display card into ONE file. There is no
+selection UI and none is needed — `CARD_MAX_DISP` is 3, so "all of them" is at most three
+tiles and the visitor composes the recording by opening the displays they want. The
+motivating case is z⁺ and z⁻ side by side in an imbalanced run, where the reading depends
+on the two panels being the **same frames**; two files an editor has to line up lose
+exactly that. Five contracts:
+
+- **One recorder, N sources, one slot clock.** `Recorder` takes a HOST (the button, the
+  result strip, `dead`) and a SOURCE list, and a card's own `rec` is the N = 1 case of the
+  same code — the layout `recTiles` returns for one card *is* the frame `rec` has always
+  encoded, down to `recCompose` handing that slot's mapped range to the `VideoFrame`
+  constructor with no copy. Two recorders would drift: one `W.n`, one timestamp ladder,
+  one `VideoEncoder`, one mp4. The feeder is `renderCards`' existing loop with one capture
+  **after** it — same synchronous task, after every card has rendered and before any
+  await, for the reason the per-card capture rides the render. A source of a live take
+  reports `needsRender()` true, so the gate cannot skip the texture the slot is about to
+  read.
+- **All-or-nothing slots.** Every source is checked before anything is committed, and the
+  staging pool hands out a SLOT (one buffer per source) rather than a buffer, so a slot is
+  captured whole or dropped whole and `W.n` does not advance either way; the slot's N maps
+  are joined (`allSettled`) before it takes its place in the ordered encode chain. This is
+  the RECRAF/RECASYNC honesty rule with one clause added: fewer frames, never a lying
+  sample table **and** never a composite whose panels are from different moments. A
+  composite take costs N × `REC_POOL` staging buffers.
+- **Composite at encode time.** `recCompose` copies each source's mapped bytes row-wise
+  into one frame buffer at its tile offset and blits that tile's label patch, clipped to
+  **its own tile** — N memcpy loops, no 2D canvas on this leg. The frame buffer is ONE
+  per take (`W.frame`, made with the pool and freed with it): 3 × 1024² is 12 MB, so a
+  fresh one per slot would be ~360 MB/s of garbage at 30 fps, and `VideoFrame(BufferSource)`
+  copies at construction, so the buffer is free again the moment the frame is built. The
+  one-tile, aligned, unlabelled slot — a card's own `rec` — still hands the mapped range
+  straight to the constructor with no copy and no scratch at all. Layout is one **row or
+  one column, whichever comes out closer to square** (a tie goes to the row: side by side
+  is the case this exists for); all cards show the same run, so equal `cv` sizes are
+  **asserted**, not scaled — mismatched sources, and sources with no pixels, return no
+  layout at all rather than a card list quietly one short.
+- **Probe the composite size, halve the TILES.** The press asks `isConfigSupported` for the
+  composite config and, if refused, for the same tiles at half size (point-sampled in the
+  same row loop; a per-frame resample is the cost this leg exists to avoid) — and the
+  result strip's line then says `tiles at half size`. The card list is never truncated to
+  fit, and an encoder that refuses both sizes starts nothing and says so rather than
+  failing silently.
+- **Leg 1 only, and one canvas or none.** Leg 2 records a canvas *stream*, which cannot
+  cover several WebGPU canvases without compositing through a real 2D canvas, so the
+  action is offered only where the WebCodecs leg runs (`recAll.sync`, which also disables
+  it below two cards) and single-card recording is untouched everywhere else. `W.cv` is
+  the one canvas the sync paths may read — null for a composite — which is also why the
+  watchdog does not feed a composite take on a hidden page: it would have to build a
+  VideoFrame from a canvas that does not exist, so the take simply records fewer frames.
+  It is also why a composite that has latched OFF the buffer path (`recPoolMake`'s
+  out-of-memory catch, a thrown copy, a failed compose) **drops every remaining slot**:
+  there is no canvas to fall back to, so the slot is counted lost rather than built from
+  nothing. Labels are rendered ONCE at start into small opaque RGBA patches
+  (`recLabelPatch`, in the frame's own byte order) and blitted per frame — the one
+  exception being a field **retyped under a live take**, which re-renders that tile's
+  patch on the next slot (`recRelabel`): the tile's pixels have already moved, so the
+  caption moves with them instead of lying about them. A card's own take is unlabelled, as
+  it always was. **A source card closed mid-take ends the take and writes the file** — the
+  encoder's frame size cannot move, so a vanished source could only be papered over with a
+  stale tile, and the strip is the page's, so the file survives the card that went.
+
 `devtools/stubenv.js` stubs `toBlob`, `captureStream`, `MediaRecorder`, `VideoEncoder` /
 `VideoFrame` / `EncodedVideoChunk`, `Blob` (keeping the *bytes*), `URL.createObjectURL`,
 and `setInterval` as a hand-driven pump (`env.tick(n)`) with `env.fireTimeout(ms)` for the
@@ -514,7 +698,18 @@ and the handoff in both directions are covered.
 the script cuts it into samples and builds the avcC (the only Annex-B code in the project,
 and it is in the test), and ffprobe/ffmpeg check the result — top-level boxes, sync samples
 exactly on the forced indices, equal pts deltas, `30/1`, and a decode with zero errors, for
-a square canvas, the 1024×256 wide box and a one-frame file.
+a square canvas, the 1024×256 wide box, a one-frame file and the 1024×512 two-tile
+composite. `devtools/checkrecall.js` is item 5's own gate: the tiler and `recCompose`
+alone (synthetic patterns in, one composite out, every row read back at its expected
+offset, both layouts, padded and tight rows, the halved tiles, a source with no pixels,
+the label blit clipped to its tile in both layouts, and the composite scratch reused
+byte-for-byte), then the action on both booted pages — the offer rule, a two-card take
+from first copy to muxed file, an all-or-nothing slot driven three times (a resized
+source, a rejected map, and the buffer path latched off) with the file's `stts` read back
+as a single uniform run, a field retyped mid-take being re-captioned, the
+`isConfigSupported` refusal halving the tiles without truncating the card list, a card
+closed mid-take, and the single-card path asserted unchanged — its own canvas, its own
+name, no label, and its **sync** fallback still recording when the buffer path is off.
 
 **Contour overlays** are per display card too: ψ contours (= the perpendicular magnetic
 field lines), φ contours (= the streamlines), or **both at once** (ψ + φ — the alignment
@@ -677,9 +872,40 @@ else is built on the CPU and uploaded through **`setICFromReal(phi, psi)`** — 
 `Float32Array`s in the buffers' own layout (`ix*ny + iy` in 2D, `(iz*nx + ix)*ny + iy` in
 3D) — which forward-transforms them and applies the 2/3 dealias exactly like the
 constructor does (unmasked beyond-cutoff IC energy would persist and alias). The **IC**
-selector then offers `large-scale modes`, `quiescent`, `letters` and `custom` (plus the
-two equilibrium presets in 2D, and the sinusoidal packet pair in 3D); **Reset** re-applies
-the current one.
+selector then offers `large-scale modes`, `quiescent`, `letters`, `custom` and
+`expression` (plus the two equilibrium presets in 2D, and the sinusoidal packet pair in
+3D); **Reset** re-applies the current one.
+
+### Expression ICs: the contract
+
+`expression` gives φ and ψ two text boxes and uploads what they say. Three rules bind
+anything that touches it (IO_PLAN item 1; the parser and everything around it live in
+`common.js`, since both pages load it and there is nowhere else shared):
+
+- **No `eval`, no `new Function`.** The parser is hand-written — tokenizer → shunting-yard
+  to RPN → a switch-on-opcode evaluator — and not mainly for security (the page has no
+  secrets): an engine's `SyntaxError` names nothing a student can act on, and the accepted
+  language would otherwise be all of JavaScript, which we would then have to document.
+  Every token carries its source index, so every failure is a message with a character
+  position and never a throw or a silent zero. It also means the cost is an interpreter's:
+  ~4.5 ns per stack op with a native `Math`, so a 30-op expression is ~140 ms at 1024² and
+  ~0.6 s at 256²×64 — one button press, not a frame. Codegen would close that and is the
+  one thing the no-`new Function` rule forbids.
+- **Code units.** `x`, `y` (and `z` in 3D) are the coordinates `setIC` itself uses:
+  `x = ix*Lx/nx`, so the box ends at `Lx`/`Ly`/`Lz` and nothing is normalized to 2π or to
+  1. `Lx`, `Ly` (and `Lz`) are constants for that reason. `z` and `Lz` are **unknown
+  names** on the 2D page rather than the zero `icDrawGrid` would hand out.
+- **Warn, never block.** A non-periodic expression is reported per axis, by the seam it
+  fails on and with the number, and then runs. A **non-finite** one is the one refusal: a
+  NaN through the forward FFT reaches every mode and the run is silently dead from step 0.
+  The guard tests the **float32 that is stored**, not the double that was computed —
+  `exp(100)` is an unremarkable double and an `Infinity` the instant it lands in the
+  field, so a guard reading the double would wave it straight through.
+
+The preset registers through `icRegister` like an equilibrium does and skips
+`icZetaFields` — what is typed has to mean what it says, which is also why the amplitude
+sliders' rows stay hidden for it. Either box may be empty: that is `null`, which
+`setICFromReal` already reads as exactly zero. Gate: `devtools/checkexpr.js`.
 
 ### ζ±, amplitudes, and where the normalization happens
 

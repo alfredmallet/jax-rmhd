@@ -26,6 +26,10 @@
 // small helpers
 // ---------------------------------------------------------------------------
 const el = id => document.getElementById(id);
+// a checkbox by id and a select by id, tolerant of a page that builds neither: the
+// controls are shared but not every one of them is on every page.
+const _uiOn = id => { const e = el(id); return !!(e && e.checked); };
+const _uiVal = id => { const e = el(id); return e ? String(e.value) : ""; };
 const statusEl = document.getElementById("status");
 // The one authoritative per-browser/per-platform WebGPU support matrix (W3C WebGPU
 // working group). The two GPU-failure banners link here INSTEAD of naming
@@ -442,6 +446,12 @@ const SQ = (typeof GPUBufferUsage !== "undefined")
 // buffers, but there are single digits of them, they are kilobytes each (the biggest is
 // the field-line sample block), and the alternative -- a lifetime rule tied to the solver
 // -- would reintroduce exactly the per-rebuild bookkeeping this removes.
+//
+// THAT ARGUMENT IS AN ARGUMENT ABOUT SIZE, so it is also the rule for what may use this:
+// nothing MEGABYTE-sized may be read through readBuf. The field export (IO_PLAN item 4)
+// reads a whole real-space field -- 1 MB at 2D 512^2, 16 MB per field at the largest 3D
+// grid, 256^2 x 64 -- and a no-eviction pool would strand tens of MB for the life of the
+// page after one press. It uses readBufOnce below, which allocates and destroys.
 const _stagePool = new Map();
 async function readBuf(device, buf, byteLen) {
   let free = _stagePool.get(byteLen);
@@ -463,6 +473,26 @@ async function readBuf(device, buf, byteLen) {
     // would turn one failure into every later readback's)
     try { st.destroy(); } catch (e2) {}
     throw err;
+  }
+}
+// ... and the UNPOOLED read, for the one caller whose buffers are too big to keep: a
+// staging buffer per call, destroyed as soon as the bytes are copied out, on the failure
+// path too. Same shape as readBuf otherwise, and the copy is encoded and submitted BEFORE
+// the first await -- so two of these started in one task read the same instant of the
+// simulation even if the frame loop steps in between.
+async function readBufOnce(device, buf, byteLen) {
+  const st = device.createBuffer(
+    { size: byteLen, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const e = device.createCommandEncoder();
+  e.copyBufferToBuffer(buf, 0, st, 0, byteLen);
+  device.queue.submit([e.finish()]);
+  try {
+    await st.mapAsync(GPUMapMode.READ);
+    const out = new Float32Array(st.getMappedRange().slice(0));
+    st.unmap();
+    return out;
+  } finally {
+    try { st.destroy(); } catch (e2) {}
   }
 }
 
@@ -3177,6 +3207,23 @@ function cbarFmt(v) {
   if (a === 0) return "0";
   return (a >= 1e4 || a < 1e-2) ? v.toExponential(1) : v.toPrecision(3);
 }
+// The colorbar as it goes into a SAVED picture: the painted strip at (x, y, w, h) with its
+// three labels under it, at scale `sc`. Both save paths draw it through here -- a display
+// card's stamp over the field (barStamp) and a chart card's band under the plot -- so the
+// bar's geometry inside a file lives in ONE place. `ticks` are the same HTML the on-screen
+// labels carry, hence the entity pass.
+function cbarDraw(c, barCv, ticks, x, y, w, h, sc) {
+  c.drawImage(barCv, x, y, w, h);
+  c.fillStyle = "#d8dee6";
+  c.font = Math.round(9 * sc) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
+  c.textBaseline = "top";
+  const t = (ticks || []).map(s => String(s == null ? "" : s).replace(/&minus;/g, "−"));
+  const ty = y + h + 3 * sc;
+  c.textAlign = "left";   c.fillText(t[0] || "", x, ty);
+  c.textAlign = "center"; c.fillText(t[1] || "", x + w / 2, ty);
+  c.textAlign = "right";  c.fillText(t[2] || "", x + w, ty);
+  c.textAlign = "left";
+}
 
 // ---------------------------------------------------------------------------
 // save / record (FEEDBACK_2026-08-10 item 13)
@@ -3244,8 +3291,10 @@ function recCodec(w, h) {
 // and, with the first chunk, a decoderConfig.description holding the avcC payload -- the
 // SPS/PPS the stsd box needs. Without it we would get Annex-B and no avcC, and nothing
 // would play; the recording bails to leg 2 if a first chunk ever arrives without one.
-const recWCConfig = cv =>
-  ({ codec: recCodec(cv.width, cv.height), width: cv.width, height: cv.height,
+// It takes a SIZE, not a canvas: since IO_PLAN item 5 the frame being encoded is not
+// always one canvas -- an all-displays take configures the encoder for the COMPOSITE.
+const recWCConfig = (w, h) =>
+  ({ codec: recCodec(w, h), width: w, height: h,
      framerate: REC_FPS, bitrate: REC_BITRATE, bitrateMode: "constant",
      avc: { format: "avc" } });
 let recWCOff = false;                    // set when this engine proves the leg unusable
@@ -3281,15 +3330,18 @@ function recBufProbe() {
 // button's visibility is decided in the card's constructor, before the canvas has been
 // sized -- so a size the encoder dislikes is caught by the probe instead, which is
 // exactly the path an unsupported config already takes.
-const recWCSupported = cv =>
-  typeof window !== "undefined" && !recWCOff && !!window.VideoEncoder && !!window.VideoFrame && !!cv;
+// `src` is whatever the take will read pixels off -- a card's canvas, or (item 5) the
+// composite geometry of several: this asks about the ENGINE, and only that there is
+// something to record at all.
+const recWCSupported = src =>
+  typeof window !== "undefined" && !recWCOff && !!window.VideoEncoder && !!window.VideoFrame && !!src;
 // VideoEncoder.isConfigSupported is async, so the probe cannot happen inside a click
 // handler's synchronous part: it runs on the first press, is cached per config, and a
 // rejection (or a throw, on an engine whose isConfigSupported is missing or fussy) means
 // a silent fall back to leg 2 rather than a dead button.
-function recWCProbe(cv) {
-  if (!(cv.width > 0) || !(cv.height > 0)) return Promise.resolve(null);
-  const cfg = recWCConfig(cv), key = cfg.codec + " " + cfg.width + "x" + cfg.height;
+function recWCProbe(w, h) {
+  if (!(w > 0) || !(h > 0)) return Promise.resolve(null);
+  const cfg = recWCConfig(w, h), key = cfg.codec + " " + cfg.width + "x" + cfg.height;
   let p = recProbes.get(key);
   if (!p) {
     p = Promise.resolve()
@@ -3381,13 +3433,398 @@ function appSlug() {
   const s = m && m[1] ? m[1].replace(/[^A-Za-z0-9_-]/g, "") : "";
   return s || "rmhd";
 }
-function shotName(mode, ext) {
-  return "taranis-" + appSlug() + "-" + (DISP_SLUG[mode] || "field") +
-         "-t" + (isFinite(simT) ? simT.toFixed(3) : "0") + "." + ext;
+// one name shape for every file the page writes: page, what it is OF, and the simulation
+// time it was taken at
+const capName = (slug, ext) => "taranis-" + appSlug() + "-" + slug +
+  "-t" + (isFinite(simT) ? simT.toFixed(3) : "0") + "." + ext;
+function shotName(mode, ext) { return capName(DISP_SLUG[mode] || "field", ext); }
+// the chart card's counterpart (IO_PLAN item 2): the CHART_TYPES key is already a slug
+// (energy, spectrum, gen2d), so it goes where a display card's field name goes
+function chartName(kind, ext) { return capName(kind || "chart", ext); }
+
+// ---- the stored-ZIP writer (IO_PLAN, shared by items 3 and 4) ---------------
+// One archive out of N byte arrays. Method 0 (STORED) throughout: a PNG is already
+// deflated and a float field compresses by a few percent, so a deflate implementation
+// would buy nothing and cost a dependency or a worker. `numpy.load` and every unzipper
+// read a stored archive, which is what makes this the .npz writer too.
+//
+// CRC-32, reflected polynomial 0xEDB88320, table built once. (The unreflected 0x04C11DB7
+// is the same polynomial written the other way round and produces a checksum every
+// unzipper rejects -- the first of the two easy bugs here.)
+const _CRC_TAB = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(b) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < b.length; i++) c = _CRC_TAB[(c ^ b[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+// the local time the archive claims, in the DOS pair every member carries
+function _dosStamp(d) {
+  const y = d.getFullYear();
+  return { d: (Math.max(0, y - 1980) & 0x7f) << 9 | (d.getMonth() + 1) << 5 | d.getDate(),
+           t: d.getHours() << 11 | d.getMinutes() << 5 | (d.getSeconds() >> 1) };
+}
+// zipStore(members) -> Blob.  members: [{ name: string, data: Uint8Array }], written in
+// the order given, which is the order they appear in the central directory and so the
+// order a reader lists them in.
+//
+// Layout: N local headers each followed by its bytes, then N central-directory records,
+// then the end-of-central-directory. The second easy bug lives in the central directory:
+// its `offset` field is the BYTE offset of that member's local header in the finished
+// buffer, not the member's index -- so the offsets are recorded as the local pass walks,
+// and the directory is written from those.
+//
+// Names are UTF-8 with general-purpose bit 11 set, always: with the flag clear a reader
+// is entitled to decode the name as CP437, which mangles anything non-ASCII. ZIP64 is
+// not implemented -- every field here is 32-bit, which caps an archive at 4 GB, an order
+// of magnitude above the largest thing this page can produce (a 3D field export).
+//
+// A member's data is BYTES, and `zipBytes` is what makes that true of whatever came in:
+// a typed array's `length` is its ELEMENT count and `Uint8Array.set` value-CONVERTS, so a
+// Float32Array written as it stands would land as its values rounded to bytes, with a
+// matching CRC over the same wrong data -- a valid archive no reader could flag. A view
+// is therefore re-read over its own byte range and anything that is not one is refused,
+// because a string or a plain array has no byte meaning this function may pick for it.
+function zipBytes(d) {
+  if (d == null) return new Uint8Array(0);
+  if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+  if (Object.prototype.toString.call(d) === "[object ArrayBuffer]") return new Uint8Array(d);
+  throw new Error("zip member data must be a typed array or an ArrayBuffer");
+}
+function zipStore(members) {
+  const enc = new TextEncoder();
+  const ms = (members || []).map(m => {
+    const data = zipBytes(m.data);
+    const name = enc.encode(String(m.name));
+    // the name length is a 16-bit field in both headers, so a longer name would be
+    // written truncated modulo 65536 and every reader would refuse the archive
+    if (name.length > 0xffff)
+      throw new Error("zip member name is " + name.length + " bytes, past the 16-bit limit");
+    return { name: name, data: data, crc: crc32(data) };
+  });
+  let total = 0, cdSize = 0;
+  for (const m of ms) {
+    total += 30 + m.name.length + m.data.length;
+    cdSize += 46 + m.name.length;
+  }
+  const buf = new Uint8Array(total + cdSize + 22);
+  const st = _dosStamp(new Date());
+  let p = 0;
+  const u16 = v => { buf[p++] = v & 255; buf[p++] = (v >>> 8) & 255; };
+  const u32 = v => { u16(v & 0xffff); u16((v >>> 16) & 0xffff); };   // little-endian throughout
+  const raw = b => { buf.set(b, p); p += b.length; };
+  for (const m of ms) {
+    m.at = p;                                    // where this member's local header lands
+    u32(0x04034b50); u16(20); u16(0x800); u16(0);         // sig, version, UTF-8 flag, stored
+    u16(st.t); u16(st.d); u32(m.crc);
+    u32(m.data.length); u32(m.data.length);               // compressed == uncompressed
+    u16(m.name.length); u16(0);
+    raw(m.name); raw(m.data);
+  }
+  const cdAt = p;
+  for (const m of ms) {
+    u32(0x02014b50); u16(20); u16(20); u16(0x800); u16(0);
+    u16(st.t); u16(st.d); u32(m.crc);
+    u32(m.data.length); u32(m.data.length);
+    u16(m.name.length); u16(0); u16(0);                   // name, extra, comment
+    u16(0); u16(0); u32(0);                               // disk, internal, external attrs
+    u32(m.at);
+    raw(m.name);
+  }
+  const cdSz = p - cdAt;                 // read BEFORE the EOCD's own fields advance p
+  u32(0x06054b50); u16(0); u16(0); u16(ms.length); u16(ms.length);
+  u32(cdSz); u32(cdAt); u16(0);          // directory size, its offset, no archive comment
+  return new window.Blob([buf], { type: "application/zip" });
+}
+
+// ---- the run manifest (IO_PLAN, shared by items 3 and 4) -------------------
+// What a folder of pictures -- or a pair of exported fields -- needs beside it to still
+// mean something a month later: the grid, the box, the time, the dissipation, what was
+// being injected, and what the run started from. ONE builder for both exports, so the
+// archive of PNGs and the field export cannot describe the same run differently; `extra`
+// is merged over the result (item 4's axis order and dealiasing note).
+// What the run started FROM, which for one preset is not a name. An expression IC's whole
+// content is the two typed formulas (IO_PLAN item 1 uploads them as they stand), so
+// recording `expr` alone would describe nothing -- the exact failure this manifest exists
+// to prevent. A drawn `custom` IC cannot be serialized compactly and stays a bare name.
+function _icRecord() {
+  const preset = _uiVal("selIC"), r = { preset: preset, demo: _uiVal("selPreset") };
+  if (preset === IC_EXPR) { r.phi = icExprSrc("tExprP"); r.psi = icExprSrc("tExprM"); }
+  return r;
+}
+function runManifest(extra) {
+  const q = liveParams();
+  const m = {
+    app: appSlug(),
+    t: isFinite(simT) ? simT : 0,
+    step: solver ? solver.nsteps : 0,
+    grid: { nx: q.nx, ny: q.ny, nz: q.nz || 1 },       // nz/Lz are absent in 2D, as 1 and 0
+    box: { Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0 },
+    dissipation: { diss: q.diss, hyper: q.hyper, auto: autoDissOn() },
+    // eps+- are already 0 while forcing is off (uiEps), so the flag is the checkbox and
+    // the band is quoted only where it means something
+    forcing: _uiOn("cbForce")
+      ? { on: true, epsPlus: q.epsP, epsMinus: q.epsM, locked: _uiOn("cbEpsLock"),
+          shell: q.fshell ? [q.fshell[0], q.fshell[1]] : null, tau: q.tau }
+      : { on: false },
+    ic: _icRecord(),
+    seed: q.seed, cfl: q.cfl
+  };
+  if (typeof q.zdiss === "number") m.dissipation.zdiss = q.zdiss;    // 3D only
+  return Object.assign(m, extra || null);
+}
+// ... and the archive member it becomes, so neither export serializes it its own way
+function manifestMember(extra) {
+  return { name: "params.json",
+           data: new TextEncoder().encode(JSON.stringify(runManifest(extra), null, 2)) };
+}
+
+// ---- the field export: .npy members, .npz archive (IO_PLAN item 4) ---------
+// `.npz` is a ZIP of `.npy` members, so the writer above IS the archive writer and the
+// only new format here is `.npy` v1.0: the 6-byte magic, a version pair, a 16-bit header
+// length, an ASCII python-dict header padded so the DATA starts 64-byte aligned, then the
+// raw little-endian values. One function for all five members -- the fields and the
+// coordinate vectors differ only in their shape tuple.
+//
+// A 1-element shape is spelled `(8,)` and a longer one `(4, 8, 16)`: numpy writes the
+// trailing comma on a 1-tuple and a reader that eval()s the header needs it.
+const _LE = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
+function npyBytes(data, shape) {
+  const dims = shape.length === 1 ? (shape[0] | 0) + "," : shape.map(n => n | 0).join(", ");
+  const head = "{'descr': '<f4', 'fortran_order': False, 'shape': (" + dims + "), }";
+  // pad with spaces so magic(6) + version(2) + length(2) + header lands on a multiple of 64
+  const pad = (64 - ((10 + head.length + 1) % 64)) % 64;
+  const hdr = head + " ".repeat(pad) + "\n";
+  const out = new Uint8Array(10 + hdr.length + data.length * 4);
+  out.set([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59, 1, 0]);        // \x93NUMPY, v1.0
+  out[8] = hdr.length & 255; out[9] = (hdr.length >>> 8) & 255;
+  for (let i = 0; i < hdr.length; i++) out[10 + i] = hdr.charCodeAt(i);
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.length * 4);
+  out.set(bytes, 10 + hdr.length);
+  // `<f4` is little-endian by definition; every engine this page runs on is too, but
+  // labelling host bytes as `<f4` on a big-endian one would be a silently wrong file.
+  if (!_LE) {
+    const at = 10 + hdr.length;
+    for (let i = at; i < out.length; i += 4) {
+      const a = out[i], b = out[i + 1];
+      out[i] = out[i + 3]; out[i + 1] = out[i + 2]; out[i + 2] = b; out[i + 3] = a;
+    }
+  }
+  return out;
+}
+// One time slice of the real-space state as an archive: the two potentials, the
+// coordinate vectors that go with them (so `plt.pcolormesh(x, y, phi.T)` needs no grid
+// rebuilt at the other end) and the shared run manifest, which carries the axis order and
+// the dealiasing note as well as the time.
+//
+// The array axis order IS the buffer layout read literally -- `ix*ny + iy` in 2D,
+// `(iz*nx + ix)*ny + iy` in 3D -- which is also what setICFromReal consumes.
+function npzFields(phi, psi, g) {
+  const three = g.nz > 1;
+  const shape = three ? [g.nz, g.nx, g.ny] : [g.nx, g.ny];
+  const axes = three ? "phi[iz, ix, iy] and psi[iz, ix, iy], C order, at x = x[ix], "
+                     + "y = y[iy], z = z[iz]"
+                     : "phi[ix, iy] and psi[ix, iy], C order, at x = x[ix], y = y[iy]";
+  // the grid setIC uses: it stops one cell short of the far face, which is what makes
+  // the box periodic
+  const coord = (n, L) => {
+    const a = new Float32Array(n);
+    for (let i = 0; i < n; i++) a[i] = i * L / n;
+    return a;
+  };
+  const members = [{ name: "phi.npy", data: npyBytes(phi, shape) },
+                   { name: "psi.npy", data: npyBytes(psi, shape) },
+                   { name: "x.npy", data: npyBytes(coord(g.nx, g.Lx), [g.nx]) },
+                   { name: "y.npy", data: npyBytes(coord(g.ny, g.Ly), [g.ny]) }];
+  if (three) members.push({ name: "z.npy", data: npyBytes(coord(g.nz, g.Lz), [g.nz]) });
+  members.push(manifestMember({ export: {
+    kind: "fields", dtype: "<f4", order: "C", shape: shape, axes: axes,
+    dealiased: "the 2/3 rule is applied to the initial condition and to the nonlinear "
+      + "term at every step, so these fields have no content above the dealiasing cutoff: "
+      + "the spectrum is exactly zero there and must not be read as a measured rolloff"
+  } }));
+  return zipStore(members);
 }
 
 // ---------------------------------------------------------------------------
 // the MP4 muxer (leg 1 of the recorder)
+// ===========================================================================
+// the tiler: N display cards -> ONE video frame (IO_PLAN item 5)
+// ===========================================================================
+// A recording of every open display card is ONE recorder with N sources, one slot clock
+// and one file -- two independent recorders would drift, and a side-by-side that dropped
+// a frame on one side only is worse than no recording at all. Everything below is the
+// GEOMETRY and the PIXELS of that; the slot clock, the pool and the encode chain are the
+// Recorder's, unchanged, with N = 1 (a card's own `rec`) as the one-tile case of the
+// same code rather than a second implementation.
+//
+// The layout record the whole item is written in terms of:
+//   { n, sw, sh, step, tw, th, cols, rows, w, h, tiles: [{ card, x, y, label }], bpr }
+// `sw`/`sh` are one SOURCE canvas in pixels, `tw`/`th` one tile in the composite (the
+// source, point-sampled by `step`), `w`/`h` the composite frame, and each tile's `x`/`y`
+// its top-left pixel in it.
+const REC_LBL_PAD = 8;                   // a label patch's inset inside its own tile
+const REC_LBL_PX = 18;                   // ... and its type size
+// One row or one column, whichever comes out closer to square. With CARD_MAX_DISP = 3
+// tiles that is the whole rule and there are never ragged or empty tiles. All the cards
+// show the same run, so their canvases match by construction -- ASSERT that rather than
+// scale: sources of different sizes are a bug upstream, not a layout to solve, and this
+// returns null instead of silently letterboxing one of them.
+function recTiles(cards) {
+  const cs = (cards || []).filter(c => c && !c.dead);
+  const n = cs.length;
+  if (!n) return null;
+  // a source with no canvas, or a canvas with no pixels, cannot be tiled -- and a card
+  // list quietly one short is exactly the silent cap this feature must not have. Refuse
+  // the whole layout, as a size mismatch does. (_resize gives every display card its
+  // pixels in the constructor, so this is a guard rather than a case that happens.)
+  if (cs.some(c => !c.cv || !(c.cv.width > 0) || !(c.cv.height > 0))) return null;
+  const sw = cs[0].cv.width, sh = cs[0].cv.height;
+  for (const c of cs) if (c.cv.width !== sw || c.cv.height !== sh) return null;
+  // the two candidate shapes, compared on how far from square each comes out. A tie goes
+  // to the ROW: two square panels side by side is the case this feature exists for.
+  const ratio = (w, h) => Math.max(w, h) / Math.min(w, h);
+  const cols = ratio(sw, n * sh) < ratio(n * sw, sh) ? 1 : n;
+  return recLay(cs, sw, sh, cols, 1);
+}
+// the layout record itself, given the tile grid and the point-sampling step
+function recLay(cs, sw, sh, cols, step) {
+  const n = cs.length, rows = Math.ceil(n / cols);
+  const tw = Math.max(1, Math.floor(sw / step)), th = Math.max(1, Math.floor(sh / step));
+  const tiles = cs.map((c, i) => ({ card: c, x: (i % cols) * tw, y: Math.floor(i / cols) * th,
+                                    label: null }));
+  return { n: n, sw: sw, sh: sh, step: step, tw: tw, th: th, cols: cols, rows: rows,
+           w: cols * tw, h: rows * th, tiles: tiles, bpr: 0 };
+}
+// ... and the same tiles at HALF size, which is what the press falls back to when the
+// encoder refuses the full composite (three 1024s in a row is 3072 px wide, past what
+// some mobile encoders take). Halving the TILES, never the card list: dropping a card to
+// fit would be a silent cap on what the visitor asked for.
+function recHalve(L) {
+  return L && L.step === 1 ? recLay(L.tiles.map(t => t.card), L.sw, L.sh, L.cols, 2) : null;
+}
+// A tile's label, rendered ONCE at recording start into a small opaque RGBA patch that
+// the composite blits in per frame. There is no 2D context on the bytes path and a
+// per-frame canvas round trip for text is exactly the main-thread cost RECASYNC removed,
+// so the text is drawn here, on a canvas that lives for one call. An engine (or a
+// harness) without a usable 2D context simply gets no labels -- degrade silently.
+// `fmt` is the frame's own byte order: the canvas hands back RGBA, so BGRX needs the two
+// channels swapped, once, here rather than per pixel per frame.
+function recLabelPatch(text, fmt) {
+  try {
+    if (typeof document === "undefined") return null;
+    const cv = document.createElement("canvas");
+    const c = cv.getContext("2d");
+    if (!c || !c.getImageData) return null;
+    const font = "600 " + REC_LBL_PX + "px ui-sans-serif, system-ui, sans-serif";
+    c.font = font;
+    const tw = Math.ceil(c.measureText(text).width);
+    const pw = tw + 2 * REC_LBL_PAD, ph = Math.round(1.9 * REC_LBL_PX);
+    cv.width = pw; cv.height = ph;
+    const cx = cv.getContext("2d");
+    cx.font = font; cx.textBaseline = "middle"; cx.textAlign = "left";
+    cx.fillStyle = "#14161a";                          // an opaque plate: the blit is a
+    cx.fillRect(0, 0, pw, ph);                         // memcpy, not an alpha composite
+    cx.fillStyle = "#f0f2f5";
+    cx.fillText(text, REC_LBL_PAD, ph / 2);
+    const d = cx.getImageData(0, 0, pw, ph).data;
+    const b = new Uint8Array(pw * ph * 4);
+    const swap = fmt === "BGRX";
+    for (let i = 0; i < pw * ph; i++) {
+      const s = 4 * i;
+      b[s] = swap ? d[s + 2] : d[s]; b[s + 1] = d[s + 1]; b[s + 2] = swap ? d[s] : d[s + 2];
+      b[s + 3] = 255;                                  // the X channel: opaque, always
+    }
+    return { w: pw, h: ph, bytes: b, text: text };
+  } catch (e) { return null; }
+}
+// one tile's caption, from the field it is showing right now. `lmode` is what the patch
+// was rendered FROM, which is what lets the take notice the field moving under it.
+function recLabelOf(t, fmt) {
+  t.lmode = t.card.barMode >= 0 ? t.card.barMode : t.card.sel();
+  t.label = recLabelPatch(DISP_SLUG[t.lmode] || "field", fmt);
+}
+// give every tile its field name, once, at start. Only a MULTI-source take is labelled:
+// a card's own recording is of one field the visitor picked and has never carried text,
+// and item 5 does not change what `rec` produces.
+function recLabels(L, fmt) {
+  if (!L || L.n < 2) return L;
+  for (const t of L.tiles) recLabelOf(t, fmt);
+  return L;
+}
+// ... and the ONE thing that re-renders one mid-take: the card's field select is live
+// during a take, so a visitor who retypes tile 0 from u to vorticity gets new pixels --
+// and, without this, the old caption over them. A changed field costs one canvas round
+// trip on that slot; an unchanged one costs a compare, which is what keeps the plan's
+// "rendered once at recording start" true of every steady frame.
+function recRelabel(L, fmt) {
+  if (!L || L.n < 2) return;
+  for (const t of L.tiles) {
+    const m = t.card.barMode >= 0 ? t.card.barMode : t.card.sel();
+    if (m !== t.lmode) recLabelOf(t, fmt);
+  }
+}
+// one patch into the frame, clipped to ITS OWN TILE (`cw` x `ch` of it are left): a label
+// must never write into the neighbouring tile. recCompose interleaves the blits with the
+// row copies today, so a bleed would be overwritten by the next tile -- invisible, and
+// only until someone hoists the blits into a loop of their own.
+function recBlitPatch(out, row, p, x, y, cw, ch) {
+  const w4 = 4 * Math.min(p.w, Math.max(0, cw));
+  if (w4 <= 0) return;
+  for (let py = 0; py < p.h && py < ch; py++)
+    out.set(p.bytes.subarray(py * p.w * 4, py * p.w * 4 + w4), (y + py) * row + 4 * x);
+}
+// THE COMPOSITE. Each source's mapped bytes copied row-wise into one frame buffer at its
+// tile offset, then that tile's label blitted over it -- N memcpy loops and no 2D canvas,
+// which is what keeps the WebCodecs leg on the path RECASYNC put it on. `ranges` are the
+// mapped ArrayBuffers, in tile order.
+//
+// The one-tile, tight-row, unlabelled slot -- a card's own `rec` -- hands the mapped
+// range straight to the VideoFrame constructor with no copy at all, exactly as it always
+// did: one tile covering the whole frame IS the composite, and the fast case of it.
+//
+// `scratch` is the take's ONE composite buffer, reused every slot (recPoolMake owns it).
+// A 3x1024^2 frame is 12 MB, so allocating one per slot is ~360 MB/s of garbage at 30 fps
+// on exactly the devices this feature is riskiest on; VideoFrame(BufferSource) COPIES at
+// construction, so the buffer is free again the moment the frame is built. A caller that
+// passes none gets a fresh one; the fast path below allocates nothing at all either way.
+function recCompose(L, ranges, scratch) {
+  const row = L.w * 4;
+  if (L.n === 1 && L.step === 1 && L.bpr === row && !L.tiles[0].label)
+    return new Uint8Array(ranges[0]);
+  const out = scratch && scratch.length === row * L.h ? scratch : new Uint8Array(row * L.h);
+  for (let i = 0; i < L.n; i++) {
+    const t = L.tiles[i], x0 = 4 * t.x;
+    if (L.step === 1) {
+      const src = new Uint8Array(ranges[i]);
+      for (let y = 0; y < L.th; y++)
+        out.set(src.subarray(y * L.bpr, y * L.bpr + 4 * L.tw), (t.y + y) * row + x0);
+    } else {
+      // POINT-SAMPLED down to half size: every other pixel of every other row, one
+      // 32-bit pixel at a time. The alternative is a resample per frame through a canvas
+      // or the GPU -- the cost this leg exists to avoid -- and the result strip says the
+      // tiles were downscaled rather than pretending they are full resolution.
+      const s32 = new Uint32Array(ranges[i]);
+      const d32 = new Uint32Array(out.buffer, out.byteOffset, out.length / 4);
+      const sp = L.bpr / 4, dp = row / 4, dx = x0 / 4;
+      for (let y = 0; y < L.th; y++) {
+        const so = y * L.step * sp, dof = (t.y + y) * dp + dx;
+        for (let x = 0; x < L.tw; x++) d32[dof + x] = s32[so + x * L.step];
+      }
+    }
+    if (t.label) recBlitPatch(out, row, t.label, t.x + REC_LBL_PAD, t.y + REC_LBL_PAD,
+                              L.tw - REC_LBL_PAD, L.th - REC_LBL_PAD);
+  }
+  return out;
+}
+
 // ===========================================================================
 // Recorder -- the capture legs of a display card (render audit, 2026-08-12)
 // ===========================================================================
@@ -3405,12 +3842,45 @@ function shotName(mode, ext) {
 // The card keeps `wc` / `rec` / `recBusy` / `recStop` as getters onto this object, so the
 // frame loop's REC_DEBUG readout, destroy() and every devtools leg that reads a card's
 // live recording state carry on reading exactly what they read before.
+//
+// Since IO_PLAN item 5 a recorder has a HOST and N SOURCES. The host owns the button, the
+// result strip and the `dead` flag -- a display card, or the page-level all-displays host
+// (`recAll`, which is nobody's card) -- and the sources are the display cards whose
+// canvases the take reads. A card's own `rec` is `host = the card, sources = [the card]`,
+// i.e. the one-tile case of this code and not a separate path: everything below is
+// written over `recTiles`' layout, whose N = 1 geometry is the frame a card has always
+// recorded.
 class Recorder {
-  constructor(card) {
-    this.card = card;
+  constructor(host, srcs) {
+    this.host = host;
+    // the cards this recorder would capture RIGHT NOW (a live take freezes its own list
+    // into W.tiles at start: see recStartWC)
+    this.srcs = srcs || (() => [host]);
     this.rec = null; this.recStop = 0;    // live MediaRecorder, and its hard-stop timer
     this.wc = null;                       // ... or the live WebCodecs recording (leg 1)
     this.recBusy = false;                 // a config probe is in flight
+  }
+  // The ONE canvas the canvas-side paths can use: leg 2 records a canvas STREAM and the
+  // watchdog builds a VideoFrame from a canvas, and neither can composite several WebGPU
+  // canvases without a 2D context to do it in. So a multi-source take has none, and every
+  // caller that needs one degrades on `null` -- which is how "the all-displays recording
+  // is offered only where leg 1 runs" is expressed once instead of branch by branch.
+  soloCv() { const s = this.srcs(); return s.length === 1 && s[0].cv ? s[0].cv : null; }
+  // the frame sizes this press will accept, in order: the composite as it stands and, if
+  // the encoder refuses it, the same tiles at HALF size (IO_PLAN item 5 -- three 1024s in
+  // a row is 3072 px wide, past what some mobile encoders take). A single-source take
+  // offers only its own size: halving one card's recording would change what `rec` has
+  // always produced, and leg 2 is that press's fallback.
+  recCandidates() {
+    const L = recTiles(this.srcs());
+    return !L ? [] : (L.n > 1 ? [L, recHalve(L)] : [L]);
+  }
+  // walk them in order, first accepted config wins; null when the engine refuses them all
+  recProbe(cands, i) {
+    const L = cands[i || 0];
+    if (!L) return Promise.resolve(null);
+    return recWCProbe(L.w, L.h)
+      .then(cfg => cfg ? { cfg: cfg, lay: L } : this.recProbe(cands, (i || 0) + 1));
   }
   // toggle: start recording the field canvas, or stop the live recording -- on whichever
   // leg the engine supports (WebCodecs preferred; see the note by REC_FPS). The 30 s
@@ -3420,17 +3890,36 @@ class Recorder {
   recToggle() {
     if (this.wc || this.rec) { this.recEnd(); return; }
     if (this.recBusy) return;                   // a probe is already in flight
-    if (recWCSupported(this.card.cv)) {
+    const cands = this.recCandidates();
+    if (recWCSupported(cands[0])) {
       this.recBusy = true;
-      recWCProbe(this.card.cv).then(cfg => {
+      this.recProbe(cands).then(r => {
         this.recBusy = false;
-        if (this.card.dead || this.wc || this.rec) return;
-        if (cfg && recWCSupported(this.card.cv)) this.recStartWC(cfg);
-        else if (recSupported(this.card.cv)) this.recStartMR();
+        if (this.host.dead || this.wc || this.rec) return;
+        // a composite exists only on the bytes path -- there is nothing to composite
+        // INTO on the canvas path -- and `recBufOff` is settled by the probe above
+        if (r && recWCSupported(r.lay) && (r.lay.n === 1 || (!recBufOff && device)))
+          this.recStartWC(r.cfg, r.lay);
+        else if (recSupported(this.soloCv())) this.recStartMR();
+        else this.recRefused(cands[0]);
       });
       return;
     }
-    if (recSupported(this.card.cv)) this.recStartMR();
+    if (recSupported(this.soloCv())) this.recStartMR();
+    else this.recRefused(cands[0]);
+  }
+  // nothing could start. A card's `rec` button is simply absent on such an engine, so
+  // this is the multi-source press talking: say what refused it rather than leaving a
+  // button that does nothing (the no-silent-failure half of the no-silent-caps rule).
+  recRefused(L) {
+    const n = L ? L.n : this.srcs().length;
+    if (n < 2) return;
+    this.host.recIdle();
+    showStatus(L
+      ? "this browser's video encoder cannot take " + L.w + "×" + L.h +
+        " (or cannot encode from a buffer): record the cards one at a time"
+      : "these display cards are not the same size, so they cannot be tiled into one video",
+      "err");
   }
   recEnd() {
     if (this.wc) this.recStopWC(false);
@@ -3445,11 +3934,12 @@ class Recorder {
     // recToggle: a press whose probe then fails to start anything (a WebCodecs-only
     // engine that dislikes this canvas size) must not have thrown away the one file the
     // visitor still had (adversarial review 2026-08-12, MINOR 1).
-    this.card.recClear("video");
+    this.host.recClear("video");
+    const cv = this.soloCv();                  // leg 2 is single-source by construction
     const mime = recMime(), chunks = [];
-    const r = new window.MediaRecorder(this.card.cv.captureStream(REC_FPS),
+    const r = new window.MediaRecorder(cv.captureStream(REC_FPS),
                                        mime ? { mimeType: mime } : undefined);
-    const name = shotName(this.card.barMode, recExt(mime));
+    const name = shotName(this.host.barMode, recExt(mime));
     // this leg hands back an opaque container built by the engine, so the frames in it are
     // not ours to count: wall clock from start() to onstop is the only length it can
     // honestly quote (leg 1, which writes the file itself, counts samples instead)
@@ -3458,19 +3948,24 @@ class Recorder {
     r.onstop = () => {
       clearTimeout(this.recStop);
       this.rec = null; this.recStop = 0;
-      this.card.recIdle();
-      this.card.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
+      this.host.recIdle();
+      this.host.recResult("video", new window.Blob(chunks, { type: mime || "video/mp4" }), name,
                      (Date.now() - t0) / 1000);
     };
     this.rec = r;
     r.start();
-    this.card.recLive();
+    this.host.recLive();
     this.recStop = setTimeout(() => { if (this.rec === r) r.stop(); }, REC_MAX_MS);
   }
 
   // ---- leg 1: WebCodecs -> mp4Mux ------------------------------------------
-  recStartWC(cfg) {
-    this.card.recClear("video");               // same rule as recStartMR: replace on START
+  // `L` is the take's LAYOUT (recTiles, possibly halved by the probe): its tiles are the
+  // sources, FROZEN here. A card opened mid-take is not in this recording -- the encoder
+  // is configured for one frame size and the composite geometry cannot move under it --
+  // and a card CLOSED mid-take ends the take with the file written (recAll.cardGone).
+  recStartWC(cfg, L) {
+    this.host.recClear("video");               // same rule as recStartMR: replace on START
+    recLabels(L, REC_BUF_FMT[canvasFormat]);   // one patch per tile, rendered ONCE (item 5)
     // ONE clock sample feeds the cadence fields: `due` is the wall-clock time of the next
     // capture slot (recCapture). `lastRaf`/`maxGap` are DIAGNOSTIC only since round 2 --
     // the watchdog parks on visibility, not on a heartbeat -- and `rafN`/`wdN` count which
@@ -3480,7 +3975,13 @@ class Recorder {
     const W = { chunks: [], avcC: null, n: 0, drop: 0, timer: 0, bailed: false, done: false,
                 due: t0 + 1000 / REC_FPS, lastRaf: t0, maxGap: 0, rafN: 0, wdN: 0,
                 tV: 0, tE: 0,               // max ms in the capture / in the encode (recdebug)
-                w: this.card.cv.width, h: this.card.cv.height, name: shotName(this.card.barMode, "mp4"),
+                // the frame the encoder is configured for is the COMPOSITE (item 5), and
+                // `sw`/`sh` are one source canvas: for a card's own take they are equal,
+                // which is the same single frame this always recorded. `cv` is the ONE
+                // canvas the sync paths may read, or null when there are several.
+                lay: L, tiles: L.tiles, sw: L.sw, sh: L.sh, w: L.w, h: L.h,
+                cv: this.soloCv(),
+                name: L.n > 1 ? capName("displays", "mp4") : shotName(this.host.barMode, "mp4"),
                 // ---- RECASYNC_PLAN (2026-08-12): the GPU-readback capture path --------
                 // `bufOn` is decided ONCE per take from the settled probe latch, so a
                 // recording never changes paths under its own feet; `fmt` is the
@@ -3490,8 +3991,10 @@ class Recorder {
                 // path first uses it, which is also what keeps the sync path's stop
                 // exactly as it was. `gone` is set when the pool is destroyed: a map
                 // resolving after that must find it and do nothing.
-                bufOn: !recBufOff && !!this.card.ctx && !!device, fmt: REC_BUF_FMT[canvasFormat],
-                pool: null, bpr: 0, pad: false, pend: 0, onDrain: null, gone: false,
+                bufOn: !recBufOff && L.tiles.every(t => !!t.card.ctx) && !!device,
+                fmt: REC_BUF_FMT[canvasFormat],
+                pool: null, bpr: 0, frame: null, pad: false, pend: 0, onDrain: null,
+                gone: false,
                 chain: null, tL: 0,         // max capture->encode lag in ms (recdebug)
               };
     W.enc = new window.VideoEncoder({
@@ -3523,7 +4026,7 @@ class Recorder {
     // hidden page or under the editor view (the park condition lives in recTick). Its
     // extra render() then costs only where there is no visible display to stutter.
     W.timer = setInterval(() => this.recTick(W), Math.round(1000 / REC_FPS));
-    this.card.recLive();
+    this.host.recLive();
     this.recStop = setTimeout(() => { if (this.wc === W) this.recStopWC(false); }, REC_MAX_MS);
   }
   // The ONE place a recording frame is encoded, whichever feeder brought it (RECRAF_PLAN,
@@ -3558,7 +4061,7 @@ class Recorder {
       init.format = src.format; init.codedWidth = src.w; init.codedHeight = src.h;
       f = new window.VideoFrame(src.bytes, init);
     } else {
-      f = new window.VideoFrame(this.card.cv, init);
+      f = new window.VideoFrame(W.cv, init);
     }
     const t2 = performance.now();
     // a forced keyframe every second: the cadence iOS wanted and MediaRecorder would not
@@ -3574,33 +4077,52 @@ class Recorder {
     return true;                            // fed: the callers' rafN/wdN tallies key on this
   }
   // ---- the buffer capture path (RECASYNC_PLAN, 2026-08-12) --------------------
-  // The hot half: copy this card's canvas texture into a free staging buffer and submit,
+  // The hot half: copy each source canvas's texture into a free staging buffer and submit,
   // all synchronously in the render's own task (getCurrentTexture is transient), then let
   // go. Microseconds of command encoding instead of the 15-17 ms a VideoFrame-from-canvas
   // cost the phone -- the readback itself happens on the GPU's clock and lands in
   // recEncodeMapped a beat later, which is fine: the timestamps are ours, not the map's.
+  //
+  // ALL-OR-NOTHING (IO_PLAN item 5): every source is checked before ANYTHING is committed,
+  // and the pool hands out a slot's worth of buffers at once, so a slot is captured whole
+  // or dropped whole and `W.n` does not advance either way. A composite missing one tile
+  // would show a stale panel beside a live one -- a picture that lies about the run, which
+  // the RECRAF/RECASYNC honesty rule does not cover and would not excuse. Fewer frames,
+  // never a lying sample table AND never a lying frame.
   recCaptureBuf(W) {
     const t1 = performance.now();
-    // the canvas can be resized under a live take (a preset or a grid change rebuilds the
-    // cards): the encoder is configured for W.w x W.h, so a copy of the new size would be
-    // a validation error rather than a frame. Drop the slot instead -- the honest-length
-    // rule again -- and let the take end at the size it started.
-    if (this.card.cv.width !== W.w || this.card.cv.height !== W.h) { W.drop++; return; }
+    // a canvas can be resized under a live take (a preset or a grid change rebuilds the
+    // cards) and a card can be closed: the encoder is configured for W.w x W.h, so a copy
+    // of the new size would be a validation error rather than a frame. Drop the slot
+    // instead -- the honest-length rule again -- and let the take end at the size it
+    // started. (A closed card ENDS an all-displays take; this covers the slot in between.)
+    for (const t of W.tiles)
+      if (t.card.dead || t.card.cv.width !== W.sw || t.card.cv.height !== W.sh) { W.drop++; return; }
+    // the sources have already rendered this pass, so a field changed under the take is
+    // in the pixels about to be copied: re-caption first, or this slot ships the old name
+    // over the new field (item 5's labels are otherwise rendered once, at start).
+    recRelabel(W.lay, W.fmt);
     if (!W.pool && !this.recPoolMake(W)) { W.drop++; return; }   // this slot was due too
     let s = null;
     for (const e of W.pool) if (!e.busy) { s = e; break; }
-    // all three buffers are still waiting on their maps: the readback is genuinely behind,
-    // so this slot is lost exactly as an encoder-backpressure slot is. Nothing waits.
+    // every slot in the pool is still waiting on its maps: the readback is genuinely
+    // behind, so this slot is lost exactly as an encoder-backpressure slot is. Nothing
+    // waits.
     if (!s) { W.drop++; return; }
     try {
+      // ONE command encoder for the whole slot: N copies, one submit, so the sources are
+      // read at one point of the frame rather than spread across N submissions.
       const ce = device.createCommandEncoder();
-      ce.copyTextureToBuffer({ texture: this.card.ctx.getCurrentTexture() },
-                             { buffer: s.b, bytesPerRow: W.bpr, rowsPerImage: W.h },
-                             { width: W.w, height: W.h, depthOrArrayLayers: 1 });
+      W.tiles.forEach((t, i) =>
+        ce.copyTextureToBuffer({ texture: t.card.ctx.getCurrentTexture() },
+                               { buffer: s.b[i], bytesPerRow: W.bpr, rowsPerImage: W.sh },
+                               { width: W.sw, height: W.sh, depthOrArrayLayers: 1 }));
       device.queue.submit([ce.finish()]);
     } catch (e) {
       // an engine that accepted the configure but not the copy: fall back to the sync
-      // canvas path for the rest of this take rather than lose every remaining frame
+      // canvas path for the rest of this take rather than lose every remaining frame.
+      // A composite has no sync path (W.cv is null), so there it simply keeps dropping --
+      // and the file it writes is short and honest rather than half-composited.
       W.bufOn = false; W.drop++;
       return;
     }
@@ -3612,32 +4134,60 @@ class Recorder {
     // something to rely on, VideoEncoder requires monotonic timestamps, and mp4Mux writes
     // a UNIFORM stts (checkmp4 asserts equal deltas) -- so index, timestamp and keyframe
     // are all assigned at ENCODE time, inside one promise chain whose steps cannot
-    // interleave. Whichever capture's bytes arrive first is simply frame n: a dropped or
+    // interleave. Whichever SLOT's bytes arrive first is simply frame n: a dropped or
     // failed capture leaves fewer frames and NO hole in the sample table.
-    s.b.mapAsync(GPUMapMode.READ).then(
-      () => { W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); }); },
-      () => { s.busy = false; if (!W.gone) W.drop++; this.recPend(W); });
+    //
+    // The slot's N maps are joined before it takes its place in the chain (allSettled,
+    // not all: a slot whose maps half-failed must still be waited out, or a buffer left
+    // mapped would be handed to a later slot).
+    Promise.allSettled(s.b.map(b => b.mapAsync(GPUMapMode.READ))).then(rs => {
+      if (rs.every(r => r.status === "fulfilled")) {
+        W.chain = W.chain.then(() => { this.recEncodeMapped(W, s, t2); this.recPend(W); });
+      } else {
+        this.recSlotFree(s, rs.map(r => r.status === "fulfilled"));
+        if (!W.gone) W.drop++;
+        this.recPend(W);
+      }
+    });
   }
-  // three staging buffers, made on the first capture of a take (a take that never captures
-  // -- pressed and stopped inside one slot -- allocates nothing). bytesPerRow must be a
-  // multiple of 256: at every preset size the row is already aligned, but the box is
-  // user-sizable, so the padded case is real and recEncodeMapped compacts it.
+  // REC_POOL slots deep, each slot holding one staging buffer PER SOURCE, made on the
+  // first capture of a take (a take that never captures -- pressed and stopped inside one
+  // slot -- allocates nothing). Three slots is still "a couple of frames of readback
+  // latency is normal, three is genuinely behind"; N sources make each slot N buffers, so
+  // a composite take costs N times the staging memory and drops slots on exactly the same
+  // rule. bytesPerRow must be a multiple of 256: at every preset size the row is already
+  // aligned, but the box is user-sizable, so the padded case is real and recCompose
+  // compacts it.
   recPoolMake(W) {
     const pool = [];
     try {
-      W.bpr = Math.ceil(W.w * 4 / 256) * 256;
-      W.pad = W.bpr !== W.w * 4;
+      W.bpr = Math.ceil(W.sw * 4 / 256) * 256;
+      W.pad = W.bpr !== W.sw * 4;
+      W.lay.bpr = W.bpr;                       // the composite reads rows at this pitch
+      // ONE composite buffer for the whole take (recCompose). The fast path -- one tile,
+      // aligned rows, no label -- composites nothing and gets none.
+      const row = W.lay.w * 4;
+      W.frame = (W.lay.n === 1 && W.lay.step === 1 && W.bpr === row)
+        ? null : new Uint8Array(row * W.lay.h);
       for (let i = 0; i < REC_POOL; i++)
-        pool.push({ b: device.createBuffer({ size: W.bpr * W.h,
-                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), busy: false });
+        pool.push({ b: W.tiles.map(() => device.createBuffer({ size: W.bpr * W.sh,
+                      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })), busy: false });
       W.pool = pool;
       return true;
     } catch (e) {
       // no memory: sync path -- and the buffers a mid-loop throw DID create go back
       // (adversarial review 2026-08-12, MINOR 3)
-      for (const p of pool) { try { p.b.destroy(); } catch (err) {} }
-      W.bufOn = false; W.pool = null; return false;
+      for (const p of pool) for (const b of p.b) { try { b.destroy(); } catch (err) {} }
+      W.bufOn = false; W.pool = null; W.frame = null; return false;
     }
+  }
+  // a slot goes back to the pool: unmap whatever really mapped (`got` null = all of them,
+  // the ordinary path after an encode) and clear the busy flag ONCE, when every buffer in
+  // it has settled -- a half-freed slot handed out again would map an already-mapped
+  // buffer.
+  recSlotFree(s, got) {
+    s.b.forEach((b, i) => { if (!got || got[i]) { try { b.unmap(); } catch (e) {} } });
+    s.busy = false;
   }
   // one capture accounted for, whichever way it ended. When the last one lands, a stop
   // that is waiting on the drain can go on to flush and mux.
@@ -3645,23 +4195,15 @@ class Recorder {
     if (W.pend > 0) W.pend--;
     if (!W.pend && W.onDrain) W.onDrain();
   }
-  // the ASYNC TAIL, running as one step of the chain: the map resolved, so this capture's
-  // bytes exist. On the aligned row the mapped range is handed to the VideoFrame
-  // constructor as it is (the constructor copies), on the padded one the rows are
-  // compacted into a tight buffer first. Then unmap, and the buffer is free again.
+  // the ASYNC TAIL, running as one step of the chain: this slot's maps resolved, so every
+  // source's bytes exist. recCompose stitches them into the one frame the encoder is
+  // configured for -- which, for a single-source take on an aligned row, is the mapped
+  // range itself, handed to the constructor exactly as it always was. Then unmap, and the
+  // slot is free again.
   recEncodeMapped(W, s, tCap) {
     if (W.gone) return;                     // torn down while this sat in the chain
     try {
-      const ab = s.b.getMappedRange();
-      const row = W.w * 4;
-      let bytes;
-      if (W.pad) {
-        bytes = new Uint8Array(row * W.h);
-        const src = new Uint8Array(ab);
-        for (let y = 0; y < W.h; y++) bytes.set(src.subarray(y * W.bpr, y * W.bpr + row), y * row);
-      } else {
-        bytes = new Uint8Array(ab);
-      }
+      const bytes = recCompose(W.lay, s.b.map(b => b.getMappedRange()), W.frame);
       // capture-submit to encode: the "arrives a beat late" number, ?recdebug's `lag`
       const lag = performance.now() - tCap;
       if (lag > W.tL) W.tL = lag;
@@ -3674,16 +4216,15 @@ class Recorder {
       // 2026-08-12, MINOR 1)
       W.drop++; W.bufOn = false;
     }
-    try { s.b.unmap(); } catch (e) {}
-    s.busy = false;
+    this.recSlotFree(s, null);
   }
   // the pool's ONE teardown, called from every route a recording ends by. `gone` first:
   // the buffers are about to stop existing, so a map still in flight (and the rejection
   // destroy() hands it) must find a recording that wants nothing more from it.
   recPoolFree(W) {
     W.gone = true;
-    for (const e of (W.pool || [])) { try { e.b.destroy(); } catch (err) {} }
-    W.pool = null;
+    for (const e of (W.pool || [])) for (const b of e.b) { try { b.destroy(); } catch (err) {} }
+    W.pool = null; W.frame = null;
   }
   // wait for the captures still in flight before the file is written (RECASYNC_PLAN 5).
   // The timeout is the guard against a map that never resolves: half a second, then mux
@@ -3728,6 +4269,12 @@ class Recorder {
     // tally is incremented THERE -- it counts frames this feeder put in the FILE, and on
     // this path that is not knowable yet.
     if (W.bufOn) return this.recCaptureBuf(W);
+    // ... and when it is NOT on -- a take that started without it, or one of the three
+    // catches below that latch it off mid-take -- the fallback is the sync canvas path,
+    // which needs the ONE canvas a composite does not have. Drop the slot rather than
+    // hand `new VideoFrame(null, init)` to the engine (a throw on every due slot for the
+    // rest of the take, and not even counted). Same rule as recTick's guard.
+    if (!W.cv) { W.drop++; return; }
     if (this.recEncodeFrame(W)) W.rafN++;
   }
   // the WATCHDOG tick (RECRAF_PLAN, 2026-08-12): identical to the feeder this leg shipped
@@ -3752,8 +4299,14 @@ class Recorder {
   recTick(W) {
     if (this.wc !== W || W.done) return;
     if (!((typeof document !== "undefined" && document.hidden) || icDraw.on)) return;
+    // ... and it feeds only what it can BUILD A FRAME FROM: the sync path takes a
+    // VideoFrame from ONE canvas, and there is no 2D context on this leg to composite
+    // several into. So an all-displays take is not fed while the page is hidden or the
+    // editor is up; it records fewer frames of wall clock, which is the standing honest
+    // failure and not a stretched or half-composited one (IO_PLAN item 5).
+    if (!W.cv) return;
     if (W.enc.encodeQueueSize > REC_QMAX) { W.drop++; return; }
-    this.card.render();      // same reason as saveShot: getCurrentTexture is transient
+    W.tiles[0].card.render();  // same reason as saveShot: getCurrentTexture is transient
     if (this.recEncodeFrame(W)) W.wdN++;
     // a fed tick refreshes the diagnostic clock too, so ?recdebug's `gap` keeps meaning
     // "the longest stretch NOBODY fed" -- without this, an editor-view stint would report
@@ -3774,7 +4327,7 @@ class Recorder {
     W.done = true;
     clearInterval(W.timer); clearTimeout(this.recStop);
     this.wc = null; this.recStop = 0;
-    this.card.recIdle();
+    this.host.recIdle();
     const fin = () => {
       try { W.enc.close(); } catch (e) {}
       this.recPoolFree(W);      // the staging buffers go here, on every route (RECASYNC 5)
@@ -3782,8 +4335,11 @@ class Recorder {
       // the length is the samples that ended up IN the file over the fixed 30 fps the
       // sample table declares -- honest under the drop-frame guard, where a slow machine
       // records fewer seconds of wall clock than the clip lasts
-      if (mp4) this.card.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
-                              W.chunks.length / REC_FPS);
+      // ... and the note is the one thing the strip has to SAY about a composite: tiles
+      // the encoder made us halve are not the resolution the cards are showing (item 5)
+      if (mp4) this.host.recResult("video", new window.Blob([mp4], { type: "video/mp4" }), W.name,
+                              W.chunks.length / REC_FPS,
+                              W.lay.step > 1 ? "tiles at half size" : "");
     };
     // flush() delivers the frames the encoder is still holding, so it has to complete
     // before the mux -- and its rejection is not a reason to lose the file either.
@@ -3820,8 +4376,17 @@ class Recorder {
     // (RECASYNC_PLAN 5, "all routes"): the file is being thrown away, so there is nothing
     // to drain -- captures still in flight resolve into a torn-down W and do nothing.
     this.recPoolFree(W);
-    if (recSupported(this.card.cv) && !this.card.dead) this.recStartMR();
-    else this.card.recIdle();
+    // leg 2 records a canvas STREAM, so it can only take over a single-source take. An
+    // all-displays take has nowhere to go: it goes idle and says so, because the action
+    // was offered on the strength of a leg that has just proved unusable, and (recWCOff
+    // being latched) cardsSync will stop offering it.
+    if (recSupported(this.soloCv()) && !this.host.dead) this.recStartMR();
+    else {
+      this.host.recIdle();
+      if (W.lay.n > 1)
+        showStatus("this browser's video encoder produced no playable MP4: " +
+                   "record the cards one at a time", "err");
+    }
   }
 }
 
@@ -3967,6 +4532,87 @@ function mp4Mux(o) {
     trak);
   return mp4Cat([ftyp, mp4U32(mdatN + 8), mp4Type("mdat")]
                 .concat(S.map(c => c.data)).concat([moov]));
+}
+
+// ---- the result strip, shared by both card classes -------------------------
+// The ONE place a finished file is handed over, whichever path made it -- the same
+// discipline the two stop paths already keep (see the note by recToggle). `seconds` is
+// each recording leg's own honest length: leg 1 counts the frames it actually MUXED
+// (dropped ones never made it into the file), leg 2 has no frame count of its own and
+// quotes wall clock; a PNG has no length at all and is quoted by size alone. Nothing is
+// downloaded here: the strip is the whole point.
+//
+// `kind` is the SLOT the strip lives in, and the slots are deliberately separate: a
+// picture and a recording are two different files, so a save must replace only the last
+// save and a take only the last take. One slot would mean a 30 s take dying because the
+// visitor pressed save a second later -- the same file-losing surprise the strip exists
+// to remove (Alfred, 2026-08-12). RES_WHAT is what each slot's dismiss button calls its
+// file; `zip` is the page-level save-all's (IO_PLAN item 3), which is nobody's card.
+const RES_WHAT = { png: "picture", video: "recording", zip: "archive",
+                   npz: "field export" };
+//
+// `card` is a DisplayCard, a ChartCard, or the page-level `saveAll` host. All this asks
+// of one is the footer host `foot` (always present on both classes, and on the chart card
+// NOT the thing _barBuild rebuilds), a `resEl` with the slot in it, and the `dead` flag
+// destroy() sets -- so a chart's PNG and a save-all's archive are delivered by this code
+// and not by two more copies of it (IO_PLAN items 2 and 3).
+// `note` is one more clause on the same line, for a file that is not simply what the
+// button implies: today only an all-displays recording whose tiles the encoder made us
+// halve (IO_PLAN item 5), which the visitor has to be told about rather than left to
+// discover in the file.
+function cardResult(card, kind, blob, name, seconds, note) {
+  if (!blob || !blob.size) return;            // nothing was captured: say nothing
+  // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
+  // async flush lands here -- and toBlob's callback is just as async, so a card can be
+  // closed between the save press and the picture -- and a strip on a removed footer
+  // would be a file the visitor can never reach. So a closed card keeps the old
+  // behaviour and downloads on the spot: a surprise file is better than a lost one.
+  if (card.dead || !card.foot) { dlBlob(blob, name); return; }
+  cardResClear(card, kind);
+  const s = _mk("div", "recres", card.foot);
+  card.resEl[kind] = s;
+  _mk("span", "recinfo", s).innerHTML = recSizeText(blob.size) +
+    (seconds === undefined ? "" : " · " + recLenText(seconds)) +
+    (note ? " · " + note : "");
+  const dl = _mk("button", "capbtn", s);
+  dl.innerHTML = "download";
+  dl.title = "download " + name;
+  dl.onclick = () => dlBlob(blob, name);
+  // share is offered only where a file can really be shared (recShareFile); on a desktop
+  // that cannot, the strip is just text and a download, which is what a desktop wants.
+  const file = recShareFile(blob, name);
+  if (file) {
+    const sh = _mk("button", "capbtn", s);
+    sh.innerHTML = "share";
+    sh.title = "send " + name + " to another app";
+    sh.onclick = () => {
+      // AbortError is the visitor closing the sheet -- a decision, not a failure, so it
+      // must not then push the file at them anyway. Anything else (no permission, an
+      // engine that lied about canShare) falls back to the download rather than
+      // swallowing the recording. share() is called SYNCHRONOUSLY in the click: an
+      // engine with strict transient-activation rules (old iOS Safari -- the fallback
+      // leg's own audience) can refuse a share deferred even one microtask, which
+      // would turn every share press into the silent download this strip exists to
+      // avoid. The try/catch folds a synchronous throw into the same rejection path
+      // (adversarial review 2026-08-12, MINOR 2).
+      let p;
+      try { p = navigator.share({ files: [file] }); } catch (e) { p = Promise.reject(e); }
+      Promise.resolve(p).catch(e => { if (!e || e.name !== "AbortError") dlBlob(blob, name); });
+    };
+  }
+  const x = _mk("button", "capbtn recx", s);
+  x.innerHTML = "&times;";
+  x.title = "dismiss this " + (RES_WHAT[kind] || "file");
+  x.onclick = () => cardResClear(card, kind);
+}
+// drop ONE kind's strip -- and with the node go the handlers, and with the handlers the
+// only references this card kept to the blob and the File, so the bytes can be
+// collected. The other slot is untouched: dismissing a picture must not take a
+// recording with it.
+function cardResClear(card, kind) {
+  const s = card.resEl[kind];
+  card.resEl[kind] = null;
+  if (s && s.parentNode) s.parentNode.removeChild(s);
 }
 
 class DisplayCard {
@@ -4295,24 +4941,34 @@ class DisplayCard {
     for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
   }
   // ---- save / record (item 13) ---------------------------------------------
+  // CAPTURE and DELIVERY are split (IO_PLAN item 2): a save-all has to capture several
+  // cards in ONE synchronous pass and deliver a single archive, so the capture resolves to
+  // a blob and hands over nothing.
+  //
   // Re-render first: with WebGPU the canvas holds only its last PRESENTED image, so the
   // capture has to be taken in the same task as a fresh present -- there is no
-  // preserveDrawingBuffer to ask for. Then one 2D composite of the three layers.
-  saveShot() {
+  // preserveDrawingBuffer to ask for. Then one 2D composite of the three layers. Nothing
+  // here may await before the composite, for that same reason.
+  captureShot() {
     this.render();
     const w = this.gw, h = this.gh;
     const cv = document.createElement("canvas");
     cv.width = w; cv.height = h;
     const c = cv.getContext("2d");
-    if (!c || !cv.toBlob) return;
+    if (!c || !cv.toBlob) return Promise.resolve(null);
     c.drawImage(this.cv, 0, 0, w, h);                  // the field
     c.drawImage(this.cvVec, 0, 0, w, h);               // arrows / field lines / box frame
     if (this.barOn()) this.barStamp(c, w, h);
-    // ... and the picture goes where a recording goes: onto the card, in its own slot, with
-    // no length to quote (recResult). Nothing is downloaded until the visitor says so --
-    // on a phone the silent download of a save is as hard to find as the silent download
-    // of a take was.
-    cv.toBlob(b => this.recResult("png", b, shotName(this.barMode, "png")), "image/png");
+    return new Promise(r => cv.toBlob(r, "image/png"));
+  }
+  // ... and the picture goes where a recording goes: onto the card, in its own slot, with
+  // no length to quote (recResult). Nothing is downloaded until the visitor says so -- on a
+  // phone the silent download of a save is as hard to find as the silent download of a take
+  // was. The name is taken at the press, i.e. of the frame that was captured.
+  saveShot() {
+    const p = this.captureShot();
+    const name = shotName(this.barMode, "png");
+    p.then(b => this.recResult("png", b, name));
   }
   // the colorbar, scaled onto the saved image's bottom right over a translucent plate
   barStamp(c, w, h) {
@@ -4320,16 +4976,7 @@ class DisplayCard {
     const px = 6 * sc, x = w - bw - 2 * px, y = h - bh - 3.4 * px;
     c.fillStyle = "rgba(20,22,26,0.72)";
     c.fillRect(x - px, y - px, bw + 2 * px, bh + 4.4 * px);
-    c.drawImage(this.barCv, x, y, bw, bh);
-    c.fillStyle = "#d8dee6";
-    c.font = Math.round(9 * sc) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
-    c.textBaseline = "top";
-    const t = this.barTicks().map(s => String(s).replace(/&minus;/g, "−"));
-    const ty = y + bh + 0.5 * px;
-    c.textAlign = "left";   c.fillText(t[0], x, ty);
-    c.textAlign = "center"; c.fillText(t[1], x + bw / 2, ty);
-    c.textAlign = "right";  c.fillText(t[2], x + bw, ty);
-    c.textAlign = "left";
+    cbarDraw(c, this.barCv, this.barTicks(), x, y, bw, bh, sc);
   }
   // The recorder's live state, read straight off the card as it always was: the frame
   // loop's REC_DEBUG line, needsRender(), destroy() and the devtools legs all ask the card
@@ -4347,71 +4994,10 @@ class DisplayCard {
   recLive() { this.btnRec.innerHTML = "stop"; this.btnRec.classList.add("reclive"); }
   recIdle() { this.btnRec.innerHTML = "rec"; this.btnRec.classList.remove("reclive"); }
 
-  // The ONE place a finished file is handed over, whichever path made it -- the same
-  // discipline the two stop paths already keep (see the note by recToggle). `seconds` is
-  // each recording leg's own honest length: leg 1 counts the frames it actually MUXED
-  // (dropped ones never made it into the file), leg 2 has no frame count of its own and
-  // quotes wall clock; a PNG has no length at all and is quoted by size alone. Nothing is
-  // downloaded here: the strip below is the whole point of the change.
-  //
-  // `kind` ("png" / "video") is the SLOT the strip lives in, and there are deliberately
-  // two: a picture and a recording are two different files, so a save must replace only
-  // the last save and a take only the last take. One slot would mean a 30 s take dying
-  // because the visitor pressed save a second later -- the same file-losing surprise the
-  // strip exists to remove (Alfred, 2026-08-12).
-  recResult(kind, blob, name, seconds) {
-    if (!blob || !blob.size) return;            // nothing was captured: say nothing
-    // ... except on a card that is already gone. destroy() sets `dead` BEFORE leg 1's
-    // async flush lands here -- and toBlob's callback is just as async, so a card can be
-    // closed between the save press and the picture -- and a strip on a removed footer
-    // would be a file the visitor can never reach. So a closed card keeps the old
-    // behaviour and downloads on the spot: a surprise file is better than a lost one.
-    if (this.dead || !this.foot) { dlBlob(blob, name); return; }
-    this.recClear(kind);
-    const s = _mk("div", "recres", this.foot);
-    this.resEl[kind] = s;
-    _mk("span", "recinfo", s).innerHTML = recSizeText(blob.size) +
-      (seconds === undefined ? "" : " · " + recLenText(seconds));
-    const dl = _mk("button", "capbtn", s);
-    dl.innerHTML = "download";
-    dl.title = "download " + name;
-    dl.onclick = () => dlBlob(blob, name);
-    // share is offered only where a file can really be shared (recShareFile); on a desktop
-    // that cannot, the strip is just text and a download, which is what a desktop wants.
-    const file = recShareFile(blob, name);
-    if (file) {
-      const sh = _mk("button", "capbtn", s);
-      sh.innerHTML = "share";
-      sh.title = "send " + name + " to another app";
-      sh.onclick = () => {
-        // AbortError is the visitor closing the sheet -- a decision, not a failure, so it
-        // must not then push the file at them anyway. Anything else (no permission, an
-        // engine that lied about canShare) falls back to the download rather than
-        // swallowing the recording. share() is called SYNCHRONOUSLY in the click: an
-        // engine with strict transient-activation rules (old iOS Safari -- the fallback
-        // leg's own audience) can refuse a share deferred even one microtask, which
-        // would turn every share press into the silent download this strip exists to
-        // avoid. The try/catch folds a synchronous throw into the same rejection path
-        // (adversarial review 2026-08-12, MINOR 2).
-        let p;
-        try { p = navigator.share({ files: [file] }); } catch (e) { p = Promise.reject(e); }
-        Promise.resolve(p).catch(e => { if (!e || e.name !== "AbortError") dlBlob(blob, name); });
-      };
-    }
-    const x = _mk("button", "capbtn recx", s);
-    x.innerHTML = "&times;";
-    x.title = "dismiss this " + (kind === "png" ? "picture" : "recording");
-    x.onclick = () => this.recClear(kind);
-  }
-  // drop ONE kind's strip -- and with the node go the handlers, and with the handlers the
-  // only references this card kept to the blob and the File, so the bytes can be
-  // collected. The other slot is untouched: dismissing a picture must not take a
-  // recording with it.
-  recClear(kind) {
-    const s = this.resEl[kind];
-    this.resEl[kind] = null;
-    if (s && s.parentNode) s.parentNode.removeChild(s);
-  }
+  // both delegate to the shared strip (cardResult / cardResClear, above DisplayCard):
+  // a chart card's save lands on exactly the same line, through the same code
+  recResult(kind, blob, name, seconds, note) { cardResult(this, kind, blob, name, seconds, note); }
+  recClear(kind) { cardResClear(this, kind); }
 
   showArrows() {
     return !!(this.cbArrow.checked && !this.linesView() && !this.volView() &&
@@ -4446,7 +5032,8 @@ class DisplayCard {
   //   - a live take, which reads the texture THIS render produced (RECRAF); a skipped
   //     frame would hand the encoder an expired one.
   needsRender() {
-    return this.dirty || this.seenMark !== stateMark() || !!this.wc || !!this.rec;
+    return this.dirty || this.seenMark !== stateMark() || !!this.wc || !!this.rec ||
+           recAllHas(this);          // ... or the all-displays take reads it (item 5)
   }
   // The overlay canvas carries the arrow field AND (3D, lines view) the box frame and the
   // projected field lines, whose readbacks land at different rates -- so ONE method owns
@@ -4477,6 +5064,7 @@ class DisplayCard {
   }
   destroy() {
     this.dead = true;                     // set BEFORE the stop: recResult reads it
+    recAllGone(this);                     // an all-displays take that reads it ends here
     this.recorder.destroy();              // a live take writes what it has -- see Recorder
     if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
   }
@@ -4491,11 +5079,25 @@ class ChartCard {
     this.selType = _sel(head, chartTypeKeys().map(k => ({ v: k, t: CHART_TYPES[k].label })),
                         "what this chart shows");
     this.selType.value = type;
+    // the display card's capture button, on the header row a chart card has instead of a
+    // caption line (IO_PLAN item 2). It rides with the close button on every retype, below.
+    this.btnSave = _mk("button", "capbtn", head);
+    this.btnSave.innerHTML = "save";
+    this.btnSave.title = "save this chart as a PNG (with its colour scale, where it has one)";
     this.btnClose = _mk("button", "x", head);
     this.btnClose.innerHTML = "&times;";
     this.btnClose.title = "close this chart";
     this.cv = _mk("canvas", "chart", root);
+    // The card's FOOTER, built ONCE and never rebuilt. Two things live on it: the colour
+    // scale of the types that declare one (_barBuild, which replaces only the bar inside
+    // it) and every finished file's result strip (cardResult) -- which is why it cannot be
+    // the bar's own node, as it was: a retype would take a waiting file with it. Built
+    // before the hint, so the card still reads canvas / colorbar / hint.
+    this.foot = _mk("div", "viewfoot", root);
     this.hint = _mk("div", "hint", root);
+    this.resEl = { png: null, video: null };   // the waiting files' strips, one slot each
+    this.dead = false;                    // set by destroy(), so a late blob cannot land
+    this.barD = null; this.barT = null; this.barCv = null;
     this.cx = null;
     this.optEls = [];               // this type's option selects, rebuilt on retype
     this.build();
@@ -4505,6 +5107,7 @@ class ChartCard {
       cardsThrottleReset();
     };
     this.btnClose.onclick = () => cardClose(this);
+    this.btnSave.onclick = () => this.saveShot();
   }
   type() { return this.selType.value; }
   zsrc() { return _zSrcPlane(this.selZSrc ? this.selZSrc.value : "manual"); }
@@ -4611,6 +5214,7 @@ class ChartCard {
         this.rSlice.oninput = () => { this.apply(); redraw(); };
       }
     }
+    this.head.removeChild(this.btnSave); this.head.appendChild(this.btnSave);
     this.head.removeChild(this.btnClose); this.head.appendChild(this.btnClose);
     this.cv.style.aspectRatio = T.w + " / " + T.h;
     this.cx = chartCtx(this.cv, T.w, T.h);
@@ -4628,27 +5232,32 @@ class ChartCard {
   // A chart whose quantity is a COLOUR needs the same legend a display card's field does,
   // so the colorbar is the display card's block verbatim -- `.viewfoot` > `.cbar` (strip +
   // three ticks), painted by cbarPaint through the shared colormap table and labelled by
-  // cbarFmt. Only types that declare `bar(opts)` get one; retyping the card takes it away
-  // again, which is why it is built here and not in the constructor.
+  // cbarFmt. Only types that declare `bar(opts)` get one, and retyping takes it away again
+  // -- which is why the BAR is built here and the FOOTER around it in the constructor: a
+  // file waiting on its result strip lives on that same footer and must survive a retype.
   _barBuild(T) {
-    if (this.foot) {
-      this.root.removeChild(this.foot); this.foot = null; this.barT = null; this.barD = null;
+    if (this.barD) {
+      this.foot.removeChild(this.barD);
+      this.barD = null; this.barT = null; this.barCv = null;
     }
     if (!T.bar) return;
-    // appended, then the hint is re-appended after it -- the same "move it back to last"
-    // idiom the close button uses, so the card reads canvas / colorbar / hint
-    this.foot = _mk("div", "viewfoot", this.root);
-    this.root.removeChild(this.hint); this.root.appendChild(this.hint);
     // the bar div is kept because a type whose colour SCALE is an option (gen2d's `gc`)
     // re-titles it per draw, through `barTi(opts)`; without one the static log wording
     // below stands, which is what every other bar-carrying type means
     const bar = this.barD = _mk("div", "cbar", this.foot);
     bar.title = "colour range of the plotted quantity (log scale, so the middle tick is "
       + "the geometric mean)";
-    const bcv = _mk("canvas", "cbarcv", bar);
+    const bcv = this.barCv = _mk("canvas", "cbarcv", bar);
     const tk = _mk("div", "cbartk", bar);
     this.barT = [_mk("span", null, tk), _mk("span", null, tk), _mk("span", null, tk)];
     cbarPaint(chartCtx(bcv, CBAR_W, CBAR_H), T.cmap || 0);
+    // a result strip is a full-width ROW of this same footer, so a waiting one is moved
+    // back after the bar -- the "move it back to last" idiom the close button uses, here so
+    // that a retype cannot leave the scale stranded under the strip
+    for (const k of ["png", "video"]) {
+      const s = this.resEl[k];
+      if (s && s.parentNode === this.foot) { this.foot.removeChild(s); this.foot.appendChild(s); }
+    }
   }
   // keep the z slider in range / enabled only when this card picks its plane by hand
   apply() {
@@ -4677,11 +5286,63 @@ class ChartCard {
     // the colorbar's labels come off the SAME options the plot was just drawn from, and
     // through the type's own hook -- the card knows it has a bar, never what is on it
     if (this.barT && T.bar) {
-      const t = T.bar(o);
+      const t = this.barTicks(o);
       for (let i = 0; i < 3; i++) this.barT[i].innerHTML = t[i];
       if (this.barD && T.barTi) this.barD.title = T.barTi(o);
     }
   }
+  // the three labels of that scale, wherever they are being written: the strip on screen
+  // and the one a save composites into the picture read the same hook (the display card's
+  // barTicks is the same name for the same thing).
+  barTicks(o) {
+    const T = CHART_TYPES[this.type()];
+    return T.bar ? T.bar(o || this.optVals()) : ["", "", ""];
+  }
+  // ---- save (IO_PLAN item 2) -------------------------------------------------
+  // Capture and delivery are split exactly as the display card's are, so a save-all can
+  // capture several cards before delivering one archive. A chart is a PERSISTENT 2D canvas
+  // sized at dpr with the transform set once, so this is its own toBlob and there is
+  // nothing to re-render -- the display card re-renders only because WebGPU keeps no
+  // drawing buffer.
+  //
+  // The one exception is a type with a colour SCALE: that lives in a second canvas in the
+  // footer, which a toBlob of the plot alone would leave out, and the saved heatmap would
+  // lose the only thing that says what its colours mean. So those get a composite -- plot,
+  // then the bar in a band beneath it, on the chart's own background, through the same
+  // cbarDraw the display card's stamp uses.
+  captureShot() {
+    const T = CHART_TYPES[this.type()];
+    const src = this.cv;
+    if (!src.toBlob) return Promise.resolve(null);
+    // A bar with no labels on it is a scale with no range: gen2d before `generate` has no
+    // panel, so its hook returns three empty strings. Composited it would put a colour
+    // ramp under the plot claiming a range the picture does not have -- so it is left out
+    // entirely, and the plot's own "press generate" is what the file says.
+    const ticks = this.barTicks();
+    if (!this.barCv || !ticks.some(s => s))
+      return new Promise(r => src.toBlob(r, "image/png"));
+    const sc = Math.max(1, src.width / T.w);        // the dpr the canvas was sized at
+    const px = 6 * sc, bw = CBAR_W * sc, bh = CBAR_H * sc;
+    const cv = document.createElement("canvas");
+    cv.width = src.width;
+    cv.height = src.height + Math.round(bh + 4.4 * px);
+    const c = cv.getContext("2d");
+    if (!c || !cv.toBlob) return Promise.resolve(null);
+    c.fillStyle = "#0f1115";                        // chartFrame's plate, under both parts
+    c.fillRect(0, 0, cv.width, cv.height);
+    c.drawImage(src, 0, 0);
+    cbarDraw(c, this.barCv, ticks, cv.width - bw - 2 * px, src.height + px, bw, bh, sc);
+    return new Promise(r => cv.toBlob(r, "image/png"));
+  }
+  // ... and the file goes where a display card's picture goes: onto the card's own strip,
+  // never straight to the downloader (cardResult).
+  saveShot() {
+    const p = this.captureShot();
+    const name = chartName(this.type(), "png");
+    p.then(b => this.recResult("png", b, name));
+  }
+  recResult(kind, blob, name, seconds, note) { cardResult(this, kind, blob, name, seconds, note); }
+  recClear(kind) { cardResClear(this, kind); }
   // ---- pinned ghost spectra (PINCURVE Phase B) -------------------------------
   // A pin is a snapshot of the curves this card is DRAWING -- post specSeries /
   // parKfac -- so it is immune to later changes of the card's own sq / sd selectors:
@@ -4708,7 +5369,13 @@ class ChartCard {
     });
   }
   pinClear() { this.pins.length = 0; }
-  destroy() { if (this.root.parentNode) this.root.parentNode.removeChild(this.root); }
+  // `dead` first, as the display card's destroy sets it: a save pressed a moment ago is
+  // still in toBlob, and cardResult must download that blob rather than append it to a
+  // footer nobody can see.
+  destroy() {
+    this.dead = true;
+    if (this.root.parentNode) this.root.parentNode.removeChild(this.root);
+  }
 }
 
 // ---- registry operations ---------------------------------------------------
@@ -4718,6 +5385,178 @@ function cardsInit(cfg) {
   cards.hostC = el("charts");
   el("btnAddDisp").onclick = () => { addDisplayCard(); cardsSync(); };
   el("btnAddChart").onclick = () => { addChartCard("energy"); cardsSync(); };
+  saveAll.foot = el("saveAllFoot");
+  el("btnSaveAll").onclick = () => saveAllZip();
+  el("btnSaveFields").onclick = () => saveFieldsNpz();
+  recAll.init(el("btnRecAll"), el("recAllFoot"));
+}
+
+// ---- save all displays and charts, as one ZIP (IO_PLAN item 3) -------------
+// A ZIP and not N downloads: several <a download> clicks in a row raise Chrome's
+// "site wants to download multiple files" prompt, and on iOS each save is silent with no
+// share sheet -- the exact failure the result strip exists to avoid, once per card. One
+// archive is one file, one strip slot, one share.
+//
+// The strip's host is the page's, not a card's. cardResult asks its `card` for a footer
+// node, a slot in `resEl` and a `dead` flag, and nothing else -- so the save-all satisfies
+// those itself and parks the archive under the button that made it. Borrowing a card's
+// footer would have put a file describing every card behind one card's x, and lost it
+// whenever that card was closed.
+// The two slots are separate for the reason every pair of slots here is: an archive of
+// pictures and a field export are different files, and pressing one must not throw the
+// other away. `busy` guards the archive, `fbusy` the export -- one per action, so a slow
+// 3D field read does not lock the save-all button out.
+const saveAll = { foot: null, resEl: { zip: null, npz: null }, dead: false,
+                  busy: false, fbusy: false };
+
+// ---- record every open display, as ONE video (IO_PLAN item 5) ---------------
+// The same shape one row down: a host that is nobody's card, holding the button, the
+// footer the finished file waits on and the `dead` flag cardResult asks for. It records
+// EVERY open display card -- there is no selection UI and none is needed, since
+// CARD_MAX_DISP is 3 and the visitor composes the recording by opening the displays they
+// want. What makes it one recording rather than N is that it is one Recorder with N
+// sources: one slot clock, one timestamp ladder, one encoder, one file (Recorder, above).
+//
+// Its own footer, not save-all's: the two are different files with different lifetimes,
+// and the strip's slots are per host.
+const recAll = {
+  foot: null, resEl: { video: null }, dead: false, btn: null, recorder: null,
+  // the sources: every open display card, in card order, read at the press. A take
+  // freezes them (Recorder.recStartWC) -- what is being recorded cannot change under a
+  // fixed frame size.
+  init(btn, foot) {
+    this.btn = btn; this.foot = foot;
+    this.recorder = new Recorder(this, () => cards.disp.slice());
+    btn.onclick = () => this.recorder.recToggle();
+  },
+  live() { return !!(this.recorder && (this.recorder.wc || this.recorder.rec)); },
+  recLive() { if (this.btn) { this.btn.innerHTML = "stop"; this.btn.classList.add("reclive"); } },
+  recIdle() { if (this.btn) { this.btn.innerHTML = "rec all"; this.btn.classList.remove("reclive"); } },
+  recResult(kind, blob, name, seconds, note) { cardResult(this, kind, blob, name, seconds, note); },
+  recClear(kind) { cardResClear(this, kind); },
+  // the frame loop's one slot clock over every source (renderCards)
+  recCapture() { if (this.recorder) this.recorder.recCapture(); },
+  // offered only with TWO or more display cards -- with one it would duplicate that
+  // card's own `rec` -- and only where leg 1 runs at all: leg 2 records a canvas STREAM,
+  // which cannot cover several WebGPU canvases without compositing through a 2D canvas,
+  // so on a WebCodecs-less engine the action is simply absent and single-card recording
+  // is untouched (the standing degrade-silently rule).
+  sync() {
+    const b = this.btn;
+    if (!b) return;
+    const eng = typeof window !== "undefined" && !recWCOff &&
+                !!window.VideoEncoder && !!window.VideoFrame;
+    b.style.display = eng ? "" : "none";
+    if (!eng || this.live()) return;
+    const L = recTiles(cards.disp);
+    b.disabled = !L || L.n < 2;
+    b.title = b.disabled
+      ? "record every open display as one video -- open a second display card first"
+      : "record all " + L.n + " displays as one MP4: " + L.n + " tiles, " +
+        L.w + "×" + L.h + " (stops itself after 30 s)";
+  }
+};
+// is this card a source of the LIVE all-displays take? Its texture has to be fresh for
+// the slot, so the render gate has to know (DisplayCard.needsRender).
+function recAllHas(card) {
+  const W = recAll.recorder && recAll.recorder.wc;
+  return !!W && W.tiles.some(t => t.card === card);
+}
+// ... and what happens when one of its cards is CLOSED mid-take: the take ends and the
+// file is written. The composite geometry is fixed at the encoder's frame size, so a
+// vanished source could only be papered over with a stale or blank tile -- a picture that
+// lies -- and stopping silently would lose the take. The strip is the page's, so the file
+// survives the card that went (which is the reason it is not parked on a card's footer).
+function recAllGone(card) {
+  if (!recAllHas(card)) return;
+  recAll.recorder.recEnd();
+  showStatus("a display card was closed: the all-displays recording stopped and was saved", "info");
+}
+
+// Every open card's capture, INITIATED IN ONE TASK. A display card's texture is
+// transient -- captureShot() re-renders and copies synchronously, and only the toBlob is
+// deferred -- so an await between two cards would capture the second from an expired
+// texture. Nothing here awaits; the promises go back to the caller.
+//
+// The two card kinds differ only in what they call themselves, which is the table, not a
+// second loop: names are `disp1-<field>.png` / `chart2-<kind>.png`, in card order.
+function _cardShots() {
+  const kinds = [[cards.disp, "disp", c => DISP_SLUG[c.barMode] || "field"],
+                 [cards.chart, "chart", c => c.type()]];
+  const shots = [];
+  for (const [list, tag, slug] of kinds) {
+    list.forEach((c, i) => shots.push({ name: tag + (i + 1) + "-" + slug(c) + ".png",
+                                        p: c.captureShot() }));
+  }
+  return shots;
+}
+// ... and the archive they become. A card whose capture came back empty (no 2D context)
+// is left out rather than written as a zero-length PNG; params.json is always the last
+// member, so an archive of nothing but the manifest is still a description of the run.
+async function saveAllZip() {
+  if (saveAll.busy) return;                  // a second press mid-capture would double it
+  saveAll.busy = true;
+  try {
+    const shots = _cardShots();
+    const bufs = await Promise.all(shots.map(s => s.p.then(b => b && b.arrayBuffer())));
+    const members = [];
+    shots.forEach((sh, i) => {
+      if (bufs[i]) members.push({ name: sh.name, data: new Uint8Array(bufs[i]) });
+    });
+    members.push(manifestMember());
+    cardResult(saveAll, "zip", zipStore(members), capName("all", "zip"));
+  } catch (e) {
+    showStatus("could not build the archive: " + (e && e.message ? e.message : e), "err");
+  } finally {
+    saveAll.busy = false;
+  }
+}
+
+// ---- download the fields: real-space phi and psi as .npz (IO_PLAN item 4) --
+// The display chain already lands a real-space field in dispR, but on no spare path: the
+// uniforms driving it are a card's LIVE mode, carrying that card's band filter and
+// display offset, so borrowing one would corrupt its picture until the next apply(). The
+// export has its own PINNED pair of Mode uniforms and its own prepDisp bind groups
+// (built in _makeChain, written once and never again) and runs at a frame boundary -- a
+// button press is its own task -- rather than inside a render. No new pipeline, kernel or
+// WGSL: it is the display chain's own stages, differently bound. It is not free, though:
+// two Mode uniforms and two bind groups per chain, and a staging buffer per field.
+//
+// Both fields go through ONE compute pass and both readbacks are submitted before the
+// first await, so phi and psi are the same instant of the run even while it steps. psi
+// runs second because its prep zeroes the k-scratch the phi half used, which by then has
+// been transformed out of it. Chain 0's real-space scratch is what the pass overwrites;
+// every render rebuilds that scratch from the state before reading it, so a card sharing
+// the chain shows the same picture on its next frame.
+async function readFieldPair(s, ci) {
+  const d = s.device, D = s.chain(ci | 0), n = s.nr * 4;
+  const enc = d.createCommandEncoder();
+  const p = enc.beginComputePass();
+  s.encodeExport(p, D);
+  p.end();
+  d.queue.submit([enc.finish()]);
+  const phi = readBufOnce(d, D.buf.dispR, n), psi = readBufOnce(d, D.buf.dispR2, n);
+  return Promise.all([phi, psi]);
+}
+async function saveFieldsNpz() {
+  if (saveAll.fbusy || !solver) return;      // a second press mid-read would double it
+  saveAll.fbusy = true;
+  try {
+    // the solver and its grid are read BEFORE the await: a rebuild mid-read swaps the
+    // global, and the array in hand is the old grid's. (A rebuild also destroys the
+    // buffer being mapped, so that read rejects into the catch below -- which is the
+    // honest outcome, not a field described by the wrong resolution.)
+    const s = solver, q = s.p;
+    const [phi, psi] = await readFieldPair(s, 0);
+    cardResult(saveAll, "npz",
+               npzFields(phi, psi, { nx: q.nx, ny: q.ny, nz: q.nz || 1,
+                                     Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0 }),
+               capName("fields", "npz"));
+  } catch (e) {
+    showStatus("could not export the fields: " + (e && e.message ? e.message : e), "err");
+  } finally {
+    saveAll.fbusy = false;
+  }
 }
 // the lowest free chain index (a closed card frees its slot for the next one)
 function _freeCi() {
@@ -4779,6 +5618,7 @@ function cardClose(c) {
 function cardsSync() {
   // the last display card cannot be closed -- shown, not just enforced
   for (const d of cards.disp) d.btnClose.disabled = cards.disp.length <= CARD_MIN_DISP;
+  recAll.sync();          // ... and "record every display" needs two of them (item 5)
   for (const d of cards.disp) d.apply();
   for (const c of cards.chart) { c.apply(); if (c.type() === "cut") c.draw(null); }
   cardsThrottleReset();
@@ -4840,12 +5680,14 @@ function chartsReset() {
 //
 // A spec is { topbar: [item...], groups: [group...] }; a group is
 // { id, summary, keep, rows: [row...] }; a row is either an array of items, an
-// object { id, hide, items }, or { k: "hintdiv", id } for a bare hint line.
+// object { id, hide, items }, or { k: "hintdiv", id, cls, t, hide } for a bare div of
+// its own.
 // Item kinds (every item may carry `ti`, the title attribute):
 //   lab  <label>t</label> (for: the id it labels)      val  <span class="val" id>
 //   sel  <select id> from o: [[value, html], ...]      txt  <span id>t</span>
 //   rng  <input type=range> min/max/step/v             hint <span class="hint" id>
 //   num  <input type=number> v, w (px)                 btn  <button id>t</button>
+//   text <input type=text> v, w (px), ph (placeholder) -- the expression IC's boxes
 //   cb   bare checkbox (v = checked)
 //   cbl  checkbox inside <label class="cbl">t</label> (v = checked)
 // `t` is HTML (the entities the markup used) EXCEPT for cbl, whose t is a text node --
@@ -4857,14 +5699,19 @@ function _ctrlItem(row, it) {
   if (it.k === "sel") {
     e = _sel(row, it.o.map(o => ({ v: o[0], t: o[1] })), it.ti);
     if (it.v !== undefined) e.value = String(it.v);
-  } else if (it.k === "rng" || it.k === "num") {
+  } else if (it.k === "rng" || it.k === "num" || it.k === "text") {
     e = put("input");
-    e.type = it.k === "rng" ? "range" : "number";
+    e.type = it.k === "rng" ? "range" : it.k === "num" ? "number" : "text";
     if (it.min !== undefined) e.min = String(it.min);
     if (it.max !== undefined) e.max = String(it.max);
     if (it.step !== undefined) e.step = String(it.step);
     if (it.v !== undefined) e.value = String(it.v);
     if (it.w) e.style.width = it.w + "px";
+    // a formula is not prose: no autocorrect, no capitalised first letter on a phone
+    if (it.k === "text") {
+      e.placeholder = it.ph || "";
+      e.spellcheck = false; e.autocapitalize = "off"; e.autocomplete = "off";
+    }
   } else if (it.k === "cb" || it.k === "cbl") {
     const host = it.k === "cbl" ? put("label", "cbl") : row;
     e = _mk("input", null, host);
@@ -4908,7 +5755,7 @@ function _ctrlItem(row, it) {
 // page's "sinusoidal z+- packets (exact interaction)". A select is a bordered box that
 // already reads as one control next to its name, and the complaint this fixes was about
 // sliders, whose name is the only thing telling two identical grey tracks apart.
-const _CTRL_GROUPABLE = { rng: 1, num: 1, cb: 1, val: 1 };
+const _CTRL_GROUPABLE = { rng: 1, num: 1, cb: 1, val: 1, text: 1 };
 function _ctrlRow(row, items) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
@@ -4931,7 +5778,15 @@ function controlsBuild(spec) {
     if (g.keep) d.setAttribute("data-keep-open", "");
     _mk("summary", null, d).innerHTML = g.summary;
     for (const r of g.rows) {
-      if (r.k === "hintdiv") { const h = _mk("div", "hint", d); h.id = r.id; continue; }
+      // a full-width div of its own, OUTSIDE any .row: a hint line, or (with cls) the
+      // viewfoot a page-level result strip lands on
+      if (r.k === "hintdiv") {
+        const h = _mk("div", r.cls || "hint", d);
+        h.id = r.id;
+        if (r.t) h.innerHTML = r.t;
+        if (r.hide) h.style.display = "none";
+        continue;
+      }
       const row = _mk("div", "row", d);
       if (r.id) row.id = r.id;
       if (r.hide) row.style.display = "none";
@@ -5012,9 +5867,29 @@ const ctrlGrpIC = o => ({
   id: "grpIC", summary: "initial condition", rows: [
     [{ k: "lab", t: "preset" },
      { k: "sel", id: "selIC", o: [["modes", "large-scale modes"], ["letters", o.letters],
-                                  ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]]
+                                  ["custom", "custom (drawn blobs)"],
+                                  [IC_EXPR, "expression (typed &phi;, &psi;)"],
+                                  ["quiescent", "quiescent (zero)"]]
                                  .concat(o.presets || []) }]
-  ].concat(o.pre || [], [
+  ].concat([
+    // the expression IC's two boxes (IO_PLAN item 1), shown on both pages. What is typed
+    // is uploaded as it stands -- no icZetaFields normalization -- so the amp sliders do
+    // not apply and icSyncRows leaves their rows hidden. The help line names the whole
+    // language, since the boxes themselves have room for one example each.
+    { id: "rowExprP", hide: true, items: [
+      { k: "lab", t: "&phi; =", for: "tExprP" },
+      { k: "text", id: "tExprP", w: 200, ph: "sin(2*pi*x/Lx)*cos(2*pi*y/Ly)",
+        ti: "stream function phi as a formula in x, y (and z in 3D), in CODE units: "
+          + "x runs from 0 to Lx. Empty = exactly zero" }
+    ] },
+    { id: "rowExprM", hide: true, items: [
+      { k: "lab", t: "&psi; =", for: "tExprM" },
+      { k: "text", id: "tExprM", w: 200, ph: "empty = zero",
+        ti: "flux function psi as a formula, same rules as phi" }
+    ] },
+    { k: "hintdiv", id: "vExprHelp", hide: true, t: EXPR_HELP },
+    { k: "hintdiv", id: "vExprMsg", hide: true }
+  ], o.pre || [], [
     { id: "rowDraw", hide: true, items: [
       { k: "btn", id: "btnEdit", t: "edit IC", ti: "pause the run and open the IC editor" },
       { k: "lab", t: "paint" },
@@ -5055,10 +5930,29 @@ const ctrlGrpDisp = extra => ({
     // went with the second slider (its content lives in docs.html's scale-filter section).
     [{ k: "btn", id: "btnAddDisp", t: "+ display" },
      { k: "btn", id: "btnAddChart", t: "+ chart" },
+     { k: "btn", id: "btnSaveAll", t: "save all",
+       ti: "one ZIP: a PNG of every display and chart card, plus a params.json describing "
+         + "the run" },
+     { k: "btn", id: "btnSaveFields", t: "save fields",
+       ti: "one .npz of the data: the real-space potentials phi and psi at this instant "
+         + "as float32 arrays, with their coordinate vectors and a params.json -- read it "
+         + "with numpy.load" },
+     // IO_PLAN item 5: one video of EVERY open display, side by side in one frame. Live
+     // only with two or more display cards (with one it would duplicate that card's own
+     // `rec`) and only where the WebCodecs leg runs -- recAll.sync writes both, and its
+     // title says what the file will be.
+     { k: "btn", id: "btnRecAll", t: "rec all",
+       ti: "record every open display as one video" },
      { k: "cbl", id: "cbFilter", t: "k⊥ filter", v: false,
        ti: "give every display card a k_perp filter slider: it hides structure below the "
          + "wavenumber you set, in the PICTURE only -- the run, the spectra and the field "
-         + "lines are never filtered" }].concat(extra || [])
+         + "lines are never filtered" }].concat(extra || []),
+    // where the save-all archive waits: a `viewfoot` of the page's own, so the shared
+    // result strip lands under the button that made it (saveAll, above)
+    { k: "hintdiv", cls: "viewfoot", id: "saveAllFoot" },
+    // ... and one of its own for the all-displays recording: two files with two
+    // lifetimes, so two slots on two hosts rather than one footer holding both
+    { k: "hintdiv", cls: "viewfoot", id: "recAllFoot" }
   ]
 });
 
@@ -5558,7 +6452,7 @@ function autoDissRelax(nu, target, lo, hi) {
 // change at all, which is what stops a converged controller from re-uploading the
 // dissipation array twice a second.
 let autoDissAt = 0;
-function autoDissOn() { const e = el("cbAutoDiss"); return !!(e && e.checked); }
+function autoDissOn() { return _uiOn("cbAutoDiss"); }
 // the spectrum cards' last readback, kept so the controller can ride it instead of
 // paying for a second spectrum pass: the cards fire at ~3.3 Hz and the controller at
 // 2 Hz, so with a card open a fresh-enough entry almost always exists. `sv` keys the
@@ -5824,6 +6718,13 @@ function wireCommonControls(opts) {
   for (const id of (opts.icSliders || [])) {
     el(id).oninput = syncLabels;
     el(id).onchange = () => { syncLabels(); applyIC(); };
+  }
+  // the expression boxes (IO_PLAN item 1): parse while typing, so a mistyped name is
+  // named at once, and re-apply on release -- the same contract as the IC sliders above.
+  // The full report (non-finite guard, seams) needs the built field and comes with it.
+  for (const id of ["tExprP", "tExprM"]) {
+    el(id).oninput = icExprCheck;
+    el(id).onchange = applyIC;
   }
   // the forcing band changes the fmask AND the shell mode list, which are baked into
   // the grid and into the OU kernel's NS -- a rebuild, not an upload. On release only.
@@ -6305,7 +7206,7 @@ icRegister("kh", {
 // above k_y a = 2.2365 -- picks the winner instead. That is the whole point of the
 // `chain` preset, and the reason it is a control on the IC and not a preset flag: the
 // selection is worth watching at any (a, L_y) a user can dial.
-const icTearBroadOn = () => { const e = el("cbTearBroad"); return !!(e && e.checked); };
+const icTearBroadOn = () => _uiOn("cbTearBroad");
 // The one seeded source the page has (#nSeed, CTRL_SEED), shared with the OU forcing
 // stream so that "same seed, same run" stays a single statement -- Math.random() would
 // make this initial condition irreproducible, which is the one thing an initial condition
@@ -6612,6 +7513,417 @@ function syncEqLabels() {
   const e = el("vEqInfo");
   e.innerHTML = s; e.style.display = s ? "" : "none";
 }
+
+// ---------------------------------------------------------------------------
+// expression IC (IO_PLAN item 1): phi and psi typed as formulas
+// ---------------------------------------------------------------------------
+// A third kind of IC preset beside the stored potentials and the equilibria. What is
+// typed is what is uploaded, so it registers through icRegister and skips icZetaFields'
+// normalization exactly as an equilibrium does -- phi = sin(x) has to mean sin(x).
+//
+// The parser is hand-written in three pure stages -- tokenize, shunting-yard to RPN, a
+// flat evaluator over a preallocated stack -- and NEVER eval / new Function: an engine's
+// SyntaxError names nothing a student can act on, and the accepted language would then
+// be all of JavaScript. Every token carries its source index, so every error is a
+// message with a character position rather than a throw or a silent zero.
+//
+// Coordinates are CODE units: x = ix*Lx/nx, so the box ends at Lx / Ly / Lz and nothing
+// is normalized to 2pi or to 1. Those are the numbers setIC itself uses.
+// OPCODES. The evaluator switches on these instead of calling through a table of
+// closures: one indirect call per stack op costs more than the arithmetic it performs
+// (2.3x on the whole build, measured). devtools/checkexpr.js section 8 times the build
+// and reports the interpreter's dispatch rate beside the harness's own Math tax.
+const EXPR_LIT = 0, EXPR_VAR = 1;
+// the 1-argument functions, name -> opcode
+const EXPR_FN1 = {
+  sin: 2, cos: 3, tan: 4, asin: 5, acos: 6, atan: 7, sinh: 8, cosh: 9, tanh: 10,
+  exp: 11, log: 12, log10: 13, sqrt: 14, abs: 15, sign: 16, floor: 17, ceil: 18
+};
+// the 2-argument ones. `mod` is the FLOORED modulo (its sign follows the divisor), which
+// is the one that means something on a periodic coordinate; JS's % follows the dividend.
+const EXPR_FN2 = { atan2: 19, min: 20, max: 21, hypot: 22, pow: 23, mod: 24 };
+// binary operators: p = precedence, r = right-associative, c = opcode (`^` IS pow).
+// `^` binds TIGHTER than unary minus (EXPR_NEG_P), so -x^2 is -(x^2), and it is
+// right-associative, so 2^3^2 is 2^9.
+const EXPR_OPS = {
+  "+": { p: 1, r: 0, c: 25 },
+  "-": { p: 1, r: 0, c: 26 },
+  "*": { p: 2, r: 0, c: 27 },
+  "/": { p: 2, r: 0, c: 28 },
+  "^": { p: 4, r: 1, c: EXPR_FN2.pow }
+};
+const EXPR_NEG_P = 3, EXPR_NEG_C = 29;
+// the two names that exist on the 3D page only, so their rejection can say why
+const EXPR_Z_NAMES = { z: 1, Lz: 1 };
+// the name set, per grid. Variables are slots into the (x, y, z) vector the evaluator is
+// handed; constants are folded at compile time, which is why the box lengths live here
+// and not in the per-point loop. z and Lz exist ONLY where there is a z axis: on the 2D
+// page they are unknown names, which is the honest error rather than the zero
+// icDrawGrid's `q.Lz || 0` would otherwise hand out.
+function exprEnv(g) {
+  const three = g.nz > 1;
+  const env = { vars: { x: 0, y: 1 },
+                consts: { pi: Math.PI, e: Math.E, Lx: g.Lx, Ly: g.Ly }, three: three };
+  if (three) { env.vars.z = 2; env.consts.Lz = g.Lz; }
+  return env;
+}
+// every failure is this shape -- a message ending in a 1-based character position, plus
+// the 0-based source index it was built from. Nothing in the parser throws.
+function exprErr(msg, i) { return { err: msg + " at character " + (i + 1), at: i }; }
+
+// ---- 1. tokenizer ---------------------------------------------------------
+// numbers (1, .5, 2e-3), identifiers, the five operators, parentheses and comma. `i` is
+// the source index every later stage points its errors at.
+const EXPR_NUM = /^(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/;
+const EXPR_NAME = /^[A-Za-z_][A-Za-z0-9_]*/;
+const EXPR_GLUE = /[A-Za-z0-9_.]/;       // what counts as stuck to the end of a bad number
+function exprTokens(src) {
+  const out = [], n = src.length;
+  for (let i = 0; i < n;) {
+    const c = src[i];
+    if (c === " " || c === "\t") { i++; continue; }
+    if ((c >= "0" && c <= "9") || (c === "." && src[i + 1] >= "0" && src[i + 1] <= "9")) {
+      const m = EXPR_NUM.exec(src.slice(i))[0], nx = src[i + m.length];
+      // a letter or a second point glued to the end of a number ("1e", "2x") is a typo,
+      // not an implicit product: say so where the number starts. Quote the WHOLE glued
+      // run, exponent sign included -- "1e+" is a number the user finished typing badly,
+      // and reporting it as '1e' quotes less than they wrote.
+      if (nx !== undefined && (EXPR_NAME.test(nx) || nx === ".")) {
+        let j = i + m.length;
+        while (j < n && (EXPR_GLUE.test(src[j])
+                         || ((src[j] === "+" || src[j] === "-")
+                             && (src[j - 1] === "e" || src[j - 1] === "E")))) j++;
+        return exprErr("bad number '" + src.slice(i, j) + "'", i);
+      }
+      out.push({ k: "num", s: m, v: parseFloat(m), i: i });
+      i += m.length; continue;
+    }
+    if (EXPR_NAME.test(c)) {
+      const m = EXPR_NAME.exec(src.slice(i))[0];
+      out.push({ k: "name", s: m, i: i });
+      i += m.length; continue;
+    }
+    if (EXPR_OPS[c]) { out.push({ k: "op", s: c, i: i }); i++; continue; }
+    if (c === "(" || c === ")" || c === ",") { out.push({ k: c, s: c, i: i }); i++; continue; }
+    return exprErr("unexpected character '" + c + "'", i);
+  }
+  return out;
+}
+
+// ---- 2. shunting-yard to RPN ----------------------------------------------
+// The emitted program is two parallel arrays: an opcode and, for EXPR_LIT / EXPR_VAR,
+// the literal value or the variable slot beside it. `stack` is allocated here, once, so
+// the evaluator allocates nothing per point.
+// Returns { err, at } on any failure -- there is no throwing path.
+function exprCompile(src, env) {
+  const tk = exprTokens(String(src));
+  if (tk.err) return tk;
+  const code = [], arg = [], ops = [];
+  let want = true, depth = 0, maxd = 0, last = 0;
+  const emit = (c, a, d) => { code.push(c); arg.push(a); depth += d; if (depth > maxd) maxd = depth; };
+  // an operator stack entry becomes RPN when something of lower precedence arrives
+  const flush = o => (o.k === "neg" ? emit(EXPR_NEG_C, 0, 0) : emit(EXPR_OPS[o.s].c, 0, -1));
+  for (let t = 0; t < tk.length; t++) {
+    const tok = tk[t];
+    last = tok.i;
+    if (tok.k === "num" || tok.k === "name") {
+      if (!want) return exprErr("expected an operator before '" + tok.s + "'", tok.i);
+      if (tok.k === "num") { emit(EXPR_LIT, tok.v, 1); want = false; continue; }
+      const two = EXPR_FN2[tok.s] !== undefined, one = EXPR_FN1[tok.s] !== undefined;
+      if (one || two) {
+        if (!tk[t + 1] || tk[t + 1].k !== "(") {
+          return exprErr("'" + tok.s + "' is a function -- write " + tok.s + "(...)", tok.i);
+        }
+        ops.push({ k: "call", s: tok.s, i: tok.i, n: 1, two: two });
+        t++; continue;                                   // the "(" belongs to the call
+      }
+      if (env.vars[tok.s] !== undefined) { emit(EXPR_VAR, env.vars[tok.s], 1); want = false; continue; }
+      if (env.consts[tok.s] !== undefined) { emit(EXPR_LIT, env.consts[tok.s], 1); want = false; continue; }
+      return exprErr("unknown name '" + tok.s + "'"
+                     + (EXPR_Z_NAMES[tok.s] && !env.three ? " (this page has no z axis)" : ""), tok.i);
+    }
+    if (tok.k === "op") {
+      if (want) {
+        if (tok.s === "-") ops.push({ k: "neg", i: tok.i });
+        else if (tok.s !== "+") return exprErr("expected a value before '" + tok.s + "'", tok.i);
+        continue;                                        // unary +: nothing to emit
+      }
+      const o = EXPR_OPS[tok.s];
+      while (ops.length) {
+        const top = ops[ops.length - 1];
+        if (top.k === "(" || top.k === "call") break;
+        const tp = top.k === "neg" ? EXPR_NEG_P : EXPR_OPS[top.s].p;
+        if (tp > o.p || (tp === o.p && !o.r)) flush(ops.pop()); else break;
+      }
+      ops.push({ k: "op", s: tok.s, i: tok.i });
+      want = true; continue;
+    }
+    if (tok.k === "(") {
+      if (!want) return exprErr("expected an operator before '('", tok.i);
+      ops.push({ k: "(", i: tok.i });
+      want = true; continue;
+    }
+    if (tok.k === ")") {
+      if (want) return exprErr("expected a value before ')'", tok.i);
+      while (ops.length && ops[ops.length - 1].k !== "(" && ops[ops.length - 1].k !== "call") flush(ops.pop());
+      if (!ops.length) return exprErr("unmatched ')'", tok.i);
+      const o = ops.pop();
+      if (o.k === "call") {
+        const need = o.two ? 2 : 1;
+        if (o.n !== need) {
+          return exprErr("'" + o.s + "' takes " + need + " argument" + (need > 1 ? "s" : "")
+                         + ", got " + o.n, o.i);
+        }
+        emit(o.two ? EXPR_FN2[o.s] : EXPR_FN1[o.s], 0, o.two ? -1 : 0);
+      }
+      want = false; continue;
+    }
+    // comma: only ever an argument separator, and only inside a call
+    if (want) return exprErr("expected a value before ','", tok.i);
+    while (ops.length && ops[ops.length - 1].k !== "(" && ops[ops.length - 1].k !== "call") flush(ops.pop());
+    if (!ops.length || ops[ops.length - 1].k !== "call") return exprErr("',' outside a function call", tok.i);
+    ops[ops.length - 1].n++;
+    want = true;
+  }
+  // An unclosed '(' outranks "ends where a value was expected": both are true of "(" and
+  // "(1+", and the paren is the one the user can act on. Innermost first, and it points
+  // at the paren rather than at the end of the line.
+  for (let k = ops.length - 1; k >= 0; k--) {
+    const o = ops[k];
+    if (o.k === "(") return exprErr("unclosed '('", o.i);
+    if (o.k === "call") return exprErr("unclosed '" + o.s + "('", o.i);
+  }
+  if (want) return exprErr("the expression ends where a value was expected", last);
+  while (ops.length) flush(ops.pop());        // only operators left; the scan took the rest
+  return { code: Int32Array.from(code), arg: Float64Array.from(arg),
+           stack: new Float64Array(Math.max(1, maxd)), src: String(src) };
+}
+
+// ---- 3. evaluator ---------------------------------------------------------
+// One flat pass over the RPN with a small numeric stack. `v` is the caller's (x, y, z),
+// reused across points; nothing in here allocates. The switch is the whole point -- see
+// the opcode table above. The case labels have to track that table: checkexpr.js section
+// 1 evaluates every name and operator in it, so a mismatch shows up as a wrong value.
+function exprEval(p, v) {
+  const code = p.code, arg = p.arg, s = p.stack, n = code.length;
+  let sp = 0, b = 0;
+  for (let i = 0; i < n; i++) {
+    switch (code[i]) {
+      case 0:  s[sp++] = arg[i]; break;                          // EXPR_LIT
+      case 1:  s[sp++] = v[arg[i] | 0]; break;                   // EXPR_VAR
+      case 2:  s[sp - 1] = Math.sin(s[sp - 1]); break;
+      case 3:  s[sp - 1] = Math.cos(s[sp - 1]); break;
+      case 4:  s[sp - 1] = Math.tan(s[sp - 1]); break;
+      case 5:  s[sp - 1] = Math.asin(s[sp - 1]); break;
+      case 6:  s[sp - 1] = Math.acos(s[sp - 1]); break;
+      case 7:  s[sp - 1] = Math.atan(s[sp - 1]); break;
+      case 8:  s[sp - 1] = Math.sinh(s[sp - 1]); break;
+      case 9:  s[sp - 1] = Math.cosh(s[sp - 1]); break;
+      case 10: s[sp - 1] = Math.tanh(s[sp - 1]); break;
+      case 11: s[sp - 1] = Math.exp(s[sp - 1]); break;
+      case 12: s[sp - 1] = Math.log(s[sp - 1]); break;
+      case 13: s[sp - 1] = Math.log10(s[sp - 1]); break;
+      case 14: s[sp - 1] = Math.sqrt(s[sp - 1]); break;
+      case 15: s[sp - 1] = Math.abs(s[sp - 1]); break;
+      case 16: s[sp - 1] = Math.sign(s[sp - 1]); break;
+      case 17: s[sp - 1] = Math.floor(s[sp - 1]); break;
+      case 18: s[sp - 1] = Math.ceil(s[sp - 1]); break;
+      case 19: b = s[--sp]; s[sp - 1] = Math.atan2(s[sp - 1], b); break;
+      case 20: b = s[--sp]; s[sp - 1] = Math.min(s[sp - 1], b); break;
+      case 21: b = s[--sp]; s[sp - 1] = Math.max(s[sp - 1], b); break;
+      case 22: b = s[--sp]; s[sp - 1] = Math.hypot(s[sp - 1], b); break;
+      case 23: b = s[--sp]; s[sp - 1] = Math.pow(s[sp - 1], b); break;     // also ^
+      case 24: b = s[--sp]; s[sp - 1] -= b * Math.floor(s[sp - 1] / b); break;  // mod
+      case 25: b = s[--sp]; s[sp - 1] += b; break;
+      case 26: b = s[--sp]; s[sp - 1] -= b; break;
+      case 27: b = s[--sp]; s[sp - 1] *= b; break;
+      case 28: b = s[--sp]; s[sp - 1] /= b; break;
+      case 29: s[sp - 1] = -s[sp - 1]; break;                    // EXPR_NEG_C
+    }
+  }
+  return s[0];
+}
+
+// ---- over the grid --------------------------------------------------------
+// setICFromReal's layout, both apps, is (iz*nx + ix)*ny + iy -- which IS ix*ny + iy at
+// nz = 1, so one loop nest serves both pages and `m` just counts.
+// Evaluate over the whole grid in that index order, so the write is sequential, and
+// carry back what the non-finite guard needs: how many entries were not finite and where
+// the first one was. 1/x and log(y) are the first two things anyone types, and a NaN
+// reaching _uploadIC spreads through the forward FFT into every mode -- the run is then
+// silently dead from step 0 and looks like a solver bug.
+function exprField(p, g) {
+  const nx = g.nx, ny = g.ny, nz = g.nz, out = new Float32Array(nx * ny * nz);
+  const v = new Float64Array(3);
+  const dx = g.Lx / nx, dy = g.Ly / ny, dz = nz > 1 ? g.Lz / nz : 0;
+  let nbad = 0, bad = null, m = 0;
+  for (let iz = 0; iz < nz; iz++) {
+    v[2] = iz * dz;
+    for (let ix = 0; ix < nx; ix++) {
+      v[0] = ix * dx;
+      for (let iy = 0; iy < ny; iy++, m++) {
+        v[1] = iy * dy;
+        // store FIRST, then test what was stored: `out` is float32, so a double as
+        // ordinary as exp(100) = 2.7e43 passes isFinite and is +Infinity the instant it
+        // lands. Testing the double would wave that straight into the forward FFT.
+        out[m] = exprEval(p, v);
+        if (!isFinite(out[m])) { nbad++; if (!bad) bad = [v[0], v[1], v[2]]; }
+      }
+    }
+  }
+  return { f: out, nbad: nbad, bad: bad };
+}
+
+// ---- the periodicity check ------------------------------------------------
+// The box is periodic; an expression is not required to be. Test EVERY axis separately
+// -- sin(x)*y is fine in x and discontinuous in y, and "not periodic" alone sends the
+// user hunting in the wrong place.
+//
+// The grid stops one cell short of the far face (x = ix*Lx/nx), so the seam is not in the
+// array at all; the expression is evaluated fresh on both faces and ONE CELL OUTSIDE each
+// of them. Working outside the box is what makes this exact: for a periodic expression
+// f(L+s) IS f(s), so the SAME centred stencil either side of the seam agrees to round-off
+// at any resolution. (Comparing one-sided differences taken from inside the grid instead
+// would leave an h^2 f'' floor, and a well-resolved cos would read as kinked.) Per seam:
+//   j0  the value jump  |f(L, .) - f(0, .)|
+//   j1  the slope jump, as the mismatch in the centred ONE-CELL increment,
+//       |(f(L+h) - f(L-h))/2 - (f(h) - f(-h))/2| -- the same units as j0, so the caller
+//       can normalize both by the field's own range. abs(x - Lx/2) gives exactly 2h,
+//       i.e. it fades as the grid refines, which is what a kink's ringing does too.
+function exprSeam(p, g, ax) {
+  const N = [g.nx, g.ny, g.nz], L = [g.Lx, g.Ly, g.Lz];
+  const d = [g.Lx / g.nx, g.Ly / g.ny, g.nz > 1 ? g.Lz / g.nz : 0], h = d[ax];
+  const other = [[1, 2], [0, 2], [0, 1]][ax];
+  const v = new Float64Array(3);
+  const at = u => { v[ax] = u; return exprEval(p, v); };
+  let j0 = 0, j1 = 0;
+  for (let a = 0; a < N[other[0]]; a++) {
+    for (let b = 0; b < N[other[1]]; b++) {
+      v[other[0]] = a * d[other[0]];
+      v[other[1]] = b * d[other[1]];
+      const near = at(0), far = at(L[ax]);
+      const dn = 0.5 * (at(h) - at(-h)), df = 0.5 * (at(L[ax] + h) - at(L[ax] - h));
+      j0 = Math.max(j0, Math.abs(far - near));
+      j1 = Math.max(j1, Math.abs(df - dn));
+    }
+  }
+  return [j0, j1];
+}
+
+// ---- the preset -----------------------------------------------------------
+const IC_EXPR = "expr";
+const EXPR_AXES = ["x", "y", "z"];
+// the whole language, in the line under the boxes (ctrlGrpIC's #vExprHelp). It says
+// natural log out loud because half the audience reads `log` as base 10.
+const EXPR_HELP =
+  "x, y and L<sub>x</sub>, L<sub>y</sub> in code units &mdash; x runs from 0 to L<sub>x</sub>, "
+  + "nothing is scaled to 2&pi; (z and L<sub>z</sub> on the 3D page only). "
+  + "Also pi, e. Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp log "
+  + "log10 sqrt abs sign min max mod floor ceil hypot pow &mdash; log is the NATURAL "
+  + "log, log10 the base-10 one, mod the floored modulo. "
+  + "^ is a power (right-associative, binding tighter than a leading minus: -x^2 is "
+  + "&minus;(x&sup2;)). No random numbers. An empty box is exactly zero.";
+const EXPR_SEAM_TOL = 1e-3;              // below this a seam jump is a rounding artifact
+// the report line rendered under the boxes. Nothing here is read by the solver.
+const icExpr = { note: "" };
+const icExprSrc = id => { const e = el(id); return e ? String(e.value || "").trim() : ""; };
+// What the seam numbers are worth saying, one line per field, worst seam named. A field
+// that is continuous but kinked rings much less than one that jumps, so the two get
+// different sentences; both say what will actually run, because _uploadIC forward-
+// transforms and dealiases and the band-limited periodic projection is never the
+// expression itself.
+function exprSeamNote(p, g, f, label) {
+  let lo = Infinity, hi = -Infinity, mx = 0;
+  for (let i = 0; i < f.length; i++) {
+    const u = f[i];
+    if (u < lo) lo = u;
+    if (u > hi) hi = u;
+    if (Math.abs(u) > mx) mx = Math.abs(u);
+  }
+  // a field that is constant ON THE GRID has no range to normalize by (floor(x/Lx) is
+  // one), so fall back to its magnitude and then to 1 rather than dividing by zero
+  const den = (hi > lo) ? hi - lo : (mx > 0 ? mx : 1);
+  let w = null;
+  for (let ax = 0; ax < (g.nz > 1 ? 3 : 2); ax++) {
+    const s = exprSeam(p, g, ax), j0 = s[0] / den, j1 = s[1] / den;
+    if (Math.max(j0, j1) < EXPR_SEAM_TOL) continue;
+    if (!w || Math.max(j0, j1) > Math.max(w.j0, w.j1)) w = { ax: ax, j0: j0, j1: j1 };
+  }
+  if (!w) return "";
+  const seam = label + ": " + EXPR_AXES[w.ax] + " seam, ";
+  const tail = " What runs is the periodic band-limited projection of what you typed, "
+             + "not the expression: ";
+  return w.j0 >= EXPR_SEAM_TOL
+    ? seam + "jump " + w.j0.toPrecision(2) + " of range." + tail
+      + "ringing at the seam that does not decay, and a broadband spectral tail that is "
+      + "not turbulence."
+    : seam + "continuous but kinked &mdash; slope jumps " + w.j1.toPrecision(2)
+      + " of range per cell." + tail
+      + "milder ringing at the seam, and a spectral tail that is not turbulence.";
+}
+// one box -> one field. An empty box is null = exactly zero, which setICFromReal already
+// understands, and so is a box that failed to parse or tripped the non-finite guard:
+// refusing to upload a NaN field is the whole point of that guard.
+function icExprField(src, g, label) {
+  if (!src) return { f: null, note: "" };
+  const p = exprCompile(src, exprEnv(g));
+  if (p.err) return { f: null, note: label + ": " + p.err };
+  const r = exprField(p, g);
+  if (r.nbad) {
+    const pt = EXPR_AXES.slice(0, g.nz > 1 ? 3 : 2)
+      .map((a, i) => a + " = " + r.bad[i].toPrecision(3)).join(", ");
+    return { f: null, note: label + ": " + r.nbad + " non-finite value" + (r.nbad > 1 ? "s" : "")
+                    + ", first at " + pt + " &mdash; not uploaded, " + label + " left at zero." };
+  }
+  return { f: r.f, note: exprSeamNote(p, g, r.f, label) };
+}
+// the report line's one renderer: the builder's full report and the while-typing parse
+// both land here, and icSyncRows calls it too so the line cannot outlive its preset.
+// Warn, never block -- the user presses Run either way.
+function icExprNote(notes) {
+  icExpr.note = notes.filter(Boolean).join("<br>");
+  icExprSync();
+}
+function icExprSync() {
+  const m = el("vExprMsg");
+  if (!m) return;
+  const on = el("selIC").value === IC_EXPR && icExpr.note;
+  m.innerHTML = on ? icExpr.note : "";
+  m.style.display = on ? "" : "none";
+}
+// the live grid, for the while-typing parse (which needs the name set and nothing else)
+function icExprGrid() {
+  const q = icDraw.cfg && icDraw.cfg.params();
+  return q ? icDrawGrid(q) : null;
+}
+// typing: PARSE only. It is cheap and it names a mistyped function before Run rather
+// than after; the seam and non-finite reports need the built field, so they come from
+// the builder below.
+function icExprCheck() {
+  const g = icExprGrid();
+  if (!g) return;
+  const out = [];
+  for (const r of [["tExprP", "&phi;"], ["tExprM", "&psi;"]]) {
+    const s = icExprSrc(r[0]);
+    if (!s) continue;
+    const p = exprCompile(s, exprEnv(g));
+    if (p.err) out.push(r[1] + ": " + p.err);
+  }
+  icExprNote(out);
+}
+// The amp sliders are meaningless here (nothing is normalized), and icSyncRows shows
+// #rowAmpP / #rowAmpM only for icIsPacketIC(p) || p === "custom" -- a predicate this
+// preset stays outside, exactly as the equilibria do. `rows` below hides nothing but
+// its own rows.
+icRegister(IC_EXPR, {
+  rows: ["rowExprP", "rowExprM", "vExprHelp", "vExprMsg"],
+  fields: g => {
+    const a = icExprField(icExprSrc("tExprP"), g, "&phi;");
+    const b = icExprField(icExprSrc("tExprM"), g, "&psi;");
+    icExprNote([a.note, b.note]);
+    return { phi: a.f, psi: b.f };
+  }
+});
 
 // periodic gaussian z-envelope, peak normalized to exactly 1 ON THE GRID (so a packet
 // whose centre falls between planes still has the requested amplitude).
@@ -7073,6 +8385,8 @@ function icSyncRows() {
   // knob at all. One predicate, so the panel never has two ways of saying "not here"; the
   // cost is that the rows are absent on a default boot (selIC = modes) and appear when the
   // user picks letters / sinusoids / the drawing, which is when they first mean anything.
+  // IC_EXPR stays outside the predicate for the same reason the equilibria do: it uploads
+  // what was typed, so there is no stored potential for an amplitude to rescale.
   // Presets still WRITE rAmpP / rAmpM by id -- a hidden input takes a value normally.
   for (const id of ["rowAmpP", "rowAmpM"]) el(id).style.display = (isP || isC) ? "" : "none";
   el("rowDraw").style.display = isC ? "" : "none";
@@ -7103,6 +8417,9 @@ function icSyncRows() {
     icSyncRows._hyperPrev = undefined;
   }
   if (!isC && icDraw.on) icEditLeave("save");
+  // the expression report belongs to its preset: the renderer blanks it for every other
+  // one, so leaving `expr` cannot leave a stale seam warning on the panel
+  icExprSync();
 }
 
 // ---------------------------------------------------------------------------
@@ -7205,6 +8522,12 @@ function renderCards(paused) {
     }
     try { d.recCapture(); } catch (e) { console.error(e); }
   }
+  // ... and ONE slot clock over the whole loop (IO_PLAN item 5): the all-displays take
+  // reads every card's texture in this same synchronous task, after they have all
+  // rendered and before any await, for exactly the reason the per-card capture rides the
+  // render. Its own slot cadence, its own drops -- a slot it cannot capture WHOLE it
+  // drops whole. Same catch, same blast radius as above.
+  try { recAll.recCapture(); } catch (e) { console.error(e); }
   return n;
 }
 async function loop() {
@@ -7269,13 +8592,16 @@ async function loop() {
     // feeder is putting frames in the file and how stretched the loop is. This is how a
     // phone, which has no devtools console, reports whether the watchdog fired on a
     // visible page (wd must stay 0 there) and whether the loop gap explains a stutter.
-    if (REC_DEBUG) for (const d of cards.disp) {
-      const W = d.wc;
+    // one line per live recording -- the all-displays take is ONE recording, so it is one
+    // more line and not one per source (IO_PLAN item 5)
+    if (REC_DEBUG) for (const W of cards.disp.map(d => d.wc)
+                          .concat([recAll.recorder && recAll.recorder.wc])) {
       // `lag` (RECASYNC, 2026-08-12) is the buffer path's own number: capture submit to
       // encode, i.e. how late the GPU's bytes arrive. Tens of ms are FINE -- the frame is
       // stamped by index, not by arrival -- and it is here only so a phone can say whether
       // the readback is keeping up at all. It stays 0 on the sync canvas path.
-      if (W) el("readout").textContent += "\nrec: raf " + W.rafN + "  wd " + W.wdN +
+      if (W) el("readout").textContent += "\nrec" + (W.lay.n > 1 ? "×" + W.lay.n : "") +
+        ": raf " + W.rafN + "  wd " + W.wdN +
         "  drop " + W.drop + "  gap " + Math.round(W.maxGap) + " ms" +
         "  vf " + W.tV.toFixed(1) + "  enc " + W.tE.toFixed(1) +
         "  lag " + Math.round(W.tL) + " ms";

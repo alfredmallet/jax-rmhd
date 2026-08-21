@@ -39,6 +39,13 @@ async function wgslMod() {
   if (!fs.existsSync(p)) return null;
   return await import(pathToFileURL(p).href);
 }
+// A row is visible unless something HID it: the stub materialises only the properties the
+// page actually wrote, so an unset `display` and "" are both "never hidden" -- hiding is a
+// positive spelling (_rngShow writes "none"), and only those spellings fail.
+const HIDDEN = ["none", "hidden", "collapse"];
+const visible = d => d == null || !HIDDEN.includes(String(d).trim().toLowerCase());
+const showStr = d => d === undefined ? "<unset>" : d === null ? "<null>" : JSON.stringify(d);
+
 // the lines `b` adds to `a`, or null if b is not a pure insertion into a (checkiso's helper)
 function inserted(a, b) {
   const A = a.split("\n"), add = [];
@@ -283,8 +290,9 @@ async function legPage2d(env) {
   env.run(UTRACE);
   const R = env.run(CARDS, 0, 0);
   ok("2D: the two sliders exist, are visible, and are centred at 0",
-     R.a[0] === 0 && R.a[1] === 0 && R.shown[0] === "" && R.shown[1] === "" && !R.on,
-     "shown = [" + R.shown + "]");
+     R.a[0] === 0 && R.a[1] === 0 && visible(R.shown[0]) && visible(R.shown[1]) && !R.on,
+     "offset = [" + R.a + "], offsetOn = " + R.on + ", display: slider "
+     + showStr(R.shown[0]) + ", label " + showStr(R.shown[1]));
   ok("  ... labelled, and travelling half a box each way", R.lab[0] === "offset x"
      && R.lab[1] === "offset y" && R.range[0] === "-0.5" && R.range[1] === "0.5"
      && R.range[2] === "0.01", R.lab + " over [" + R.range.slice(0, 2) + "] by " + R.range[2]);
