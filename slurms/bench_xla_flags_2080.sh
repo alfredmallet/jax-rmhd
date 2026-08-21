@@ -113,7 +113,7 @@ SET_FLAGS=(
   "--xla_gpu_enable_latency_hiding_scheduler=true --xla_gpu_collective_permute_decomposer_threshold=0"
 )
 # flagsets carried into the (much more expensive) timing phase; the rest stay audit-only
-BENCH_SETS_16="base lhs lhspipe"
+BENCH_SETS_16=${BENCH_SETS_16:-"base lhs lhsdec"}
 BENCH_SETS_4="base lhs"
 
 # ------------------------------------------------------------------------ phase 0: probe

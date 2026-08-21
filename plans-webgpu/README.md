@@ -23,6 +23,14 @@ disagree, the file is right.
 
 ## Live
 
+- **FFTPERF_PLAN.md** — what the step's transforms actually cost, then whichever of a twiddle
+  table / radix-4 / gradient chunking the numbers justify. Written 2026-08-21, **not
+  started**. Reopens AUDIT item 6 on the record: the 2026-08-12 closure counted a
+  transcendental as one op and its 4.00 scaling ratio separates launch-bound from work-bound,
+  not bandwidth from ALU from barriers — so Phase 0 is a `?bench` harness with a three-rung
+  ladder per FFT kernel (copy-only / constant-twiddle / full) and Phase 1 is Alfred's
+  on-device campaign; nothing ships without it. Gradient chunking is the resolution-ceiling
+  item (256²×64 fits the default binding limits after it) and cannot move `steps/s`.
 - **IO_PLAN.md** — data in and out: expression ICs (`x, y, z` in code units, a hand-written
   parser, non-periodic warned about per axis and never forbidden), a save button on chart
   cards, save-all-cards as one ZIP, a "download fields" export of real-space φ/ψ as `.npz`,
