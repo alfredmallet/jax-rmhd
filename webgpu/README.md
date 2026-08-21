@@ -738,9 +738,37 @@ else is built on the CPU and uploaded through **`setICFromReal(phi, psi)`** — 
 `Float32Array`s in the buffers' own layout (`ix*ny + iy` in 2D, `(iz*nx + ix)*ny + iy` in
 3D) — which forward-transforms them and applies the 2/3 dealias exactly like the
 constructor does (unmasked beyond-cutoff IC energy would persist and alias). The **IC**
-selector then offers `large-scale modes`, `quiescent`, `letters` and `custom` (plus the
-two equilibrium presets in 2D, and the sinusoidal packet pair in 3D); **Reset** re-applies
-the current one.
+selector then offers `large-scale modes`, `quiescent`, `letters`, `custom` and
+`expression` (plus the two equilibrium presets in 2D, and the sinusoidal packet pair in
+3D); **Reset** re-applies the current one.
+
+### Expression ICs: the contract
+
+`expression` gives φ and ψ two text boxes and uploads what they say. Three rules bind
+anything that touches it (IO_PLAN item 1; the parser and everything around it live in
+`common.js`, since both pages load it and there is nowhere else shared):
+
+- **No `eval`, no `new Function`.** The parser is hand-written — tokenizer → shunting-yard
+  to RPN → a switch-on-opcode evaluator — and not mainly for security (the page has no
+  secrets): an engine's `SyntaxError` names nothing a student can act on, and the accepted
+  language would otherwise be all of JavaScript, which we would then have to document.
+  Every token carries its source index, so every failure is a message with a character
+  position and never a throw or a silent zero. It also means the cost is an interpreter's:
+  ~4.5 ns per stack op with a native `Math`, so a 30-op expression is ~140 ms at 1024² and
+  ~0.6 s at 256²×64 — one button press, not a frame. Codegen would close that and is the
+  one thing the no-`new Function` rule forbids.
+- **Code units.** `x`, `y` (and `z` in 3D) are the coordinates `setIC` itself uses:
+  `x = ix*Lx/nx`, so the box ends at `Lx`/`Ly`/`Lz` and nothing is normalized to 2π or to
+  1. `Lx`, `Ly` (and `Lz`) are constants for that reason. `z` and `Lz` are **unknown
+  names** on the 2D page rather than the zero `icDrawGrid` would hand out.
+- **Warn, never block.** A non-periodic expression is reported per axis, by the seam it
+  fails on and with the number, and then runs. A **non-finite** one is the one refusal: a
+  NaN through the forward FFT reaches every mode and the run is silently dead from step 0.
+
+The preset registers through `icRegister` like an equilibrium does and skips
+`icZetaFields` — what is typed has to mean what it says, which is also why the amplitude
+sliders' rows stay hidden for it. Either box may be empty: that is `null`, which
+`setICFromReal` already reads as exactly zero. Gate: `devtools/checkexpr.js`.
 
 ### ζ±, amplitudes, and where the normalization happens
 

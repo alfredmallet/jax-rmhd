@@ -137,6 +137,8 @@ press the green <b>Run</b>, and change one thing at a time.</p>
       field, smoothed to a physical width. In 3D they are wave packets: the same shapes
       wrapped in a bell-shaped envelope along z, placed to collide head-on.</li>
     <li><b>custom (drawn blobs)</b> &mdash; whatever you paint. See the next section.</li>
+    <li><b>expression (typed &phi;, &psi;)</b> &mdash; whatever you type, as a formula.
+      See "typing your own initial condition" below.</li>
     <li><b>quiescent (zero)</b> &mdash; exactly nothing. Useful with forcing on, to watch
       turbulence build from a standing start.</li>
     <li><b>Kelvin&ndash;Helmholtz shear layers</b> and <b>tearing mode</b> (2D only)
@@ -154,8 +156,9 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     press <b>Reset</b> to get the same shape at a different strength, any number of
     times. They appear only for the presets they apply to &mdash; the letter and sinusoid
     packets and the drawing. <b>large-scale modes</b> and <b>quiescent</b> have no
-    amplitude to set, and the equilibrium demos below set theirs with their own physical
-    knobs instead, so in those four the amp rows are simply not shown.</p>
+    amplitude to set, the equilibrium demos below set theirs with their own physical
+    knobs instead, and a typed <b>expression</b> already says how strong it is, so for all
+    of those the amp rows are simply not shown.</p>
   <p>While you are painting a <b>custom</b> drawing in &phi; or &psi;, the same two
     sliders are relabelled <b>&phi; amp</b> and <b>&psi; amp</b> and mean something more
     direct: &phi; amp is the peak flow speed max&nbsp;|u|, and &psi; amp is the peak
@@ -204,6 +207,57 @@ press the green <b>Run</b>, and change one thing at a time.</p>
   <p>The strength of what you drew is set by the amp sliders afterwards, not by how hard
     you scribbled: the whole drawing is rescaled to the amplitude you ask for. The
     drawing is dropped if you change the resolution, because it is stored on the grid.</p>
+</details>
+
+<!-- DRAFT copy (IO_PLAN item 1): written by the implementing agent, awaiting Alfred's
+     wording pass, like the preset text before it. -->
+<details>
+  <summary>typing your own initial condition</summary>
+  <p>Choose IC <b>expression (typed &phi;, &psi;)</b> and two boxes appear: one for
+    &phi;, one for &psi;. Type a formula in each and the run starts from exactly that.
+    An empty box means exactly zero, so you can set one field and leave the other alone.
+    Unlike the drawing, nothing is rescaled afterwards &mdash; what you write is what
+    runs, so the numbers in the formula <i>are</i> the amplitude.</p>
+  <p><b>The coordinates are the box's own.</b> <code>x</code> runs from 0 up to
+    <code>Lx</code>, <code>y</code> up to <code>Ly</code>, and in the 3D app <code>z</code>
+    up to <code>Lz</code>. Nothing is scaled to 2&pi; or to 1. Those box lengths are
+    available as <code>Lx</code>, <code>Ly</code> and <code>Lz</code>, so
+    <code>sin(2*pi*x/Lx)</code> is one full wave across the box whatever box you picked,
+    and it stays one full wave when you change the resolution or the box shape. On the 2D
+    app <code>z</code> and <code>Lz</code> are simply not names &mdash; you get told so
+    rather than quietly getting a zero.</p>
+  <p>Also available: <code>pi</code>, <code>e</code>, the operators
+    <code>+ - * / ^</code> and brackets, and the functions
+    <code>sin cos tan asin acos atan atan2 sinh cosh tanh exp log log10 sqrt abs sign
+    min max mod floor ceil hypot pow</code>. <b><code>log</code> is the natural
+    logarithm</b> &mdash; use <code>log10</code> if you want base 10. <code>mod</code>
+    follows the sign of the second argument, which is the useful convention on a periodic
+    coordinate. <code>^</code> is a power, and it binds tightly: <code>-x^2</code> is
+    &minus;(x&sup2;), and <code>2^3^2</code> is 2<sup>9</sup>. There is deliberately no
+    random-number function: the same text should always give the same run.</p>
+  <p>If something is mistyped you get one line under the boxes saying what and where
+    &mdash; <i>unknown name 'sn' at character 8</i> &mdash; as you type, before you press
+    anything.</p>
+  <p><b>The one thing that is refused.</b> If the formula is infinite or undefined
+    anywhere on the grid &mdash; <code>1/x</code> at x&nbsp;=&nbsp;0, <code>log(y)</code>
+    at y&nbsp;=&nbsp;0 &mdash; that field is not uploaded, and the line tells you how many
+    points and where the first one is. This is not fussiness: a single undefined value
+    goes through the transform into every wave in the box, and the run would be dead from
+    the first step while still looking like it was working.</p>
+  <p><b>The periodicity warning.</b> The box wraps: the right edge is glued to the left
+    edge, the top to the bottom, and in 3D the two ends along z. Your formula does not
+    have to respect that, and if it does not you get a line saying which seam it fails on
+    and by how much &mdash; <i>&phi;: y seam, jump 0.42 of range</i>. It is a warning, not
+    a refusal; press <b>Run</b> anyway if that is what you meant.</p>
+  <p>What it is telling you is that the field which actually runs is not the formula. The
+    solver only knows fields that wrap and that are built from waves it can represent, so
+    what gets uploaded is the closest such field &mdash; and near a seam that is typed
+    across, "closest" means ripples that sit there and do not fade, plus a haze of energy
+    spread across every small scale that looks like turbulence in the spectrum chart and
+    is not. Type <code>x*y</code> and watch it: it is the quickest way to see why a code
+    like this one wants periodic data. A formula that meets itself in value but turns a
+    corner there (<code>abs(x-Lx/2)</code>) gets a milder version of the same warning, and
+    a milder version of the same ripples.</p>
 </details>
 
 <details>

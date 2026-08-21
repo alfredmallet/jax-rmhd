@@ -614,6 +614,30 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   k_y = 2pi/Ly, plus a shooting solve for Delta'a. Prints the benchmark table checkj.js's
   REF block quotes (regenerate it there from this output), then eta- and b0-survey
   tables. `n` = Fourier modes, default 384; 768 reproduces every printed digit.
+- `checkexpr.js [dir]` — the IO_PLAN item 1 gate: the expression IC. Eight sections, both
+  pages booted, because the name set differs between them. The parser first, in units —
+  precedence and the two readings the plan pins by name (`^` right-associative and binding
+  tighter than unary minus, so `-x^2` is `-(x^2)` and `2^3^2` is `2^9`), asserted on the
+  emitted RPN and not only on its value; then every error path, each checked to RETURN
+  rather than throw and to point at the right character (the message quotes a 1-based
+  position, `at` carries the 0-based index it came from); then `z` / `Lz` rejected on the
+  2D page and resolving on the 3D one. Evaluation is compared against the index formula
+  `(iz*nx + ix)*ny + iy` written out longhand HERE, never read back off the thing under
+  test. The non-finite guard is driven with `1/x`, `log(y)` and `sqrt(-1)`, counting the
+  offenders and locating the first. The periodicity detector gets the plan's three cases
+  (`sin(2*pi*x/Lx)` periodic, `x*y` not, `abs(x-Lx/2)` continuous but kinked at exactly
+  the analytic `2h`) plus the one that decided the algorithm: a COSINE is even about the
+  seam, so a slope test built from one-sided differences taken INSIDE the grid reads
+  `h^2 f''` there and calls a perfectly smooth field kinked — the check pins it at
+  round-off over an nz sweep, which is only true because the expression is evaluated one
+  cell OUTSIDE each face. Section 7 drives the REAL app: the preset selectable, both boxes
+  and the help line shown, the amp rows left hidden, a typed expression reaching
+  `setICFromReal` with the right values, `1/x` arriving as `null` instead, the warning line
+  naming the seam it failed on, and the line dying with its preset. Section 8 times one
+  build at 1024² and at 256²×64 — and measures the HARNESS first: stubenv's `Math` belongs
+  to the outer realm, so every `Math.sin` is a cross-context call ~10x a native one, which
+  is most of what the raw number contains. The interpreter's own dispatch rate is timed
+  separately on a transcendental-free program.
 - `dup.py` — token-normalized >=10-line clone detector over the shared core
   (common.js/physics.js/solver2d.js) + extracted app scripts (the standing-rule
   duplication audit); callers pass the file list explicitly. Run it over the extracted

@@ -5125,12 +5125,14 @@ function chartsReset() {
 //
 // A spec is { topbar: [item...], groups: [group...] }; a group is
 // { id, summary, keep, rows: [row...] }; a row is either an array of items, an
-// object { id, hide, items }, or { k: "hintdiv", id, cls } for a bare div of its own.
+// object { id, hide, items }, or { k: "hintdiv", id, cls, t, hide } for a bare div of
+// its own.
 // Item kinds (every item may carry `ti`, the title attribute):
 //   lab  <label>t</label> (for: the id it labels)      val  <span class="val" id>
 //   sel  <select id> from o: [[value, html], ...]      txt  <span id>t</span>
 //   rng  <input type=range> min/max/step/v             hint <span class="hint" id>
 //   num  <input type=number> v, w (px)                 btn  <button id>t</button>
+//   text <input type=text> v, w (px), ph (placeholder) -- the expression IC's boxes
 //   cb   bare checkbox (v = checked)
 //   cbl  checkbox inside <label class="cbl">t</label> (v = checked)
 // `t` is HTML (the entities the markup used) EXCEPT for cbl, whose t is a text node --
@@ -5142,14 +5144,19 @@ function _ctrlItem(row, it) {
   if (it.k === "sel") {
     e = _sel(row, it.o.map(o => ({ v: o[0], t: o[1] })), it.ti);
     if (it.v !== undefined) e.value = String(it.v);
-  } else if (it.k === "rng" || it.k === "num") {
+  } else if (it.k === "rng" || it.k === "num" || it.k === "text") {
     e = put("input");
-    e.type = it.k === "rng" ? "range" : "number";
+    e.type = it.k === "rng" ? "range" : it.k === "num" ? "number" : "text";
     if (it.min !== undefined) e.min = String(it.min);
     if (it.max !== undefined) e.max = String(it.max);
     if (it.step !== undefined) e.step = String(it.step);
     if (it.v !== undefined) e.value = String(it.v);
     if (it.w) e.style.width = it.w + "px";
+    // a formula is not prose: no autocorrect, no capitalised first letter on a phone
+    if (it.k === "text") {
+      e.placeholder = it.ph || "";
+      e.spellcheck = false; e.autocapitalize = "off"; e.autocomplete = "off";
+    }
   } else if (it.k === "cb" || it.k === "cbl") {
     const host = it.k === "cbl" ? put("label", "cbl") : row;
     e = _mk("input", null, host);
@@ -5193,7 +5200,7 @@ function _ctrlItem(row, it) {
 // page's "sinusoidal z+- packets (exact interaction)". A select is a bordered box that
 // already reads as one control next to its name, and the complaint this fixes was about
 // sliders, whose name is the only thing telling two identical grey tracks apart.
-const _CTRL_GROUPABLE = { rng: 1, num: 1, cb: 1, val: 1 };
+const _CTRL_GROUPABLE = { rng: 1, num: 1, cb: 1, val: 1, text: 1 };
 function _ctrlRow(row, items) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
@@ -5218,7 +5225,13 @@ function controlsBuild(spec) {
     for (const r of g.rows) {
       // a full-width div of its own, OUTSIDE any .row: a hint line, or (with cls) the
       // viewfoot a page-level result strip lands on
-      if (r.k === "hintdiv") { const h = _mk("div", r.cls || "hint", d); h.id = r.id; continue; }
+      if (r.k === "hintdiv") {
+        const h = _mk("div", r.cls || "hint", d);
+        h.id = r.id;
+        if (r.t) h.innerHTML = r.t;
+        if (r.hide) h.style.display = "none";
+        continue;
+      }
       const row = _mk("div", "row", d);
       if (r.id) row.id = r.id;
       if (r.hide) row.style.display = "none";
@@ -5299,9 +5312,29 @@ const ctrlGrpIC = o => ({
   id: "grpIC", summary: "initial condition", rows: [
     [{ k: "lab", t: "preset" },
      { k: "sel", id: "selIC", o: [["modes", "large-scale modes"], ["letters", o.letters],
-                                  ["custom", "custom (drawn blobs)"], ["quiescent", "quiescent (zero)"]]
+                                  ["custom", "custom (drawn blobs)"],
+                                  [IC_EXPR, "expression (typed &phi;, &psi;)"],
+                                  ["quiescent", "quiescent (zero)"]]
                                  .concat(o.presets || []) }]
-  ].concat(o.pre || [], [
+  ].concat([
+    // the expression IC's two boxes (IO_PLAN item 1), shown on both pages. What is typed
+    // is uploaded as it stands -- no icZetaFields normalization -- so the amp sliders do
+    // not apply and icSyncRows leaves their rows hidden. The help line names the whole
+    // language, since the boxes themselves have room for one example each.
+    { id: "rowExprP", hide: true, items: [
+      { k: "lab", t: "&phi; =", for: "tExprP" },
+      { k: "text", id: "tExprP", w: 200, ph: "sin(2*pi*x/Lx)*cos(2*pi*y/Ly)",
+        ti: "stream function phi as a formula in x, y (and z in 3D), in CODE units: "
+          + "x runs from 0 to Lx. Empty = exactly zero" }
+    ] },
+    { id: "rowExprM", hide: true, items: [
+      { k: "lab", t: "&psi; =", for: "tExprM" },
+      { k: "text", id: "tExprM", w: 200, ph: "empty = zero",
+        ti: "flux function psi as a formula, same rules as phi" }
+    ] },
+    { k: "hintdiv", id: "vExprHelp", hide: true, t: EXPR_HELP },
+    { k: "hintdiv", id: "vExprMsg", hide: true }
+  ], o.pre || [], [
     { id: "rowDraw", hide: true, items: [
       { k: "btn", id: "btnEdit", t: "edit IC", ti: "pause the run and open the IC editor" },
       { k: "lab", t: "paint" },
@@ -6118,6 +6151,13 @@ function wireCommonControls(opts) {
     el(id).oninput = syncLabels;
     el(id).onchange = () => { syncLabels(); applyIC(); };
   }
+  // the expression boxes (IO_PLAN item 1): parse while typing, so a mistyped name is
+  // named at once, and re-apply on release -- the same contract as the IC sliders above.
+  // The full report (non-finite guard, seams) needs the built field and comes with it.
+  for (const id of ["tExprP", "tExprM"]) {
+    el(id).oninput = icExprCheck;
+    el(id).onchange = applyIC;
+  }
   // the forcing band changes the fmask AND the shell mode list, which are baked into
   // the grid and into the OU kernel's NS -- a rebuild, not an upload. On release only.
   for (const id of ["rFmin", "rFmax"]) {
@@ -6906,6 +6946,405 @@ function syncEqLabels() {
   e.innerHTML = s; e.style.display = s ? "" : "none";
 }
 
+// ---------------------------------------------------------------------------
+// expression IC (IO_PLAN item 1): phi and psi typed as formulas
+// ---------------------------------------------------------------------------
+// A third kind of IC preset beside the stored potentials and the equilibria. What is
+// typed is what is uploaded, so it registers through icRegister and skips icZetaFields'
+// normalization exactly as an equilibrium does -- phi = sin(x) has to mean sin(x).
+//
+// The parser is hand-written in three pure stages -- tokenize, shunting-yard to RPN, a
+// flat evaluator over a preallocated stack -- and NEVER eval / new Function: an engine's
+// SyntaxError names nothing a student can act on, and the accepted language would then
+// be all of JavaScript. Every token carries its source index, so every error is a
+// message with a character position rather than a throw or a silent zero.
+//
+// Coordinates are CODE units: x = ix*Lx/nx, so the box ends at Lx / Ly / Lz and nothing
+// is normalized to 2pi or to 1. Those are the numbers setIC itself uses.
+// OPCODES. The evaluator switches on these instead of calling through a table of
+// closures: one indirect call per stack op costs more than the arithmetic it performs
+// (2.3x on the whole build, measured). devtools/checkexpr.js section 8 times the build
+// and reports the interpreter's dispatch rate beside the harness's own Math tax.
+const EXPR_LIT = 0, EXPR_VAR = 1;
+// the 1-argument functions, name -> opcode
+const EXPR_FN1 = {
+  sin: 2, cos: 3, tan: 4, asin: 5, acos: 6, atan: 7, sinh: 8, cosh: 9, tanh: 10,
+  exp: 11, log: 12, log10: 13, sqrt: 14, abs: 15, sign: 16, floor: 17, ceil: 18
+};
+// the 2-argument ones. `mod` is the FLOORED modulo (its sign follows the divisor), which
+// is the one that means something on a periodic coordinate; JS's % follows the dividend.
+const EXPR_FN2 = { atan2: 19, min: 20, max: 21, hypot: 22, pow: 23, mod: 24 };
+// binary operators: p = precedence, r = right-associative, c = opcode (`^` IS pow).
+// `^` binds TIGHTER than unary minus (EXPR_NEG_P), so -x^2 is -(x^2), and it is
+// right-associative, so 2^3^2 is 2^9.
+const EXPR_OPS = {
+  "+": { p: 1, r: 0, c: 25 },
+  "-": { p: 1, r: 0, c: 26 },
+  "*": { p: 2, r: 0, c: 27 },
+  "/": { p: 2, r: 0, c: 28 },
+  "^": { p: 4, r: 1, c: EXPR_FN2.pow }
+};
+const EXPR_NEG_P = 3, EXPR_NEG_C = 29;
+// the two names that exist on the 3D page only, so their rejection can say why
+const EXPR_Z_NAMES = { z: 1, Lz: 1 };
+// the name set, per grid. Variables are slots into the (x, y, z) vector the evaluator is
+// handed; constants are folded at compile time, which is why the box lengths live here
+// and not in the per-point loop. z and Lz exist ONLY where there is a z axis: on the 2D
+// page they are unknown names, which is the honest error rather than the zero
+// icDrawGrid's `q.Lz || 0` would otherwise hand out.
+function exprEnv(g) {
+  const three = g.nz > 1;
+  const env = { vars: { x: 0, y: 1 },
+                consts: { pi: Math.PI, e: Math.E, Lx: g.Lx, Ly: g.Ly }, three: three };
+  if (three) { env.vars.z = 2; env.consts.Lz = g.Lz; }
+  return env;
+}
+// every failure is this shape -- a message ending in a 1-based character position, plus
+// the 0-based source index it was built from. Nothing in the parser throws.
+function exprErr(msg, i) { return { err: msg + " at character " + (i + 1), at: i }; }
+
+// ---- 1. tokenizer ---------------------------------------------------------
+// numbers (1, .5, 2e-3), identifiers, the five operators, parentheses and comma. `i` is
+// the source index every later stage points its errors at.
+const EXPR_NUM = /^(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/;
+const EXPR_NAME = /^[A-Za-z_][A-Za-z0-9_]*/;
+function exprTokens(src) {
+  const out = [], n = src.length;
+  for (let i = 0; i < n;) {
+    const c = src[i];
+    if (c === " " || c === "\t") { i++; continue; }
+    if ((c >= "0" && c <= "9") || (c === "." && src[i + 1] >= "0" && src[i + 1] <= "9")) {
+      const m = EXPR_NUM.exec(src.slice(i))[0], nx = src[i + m.length];
+      // a letter or a second point glued to the end of a number ("1e", "2x") is a typo,
+      // not an implicit product: say so where the number starts
+      if (nx !== undefined && (EXPR_NAME.test(nx) || nx === ".")) {
+        return exprErr("bad number '" + m + nx + "'", i);
+      }
+      out.push({ k: "num", s: m, v: parseFloat(m), i: i });
+      i += m.length; continue;
+    }
+    if (EXPR_NAME.test(c)) {
+      const m = EXPR_NAME.exec(src.slice(i))[0];
+      out.push({ k: "name", s: m, i: i });
+      i += m.length; continue;
+    }
+    if (EXPR_OPS[c]) { out.push({ k: "op", s: c, i: i }); i++; continue; }
+    if (c === "(" || c === ")" || c === ",") { out.push({ k: c, s: c, i: i }); i++; continue; }
+    return exprErr("unexpected character '" + c + "'", i);
+  }
+  return out;
+}
+
+// ---- 2. shunting-yard to RPN ----------------------------------------------
+// The emitted program is two parallel arrays: an opcode and, for EXPR_LIT / EXPR_VAR,
+// the literal value or the variable slot beside it. `stack` is allocated here, once, so
+// the evaluator allocates nothing per point.
+// Returns { err, at } on any failure -- there is no throwing path.
+function exprCompile(src, env) {
+  const tk = exprTokens(String(src));
+  if (tk.err) return tk;
+  const code = [], arg = [], ops = [];
+  let want = true, depth = 0, maxd = 0, last = 0;
+  const emit = (c, a, d) => { code.push(c); arg.push(a); depth += d; if (depth > maxd) maxd = depth; };
+  // an operator stack entry becomes RPN when something of lower precedence arrives
+  const flush = o => (o.k === "neg" ? emit(EXPR_NEG_C, 0, 0) : emit(EXPR_OPS[o.s].c, 0, -1));
+  for (let t = 0; t < tk.length; t++) {
+    const tok = tk[t];
+    last = tok.i;
+    if (tok.k === "num" || tok.k === "name") {
+      if (!want) return exprErr("expected an operator before '" + tok.s + "'", tok.i);
+      if (tok.k === "num") { emit(EXPR_LIT, tok.v, 1); want = false; continue; }
+      const two = EXPR_FN2[tok.s] !== undefined, one = EXPR_FN1[tok.s] !== undefined;
+      if (one || two) {
+        if (!tk[t + 1] || tk[t + 1].k !== "(") {
+          return exprErr("'" + tok.s + "' is a function -- write " + tok.s + "(...)", tok.i);
+        }
+        ops.push({ k: "call", s: tok.s, i: tok.i, n: 1, two: two });
+        t++; continue;                                   // the "(" belongs to the call
+      }
+      if (env.vars[tok.s] !== undefined) { emit(EXPR_VAR, env.vars[tok.s], 1); want = false; continue; }
+      if (env.consts[tok.s] !== undefined) { emit(EXPR_LIT, env.consts[tok.s], 1); want = false; continue; }
+      return exprErr("unknown name '" + tok.s + "'"
+                     + (EXPR_Z_NAMES[tok.s] && !env.three ? " (this page has no z axis)" : ""), tok.i);
+    }
+    if (tok.k === "op") {
+      if (want) {
+        if (tok.s === "-") ops.push({ k: "neg", i: tok.i });
+        else if (tok.s !== "+") return exprErr("expected a value before '" + tok.s + "'", tok.i);
+        continue;                                        // unary +: nothing to emit
+      }
+      const o = EXPR_OPS[tok.s];
+      while (ops.length) {
+        const top = ops[ops.length - 1];
+        if (top.k === "(" || top.k === "call") break;
+        const tp = top.k === "neg" ? EXPR_NEG_P : EXPR_OPS[top.s].p;
+        if (tp > o.p || (tp === o.p && !o.r)) flush(ops.pop()); else break;
+      }
+      ops.push({ k: "op", s: tok.s, i: tok.i });
+      want = true; continue;
+    }
+    if (tok.k === "(") {
+      if (!want) return exprErr("expected an operator before '('", tok.i);
+      ops.push({ k: "(", i: tok.i });
+      want = true; continue;
+    }
+    if (tok.k === ")") {
+      if (want) return exprErr("expected a value before ')'", tok.i);
+      while (ops.length && ops[ops.length - 1].k !== "(" && ops[ops.length - 1].k !== "call") flush(ops.pop());
+      if (!ops.length) return exprErr("unmatched ')'", tok.i);
+      const o = ops.pop();
+      if (o.k === "call") {
+        const need = o.two ? 2 : 1;
+        if (o.n !== need) {
+          return exprErr("'" + o.s + "' takes " + need + " argument" + (need > 1 ? "s" : "")
+                         + ", got " + o.n, o.i);
+        }
+        emit(o.two ? EXPR_FN2[o.s] : EXPR_FN1[o.s], 0, o.two ? -1 : 0);
+      }
+      want = false; continue;
+    }
+    // comma: only ever an argument separator, and only inside a call
+    if (want) return exprErr("expected a value before ','", tok.i);
+    while (ops.length && ops[ops.length - 1].k !== "(" && ops[ops.length - 1].k !== "call") flush(ops.pop());
+    if (!ops.length || ops[ops.length - 1].k !== "call") return exprErr("',' outside a function call", tok.i);
+    ops[ops.length - 1].n++;
+    want = true;
+  }
+  if (want) return exprErr("the expression ends where a value was expected", last);
+  while (ops.length) {
+    const o = ops.pop();
+    if (o.k === "(") return exprErr("unclosed '('", o.i);
+    if (o.k === "call") return exprErr("unclosed '" + o.s + "('", o.i);
+    flush(o);
+  }
+  return { code: Int32Array.from(code), arg: Float64Array.from(arg),
+           stack: new Float64Array(Math.max(1, maxd)), src: String(src) };
+}
+
+// ---- 3. evaluator ---------------------------------------------------------
+// One flat pass over the RPN with a small numeric stack. `v` is the caller's (x, y, z),
+// reused across points; nothing in here allocates. The switch is the whole point -- see
+// the opcode table above. The case labels have to track that table: checkexpr.js section
+// 1 evaluates every name and operator in it, so a mismatch shows up as a wrong value.
+function exprEval(p, v) {
+  const code = p.code, arg = p.arg, s = p.stack, n = code.length;
+  let sp = 0, b = 0;
+  for (let i = 0; i < n; i++) {
+    switch (code[i]) {
+      case 0:  s[sp++] = arg[i]; break;                          // EXPR_LIT
+      case 1:  s[sp++] = v[arg[i] | 0]; break;                   // EXPR_VAR
+      case 2:  s[sp - 1] = Math.sin(s[sp - 1]); break;
+      case 3:  s[sp - 1] = Math.cos(s[sp - 1]); break;
+      case 4:  s[sp - 1] = Math.tan(s[sp - 1]); break;
+      case 5:  s[sp - 1] = Math.asin(s[sp - 1]); break;
+      case 6:  s[sp - 1] = Math.acos(s[sp - 1]); break;
+      case 7:  s[sp - 1] = Math.atan(s[sp - 1]); break;
+      case 8:  s[sp - 1] = Math.sinh(s[sp - 1]); break;
+      case 9:  s[sp - 1] = Math.cosh(s[sp - 1]); break;
+      case 10: s[sp - 1] = Math.tanh(s[sp - 1]); break;
+      case 11: s[sp - 1] = Math.exp(s[sp - 1]); break;
+      case 12: s[sp - 1] = Math.log(s[sp - 1]); break;
+      case 13: s[sp - 1] = Math.log10(s[sp - 1]); break;
+      case 14: s[sp - 1] = Math.sqrt(s[sp - 1]); break;
+      case 15: s[sp - 1] = Math.abs(s[sp - 1]); break;
+      case 16: s[sp - 1] = Math.sign(s[sp - 1]); break;
+      case 17: s[sp - 1] = Math.floor(s[sp - 1]); break;
+      case 18: s[sp - 1] = Math.ceil(s[sp - 1]); break;
+      case 19: b = s[--sp]; s[sp - 1] = Math.atan2(s[sp - 1], b); break;
+      case 20: b = s[--sp]; s[sp - 1] = Math.min(s[sp - 1], b); break;
+      case 21: b = s[--sp]; s[sp - 1] = Math.max(s[sp - 1], b); break;
+      case 22: b = s[--sp]; s[sp - 1] = Math.hypot(s[sp - 1], b); break;
+      case 23: b = s[--sp]; s[sp - 1] = Math.pow(s[sp - 1], b); break;     // also ^
+      case 24: b = s[--sp]; s[sp - 1] -= b * Math.floor(s[sp - 1] / b); break;  // mod
+      case 25: b = s[--sp]; s[sp - 1] += b; break;
+      case 26: b = s[--sp]; s[sp - 1] -= b; break;
+      case 27: b = s[--sp]; s[sp - 1] *= b; break;
+      case 28: b = s[--sp]; s[sp - 1] /= b; break;
+      case 29: s[sp - 1] = -s[sp - 1]; break;                    // EXPR_NEG_C
+    }
+  }
+  return s[0];
+}
+
+// ---- over the grid --------------------------------------------------------
+// setICFromReal's layout, both apps, is (iz*nx + ix)*ny + iy -- which IS ix*ny + iy at
+// nz = 1, so one loop nest serves both pages and `m` just counts.
+// Evaluate over the whole grid in that index order, so the write is sequential, and
+// carry back what the non-finite guard needs: how many entries were not finite and where
+// the first one was. 1/x and log(y) are the first two things anyone types, and a NaN
+// reaching _uploadIC spreads through the forward FFT into every mode -- the run is then
+// silently dead from step 0 and looks like a solver bug.
+function exprField(p, g) {
+  const nx = g.nx, ny = g.ny, nz = g.nz, out = new Float32Array(nx * ny * nz);
+  const v = new Float64Array(3);
+  const dx = g.Lx / nx, dy = g.Ly / ny, dz = nz > 1 ? g.Lz / nz : 0;
+  let nbad = 0, bad = null, m = 0;
+  for (let iz = 0; iz < nz; iz++) {
+    v[2] = iz * dz;
+    for (let ix = 0; ix < nx; ix++) {
+      v[0] = ix * dx;
+      for (let iy = 0; iy < ny; iy++, m++) {
+        v[1] = iy * dy;
+        const r = exprEval(p, v);
+        if (!isFinite(r)) { nbad++; if (!bad) bad = [v[0], v[1], v[2]]; }
+        out[m] = r;
+      }
+    }
+  }
+  return { f: out, nbad: nbad, bad: bad };
+}
+
+// ---- the periodicity check ------------------------------------------------
+// The box is periodic; an expression is not required to be. Test EVERY axis separately
+// -- sin(x)*y is fine in x and discontinuous in y, and "not periodic" alone sends the
+// user hunting in the wrong place.
+//
+// The grid stops one cell short of the far face (x = ix*Lx/nx), so the seam is not in the
+// array at all; the expression is evaluated fresh on both faces and ONE CELL OUTSIDE each
+// of them. Working outside the box is what makes this exact: for a periodic expression
+// f(L+s) IS f(s), so the SAME centred stencil either side of the seam agrees to round-off
+// at any resolution. (Comparing one-sided differences taken from inside the grid instead
+// would leave an h^2 f'' floor, and a well-resolved cos would read as kinked.) Per seam:
+//   j0  the value jump  |f(L, .) - f(0, .)|
+//   j1  the slope jump, as the mismatch in the centred ONE-CELL increment,
+//       |(f(L+h) - f(L-h))/2 - (f(h) - f(-h))/2| -- the same units as j0, so the caller
+//       can normalize both by the field's own range. abs(x - Lx/2) gives exactly 2h,
+//       i.e. it fades as the grid refines, which is what a kink's ringing does too.
+function exprSeam(p, g, ax) {
+  const N = [g.nx, g.ny, g.nz], L = [g.Lx, g.Ly, g.Lz];
+  const d = [g.Lx / g.nx, g.Ly / g.ny, g.nz > 1 ? g.Lz / g.nz : 0], h = d[ax];
+  const other = [[1, 2], [0, 2], [0, 1]][ax];
+  const v = new Float64Array(3);
+  const at = u => { v[ax] = u; return exprEval(p, v); };
+  let j0 = 0, j1 = 0;
+  for (let a = 0; a < N[other[0]]; a++) {
+    for (let b = 0; b < N[other[1]]; b++) {
+      v[other[0]] = a * d[other[0]];
+      v[other[1]] = b * d[other[1]];
+      const near = at(0), far = at(L[ax]);
+      const dn = 0.5 * (at(h) - at(-h)), df = 0.5 * (at(L[ax] + h) - at(L[ax] - h));
+      j0 = Math.max(j0, Math.abs(far - near));
+      j1 = Math.max(j1, Math.abs(df - dn));
+    }
+  }
+  return [j0, j1];
+}
+
+// ---- the preset -----------------------------------------------------------
+const IC_EXPR = "expr";
+const EXPR_AXES = ["x", "y", "z"];
+// the whole language, in the line under the boxes (ctrlGrpIC's #vExprHelp). It says
+// natural log out loud because half the audience reads `log` as base 10.
+const EXPR_HELP =
+  "x, y and L<sub>x</sub>, L<sub>y</sub> in code units &mdash; x runs from 0 to L<sub>x</sub>, "
+  + "nothing is scaled to 2&pi; (z and L<sub>z</sub> on the 3D page only). "
+  + "Also pi, e. Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp log "
+  + "log10 sqrt abs sign min max mod floor ceil hypot pow &mdash; log is the NATURAL "
+  + "log, log10 the base-10 one, mod the floored modulo. "
+  + "^ is a power (right-associative, binding tighter than a leading minus: -x^2 is "
+  + "&minus;(x&sup2;)). No random numbers. An empty box is exactly zero.";
+const EXPR_SEAM_TOL = 1e-3;              // below this a seam jump is a rounding artifact
+// the report line rendered under the boxes. Nothing here is read by the solver.
+const icExpr = { note: "" };
+const icExprSrc = id => { const e = el(id); return e ? String(e.value || "").trim() : ""; };
+// What the seam numbers are worth saying, one line per field, worst seam named. A field
+// that is continuous but kinked rings much less than one that jumps, so the two get
+// different sentences; both say what will actually run, because _uploadIC forward-
+// transforms and dealiases and the band-limited periodic projection is never the
+// expression itself.
+function exprSeamNote(p, g, f, label) {
+  let lo = Infinity, hi = -Infinity, mx = 0;
+  for (let i = 0; i < f.length; i++) {
+    const u = f[i];
+    if (u < lo) lo = u;
+    if (u > hi) hi = u;
+    if (Math.abs(u) > mx) mx = Math.abs(u);
+  }
+  // a field that is constant ON THE GRID has no range to normalize by (floor(x/Lx) is
+  // one), so fall back to its magnitude and then to 1 rather than dividing by zero
+  const den = (hi > lo) ? hi - lo : (mx > 0 ? mx : 1);
+  let w = null;
+  for (let ax = 0; ax < (g.nz > 1 ? 3 : 2); ax++) {
+    const s = exprSeam(p, g, ax), j0 = s[0] / den, j1 = s[1] / den;
+    if (Math.max(j0, j1) < EXPR_SEAM_TOL) continue;
+    if (!w || Math.max(j0, j1) > Math.max(w.j0, w.j1)) w = { ax: ax, j0: j0, j1: j1 };
+  }
+  if (!w) return "";
+  const seam = label + ": " + EXPR_AXES[w.ax] + " seam, ";
+  const tail = " What runs is the periodic band-limited projection of what you typed, "
+             + "not the expression: ";
+  return w.j0 >= EXPR_SEAM_TOL
+    ? seam + "jump " + w.j0.toPrecision(2) + " of range." + tail
+      + "ringing at the seam that does not decay, and a broadband spectral tail that is "
+      + "not turbulence."
+    : seam + "continuous but kinked &mdash; slope jumps " + w.j1.toPrecision(2)
+      + " of range per cell." + tail
+      + "milder ringing at the seam, and a spectral tail that is not turbulence.";
+}
+// one box -> one field. An empty box is null = exactly zero, which setICFromReal already
+// understands, and so is a box that failed to parse or tripped the non-finite guard:
+// refusing to upload a NaN field is the whole point of that guard.
+function icExprField(src, g, label) {
+  if (!src) return { f: null, note: "" };
+  const p = exprCompile(src, exprEnv(g));
+  if (p.err) return { f: null, note: label + ": " + p.err };
+  const r = exprField(p, g);
+  if (r.nbad) {
+    const pt = EXPR_AXES.slice(0, g.nz > 1 ? 3 : 2)
+      .map((a, i) => a + " = " + r.bad[i].toPrecision(3)).join(", ");
+    return { f: null, note: label + ": " + r.nbad + " non-finite value" + (r.nbad > 1 ? "s" : "")
+                    + ", first at " + pt + " &mdash; not uploaded, " + label + " left at zero." };
+  }
+  return { f: r.f, note: exprSeamNote(p, g, r.f, label) };
+}
+// the report line's one renderer: the builder's full report and the while-typing parse
+// both land here, and icSyncRows calls it too so the line cannot outlive its preset.
+// Warn, never block -- the user presses Run either way.
+function icExprNote(notes) {
+  icExpr.note = notes.filter(Boolean).join("<br>");
+  icExprSync();
+}
+function icExprSync() {
+  const m = el("vExprMsg");
+  if (!m) return;
+  const on = el("selIC").value === IC_EXPR && icExpr.note;
+  m.innerHTML = on ? icExpr.note : "";
+  m.style.display = on ? "" : "none";
+}
+// the live grid, for the while-typing parse (which needs the name set and nothing else)
+function icExprGrid() {
+  const q = icDraw.cfg && icDraw.cfg.params();
+  return q ? icDrawGrid(q) : null;
+}
+// typing: PARSE only. It is cheap and it names a mistyped function before Run rather
+// than after; the seam and non-finite reports need the built field, so they come from
+// the builder below.
+function icExprCheck() {
+  const g = icExprGrid();
+  if (!g) return;
+  const out = [];
+  for (const r of [["tExprP", "&phi;"], ["tExprM", "&psi;"]]) {
+    const s = icExprSrc(r[0]);
+    if (!s) continue;
+    const p = exprCompile(s, exprEnv(g));
+    if (p.err) out.push(r[1] + ": " + p.err);
+  }
+  icExprNote(out);
+}
+// The amp sliders are meaningless here (nothing is normalized), and icSyncRows shows
+// #rowAmpP / #rowAmpM only for icIsPacketIC(p) || p === "custom" -- a predicate this
+// preset stays outside, exactly as the equilibria do. `rows` below hides nothing but
+// its own rows.
+icRegister(IC_EXPR, {
+  rows: ["rowExprP", "rowExprM", "vExprHelp", "vExprMsg"],
+  fields: g => {
+    const a = icExprField(icExprSrc("tExprP"), g, "&phi;");
+    const b = icExprField(icExprSrc("tExprM"), g, "&psi;");
+    icExprNote([a.note, b.note]);
+    return { phi: a.f, psi: b.f };
+  }
+});
+
 // periodic gaussian z-envelope, peak normalized to exactly 1 ON THE GRID (so a packet
 // whose centre falls between planes still has the requested amplitude).
 function icGaussZ(nz, Lz, z0, sigma) {
@@ -7366,6 +7805,8 @@ function icSyncRows() {
   // knob at all. One predicate, so the panel never has two ways of saying "not here"; the
   // cost is that the rows are absent on a default boot (selIC = modes) and appear when the
   // user picks letters / sinusoids / the drawing, which is when they first mean anything.
+  // IC_EXPR stays outside the predicate for the same reason the equilibria do: it uploads
+  // what was typed, so there is no stored potential for an amplitude to rescale.
   // Presets still WRITE rAmpP / rAmpM by id -- a hidden input takes a value normally.
   for (const id of ["rowAmpP", "rowAmpM"]) el(id).style.display = (isP || isC) ? "" : "none";
   el("rowDraw").style.display = isC ? "" : "none";
@@ -7396,6 +7837,9 @@ function icSyncRows() {
     icSyncRows._hyperPrev = undefined;
   }
   if (!isC && icDraw.on) icEditLeave("save");
+  // the expression report belongs to its preset: the renderer blanks it for every other
+  // one, so leaving `expr` cannot leave a stale seam warning on the panel
+  icExprSync();
 }
 
 // ---------------------------------------------------------------------------
