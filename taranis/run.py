@@ -62,13 +62,6 @@ def _advance_particles(pstate, prev_state, new_state, kgrid, params):
     dt = (new_state.t - prev_state.t).astype(jnp.float64)
     return push_ensembles(pstate, prev_state, kgrid, params, dt)
 
-def _carry_state(carry, params):
-    # the run carry is (state, pstate) with particles on, the bare SimulationState off
-    return carry[0] if params.particles is not None else carry
-
-def _carry_pstate(carry, params):
-    return carry[1] if params.particles is not None else None
-
 def _refresh_forcing_scale(state, kgrid, params):
     # compute the per-step scale at dt = 0 only for a state that carries none -- an
     # all-zero forcing_scale, which is what initialize and a repaired legacy snapshot
@@ -121,75 +114,53 @@ def _fixed_dt(params):
     # the frozen dt of the plain (non-cfl-block) step scan, or None when dt is adaptive
     return None if params.adaptive_timestep else params.dt
 
-def _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper):
-    # params.cfl_every full steps sharing one dt; forcing still advances every step.
+def _step(carry,kgrid,params,rhs,set_timestep,scheme,stepper,dt_override=None,exp_ops=None):
+    # One full timestep on the run carry (state, aux), aux being the ParticleState when
+    # particles are on and None off (a leafless pytree: scan/while_loop/donation ignore it).
+    # Returns (carry, ys) with ys = (post-step t, per-ensemble moments) on, None off.
+    state,aux = carry
+    new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt_override,exp_ops)
+    # advance the O-U forcing state (and per-step norm scale) once per full timestep
+    if params.forcing:
+        new_state = _advance_forcing(new_state, state.t, kgrid, params)
     if params.particles is not None:
-        return _cfl_block_particles(state,kgrid,params,rhs,set_timestep,scheme,stepper)
-    dt = _block_dt(state,kgrid,params)
-    exp_ops = _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
-    def stepping(state,_):
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt,exp_ops)
-        if params.forcing:
-            new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        return new_state, None
-    final_state,_ = jax.lax.scan(stepping,state,None,params.cfl_every)
-    return final_state
+        aux,mom = _advance_particles(aux, state, new_state, kgrid, params)
+        return (new_state,aux), (new_state.t, mom)
+    return (new_state,aux), None
 
-def _cfl_block_particles(carry,kgrid,params,rhs,set_timestep,scheme,stepper):
-    # _cfl_block on the (state, pstate) carry; ys = (post-step t, per-ensemble moments).
+def _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper):
+    # params.cfl_every full steps sharing one dt; forcing still advances every step.
     dt = _block_dt(carry[0],kgrid,params)
     exp_ops = _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
     def stepping(carry,_):
-        state,pstate = carry
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,dt,exp_ops)
-        if params.forcing:
-            new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        pstate,mom = _advance_particles(pstate, state, new_state, kgrid, params)
-        return (new_state,pstate), (new_state.t, mom)
+        return _step(carry,kgrid,params,rhs,set_timestep,scheme,stepper,dt,exp_ops)
     return jax.lax.scan(stepping,carry,None,params.cfl_every)
 
-def _block_of_steps_particles(carry,kgrid,params,nblock,scheme,stepper,rhs,set_timestep):
-    # block_of_steps on the (state, pstate) carry; ys stacked over every full step.
-    if _use_cfl_blocks(params):
-        def block(carry,_):
-            return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)
-        carry,ys = jax.lax.scan(block,carry,None,-(-nblock//params.cfl_every))
-        # (nblocks, cfl_every, ...) -> (nsteps, ...)
-        return carry, tuple(y.reshape((-1,)+y.shape[2:]) for y in ys)
-    dt = _fixed_dt(params)
-    exp_ops = None if dt is None else _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
-    def stepping(carry,_):
-        state,pstate = carry
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,None,exp_ops)
-        if params.forcing:
-            new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        pstate,mom = _advance_particles(pstate, state, new_state, kgrid, params)
-        return (new_state,pstate), (new_state.t, mom)
-    return jax.lax.scan(stepping,carry,None,nblock)
-
-def block_of_steps(state,kgrid,params,nblock,scheme,stepper):
+def _advance_block(carry,kgrid,params,nblock,scheme,stepper):
+    # nblock full steps on the (state, aux) carry, ys stacked over every step.
     recipe = equation_registry[params.eqtype]
     set_timestep = recipe.set_timestep_func
     rhs = construct_rhs(recipe)
-    if params.particles is not None:
-        return _block_of_steps_particles(state,kgrid,params,nblock,scheme,stepper,rhs,set_timestep)
     if _use_cfl_blocks(params):
         # nblock rounded up to a whole multiple of cfl_every: dt frozen per block.
-        def block(state,_):
-            return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper), None
-        final_state,_ = jax.lax.scan(block,state,None,-(-nblock//params.cfl_every))
-        return final_state
+        def block(carry,_):
+            return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)
+        carry,ys = jax.lax.scan(block,carry,None,-(-nblock//params.cfl_every))
+        # (nblocks, cfl_every, ...) -> (nsteps, ...); a no-op on the particles-off None
+        return carry, jax.tree.map(lambda y: y.reshape((-1,)+y.shape[2:]), ys)
     # fixed dt: the stage propagators are the same for every step of the block -> hoist
     dt = _fixed_dt(params)
     exp_ops = None if dt is None else _hoisted_exp_ops(kgrid,params,scheme,stepper,dt)
-    def stepping(state,_):
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme,None,exp_ops)
-        # advance the O-U forcing state (and per-step norm scale) once per full timestep
-        if params.forcing:
-            new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        return new_state, None
-    final_state,_ = jax.lax.scan(stepping,state,None,nblock)
-    return final_state
+    def stepping(carry,_):
+        return _step(carry,kgrid,params,rhs,set_timestep,scheme,stepper,None,exp_ops)
+    return jax.lax.scan(stepping,carry,None,nblock)
+
+def block_of_steps(x,kgrid,params,nblock,scheme,stepper):
+    # public driver: particles off, state in -> state out; on, (state, pstate) in ->
+    # ((state, pstate), ys) out.
+    if params.particles is not None:
+        return _advance_block(x,kgrid,params,nblock,scheme,stepper)
+    return _advance_block((x,None),kgrid,params,nblock,scheme,stepper)[0][0]
 
 def _write_snapshot(snap,state,params,mngr,save,label="snapshot",pstate=None):
     # one snapshot write, drained before returning; returns the next free index
@@ -263,34 +234,30 @@ def simulate_scan(state,kgrid,params,nblock,t_snap,t_end,mngr,schemestr='lsrk33'
     state = _refresh_forcing_scale(state, kgrid, params)
     # donate_argnums=(0,): caller's input `state` buffer is consumed/reused for the output, since we always reassign `state` from the return value below.
     if params.comm_backend == "jax":
-        # same stepper, wrapped in the z-mesh shard_map that the collectives need
+        # same stepper, wrapped in the z-mesh shard_map that the collectives need.
+        # shard_call specs the bare state, which is what the carry holds here: particles
+        # are rejected on this backend, so aux is always None.
         advance_jit = jax.jit(comms.shard_call(
-            lambda s,kg: block_of_steps(s,kg,params,nblock,scheme,stepper), params, kgrid),
-            donate_argnums=(0,))
-        advance = lambda s: advance_jit(s,kgrid)
+            lambda s,kg: _advance_block((s,None),kg,params,nblock,scheme,stepper)[0][0],
+            params, kgrid), donate_argnums=(0,))
+        advance = lambda c: ((advance_jit(c[0],kgrid),None),None)
     else:
-        block_of_steps_jit = jax.jit(block_of_steps,static_argnums=(2,3,4,5),donate_argnums=(0,))
-        advance = lambda s: block_of_steps_jit(s,kgrid,params,nblock,scheme,stepper)
-    if params.particles is not None:
-        if save:
-            _truncate_moments(mngr.directory,float(state.t))
-        # the jitted block carries (state, pstate) and emits per-step moments; the whole
-        # tuple is donated
-        _block = advance
-        def advance(carry):
-            carry,ys = _block(carry)
-            if save:
-                _append_moments(mngr.directory,ys)
-            return carry
+        # the jitted block carries (state, aux) and emits per-step ys; the whole carry is donated
+        block_jit = jax.jit(_advance_block,static_argnums=(2,3,4,5),donate_argnums=(0,))
+        advance = lambda c: block_jit(c,kgrid,params,nblock,scheme,stepper)
+    if params.particles is not None and save:
+        _truncate_moments(mngr.directory,float(state.t))
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    carry = state if params.particles is None else (state,pstate)
+    carry = (state,pstate)
     snap = _start_snapshots(state,params,mngr,save,pstate)
     block_count=0
     saved_current=True
     while state.t<t_end:
-        carry = advance(carry)
-        state,pstate = _carry_state(carry,params),_carry_pstate(carry,params)
+        carry,ys = advance(carry)
+        if params.particles is not None and save:
+            _append_moments(mngr.directory,ys)
+        state,pstate = carry
         block_count+=1
         saved_current=False
         if params.rank==0 and block_count%print_every==0:
@@ -313,56 +280,40 @@ def simulate(initial_state,kgrid,params,t_snap,t_end,mngr,schemestr='lsrk33',sav
     rhs = construct_rhs(equation_registry[params.eqtype])
     # kgrid is an explicit argument (not a closure) so the jax backend can hand it to
     # shard_map with its own in_specs; the mpi4jax branch below re-closes over it unchanged.
-    def stepper_wrapped(state,kgrid):
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
-        if params.forcing:
-            new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        return new_state
-    def block_wrapped(state,kgrid):
-        return _cfl_block(state,kgrid,params,rhs,set_timestep,scheme,stepper)
-    # particle variants of the two loop bodies: same step, on the (state, pstate) carry.
-    # The while_loop cannot emit ys, so `simulate` has snapshot-cadence diagnostics only.
-    def stepper_particles(carry,kgrid):
-        state,pstate = carry
-        new_state = stepper(state,kgrid,params,rhs,set_timestep,scheme)
-        if params.forcing:
-            new_state = _advance_forcing(new_state, state.t, kgrid, params)
-        # the while_loop cannot emit ys, so the moments are dropped here
-        pstate,_mom = _advance_particles(pstate, state, new_state, kgrid, params)
-        return new_state,pstate
-    def block_particles(carry,kgrid):
-        return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)[0]
     # cfl_every>1: the while_loop iterates over whole blocks, so it can overshoot the
-    # snapshot target by up to cfl_every-1 extra steps (on top of the usual one-step overshoot)
-    if params.particles is None:
-        loop_body = block_wrapped if _use_cfl_blocks(params) else stepper_wrapped
+    # snapshot target by up to cfl_every-1 extra steps (on top of the usual one-step
+    # overshoot). The while_loop cannot emit ys, so with particles on `simulate` has
+    # snapshot-cadence diagnostics only -- _step's/_cfl_block's moments are dropped here.
+    if _use_cfl_blocks(params):
+        def loop_body(carry,kgrid):
+            return _cfl_block(carry,kgrid,params,rhs,set_timestep,scheme,stepper)[0]
     else:
-        loop_body = block_particles if _use_cfl_blocks(params) else stepper_particles
-    def sim_to_next_snap(state,kgrid,target_t):
-        def snap_cond(state):
-            return state.t<target_t
-        return jax.lax.while_loop(snap_cond,lambda s: loop_body(s,kgrid),state)
-    def sim_to_next_snap_particles(carry,kgrid,target_t):
+        def loop_body(carry,kgrid):
+            return _step(carry,kgrid,params,rhs,set_timestep,scheme,stepper)[0]
+    def sim_to_next_snap(carry,kgrid,target_t):
         def snap_cond(carry):
             return carry[0].t<target_t
         return jax.lax.while_loop(snap_cond,lambda c: loop_body(c,kgrid),carry)
-    driver = sim_to_next_snap if params.particles is None else sim_to_next_snap_particles
     # donate_argnums=(0,): caller's input `state` buffer is consumed/reused for the output, since we always reassign `state` from the return value below.
     if params.comm_backend == "jax":
-        _jit = jax.jit(comms.shard_call(driver,params,kgrid,nextra=1),donate_argnums=(0,))
-        sim_to_next_snap_jit = lambda s,target_t: _jit(s,kgrid,target_t)
+        # shard_call specs the bare state; particles are rejected on this backend, so the
+        # carry's aux is always None
+        _jit = jax.jit(comms.shard_call(
+            lambda s,kg,target_t: sim_to_next_snap((s,None),kg,target_t)[0],
+            params,kgrid,nextra=1),donate_argnums=(0,))
+        sim_to_next_snap_jit = lambda c,target_t: (_jit(c[0],kgrid,target_t),None)
     else:
-        sim_to_next_snap_jit = jax.jit(lambda state,target_t: driver(state,kgrid,target_t),
+        sim_to_next_snap_jit = jax.jit(lambda carry,target_t: sim_to_next_snap(carry,kgrid,target_t),
                                        donate_argnums=(0,))
     state=_refresh_forcing_scale(initial_state, kgrid, params)
     # float(): pull to host so this doesn't alias state.t's buffer, which donate_argnums frees on the next jit call
     t_last_snapshot = float(state.t)
-    carry = state if params.particles is None else (state,pstate)
+    carry = (state,pstate)
     snap = _start_snapshots(state,params,mngr,save,pstate)
 
     while state.t<t_end:
         carry = sim_to_next_snap_jit(carry,min(t_last_snapshot+t_snap,t_end))
-        state,pstate = _carry_state(carry,params),_carry_pstate(carry,params)
+        state,pstate = carry
         snap = _write_snapshot(snap,state,params,mngr,save,"snapshot",pstate)
         t_last_snapshot=float(state.t)
     mngr.wait_until_finished()
