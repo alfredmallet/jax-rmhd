@@ -165,6 +165,16 @@ Review-fix round (F1/F2/F3/F7), all with `PYTHONPATH=/private/tmp/taranis-wt-R`:
 | `ruff check .` | All checks passed |
 | mutation check on the two new rejections | disabling the device-count check fails only "nz=6 on a mesh of 4 is refused…"; disabling the cart_comm check fails only "a dims=2 runtime is refused…" |
 
+F8: the same 4-device subprocess also pins the z_spectral check ORDER — `z_spectral=True,
+comm_backend="jax", nz=6` (indivisible by the 4 devices) must be refused with
+`z_spectral=True is incompatible with comm_backend='jax'`, and `comms._mesh` must still be
+`None` afterwards, i.e. `Runtime.resolve` refused it ahead of `init_backend`. Teeth, on a
+scratch copy of the tree with the z_spectral trio deleted from `Runtime.resolve` (and
+`_validate_compat`'s copies left in place): exactly those two checks fail, with
+`ZS_REJECTED comm_backend='jax': nz=6 must be divisible by the global device count 4` and
+`ZS_MESH_BUILT True` — the mesh built during a construction that is then refused, which is
+the regression the ordering exists to prevent. `tests/test_params.py` at fp64: 16 passed.
+
 No reference was regenerated, no tolerance touched, no test skipped that the base does not
 skip. The probe (§0.4) is not a Phase R gate — this phase compiles nothing new.
 

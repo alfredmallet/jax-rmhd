@@ -403,10 +403,18 @@ if jax.device_count() < 4:
     print("NO_DEVICES", jax.device_count()); raise SystemExit
 _BOX = dict(nx=8, ny=8, Lx=1.0, Ly=1.0, Lz=1.0, cfl_safety=0.5, dims=3,
             eqpars={{"diss": (0.0, 0.0), "hyper": 1}})
+# first, before anything builds the mesh: a config the transport cannot serve must be
+# refused by Runtime.resolve AHEAD of init_backend, so nz=6 never reaches the device-count
+# check and jax.distributed/get_mesh are never touched
 try:
-    rt = comms.Runtime.resolve("jax", dims=3, nz=8)
+    jr.Parameters(nz=6, z_spectral=True, comm_backend="jax", **_BOX)
+    print("ZS_NOT_REJECTED")
 except ImportError:
     print("NO_MPI4PY"); raise SystemExit
+except ValueError as e:
+    print("ZS_REJECTED", e)
+print("ZS_MESH_BUILT", comms._mesh is not None)
+rt = comms.Runtime.resolve("jax", dims=3, nz=8)
 print("MESH", comms.get_mesh().size)
 try:
     jr.Parameters(nz=6, runtime=rt, **_BOX)
@@ -438,6 +446,12 @@ def test_shared_jax_runtime_rechecks_the_device_count():
         if "NO_DEVICES" in out or "NO_MPI4PY" in out:
             print(f"[SKIP] shared-jax-runtime device check -- {out.strip()}")
             return
+        c.check("z_spectral+jax is refused with the z_spectral message, not the "
+                "device-count one, even at an indivisible nz",
+                "ZS_REJECTED z_spectral=True is incompatible with comm_backend='jax'" in out,
+                out)
+        c.check("... and the refusal happens before init_backend: no device mesh was built",
+                "ZS_MESH_BUILT False" in out, out)
         c.check("the subprocess really has a 4-device mesh", "MESH 4" in out, out)
         c.check("nz=6 on a mesh of 4 is refused at construction, with init_backend's message",
                 "REJECTED comm_backend='jax': nz=6 must be divisible by the global device "
