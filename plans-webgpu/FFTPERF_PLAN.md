@@ -680,3 +680,14 @@ the `6831d53` page and the chunked page equal in all eight `hash_lane` and `hash
 pages, two resolutions each, same IC; whole step and the `gradient chain` cell ≤ 1.03× the
 Phase 1 record; the 3D generate sweep and field-line view clean of validation errors
 (the offset bind groups' only real validation); self-test rows unchanged.
+
+**Pre-2C `grads hash` record (laptop `apple metal-3`, page `6831d53`, default IC, 2026-08-21):**
+
+| page, grid | bytes | hash_lane[0..7] | hash_all |
+|---|---|---|---|
+| 2D 256² | 2,097,152 | 482638133 2368582853 4180176569 1854853189 3807947513 3579484697 676813825 1675221881 | 4061148817 |
+| 2D 1024² | 33,554,432 | 2504137769 3206017749 3678507661 495144193 1079874917 2578950449 649279321 1275090241 | 58098025 |
+| 3D 128²×64 | 33,554,432 | 1935610801 3236346983 698820014 889683997 1981461617 2571723835 2451374745 1792438921 | 1028719198 |
+| 3D 256²×64 | 134,217,728 | 318975641 781519921 710674129 2467220641 1396472425 3371760281 1795061589 2403523413 | 4222161269 |
+
+The chunked page (`cc50ec4`) must reproduce every entry of this table.
