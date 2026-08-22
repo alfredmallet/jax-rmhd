@@ -1,7 +1,7 @@
 # FFTPERF_PLAN — what the step's transforms cost, then twiddle table / radix-4 / gradient chunking
 
-Written 2026-08-21. **Phase 0 landed 2026-08-21** (`58c3fd7` + review fixes `4972e0e`; execution
-notes at the end); Phase 1 is Alfred's campaign and is **not started**. Prompted by `plans/MEMORY_PERF_PLAN.md` closing on the
+Written 2026-08-21. **Phase 0 landed and Phase 1 measured 2026-08-21** (execution notes at the end;
+the Phase 1 record is in §4): A and B not taken (§9.1), **2C in progress**. Prompted by `plans/MEMORY_PERF_PLAN.md` closing on the
 solver: of its four shipped phases, Z1 (the Elsasser-separable propagator) is what
 `rmhd3d.html`'s stage kernel has always been, Z2/F2 have no counterpart here, F4 is dead
 (`realGrads` is shared with the field-line pass), and F1's diagnosis — the eight-lane gradient
@@ -341,6 +341,12 @@ possible small regression on the phone — 2A's timing gate becomes two-sided (l
 ≥ 0.7·T_tw on the row kernels; phone whole step ≤ 1.02×; analytic relL2 not worse on
 either); **B** held (under the bar on the phone everywhere, marginal on the laptop); **C** go
 (1.00× phone, 0.975–0.987× laptop). §9.1 raised to Alfred.
+
+**§9.1 decision (Alfred, 2026-08-21): A and B NOT taken** — 5–10% of the step on one device
+and ≤5% on the other is not worth a rewrite of the kernel everything depends on; the audit's
+2026-08-12 call stands, now with the ladder numbers behind it. **C goes ahead**, as the
+memory/resolution-ceiling item it is, with its "no slower on either device" gate. Phase 1
+closed; Phase 2A/2B stay in this file as designs not executed.
 
 ## 5. Phase 2A — the twiddle table
 
