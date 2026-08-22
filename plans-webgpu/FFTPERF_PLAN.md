@@ -759,7 +759,8 @@ specs assume the shipped lists (devtools README says so).
 1024² equal the pre-2C table rows (16/16 lane digests, both `hash_all`; compared by script);
 2D whole step at 1024² **30.28 ms against 30.18** (1.003×), record signature
 `bytes_per_step: 1134182400` = the one-chunk value (the four-chunk page read 1,235,042,304).
-3D stands on its earlier on-device run (`07ea844`: 32/32 digests, 1.00×/1.02×), its WGSL and
-encoder being `cmp`-identical since. Final state: 3D four one-pair chunks (`gradsK` 129 →
+3D re-confirmed on the `294acb0` page: whole step at 128²×64 **25.27 ms against 25.475**
+(0.99×), signature `bytes_per_step: 1236886528`; its 32/32 digests and 1.02× at 256²×64 stand
+from `07ea844`, the WGSL and encoder being `cmp`-identical since. Final state: 3D four one-pair chunks (`gradsK` 129 →
 32 MiB at 256²×64), 2D the pre-2C chain byte for byte. Every phase of this plan is now
 executed or decided: 0 landed, 1 measured, 2A/2B declined (§9.1), 2C landed (§9.3).
