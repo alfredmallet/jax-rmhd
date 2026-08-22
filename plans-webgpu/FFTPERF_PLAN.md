@@ -707,5 +707,26 @@ table, compared by script. **Timing: the `gradient chain` cell FAILS its ≤ 1.0
 The Phase 1 proxy (0.975×/0.987×) was the cache-optimistic one the record warned about; the
 real per-pair chain is 4× the dispatches (16 per stage against 4) and `prepGrads` moves
 1.5× the bytes (Appendix A). The chain is ~18.5% of the 3D step, so the predicted whole-step
-ratio is ~1.03 at both grids — measurement pending, and the decision (§9.3: the ceiling
-against the cost, per device) is raised with it.
+ratio is ~1.03 at both grids — measured next.
+
+**Whole step on the chunked page (laptop, 2026-08-22), against the Phase 1 record:**
+
+| grid | pre-2C ms | 2C ms | ratio | bytes/step 2C |
+|---|---|---|---|---|
+| 2D 256² | 1.515 | 1.495 | **0.99** | 77,549,568 |
+| 2D 1024² | 30.18 | 32.38 | **1.07** | 1,235,042,304 |
+| 3D 128²×64 | 25.475 | 25.515 | **1.00** | 1,236,886,528 |
+| 3D 256²×64 | 99.355 | 101.525 | **1.02** | 4,917,210,112 |
+
+(The same-day re-measurement of the pre-2C page gave 1.515 / 30.23 / 25.735 / 99.535 — the
+noise band is ~1%.) The isolated chain cell's 1.16–1.17× does not carry into the step in 3D:
+there the chunked chain costs 0–2%. What does carry is bytes: in 2D `gridA` is the full-grid
+`nm·16` and every chunk re-reads it, so `prepGrads` goes from `10cx + grA` to `12cx + 4grA`
+per stage — +9% of the step's bytes at 1024² (+101 MB of 1,134), which at that grid's
+~38 GB/s is the +7% measured; at 256² the step is latency-dominated and the bytes do not
+show. In 3D `gridA` is perpendicular-only (`nmp·16`, 133 KB at 128²) and the re-reads are
+free. **3D — the page that needed the memory — passes the ≤ 1.03× bar at both grids; 2D
+fails it at 1024², where the saving (48 MB of ~190) meets no limit.** §9.3 raised with the
+options: 3D as landed + 2D back to one chunk of all four pairs (the pre-2C kernel text,
+through the same template — one template, a per-page chunk size like `WGC`); two-pair chunks
+on both pages (2D bytes +4.5%, ~+3%); keep as landed.
