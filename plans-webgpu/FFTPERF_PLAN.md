@@ -221,6 +221,47 @@ index) and B is measured against post-A.
 three ladder numbers and the shares — pasted from the bench's JSON. Nothing in Phase 2 is
 briefed until it exists.
 
+### Phase 1 record
+
+**Laptop, `apple metal-3` (Chrome), 2D 256², `cflEvery` 4, K 20 / R 5 / reps 50 (2026-08-21).**
+Whole step **1.515 ms** (min 1.49); by the Appendix A convention 47.0 GB/s, 7.8 G butterflies/s.
+Per-kernel µs per dispatch at the step's lane count, and ×3 against the step (the eight cells
+sum to 1,422 µs = 94% of it):
+
+| kernel | lanes | µs med (min) | ×3 / step |
+|---|---|---|---|
+| rowsC2R | 8 | 150 (148) | 30% |
+| colsInv | 8 | 94 (90) | 19% |
+| rowsR2C | 2 | 52 (52) | 10% |
+| colsFwd | 2 | 38 (36) | 7.5% |
+| prepGrads | — | 38 (36) | 7.5% |
+| bracket | — | 34 (30) | 6.7% |
+| nlAssemble | — | 30 (28) | 5.9% |
+| stage | — | 38 (36) | 7.5% |
+
+Ladder (µs med: full / consttw / copy, then the shares):
+
+| kernel | full | consttw | copy | T_mem | T_bf | T_tw |
+|---|---|---|---|---|---|---|
+| rowsC2R | 148 | 100 | 48 | 32% | 35% | 32% |
+| rowsR2C | 42 | 32 | 16 | 38% | 38% | 24% |
+| colsInv | 88 | 72 | 70 | 80% | 2% | 18% |
+| colsFwd | 48 (min 36) | 40 | 40 | 83% | 0% | 17% |
+
+Reading: FFTs are 66% of the step (rows 40%, columns 26%). The row kernels split three ways;
+the column kernels are 80% memory floor — the strided `NKY` read (their `copy` rung moves
+bytes at ~60 GB/s against the rows' ~88) with the butterflies hidden behind it. Summed over
+a step, `T_tw` = 246 µs = 16% (an upper bound, §3) and `T_bf` = 210 µs, of which radix-4
+could take about half on the row kernels only. `colsFwd` is the one noisy cell (258
+workgroups; med/min 48/36); re-run the 2-lane cells at `reps` 200. A second standalone
+"per kernel" run drifted ≤ 5% from the one inside `all`.
+
+Against the decision table: **A goes ahead** (`T_tw` ≥ 15% on every FFT kernel; realistic
+whole-step gain 10–14%); **B is marginal** — passes the 30% `T_bf` bar on the row kernels
+only, ~7% of the step at best, decided after A per §4; "both dead" does not apply (`T_mem`
+≥ 70% on the columns only, and nothing in this plan touches that floor). Still to come: 2D
+512²/1024², the 3D cells (the z kernel and the grad-chain cell for C), the phone.
+
 ## 5. Phase 2A — the twiddle table
 
 **Design.** One read-only storage buffer per distinct line length the page transforms (2D:
