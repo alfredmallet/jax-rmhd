@@ -27,6 +27,8 @@ import dataclasses
 import io
 import json
 import os
+import subprocess
+import sys
 import time
 import warnings
 
@@ -310,6 +312,12 @@ def test_transport_is_not_persisted_or_compared():
                     _read_record(d)["comm_backend"] == "jax")
 
 
+def _ctor_2d():
+    """Ctor kwargs for a minimal 2D Parameters (its runtime has no cartesian comm)."""
+    return dict(nx=16, ny=16, Lx=6.0, Ly=6.0, cfl_safety=0.4, dims=2,
+                eqpars={"diss": (0.01, 0.02), "hyper": 2})
+
+
 def test_runtime_is_injectable_but_never_recorded():
     # comms.Runtime is a live transport object (communicators, rank/size): it can be handed
     # to Parameters so a parameter scan shares one set of communicators, but it is not a
@@ -362,6 +370,80 @@ def test_runtime_is_injectable_but_never_recorded():
             c.check("nz % runtime.size is re-checked against the shared runtime's size",
                     nzerr is not None and "divisible by the number of MPI ranks (3)" in nzerr,
                     nzerr)
+            # ... and the other half: any nz divisible by the runtime's size is accepted,
+            # whatever nz the runtime was resolved for (plan §9 decision 2)
+            p_nz4 = fresh_params(runtime=rt, **dict(_KW, nz=4))
+            c.check("a runtime resolved at nz=8 serves an nz=4 Parameters",
+                    p_nz4.nz == 4 and p_nz4.runtime is rt)
+            # a runtime resolved for dims=2 has no cartesian communicator: reusing it for a
+            # decomposable dims=3 run would break halo_exchange and make the CFL allreduce
+            # rank-local, so it is refused
+            rt2d = jr.Parameters(**_ctor_2d()).runtime
+            try:
+                fresh_params(runtime=rt2d, **_KW)
+                carterr = None
+            except ValueError as e:
+                carterr = str(e)
+            c.check("a dims=2 runtime is refused for a dims=3 non-serial Parameters",
+                    carterr is not None and "cartesian communicator" in carterr, carterr)
+            c.check("(the dims=2 runtime really has no cart_comm, and dims=2 still works)",
+                    rt2d.cart_comm is None and rt2d.backend == rt.backend)
+
+
+_JAX_DEVICE_CHECK = """
+import os, sys
+sys.path.insert(0, {tests!r})
+sys.path.insert(0, {root!r})   # this test file's own tree, ahead of any installed copy
+from _rmhd_testing import bootstrap
+bootstrap()
+import jax
+import taranis as jr
+from taranis import comms
+if jax.device_count() < 4:
+    print("NO_DEVICES", jax.device_count()); raise SystemExit
+_BOX = dict(nx=8, ny=8, Lx=1.0, Ly=1.0, Lz=1.0, cfl_safety=0.5, dims=3,
+            eqpars={{"diss": (0.0, 0.0), "hyper": 1}})
+try:
+    rt = comms.Runtime.resolve("jax", dims=3, nz=8)
+except ImportError:
+    print("NO_MPI4PY"); raise SystemExit
+print("MESH", comms.get_mesh().size)
+try:
+    jr.Parameters(nz=6, runtime=rt, **_BOX)
+    print("NOT_REJECTED")
+except ValueError as e:
+    print("REJECTED", e)
+p = jr.Parameters(nz=8, runtime=rt, **_BOX)
+print("ACCEPTED", p.nz, p.comm_backend, p.runtime is rt)
+"""
+
+
+def test_shared_jax_runtime_rechecks_the_device_count():
+    """A shared comm_backend="jax" Runtime skips comms.init_backend, so Parameters has to
+    re-run its device-count checks against ITS nz -- otherwise an indivisible nz survives
+    construction and dies much later inside comms.to_global. Needs 4 devices, so it runs in
+    a subprocess with the fake-device XLA flag."""
+    if _single_process_only("test_shared_jax_runtime_rechecks_the_device_count"):
+        return
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    script = _JAX_DEVICE_CHECK.format(tests=tests_dir, root=os.path.dirname(tests_dir))
+    env = dict(os.environ)
+    env["XLA_FLAGS"] = (env.get("XLA_FLAGS", "") + " --xla_force_host_platform_device_count=4").strip()
+    proc = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True,
+                          text=True, timeout=300)
+    out = proc.stdout
+    with checks() as c:
+        c.check("the 4-device subprocess exits cleanly", proc.returncode == 0,
+                f"returncode={proc.returncode}\nstdout={out}\nstderr={proc.stderr}")
+        if "NO_DEVICES" in out or "NO_MPI4PY" in out:
+            print(f"[SKIP] shared-jax-runtime device check -- {out.strip()}")
+            return
+        c.check("the subprocess really has a 4-device mesh", "MESH 4" in out, out)
+        c.check("nz=6 on a mesh of 4 is refused at construction, with init_backend's message",
+                "REJECTED comm_backend='jax': nz=6 must be divisible by the global device "
+                "count 4" in out, out)
+        c.check("nz=8 on the same shared runtime still constructs",
+                "ACCEPTED 8 jax True" in out, out)
 
 
 def test_constructor_rejects_malformed_arguments():

@@ -103,12 +103,14 @@ class Runtime:
     right_neighbor: object = None
 
     @classmethod
-    def resolve(cls, comm_backend=None, *, dims, nz):
+    def resolve(cls, comm_backend=None, *, dims, nz, z_spectral=False):
         # build this process's transport: resolve the backend, take the world communicator,
         # check every rank reads the same TARANIS_PRECISION, create the z cartesian
         # communicator (dims=3, non-serial backends) and bring the backend up.
-        # init_backend runs jax.distributed.initialize for comm_backend="jax", so the first
-        # resolve() of such a process must precede any jax device work in it.
+        # init_backend runs jax.distributed.initialize for comm_backend="jax" and builds the
+        # device mesh, so the first resolve() of such a process must precede any jax device
+        # work in it — which is why every configuration this transport cannot serve (dims,
+        # nz, z_spectral) is refused ahead of that irreversible bring-up.
         if comm_backend is not None and comm_backend not in COMM_BACKENDS:
             raise ValueError(f"comm_backend must be one of {COMM_BACKENDS} or None (auto), "
                              f"got {comm_backend!r}")
@@ -136,6 +138,19 @@ class Runtime:
             if backend != "serial":
                 cart_comm = comm.Create_cart(dims=[size], periods=[True], reorder=False)
                 left_neighbor, right_neighbor = cart_comm.Shift(direction=0, disp=1)
+        # z_spectral needs the whole z domain on one rank; also checked (with the same
+        # messages) by Parameters._validate_compat for the shared-Runtime path
+        if z_spectral:
+            if dims != 3:
+                raise ValueError("z_spectral=True requires dims=3 (there is no z axis to "
+                                 "transform in 2D)")
+            if size != 1:
+                raise ValueError(f"z_spectral=True is single-process only (the z-FFT needs the "
+                                 f"whole z domain on one rank), but this process is one of "
+                                 f"{size} ranks")
+            if backend == "jax":
+                raise ValueError("z_spectral=True is incompatible with comm_backend='jax' "
+                                 "(the jax backend exists to decompose z across devices)")
         runtime = cls(backend=backend, comm=comm, rank=rank, size=size, cart_comm=cart_comm,
                       left_neighbor=left_neighbor, right_neighbor=right_neighbor)
         init_backend(runtime, nz)

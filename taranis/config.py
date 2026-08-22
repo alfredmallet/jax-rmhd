@@ -119,9 +119,10 @@ class Parameters():
         # python). runtime=None resolves one for this process (comm_backend=None then
         # auto-resolves to mpi4jax with MPI present, serial without); an explicit Runtime is
         # reused as is, so a parameter scan shares one set of communicators
+        self.z_spectral = bool(z_spectral)
         if runtime is None:
             self.runtime = comms.Runtime.resolve(comm_backend, dims=self.spatial_dimensions,
-                                                 nz=self.nz)
+                                                 nz=self.nz, z_spectral=self.z_spectral)
         else:
             if comm_backend is not None and comm_backend != runtime.backend:
                 raise ValueError(f"comm_backend={comm_backend!r} contradicts the given "
@@ -130,7 +131,6 @@ class Parameters():
             self.runtime = runtime
         # record what actually ran, not the request: params.json documents the resolved backend
         self._init_args["comm_backend"] = self.comm_backend
-        self.z_spectral = bool(z_spectral)
         #forcing
         self.forcing = forcing
         if forcing_mode not in ("momentum","elsasser"):
@@ -221,14 +221,21 @@ class Parameters():
 
     def _validate_compat(self):
         # the compatibility matrix — backend x dims x size, z_spectral, particles — in one
-        # place, called once from __init__ with every attribute it reads set. The nz % size
-        # and jax-needs-3D checks are also in Runtime.resolve, which a Parameters built on a
-        # shared Runtime does not re-run.
+        # place, called once from __init__ with every attribute it reads set. nz % size,
+        # jax-needs-3D, the z_spectral trio and the device-count checks are also in
+        # Runtime.resolve/init_backend, which guard the communicators and mesh THEY create;
+        # here they cover the shared-Runtime path, which re-runs none of them.
         if self.comm_backend=="jax" and self.spatial_dimensions!=3:
             raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
         if self.spatial_dimensions==3:
             if self.nz % self.size != 0:
                 raise ValueError(f"nz={self.nz} must be divisible by the number of MPI ranks ({self.size})")
+            if self.comm_backend != "serial" and self.cart_comm is None:
+                raise ValueError(f"dims=3 on comm_backend={self.comm_backend!r} needs the z "
+                                 f"cartesian communicator, and the given runtime has none (it "
+                                 f"was resolved for dims=2): the halo exchange would fail and "
+                                 f"the CFL allreduce would silently go rank-local. Resolve a "
+                                 f"Runtime with dims=3, or pass runtime=None")
         elif self.size > 1 and self.rank==0:
             warnings.warn("You probably should only run a 2D run on one device, since this "
                           "isn't parallelized.", stacklevel=3)
@@ -243,6 +250,16 @@ class Parameters():
             if self.comm_backend == "jax":
                 raise ValueError("z_spectral=True is incompatible with comm_backend='jax' "
                                  "(the jax backend exists to decompose z across devices)")
+        if self.comm_backend == "jax":
+            # comms.init_backend's device-count checks, against THIS nz: a shared Runtime
+            # does not re-run them. The mesh exists already — the runtime built it.
+            ndev = comms.get_mesh().size
+            if ndev % self.size:
+                raise ValueError(f"comm_backend='jax': global device count {ndev} must be a multiple "
+                                 f"of the process count {self.size}")
+            if self.nz % ndev:
+                raise ValueError(f"comm_backend='jax': nz={self.nz} must be divisible by the "
+                                 f"global device count {ndev}")
         if self.particles is not None:
             if self.eqtype != "RMHD" or self.size != 1 or self.comm_backend == "jax":
                 raise ValueError(f"test particles require eqtype='RMHD', a single process and "

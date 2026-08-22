@@ -59,35 +59,77 @@ hence a `# noqa: F401`); `_NullComm`/`launcher_world_size` moved with the resolv
   `AttributeError: property 'rank' of 'Parameters' object has no setter`, which is why the
   two rank-spoofing helpers had to change.
 - `_validate_compat(self)` holds the whole matrix — `"jax"` × dims, `nz % size`, the
-  2D-on-many-ranks warning, `z_spectral` × (dims, size, backend), particles × (eqtype,
-  size, backend) and the 3D `B0 == 1` rejection — in that (unchanged) relative order, with
+  missing-cartesian-communicator rejection, the 2D-on-many-ranks warning, `z_spectral` ×
+  (dims, size, backend), the `"jax"` device-count checks, particles × (eqtype, size,
+  backend) and the 3D `B0 == 1` rejection — in that (unchanged) relative order, with
   byte-identical messages. It is called once, as the last statement of `__init__`, because
   the particles half needs the normalized `self.particles`.
 
-### Ordering deltas (all deliberate, none reachable from the suite)
+### Checks that appear in both `Runtime.resolve` and `_validate_compat`
 
-`_validate_compat` sits at the end of `__init__` and `Runtime.resolve` at the start, so
-three relative orders moved. In each case both branches raise; only *which* message comes
-first could differ:
+`resolve` must refuse a configuration its own transport cannot serve **before**
+`init_backend`, whose `jax.distributed.initialize` (size > 1) and `get_mesh()` (any size)
+are irreversible, process-wide side effects. `_validate_compat` must repeat those checks,
+because a `Parameters` built on a **shared** `Runtime` never calls `resolve`. So
+`"jax"`-needs-3D, `nz % size`, the three `z_spectral` rejections and (in `init_backend`'s
+own words) the two device-count checks exist in both places, with byte-identical messages.
+`resolve` therefore takes `dims`, `nz` **and** `z_spectral`.
 
-1. `nz % size` and `"jax"`-needs-3D are checked **twice** — once in `Runtime.resolve` (so
-   a direct `resolve()` call and the ordinary construction still fail at the same point as
-   before, ahead of `init_backend`) and once in `_validate_compat` (so a `Parameters` built
-   on a *shared* `Runtime`, which does not re-run `resolve`, is still checked — plan §9
-   decision 2: `nz` is validated against `runtime.size`, not against the `nz` the runtime
-   was built for). Same message text in both places.
-2. The three `z_spectral` rejections now run *after* `init_backend` instead of just before
-   it. Only `z_spectral=True` + `comm_backend="jax"` is affected, and only at `size > 1`,
-   where `init_backend` would now bring up `jax.distributed` before the config is refused.
-   Untestable here (the 4-fake-device path is `size == 1`); flagged for the Savio run.
-   `tests/test_params.py::test_runtime_is_injectable_but_never_recorded` pins the shared-runtime
-   half of this: a `dataclasses.replace(rt, size=3)` runtime with `nz=8` is refused with the
-   byte-identical "must be divisible by the number of MPI ranks (3)".
-3. The particles compatibility rejection now runs *after* `particles.state.normalize_config`
-   instead of before it, so a config that is both malformed and incompatible (e.g.
-   `eqtype="GDI"` + a bad ensemble dict) reports the malformed-dict error first.
-   `tests/test_particles_config.py`'s `eqtype != RMHD` case passes a well-formed dict and is
-   unaffected.
+For a freshly resolved runtime — every construction in the tree today — the order of every
+raise and every warning is the base's, verified probe by probe below. Plan §9 decision 2 is
+what the duplication buys on the shared path: `nz` is validated against `runtime.size`, not
+against the `nz` the runtime was resolved for, so an `nz=8` runtime serves `nz=4`
+(`tests/test_params.py` checks both halves: `nz=4` constructs, a `size=3`-spoofed runtime
+with `nz=8` is refused with "must be divisible by the number of MPI ranks (3)").
+
+Two rejections are new, because two ways of misusing a shared `Runtime` were silently
+broken (found in review):
+
+- **`dims=3` on a runtime resolved for `dims=2`** — `cart_comm is None`, so
+  `halo_exchange` would `TypeError` and `allreduce_*` would return the identity, i.e. a
+  rank-local CFL dt. Refused, naming the cause.
+- **`comm_backend="jax"` with an `nz` the mesh cannot divide** — `Runtime.resolve("jax",
+  dims=3, nz=8)` then `Parameters(dims=3, nz=6, runtime=rt)` used to construct and die much
+  later inside `comms.to_global` ("array split does not result in an equal division").
+  `_validate_compat` now re-runs `init_backend`'s two device-count checks against this
+  `Parameters`' `nz`, with `init_backend`'s exact messages
+  (`tests/test_params.py::test_shared_jax_runtime_rechecks_the_device_count`, a subprocess
+  under `--xla_force_host_platform_device_count=4`: `nz=6` refused, `nz=8` accepted on the
+  same runtime).
+
+Both new checks were mutation-tested: disabling either one fails exactly its own assertion
+and nothing else.
+
+### The one ordering delta that remains
+
+The particles compatibility rejection runs *after* `particles.state.normalize_config`
+instead of before it, because `_validate_compat` is called once and the 3D `B0` half needs
+the normalized ensembles. A config that is both malformed and incompatible reports the
+malformed-dict error first. Measured pair, `eqtype="GDI"` + `particles={"n": 4,
+"ensembles": [{"qm": 1.0, "init": {"kind": "nope"}}]}`:
+
+| tree | first error |
+|---|---|
+| base `3073df4` | `ValueError: test particles require eqtype='RMHD', a single process and a non-sharded backend …` |
+| `refactor/R` | `ValueError: unknown init kind 'nope' in particles['ensembles'][0]; expec…` |
+
+Both refuse; matching the base here would mean splitting the particles half back out of
+`_validate_compat`, which is the opposite of what §4 asks for.
+`tests/test_particles_config.py`'s `eqtype != RMHD` case passes a well-formed dict and is
+unaffected.
+
+### Ordering probes against the base commit
+
+Run in a `git archive` copy of `3073df4` and in this worktree, same machine, same
+interpreter (`P3` under `--xla_force_host_platform_device_count=4`):
+
+| probe | base `3073df4` | `refactor/R` |
+|---|---|---|
+| `z_spectral=True, dims=2, z_diss=0.5` | `ValueError: z_spectral=True requires dims=3 …`, **no warning** | identical |
+| `z_spectral=True, dims=2, forcing_mode="bogus"` | `ValueError: z_spectral=True requires dims=3 …` | identical |
+| `z_spectral=True, comm_backend="jax", nz=6`, 4 devices | `ValueError: z_spectral=True is incompatible with comm_backend='jax' …`; mesh **not** built | identical (mesh not built) |
+| `z_spectral=True, dims=2, comm_backend="jax"` | `ValueError: comm_backend='jax' requires dims=3 …` | identical |
+| `z_spectral=True, dims=3, z_diss=0.5` | constructs, warns `z_spectral=True: z_diss=0.5 is …` | identical |
 
 `comms.py`'s dispatch functions read `params.runtime` (`rt = params.runtime`, then
 `rt.backend`/`rt.cart_comm`/…) rather than the forwarding properties — one convention
@@ -112,6 +154,16 @@ as on the base. Other agents were running tests concurrently — no timing is qu
 | `tests/test_params.py` (15), `test_backend_serial.py`, `test_backend_jax.py`, `test_infra.py` | passed in both sessions |
 | `params.json` byte-identity vs the base commit | identical apart from `_created` (869 bytes both) |
 | `ruff check .` | All checks passed |
+
+Review-fix round (F1/F2/F3/F7), all with `PYTHONPATH=/private/tmp/taranis-wt-R`:
+
+| gate | result |
+|---|---|
+| `test_params.py test_backend_serial.py test_backend_jax.py test_infra.py test_z_spectral.py test_particles_config.py`, fp64 | **58 passed, 16 skipped** |
+| the same under `--xla_force_host_platform_device_count=4` (`test_backend_jax.py test_params.py`) | **29 passed, 1 failed** — the failure is the pre-existing `test_same_seed_run_matches_serial_reference` (`final time matches`, `forcing_state max|diff| 1.42817e-13`), which fails identically on the base commit |
+| `tests/test_refactor_reference.py` | 2 passed at fp64, 2 passed at fp32 — fields and HLO histograms unchanged, no regeneration |
+| `ruff check .` | All checks passed |
+| mutation check on the two new rejections | disabling the device-count check fails only "nz=6 on a mesh of 4 is refused…"; disabling the cart_comm check fails only "a dims=2 runtime is refused…" |
 
 No reference was regenerated, no tolerance touched, no test skipped that the base does not
 skip. The probe (§0.4) is not a Phase R gate — this phase compiles nothing new.
@@ -175,8 +227,11 @@ pytree**" paragraph:
 > properties forwarding to it: reads are unchanged everywhere, but **assigning
 > `params.rank` now raises** — spoof a rank with `dataclasses.replace(p.runtime, ...)`
 > (`tests/_rmhd_testing.py::fake_ranked_params`). `runtime` is never recorded in
-> `params.json`. The compatibility matrix (backend × dims × size, `z_spectral`,
-> particles) lives in one place, `Parameters._validate_compat`.
+> `params.json`. The compatibility matrix (backend × dims × size, `z_spectral`, particles)
+> is validated in `Parameters._validate_compat`; `nz % size`, `"jax"` × dims, the
+> `z_spectral` checks and the device-count checks are ALSO in `Runtime.resolve`, which
+> guards the communicators and mesh it creates — `_validate_compat` is what covers a
+> `Parameters` built on a shared `Runtime`, which re-runs none of them.
 
 In the **`comm_backend` bullets**, the `"jax"` bullet's sentence
 
@@ -192,9 +247,10 @@ should become
 and the `"serial"` bullet's `comm_backend=None` auto-resolution sentence can point at
 `comms._resolve_backend` (it now lives in `comms.py`, re-exported from `config.py`).
 
-`docs/SAVIO_GPU_SETUP.md` states the same ordering constraint in terms of "the first
-`Parameters(comm_backend='jax')`"; that phrasing is still true (the constructor resolves a
-runtime), so it needs no edit — but if the sweep wants it precise, "the first
-`comms.Runtime.resolve`, which `Parameters(comm_backend='jax')` calls" is the exact
-statement. Its `comms._local_device_ids` references are still correct (the function now
-takes a `Runtime` instead of a `Parameters`).
+`docs/SAVIO_GPU_SETUP.md` does **not** state the ordering constraint anywhere (grep: the
+only statements of it are CLAUDE.md's `"jax"` bullet and `comms.init_backend`'s own
+`RuntimeError` text, and that message still says "construct the first
+`Parameters(comm_backend='jax')` BEFORE any jax device work", which is still true). The
+doc's two `comms._local_device_ids` references are also still correct — the function now
+takes a `Runtime` instead of a `Parameters`, but it is named, not called, there. Nothing in
+`docs/` needs a Phase R edit.
