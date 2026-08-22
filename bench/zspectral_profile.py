@@ -110,7 +110,8 @@ def _pieces_ms(p, kg, state):
     grads = jax.jit(lambda s, k: recipe.grad_func(s, k, p))(state, kg)
     halo = (jax.jit(lambda s, k: recipe.halo_start_func(s, k, p))(state, kg)
             if not p.z_spectral else None)
-    for name, term in zip(("nonlinear", "fdlinear", "forcing"), recipe.term_funcs):
+    for name, term in zip(("nonlinear", "fdlinear", "forcing"),
+                          (t.func for t in recipe.term_funcs)):
         out[f"term: {name}"] = _median_ms(
             jax.jit(lambda s, g, k, h: term(s, g, k, p, h)), state, grads, kg, halo)
 

@@ -164,8 +164,9 @@ def _apply_variant(variant):
     def drop_term(name):
         for eq, rec in list(equation_registry.items()):
             equation_registry[eq] = rec._replace(
-                term_funcs=tuple(zero_term if f.__name__ == name else f
-                                 for f in rec.term_funcs))
+                # substitute inside the Term record: the predicate stays as shipped
+                term_funcs=tuple(t._replace(func=zero_term) if t.func.__name__ == name
+                                 else t for t in rec.term_funcs))
         jrun.equation_registry = equation_registry
 
     if variant in ("noifft", "notrans"):
@@ -257,7 +258,8 @@ def _apply_scopes():
         mod = rmhd if eq == "RMHD" else gdi
         equation_registry[eq] = rec._replace(
             grad_func=scoped("GRAD", mod.grad),
-            term_funcs=tuple(scoped(f.__name__.upper(), f) for f in rec.term_funcs),
+            term_funcs=tuple(t._replace(func=scoped(t.func.__name__.upper(), t.func))
+                             for t in rec.term_funcs),
             set_timestep_func=scoped("SETDT", rec.set_timestep_func),
             halo_start_func=(scoped("HALOSTART", rec.halo_start_func)
                              if rec.halo_start_func is not None else None))

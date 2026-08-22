@@ -124,25 +124,70 @@ it changes no G-attributable count.
   the predicate count does not scale with steps or stages (measured: 2 calls per trace of a
   one-term toy recipe, independent of nblock).
 
-## Two consumers this breaks (NOT fixed — outside G's §6 row)
+## Three consumers of `Term` — found, then fixed (follow-up commit)
 
-1. **`tests/test_z_stencils.py::test_fdz_solver_bitwise_over_20_steps` loses its teeth
-   silently.** It builds its reference term tuple with
-   `tuple(_padded_fd_linear_term if t is rmhd.FDLinearTerm else t for t in shipped)`.
-   `shipped` now holds `Term`s, so the identity test never matches: `reference == shipped`
-   is `True` and the test compares the shipped stencil against itself. It still PASSES —
-   which is the problem. Verified in-process. One-line fix, in a file no phase owns:
+The first pass found three places that treated `term_funcs` entries as bare callables. The
+overseer amended G's ownership to include them; they are fixed in the follow-up commit
+`refactor G: consumers of Term`. `Term` stays a plain record — it was NOT made callable;
+direct callers read `.func`.
 
-   ```python
-   reference = tuple(t._replace(func=_padded_fd_linear_term)
-                     if t.func is rmhd.FDLinearTerm else t for t in shipped)
-   ```
+**1. `tests/test_z_stencils.py::test_fdz_solver_bitwise_over_20_steps` had lost its teeth
+silently.** It built its reference term tuple with
+`tuple(_padded_fd_linear_term if t is rmhd.FDLinearTerm else t for t in shipped)`. Once
+`shipped` held `Term`s the identity test matched nothing, so `reference == shipped` was
+`True` (verified in-process) and the test compared the shipped stencil against itself — and
+still PASSED, which was the problem. Now:
 
-2. **Two benches iterate `term_funcs` as bare callables and now raise.**
-   `bench/zspectral_profile.py:114` calls `term(s, g, k, p, h)` on the entries (a `Term` is
-   not callable) — Phase L owns that file. `bench/step_accounting.py:167,260` reads
-   `f.__name__` and wraps the entries in `scoped(...)` — no phase owns it. Both want
-   `t.func` (and `t._replace(func=...)` where they substitute). Not covered by `make test`.
+```python
+reference = tuple(t._replace(func=_padded_fd_linear_term)
+                  if t.func is rmhd.FDLinearTerm else t for t in shipped)
+assert any(t.func is _padded_fd_linear_term for t in reference), \
+    "the padded reference term was not substituted into the recipe"
+```
+
+The `assert` is the cheap guard against the same class of silent no-op substitution.
+
+**Teeth proof.** `_padded_fd_linear_term`'s return was temporarily scaled by an
+environment-set factor, the test run, then the file restored from a backup and re-run.
+
+- fp64, reference scaled by 1 + 1e-12 — **FAILS**, as required:
+  ```
+  AssertionError: 2 check(s) failed:
+    - backend=default: fields bitwise equal to the padded reference after 20 steps (800/2304 differ, max|diff|=1.253e-11)
+    - backend=serial: fields bitwise equal to the padded reference after 20 steps (800/2304 differ, max|diff|=1.253e-11)
+  1 failed
+  ```
+- fp32, reference scaled by 1 + 1e-6 (1 + 1e-12 is exactly 1.0 in float32, so it cannot
+  perturb anything) — **FAILS**, as required:
+  ```
+  AssertionError: 2 check(s) failed:
+    - backend=default: fields bitwise equal to the padded reference after 20 steps (797/2304 differ, max|diff|=1.490e-05)
+    - backend=serial: fields bitwise equal to the padded reference after 20 steps (797/2304 differ, max|diff|=1.490e-05)
+  1 failed
+  ```
+- fp32 control, scale exactly 1.0 — `1 passed`.
+- Restored file, whole module: fp64 `6 passed, 1 skipped`; fp32 `6 passed, 1 skipped` (the
+  skip is the `multidev` 4-device case).
+
+**2. `bench/step_accounting.py`** — `drop_term` (line 167) and the `scoped(...)` wrap
+(line 260) now substitute INSIDE the record, so the recipe keeps its `Term` structure and
+the shipped predicates: `t._replace(func=zero_term) if t.func.__name__ == name else t` and
+`t._replace(func=scoped(t.func.__name__.upper(), t.func))`.
+Proof it runs: a `--single` timing job, `path=fdz`, `variant=nofdlin`, 16²×8, nblock 2 —
+which exercises `drop_term` AND the unconditional `scoped` loop — returns `"error": null`.
+
+**3. `bench/zspectral_profile.py:114`** — `zip(..., (t.func for t in recipe.term_funcs))`.
+Only that line was touched; Phase L's edits to that file are in the propagator block around
+lines 150–160, so the hunks do not overlap. Proof it runs: `python bench/zspectral_profile.py
+16 8 2 1` completes all four tables, including the `term: nonlinear / fdlinear / forcing`
+rows that go through the fixed line. **Note for L:** unlike `bench/step_accounting.py`,
+this bench does not insert the repo root on `sys.path`, so run from a worktree it imports
+the *installed* `taranis` unless `PYTHONPATH=.` is set. Pre-existing, not touched here.
+
+Follow-up gates: `ruff check .` clean; `tests/test_z_stencils.py` green at both precisions;
+`make test-fast` (fp64) `253 passed, 23 skipped, 1 deselected`, unchanged from the first
+commit's fp64 session. fp64 alone is enough for the follow-up — it
+changes no solver code, only two benches and one test's substitution.
 
 ## CLAUDE.md sentences that should change (sweep)
 

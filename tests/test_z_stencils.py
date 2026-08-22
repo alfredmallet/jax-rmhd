@@ -166,8 +166,13 @@ def test_fdz_solver_bitwise_over_20_steps():
     # end-to-end: 3D FD-z RMHD output equals the private padded reference's.
     from taranis.physics import rmhd
     shipped = equation_registry["RMHD"].term_funcs
-    reference = tuple(_padded_fd_linear_term if t is rmhd.FDLinearTerm else t
-                      for t in shipped)
+    # term_funcs entries are physics.Term records: substitute the wrapped func, not the
+    # record, or the substitution silently matches nothing and the test compares the
+    # shipped stencil against itself
+    reference = tuple(t._replace(func=_padded_fd_linear_term)
+                      if t.func is rmhd.FDLinearTerm else t for t in shipped)
+    assert any(t.func is _padded_fd_linear_term for t in reference), \
+        "the padded reference term was not substituted into the recipe"
     with checks() as c:
         for backend in (None, "serial"):
             if backend == "serial" and mpi_size() > 1:
