@@ -355,6 +355,11 @@ the particles-on bitwise test) and `test_particles_3d.py` cover the `aux`-on sid
 | C | `taranis/run.py` | everything else |
 | sweep | `CLAUDE.md`, `docs/numerics.md`, `docs/performance.md`, `docs/checkpointing.md`, `plans/README.md`, this file §10, `plans/refactor_notes/*` (folded in, then deleted) | source |
 
+Ownership amendment (2026-08-22, during G): consumers of `term_funcs` that nobody owned and
+that `Term` breaks — `tests/test_z_stencils.py` (identity-matched `rmhd.FDLinearTerm`, went
+silently toothless), `bench/step_accounting.py` (`f.__name__`, `scoped(f)`) and the one
+line `bench/zspectral_profile.py:114` (non-overlapping with L's hunks) — are G's.
+
 Cross-phase interfaces, fixed now so nobody waits on anybody: G keeps `term_funcs` as the
 field name and bare callables valid (L's `test_imex.py` constructs recipes that way); L's
 `timestepping.py` edit is confined to replacing `get_propagator(kgrid, params)` with
