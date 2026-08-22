@@ -517,5 +517,18 @@ test_same_seed_run_matches_serial_reference` fails under 4 forced host devices o
 (jax 0.10.0; identical on the unfixed tree) and `make test` skips every `multidev` test
 here because mpi4py imports — the jax backend is NOT covered by the local suite.
 
-(per-phase gate numbers, drift findings, the sweep, and what moved to `plans/old/`: below
-as they land)
+**Phase L** (`refactor/L`: `d04379a` + `e8e5a40`, webgpu generators). fp64 250/23, fp32
+227/46; 24/24 fields bitwise, 12/12 histograms identical at both precisions; probe
+max |Δ total_u| = 0.0000 u over 56 cases; memory-light gate green. Pre-existing, recorded:
+on the separable backend eager vs jitted `apply_exp`/`solve_shifted` differ at ~6e-16
+(reproduced with the OLD class — XLA fusing complex sums), so the new jit test asserts
+round-off there and bitwise elsewhere; `webgpu/refvectors*.json` do not reproduce bitwise
+on this laptop (1-ulp differences in a pure numpy `fft_input` — recorded elsewhere; the
+browser self-test is fp32-tolerant). Review: pending.
+
+**Phase G** (`refactor/G`: `96a678b` + follow-up). fp64 253/23, fp32 230/46; 12/12 fields
+bitwise AND 12/12 histograms identical — **zero HLO movement**: XLA had already folded
+`add(x, broadcast(0))`, only pre-optimization StableHLO shrinks (6 lines per config with
+an inactive term). No sidecar regeneration needed. Review: pending.
+
+(C, R, the merges, the sweep, and what moved to `plans/old/`: below as they land)
