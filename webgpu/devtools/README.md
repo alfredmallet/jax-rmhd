@@ -4,11 +4,19 @@ Node/python scripts built during REFINE_PLAN phases F–G to verify the apps wit
 GPU. Saved here so later phases (and fresh sandboxes) don't rebuild them. Safe to
 leave untracked or commit — they are dev-only, nothing in the apps loads them.
 
-- `dispoffsets.js` — the one allowance the three prepDisp pins share: 268100f ("webgpu
-  perp offsets") gave the 2D card its display offset, which moves the Mode struct line
-  and inserts the translation phase. `applied(base)` is base's prepDisp text plus exactly
-  that, so `checkiso`, `checkeigf` and `check2dspec` keep their older base commits and
-  still fail on any OTHER change to prepDisp — or on the offset going missing.
+- `dispoffsets.js` — the two allowances the WGSL byte-identity pins share, so that
+  `checkiso`, `checkeigf`, `check2dspec` and `checksolver2d` keep their older base commits
+  and still fail on any OTHER change. (1) 268100f ("webgpu perp offsets") gave the 2D card
+  its display offset, which moves the Mode struct line and inserts the translation phase:
+  `applied(base)` is base's prepDisp text plus exactly that, so any other change to
+  prepDisp — or the offset going missing — still fails. (2) FFTPERF_PLAN 2C turned one
+  eight-lane `prepGrads` (and the sweep's banded twin) into four per-pair emissions:
+  `gpairApplied(base, k)` is base's own text reduced to pair k — its source `let`s, its
+  two writes, moved to lanes 0 and 1 — and `chunkAudit(base, cur)` spends that allowance
+  exactly, demanding the eight-lane emission be GONE and all four pairs present and equal
+  to the reduction. `checkiso` leg 2b is the allowance's own gate: BASE's text with a sign
+  flip, a pair built from the wrong field, swapped lanes, the eight-lane emission left in
+  place, a missing pair and a pair that is the whole text must each come back named.
 - `stubenv.js` — the shared stub: a DOM + WebGPU stub good enough to run a real app
   page (the classic `<script src>` files the page's own markup names, in document order —
   common.js + physics.js, plus solver2d.js on the 2D page — then its inline script) under
@@ -55,7 +63,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `env.gpuReset()`): `shaders` every `createShaderModule` as `{label, code}`, `dispatches`
   every compute dispatch as `{pipe, bg, d}`, and counters for render passes (`renders`) and
   queue drains (`drains`); a compute pipeline also carries its module's WGSL on `__code` and
-  its label on `__name`, and a bind group its entries' buffers on `__buffers`. So a gate can
+  its label on `__name`, and a bind group its entries' buffers on `__buffers` — plus, since
+  FFTPERF_PLAN 2C, each entry's whole `{buffer, offset, size}` on `__bindings`, with a
+  misaligned (not 256-byte) or overrunning offset THROWN as a real implementation would
+  reject it; a binding that is a WINDOW into a buffer is otherwise indistinguishable from
+  one that binds the whole of it. So a gate can
   say that a caller's idea of a pipeline, an extent or a bind group is the one the app
   encoded, rather than that the call did not throw. `requestAnimationFrame` PARKS its
   callback (it always was inert); `env.frame()` fires the parked ones, which is one frame
@@ -641,13 +653,18 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   inline scripts (Chrome blocks module scripts from `file://`). Then the move itself,
   VERBATIM: each definition's text — located by its header line and its closing brace at
   column 0 — byte for byte against `git show <base>:webgpu/rmhd2d.html`, `class Solver`
-  after ONE recorded allowance is stripped (`IO4_INSERTS`: the exact lines IO_PLAN item 4's
-  field export inserted — two pinned Mode uniforms, their two `prepDisp` bind groups and
-  `encodeExport`, buffers and bind groups only, which is why the WGSL leg above does not
-  move with it). The allowance is the `dispoffsets.js` idiom: it is stripped and the base
-  text is then still demanded byte for byte, so any OTHER change to the class fails, and a
-  companion leg fails it as STALE if a recorded block has stopped being there or as VACUOUS
-  if there was nothing to strip. Then reusability:
+  and `buildShaders` after their RECORDED allowances are stripped (`IO4_INSERTS`: the exact
+  lines IO_PLAN item 4's field export inserted — two pinned Mode uniforms, their two
+  `prepDisp` bind groups and `encodeExport`, buffers and bind groups only, which is why the
+  WGSL leg above does not move with it; `FFT2C_SOLVER` / `FFT2C_SHADERS`: FFTPERF_PLAN 2C's
+  gradient chunking, recorded as REPLACEMENTS — the base lines and the lines that stand in
+  for them — the two-lane `gradsK`/`specTmp`, the four `prepGrads` pipelines and their bind
+  groups, the row kernel's per-pair `realGrads` window, `encodeGrads`, and the four
+  emissions in `buildShaders`). The allowances are the `dispoffsets.js` idiom: they are put
+  back and the base text is then still demanded byte for byte, so any OTHER change to
+  either definition fails, and a companion leg fails it as STALE if a recorded block has
+  stopped being there or moved off its recorded base line, or as VACUOUS if there was
+  nothing to strip. Then reusability:
   `names.mjs` resolves `solver2d.js` against common.js + physics.js + builtins ALONE, never
   against `rmhd2d.html`'s inline script, which is what says a second page can load it. Then
   `pages.yml` — solver2d.js in the MISSING list and in the cache-bust sed, and the
@@ -778,9 +795,20 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   Then the WIRING, off the stub's dispatch log: for every spec cell, the pipeline and bind
   group it names must be one the solver's own `step()` dispatched, at the spec's extent and
   lane count, with the FFT cells' `bufs` equal to that bind group's buffers in binding
-  order — and every byte-table entry dispatched exactly `n` times, with nothing dispatched
+  order — and every byte-table entry dispatched exactly `n` times (a spec name may stand for
+  a GROUP of pipelines built from one template, as the four `prepGrads` do, and the group is
+  counted together), with nothing dispatched
   the table has neither counted nor excused and each excused kernel dispatched exactly as
-  often as the table assumes. Then the LOOP: with frames driven from inside
+  often as the table assumes. Since FFTPERF_PLAN 2C the same leg pins the chunked chain's
+  WIRING, which nothing else can see: its four row-kernel dispatches bind `realGrads` at
+  `2·k·nr·4` with `size 2·nr·4` — four windows into one buffer, in pair order, the stub
+  keeping each binding's `{buffer, offset, size}` and rejecting a misaligned or overrunning
+  one as a device would — each behind its own `prepGrads<k>` pipeline, four distinct
+  pipelines and not one dispatched four times. The `grads hash` cell, which encodes exactly
+  one chain, is held to the same four windows and four pipelines.
+  NOTE that the per-kernel `prepGrads` / `colsInv` / `rowsC2R` cells now time ONE two-lane
+  chunk, dispatched 12 times a step, so they are not comparable with the Phase 1 rows (which
+  timed the eight-lane form, 3 times a step) without a factor of four. Then the LOOP: with frames driven from inside
   the queue drains, a campaign must encode no display chain, read no stats, and leave the
   hero button paused — and the next frame after it must draw again. Its second half is the
   frame ALREADY in flight when the button is pressed: a frame is parked on its own drain
@@ -802,8 +830,13 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   lines and keeps every barrier, `copy` has no stage loop at all and still carries the load
   and store bodies verbatim, all three parse, and a build that THROWS still hands the seam
   back. Then BYTES: the per-step sum reproduces a
-  hand-computed number for 2D 256² and 3D 128²×64 exactly, with the appendix-A arithmetic
-  written out in the check, and a 2D `eqsrc` solver counts its extra `eqk` binding on top.
+  hand-computed number for 2D 256² (**77,549,568**) and 3D 128²×64 (**1,236,886,528**)
+  exactly, with the appendix-A arithmetic written out in the check, and a 2D `eqsrc` solver
+  counts its extra `eqk` binding on top. Both numbers grew with FFTPERF_PLAN 2C and only in
+  the `prepGrads` row: the gradient chain runs four per-pair preps per stage, each reading
+  ONE state field (phi or psi) plus the grid and writing two lanes, so it is 12 dispatches
+  of `cx + gr + 2cx` a step where it was 3 of `2cx + gr + 8cx`; the transforms move the same
+  bytes either way (12 × 2 lanes = 3 × 8) and the butterfly count does not move at all.
   Last, `fftAnalyticCase` — the self-test's analytic reference —
   returns three nonzero bins at the flat indices it reports, zeros everywhere else, and
   each bin holding `amp·nr/2·exp(i·phase)`; and `fftAnalyticRows` adds two rows on a live

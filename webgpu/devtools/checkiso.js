@@ -1201,9 +1201,57 @@ async function legFilter(state) {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. the chunk allowance itself: what it must REFUSE
+// ---------------------------------------------------------------------------
+// dispoffsets' chunk audit is what lets four per-pair prepGrads emissions past a byte
+// identity pin, so its own failure modes have to be exercised or the pin is a rubber
+// stamp. BASE's own eight-lane text is the input; the cases below are the ways a chunked
+// emission can be wrong, each built by editing the CORRECT reduction, and every one of
+// them must come back named in `bad`. (The positive case is the same audit passing.)
+function legChunkAllowance(state) {
+  const base = state.base["rmhd2d.html"] || {};
+  const label = Object.keys(base).filter(k => OFF.isGradsLabel(k)).sort()[0];
+  if (!label) { ok("a BASE prepGrads emission to reduce", false, "none in the base dump"); return; }
+  const src = base[label], keys = OFF.gpairKeys(label);
+  const good = () => { const c = {}; keys.forEach((k, j) => { c[k] = OFF.gpairApplied(src, j); }); return c; };
+  const B = { [label]: src };
+  const audit = c => OFF.chunkAudit(B, c);
+  const ref = audit(good());
+  ok("the chunk audit passes the four correct reductions",
+     ref.bad.length === 0 && ref.reduced.length === 1 && ref.added.length === 0,
+     ref.bad[0] || ref.reduced.join(", "));
+  ok("  ... and every pair is a DIFFERENT text (a reduction that ignored k would not be)",
+     new Set(Object.values(good())).size === OFF.NPAIR,
+     new Set(Object.values(good())).size + " distinct of " + OFF.NPAIR);
+  // each case: a name, and the edit it makes to the correct set
+  const CASES = [
+    ["a sign flip in one pair's write", c => {
+      c[keys[1]] = c[keys[1]].replace("vec2<f32>(-g.x", "vec2<f32>(+g.x"); }],
+    ["pair 2 built from psi instead of phi", c => {
+      c[keys[2]] = c[keys[2]].replace(/phi/g, "psi"); }],
+    ["one pair's two lanes swapped", c => {
+      const L = c[keys[0]].split("\n"), i = L.findIndex(l => /^  outg\[m\]/.test(l));
+      const a = L[i].replace("outg[m]          ", "outg[NM + m]     ");
+      const b = L[i + 1].replace("outg[NM + m]     ", "outg[m]          ");
+      L[i] = b; L[i + 1] = a; c[keys[0]] = L.join("\n"); }],
+    ["the eight-lane emission still there beside the pairs", c => { c[label] = src; }],
+    ["one pair missing altogether", c => { delete c[keys[3]]; }],
+    ["a pair that is the WHOLE eight-lane text", c => { c[keys[0]] = src; }]
+  ];
+  for (const [name, edit] of CASES) {
+    const c = good();
+    edit(c);
+    const r = audit(c);
+    ok("  ... and refuses " + name, r.bad.length > 0 && r.reduced.length === 0,
+       r.bad[0] || "ACCEPTED as " + r.reduced.join(", "));
+  }
+}
+
+// ---------------------------------------------------------------------------
 const LEGS = [
   ["1. every kernel parses; names / duplication discipline", legDiscipline],
   ["2. physics WGSL byte-identical to " + BASE, legByteIdentical],
+  ["2b. the chunk allowance refuses a wrong pair set", legChunkAllowance],
   ["3. box-unit aspect: cubeQuads / cubeFrame across every Lz (Phase A)", legAspect],
   ["4. the ASPECT_CAP display cap, as the one-line on-device edit", legCap],
   ["5. the volume ray: volRay inverts cubeQuads, and marches the drawn box (Phase B)", legRay],

@@ -88,7 +88,7 @@ entry point like `?recdebug`, not a control: without the flag the panel does not
 
 Each button runs one campaign and appends one JSON record to the textarea (phones have no
 console — copy-paste is the transport); the same functions are on `window.bench` (`whole`,
-`kernels`, `ladder`, `chains` on 3D, `all`, with `cfg` for K / R / reps). Every cell is
+`kernels`, `ladder`, `chains` on 3D, `gradsHash`, `all`, with `cfg` for K / R / reps). Every cell is
 timed the same way: submit the batch, `await onSubmittedWorkDone()`, `performance.now()`
 around it, R+1 reps with the first discarded, median and min reported. The frame loop is held
 off while a campaign runs, so nothing renders or reads back inside a timed window; there is no
@@ -101,9 +101,9 @@ controller and no `timestamp-query`.
   the buffer bytes one step binds and reads/writes (the table in FFTPERF_PLAN Appendix A) as
   GB/s, and butterflies as G butterflies/s.
 - **per kernel** — each kernel alone: `reps` dispatches of one pipeline in one compute
-  pass, on the solver's own buffers at the dispatch shape the step gives it (FFT kernels at
-  their own chain's lane count — 8 for the gradient chain, 2 for the nonlinear one), µs per
-  dispatch.
+  pass, on the solver's own buffers at the dispatch shape the step gives it (the gradient
+  chain's kernels at one two-lane chunk — four chunks per stage, so ×12 per step — and the
+  nonlinear chain's at its two lanes), µs per dispatch.
 - **FFT ladder** — each FFT kernel three ways: the shipped kernel; one with the `cos`/`sin`
   twiddle lines replaced by constants (`consttw`); one that keeps only the load and the
   store (`copy`). Read them as `T_mem` = copy (memory traffic, strided reads included),
@@ -111,10 +111,17 @@ controller and no `timestamp-query`.
   `T_tw` = full − consttw (the transcendentals); `1.0·x` folds under any compiler, so `T_bf`
   is a lower bound and `T_tw` an upper one. A share is a share of that cell on that device —
   never compare against another device's.
-- **grad chain** (3D) — the eight-lane gradient chain against four two-lane calls: the
-  gradient-chunking question, measured without chunking code. The two-lane cell
-  re-transforms lanes 0–1 four times, so a working set that fits the last-level cache
-  flatters it; it is a proxy.
+- **grad chain** (3D) — the whole gradient chain as the RHS encodes it: four per-pair
+  `prepGrads` dispatches, each followed by its own three inverse passes at two lanes (the
+  cell FFTPERF_PLAN item C is timed on).
+- **grads hash** — times nothing. It re-applies the page's selected initial condition,
+  encodes one gradient chain (the dispatches the RHS makes) and reads `realGrads` back,
+  reporting a 32-bit FNV-1a digest of each of the eight real-space lanes and one over the
+  whole buffer, plus the byte length. Same page, IC, resolution and device ⇒ same digests,
+  so a change to the chain that is meant to be bitwise is shown to be bitwise by comparing
+  two records. The digest is over the buffer's `Uint32Array` view, low byte first by shift,
+  so it does not depend on the device's endianness. It re-applies the IC first, not last,
+  and writes only the gradient scratch.
 
 A campaign pauses the run; the per-kernel, ladder and chain campaigns leave the buffers as
 garbage (kernels run out of order on the live state), so each ends by re-applying the

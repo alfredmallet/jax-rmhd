@@ -17,7 +17,8 @@
 //      its own script, the 3D page does not load it at all, and no module syntax reaches
 //      any of it (Chrome blocks module scripts from file://).
 //   5  the verbatim move: each definition's text equals the BASE commit's, byte for byte
-//      -- `class Solver` after ONE recorded allowance (IO_PLAN item 4) is stripped.
+//      -- `class Solver` and `buildShaders` after their RECORDED allowances are stripped
+//      (IO_PLAN item 4's field export, FFTPERF_PLAN 2C's gradient chunking).
 //   6  reusability: solver2d.js's free identifiers resolve against common.js + physics.js
 //      + builtins ALONE -- never against rmhd2d.html's inline script, which is the whole
 //      reason a second page can load it.
@@ -438,8 +439,8 @@ if (bd) {
   const baseInline = inline(read(path.join(bd, "rmhd2d.html")));
   for (const h of DEFS) {
     const a = defText(baseInline, h), raw = defText(SOLVER, h);
-    // `class Solver` is compared with the ONE recorded allowance stripped; the other two
-    // definitions are still compared raw, and must never need one.
+    // a definition with recorded allowances is compared with them stripped (their base
+    // lines put back); one without is compared raw, and makeGrid must never need any.
     const st = raw === null ? null
              : ALLOWED[h] ? stripBlocks(raw, ALLOWED[h]) : { txt: raw, miss: [] };
     const b = st && st.txt;

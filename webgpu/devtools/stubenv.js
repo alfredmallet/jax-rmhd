@@ -511,7 +511,10 @@ module.exports = function makeEnv(dir, page, demo, opts) {
   //   gpu.renders     render passes begun
   //   gpu.drains      queue.onSubmittedWorkDone calls
   // A pipeline also carries its module's text on `__code`, and a bind group its entries'
-  // buffers on `__buffers`. `env.gpuReset()` empties the log.
+  // buffers on `__buffers` and their whole {buffer, offset, size} on `__bindings` -- a
+  // binding that is a WINDOW into a buffer (FFTPERF_PLAN 2C's per-pair gradient targets)
+  // is otherwise indistinguishable from one that binds the whole of it.
+  // `env.gpuReset()` empties the log.
   const gpu = { shaders: [], dispatches: [], renders: 0, drains: 0 };
   // mapAsync is normally what it always was -- an immediately resolved promise, which is
   // what every ordinary readback (readBuf) expects. The recorder's GPU-readback capture
@@ -587,7 +590,23 @@ module.exports = function makeEnv(dir, page, demo, opts) {
         if (!e.resource) fail("bind group entry " + e.binding + ": undefined resource");
         else if ("buffer" in e.resource && !e.resource.buffer) fail("bind group entry " + e.binding + ": undefined buffer");
       });
-      return { __bg: 1, __buffers: o.entries.map(e => e.resource && e.resource.buffer) };
+      // the two rules a real implementation enforces on a buffer binding, and the two an
+      // offset can break: the offset meets minStorageBufferOffsetAlignment (256, the
+      // default every backend may ask for) and the window fits inside the buffer. THROWN,
+      // not logged: a bind group a device would reject is not a run worth continuing.
+      const binds = o.entries.map(e => {
+        const r = e.resource || {}, b = r.buffer;
+        if (!b) return { buffer: b, offset: 0, size: 0 };
+        const off = r.offset || 0, size = r.size === undefined ? b.size - off : r.size;
+        if (off % 256)
+          throw new Error("bind group entry " + e.binding + ": offset " + off
+                          + " is not 256-byte aligned");
+        if (off + size > b.size)
+          throw new Error("bind group entry " + e.binding + ": [" + off + ", " + (off + size)
+                          + ") overruns a " + b.size + "-byte buffer");
+        return { buffer: b, offset: off, size: size };
+      });
+      return { __bg: 1, __buffers: binds.map(x => x.buffer), __bindings: binds };
     },
     createCommandEncoder: () => ({
       beginComputePass: () => mkPass("compute"),

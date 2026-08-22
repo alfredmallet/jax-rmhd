@@ -482,7 +482,11 @@ read before.
 
 Whether a 256²×128 (or 512²×64) rung is then offered is a separate, §9 question with its own
 costs (the volume view, the spectra passes, `realGrads`' own 256 MiB); this phase makes the
-gradient stack stop being the reason.
+gradient stack stop being the reason. [As landed (`createBuffer` sizes): `gradsK` 2D 1024²
+32.06 → 8.02 MiB and `specTmp` the same; 3D 128²×64 32.5 → 8.13 MiB; 3D 256²×64
+**129.0 → 32.25 MiB**, `realGrads` 134,217,728 B = exactly the 128 MiB default binding
+limit (≤, allowed). The page still asks for `maxLimits` as margin — a §9 question, not a
+requirement of this phase.]
 
 **Timing gate.** Whole step and the gradient chain at the Phase 1 cells: ≤ 1.03× the pre-2C
 page on every device measured (the Phase 1 batch-2 number is the prediction; this is the
@@ -551,10 +555,10 @@ in 2D and `nmp·16` in 3D (`gridA`/`gridB` are perpendicular-only there), `grZ =
 
 | kernel | 2D | 3D |
 |---|---|---|
-| `prepGrads` | read `2cx + grA`, write `8cx` | read `2cx + grA`, write `8cx` |
-| `zInv` ×8 | — | `16cx` |
-| `colsInv` ×8 | `16cx` | `16cx` |
-| `rowsC2R` ×8 | read `8cx`, write `8rx` | same |
+| `prepGrads` ×4 (2C: one field pair each) | read `cx + grA`, write `2cx` (each) | same |
+| `zInv` ×4 at 2 lanes | — | `4cx` (each) = `16cx` |
+| `colsInv` ×4 at 2 lanes | `4cx` (each) = `16cx` | same |
+| `rowsC2R` ×4 at 2 lanes | read `2cx`, write `2rx` (each) = `8cx + 8rx` | same |
 | `bracket` | read `8rx`, write `2rx` | same |
 | `rowsR2C` ×2 | read `2rx`, write `2cx` | same |
 | `colsFwd` ×2 | `4cx` | `4cx` |
@@ -564,17 +568,23 @@ in 2D and `nmp·16` in 3D (`gridA`/`gridB` are perpendicular-only there), `grZ =
 | `stage` | read `fields 2cx + delta 2cx + rhs 2cx + grB`, write `fields 2cx + delta 2cx` = `10cx + grB` | `10cx + grB + grZ` |
 
 Per step: three stages plus `energyPartial` (read `2cx + grA + grB` in 2D, `+ grZ` in 3D).
-The two hand numbers `checkbench.js` leg (iv) pins:
+Before 2C the gradient chain was one `prepGrads` (read `2cx + grA`, write `8cx`) and one
+8-lane pass per transform — the same transform bytes, and `prepGrads` at `10cx + grA` per
+stage against 2C's `4(3cx + grA)`: every chunk re-reads the grid and reads one state field.
+The two hand numbers `checkbench.js` leg (iv) pins, pre-2C (Phase 0/1) and as landed (2C):
 
 - **2D 256²**: `nm = 33,024`, `nr = 65,536`, `cx = 264,192`, `rx = 262,144`, `grA = 528,384`.
   Per stage 3,170,304 + 4,227,072 + 4,210,688 + 2,621,440 + 1,052,672 + 1,056,768 +
   2,113,536 + 1,585,152 + 3,170,304 = 23,207,936; ×3 = 69,623,808; + `energyPartial`
-  1,585,152 = **71,208,960 B/step**. Butterflies: 11,827,200.
+  1,585,152 = **71,208,960 B/step** pre-2C. Butterflies: 11,827,200. 2C: `prepGrads`
+  4 × 1,320,960 = 5,283,840 per stage in place of 3,170,304 → **77,549,568 B/step**
+  (+6,340,608, all `prepGrads`).
 - **3D 128²×64**: `nmp = 8,320`, `nm = 532,480`, `nr = 1,048,576`, `cx = 4,259,840`,
   `rx = 4,194,304`, `grA = 133,120`, `grZ = 1,024`. Per stage 42,731,520 + 68,157,440 +
   68,157,440 + 67,633,152 + 41,943,040 + 16,908,288 + 17,039,360 + 17,039,360 + 17,306,624 +
   798,720 + 42,732,544 = 400,447,488; ×3 = 1,201,342,464; + `energyPartial` 8,786,944 =
-  **1,210,129,408 B/step**. Butterflies: 213,934,080.
+  **1,210,129,408 B/step** pre-2C. Butterflies: 213,934,080. 2C: `prepGrads` 4 × 12,912,640
+  = 51,650,560 per stage in place of 42,731,520 → **1,236,886,528 B/step** (+26,757,120).
 
 The bench sums the same table from the page's own dispatch list so a kernel added later is
 counted; a disagreement between the check's literal and the function is a change to one of
@@ -629,3 +639,44 @@ green on both pages at the default and largest resolutions; the `?bench` panel r
 a campaign completes with no WebGPU validation error (the variant pipelines' `auto` layouts
 and the hand-listed `bufs` get their only real validation there); per kernel
 `copy ≤ consttw ≤ full`; whole-step `ms_med` stable across two runs.
+
+## Phase 2C execution notes (2026-08-21)
+
+One opus implementer, two steps: the `grads hash` bench cell first (`6831d53`, WGSL
+byte-identical — the bitwise gate's instrument, so Alfred can record the eight-lane digests
+on the pre-2C page), then the chunking (`fb30cab` + review fixes). Fresh-Fable adversarial
+review, one fix round.
+
+**As landed.** `prepGradsWGSL(C)` takes `C.gpair ∈ {0..3}` off a `GRAD_PAIRS` table; each
+kernel reads ONE state field (phi for pairs 0 and 2, psi for 1 and 3), forms the pair's
+field where it is derived, writes lanes 0–1 of a 2-lane `gradsK` — four pipelines from one
+template, the `gband` variant through the same template. The row kernel's text is unchanged;
+its store lands in `realGrads` through the bind group's buffer `offset` (`gradPairOffset`,
+256-byte alignment thrown at construction). One chain encoder per page (`encodeGrads`) used
+by the RHS, the 3D field-line prep and the generate sweep. 2D `specTmp` drops to 2 lanes
+with `gradsK`. The `checksolver2d` `class Solver` pin gained a second recorded-replacement
+block (the IO_PLAN idiom, generalised to `stripBlocks`); the `prepGrads` byte pins
+(`checkiso`/`checkeigf`/`check2dspec`) keep their BASE commits through a `dispoffsets.js`
+allowance that reduces BASE's eight-lane text to each pair mechanically.
+
+**What the review found and the fix round closed.** The lane offsets — the whole mechanism —
+were invisible to every gate (the stub kept only an entry's buffer): `gradPairOffset` halved,
+or every pair bound at offset 0, stayed green. The stub now keeps `{buffer, offset, size}`
+and throws on misalignment or overrun as WebGPU does, and `checkbench` asserts the chain's
+four row-kernel targets at `[0, 2nr4, 4nr4, 6nr4]` in pair order behind four distinct
+`prepGrads0..3` pipelines. The allowance had no negative test (a permissive edit to
+`gpairApplied` retired all four pins silently) — `checkiso` leg 2b now feeds it six wrong
+pair sets and the correct one. The "one encoder" claim is pinned by `check2dspec` leg (f)
+(each band pass = 4 × (prepGradsBand_k, zInv, colsInv, rowsC2R@2) + march). Bench
+semantics: the per-kernel `prepGrads`/`colsInv`/`rowsC2R` cells now time one two-lane chunk
+(×12 per step) and need ×4 before comparison with the Phase 1 rows.
+
+**Byte identity.** Every FFT kernel and everything else byte-identical to `f83386e` at every
+offered grid; the differing set is exactly `prepGrads` (gone) and `prepGrads0..3` (+ the
+`Band` four on 3D). Bytes per step as in Appendix A (77,549,568 / 1,236,886,528).
+
+**Only checkable on device** (the phase's two gates, Alfred): the `grads hash` records from
+the `6831d53` page and the chunked page equal in all eight `hash_lane` and `hash_all`, both
+pages, two resolutions each, same IC; whole step and the `gradient chain` cell ≤ 1.03× the
+Phase 1 record; the 3D generate sweep and field-line view clean of validation errors
+(the offset bind groups' only real validation); self-test rows unchanged.

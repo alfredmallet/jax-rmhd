@@ -138,7 +138,7 @@ const GRAD_PAIRS = [
 // where pair k's two lanes start inside the eight-lane real-space gradient stack. The row
 // kernel reaches them as its target binding's OFFSET, which is why its text is the same
 // for every pair -- so the offset has to meet the storage-binding alignment every backend
-// asks for (256 bytes; any nr >= 64 does, and both apps' smallest grid is 128^2).
+// asks for (256 bytes; any nr >= 32 does, and both apps' smallest grid is 128^2).
 function gradPairOffset(nr, k) {
   const off = 2 * k * nr * 4;
   if (off % 256) throw new Error("realGrads pair offset " + off

@@ -151,6 +151,40 @@ function legWiring(env, page) {
                     : c.bufs.length + " of " + got.length + " bound");
     }
   }
+  // the gradient chain's four row-kernel targets: the SAME buffer, four windows into it,
+  // in pair order, each two real lanes wide (FFTPERF_PLAN 2C). The stub keeps a binding's
+  // {buffer, offset, size}, so a chain that wrote every pair over lane 0 -- or bound the
+  // whole eight-lane stack four times -- is visible here and nowhere else.
+  const gradRows = env.run("() => { const s = solver;" +
+    " return { bg: s.bg.rowsC2RGrads, real: s.buf.realGrads, nr: s.nr," +
+    "          prep: s.pl.prepGrads.map(p => p.__name) }; }");
+  const npair = gradRows.bg.length, lane2 = 2 * gradRows.nr * 4;
+  const wantOff = gradRows.bg.map((b, k) => k * lane2);
+  const winOf = e => {
+    const w = e.bg.__bindings && e.bg.__bindings.filter(x => x.buffer === gradRows.real)[0];
+    return w ? [w.offset, w.size] : null;
+  };
+  const rows = disp.filter(e => gradRows.bg.indexOf(e.bg) >= 0);
+  const perBg = gradRows.bg.map(b => rows.filter(e => e.bg === b).length);
+  const firstRows = rows.slice(0, npair).map(winOf);
+  ok(page + ": the chain's four row-kernel targets are realGrads at " +
+     JSON.stringify(wantOff) + ", two lanes (" + lane2 + " B) each, in pair order",
+     firstRows.length === npair &&
+     firstRows.every((w, k) => w && w[0] === wantOff[k] && w[1] === lane2),
+     JSON.stringify(firstRows));
+  ok(page + ":   ... and the step runs each of the four the same number of times",
+     rows.length === npair * perBg[0] && perBg.every(n => n === perBg[0]),
+     perBg.join(", ") + " dispatches, " + rows.length + " in the step");
+  // ... off four DISTINCT prep pipelines: four instantiations of one template, in pair
+  // order, not one pipeline dispatched four times
+  const preps = disp.filter(e => gradRows.prep.indexOf(e.pipe.__name) >= 0);
+  const firstPreps = preps.slice(0, npair);
+  ok(page + ":   ... each behind its own prepGrads pipeline, " + gradRows.prep.join(", "),
+     preps.length === npair * perBg[0] &&
+     same(firstPreps.map(e => e.pipe.__name), gradRows.prep) &&
+     new Set(firstPreps.map(e => e.pipe)).size === npair,
+     firstPreps.map(e => e.pipe.__name).join(", ") || "none");
+
   // the byte table's `n` column against the same recorded step, and nothing dispatched
   // that the table neither counts nor names as uncounted
   const per = new Map();
@@ -226,6 +260,27 @@ async function legGradsHash(env, page) {
      env.gpu.dispatches.length > nchain &&
      env.gpu.dispatches.slice(-nchain - 1)[0].pipe !== chain[0].pipe,
      env.gpu.dispatches.length + " dispatches in all");
+  // ONE chain, so the four pairs are exactly four dispatches here: four distinct prep
+  // pipelines, and four windows into realGrads at 2*k*nr*4, two lanes wide (2C). A chain
+  // that wrote every pair over lane 0 would hash the same buffer four times and be
+  // invisible to the digest itself.
+  const G = env.run("() => ({ real: solver.buf.realGrads, nr: solver.nr," +
+    " prep: solver.pl.prepGrads.map(p => p.__name) })");
+  const lane2 = 2 * G.nr * 4;
+  const wins = tail.filter(e => e.bg.__bindings &&
+                                e.bg.__bindings.some(x => x.buffer === G.real))
+    .map(e => e.bg.__bindings.filter(x => x.buffer === G.real)
+                             .map(x => [x.offset, x.size])[0]);
+  ok(page + ": ... the chain's four writes are realGrads at 0, " + lane2 + ", " + 2 * lane2
+     + ", " + 3 * lane2 + ", two lanes each",
+     wins.length === G.prep.length &&
+     wins.every((w, k) => w[0] === k * lane2 && w[1] === lane2),
+     JSON.stringify(wins));
+  const preps = tail.filter(e => G.prep.indexOf(e.pipe.__name) >= 0);
+  ok(page + ": ... and its four preps are the four distinct pipelines, in pair order",
+     same(preps.map(e => e.pipe.__name), G.prep) &&
+     new Set(preps.map(e => e.pipe)).size === G.prep.length,
+     preps.map(e => e.pipe.__name).join(", ") || "none");
   // the readback: eight lanes of one real field each, hashed lane by lane and whole
   const nr = env.run("() => solver.nr");
   const cell = (rec && rec.cells && rec.cells[0]) || {};

@@ -376,8 +376,12 @@ function legTemplates(state) {
 //       band table (lo, hi, 0, 0) per band, and the field-line seed grid's own `genCfg`
 //       ([GEN_SIDE,0,0,0], written once in _genInit and never again) -- read out of
 //       MEMDEV's backing stores.
-//   (f) the press, DISPATCHED: the workgroup counts readGenBand's own pass issues for the
-//       banded prep and the march, off MEMDEV's dispatch recorder (leg 5's W.disp idiom).
+//   (f) the press, DISPATCHED: the WHOLE dispatch sequence readGenBand's own pass issues,
+//       pipeline by pipeline and extent by extent, off MEMDEV's dispatch recorder (leg 5's
+//       W.disp idiom). Since FFTPERF_PLAN 2C that sequence is the claim that ONE encoder
+//       serves all three callers: four (banded prep for pair k, zInv, colsInv, rowsC2R)
+//       chunks at two lanes, then the march -- i.e. exactly `Solver.encodeGrads` with the
+//       sweep's own pipelines, and not a second copy of the chain written out here.
 //       (a)-(e) are all blind to this: (a) hand-dispatches the interpreter itself, (d)
 //       checks binding identity and not size, and an undersized march simply leaves stale
 //       gradients in 3/4 of the polylines -- invisible to a buffer that is the right one,
@@ -426,9 +430,14 @@ const MEMDEV = `function(){
     };
     e.clearBuffer = b => { globalThis.TRACE.push(["clear", nameOf(b)]); return ocl(b); };
     e.beginComputePass = () => {
-      const p = obp(), od = p.dispatchWorkgroups.bind(p), calls = [];
+      const p = obp(), od = p.dispatchWorkgroups.bind(p), osp = p.setPipeline.bind(p), calls = [];
       globalThis.DISP.push(calls);
-      p.dispatchWorkgroups = (x, y, z) => { calls.push([x, y === undefined ? 1 : y]); return od(x, y, z); };
+      let pl = null;
+      p.setPipeline = q => { pl = q; return osp(q); };
+      p.dispatchWorkgroups = (x, y, z) => {
+        calls.push([pl && pl.__name, x, y === undefined ? 1 : y]);
+        return od(x, y, z);
+      };
       return p;
     };
     return e;
@@ -617,18 +626,25 @@ async function legInvariance(state) {
   const expPrep = Math.ceil(nmApp / wgSize(cur[K_GRADSB[0]]));
   const expMarch = Math.ceil((sideApp * sideApp) / wgSize(cur["selftest :: fieldLine"]));
   const bandPasses = (DISP || []).filter(c => c.length > 1);
+  // the sequence the sweep's pass must be, built from the app's own grid and the pipeline
+  // NAMES it compiled -- four chunks of (prep, z, columns, rows) at two lanes, then one march
+  const gg = env.run("function(){ const g = solver.g;"
+    + " return { nmp: g.nmp, nz: g.nz, nky: g.nky, nx: g.nx }; }");
+  const wantSeq = [];
+  for (let k = 0; k < OFF.NPAIR; k++)
+    wantSeq.push(["prepGradsBand" + k, expPrep, 1], ["zInv", gg.nmp, 2],
+                 ["colsInv", gg.nz * gg.nky, 2], ["rowsC2R", gg.nz * gg.nx, 2]);
+  wantSeq.push(["fieldLine", expMarch, 1]);
+  const want = JSON.stringify(wantSeq);
   let badd = 0, firstd = "";
   for (const c of bandPasses) {
-    const first = c[0], last = c[c.length - 1];
-    const good = !!first && !!last && first[0] === expPrep && first[1] === 1 &&
-                 last[0] === expMarch && last[1] === 1;
-    if (!good && !badd++)
-      firstd = "prep " + JSON.stringify(first) + ", march " + JSON.stringify(last);
+    if (JSON.stringify(c) !== want && !badd++) firstd = JSON.stringify(c);
   }
-  ok("(f) DISPATCHED: every per-band pass dispatches ceil(nm/64) workgroups for the banded "
-     + "prep and ceil(GEN_SIDE^2/64) for the march (sizes read off the app's own kernels)",
+  ok("(f) DISPATCHED: every per-band pass IS the gradient chain, pair by pair -- four "
+     + "(banded prep, zInv, colsInv, rowsC2R) at two lanes, then the march (every name and "
+     + "extent read off the app's own kernels and grid)",
      bandPasses.length > 2 && badd === 0,
-     bandPasses.length + " band passes, want prep=" + expPrep + " march=" + expMarch
+     bandPasses.length + " band passes; want " + want
      + (firstd ? "; first bad: " + firstd : ""));
 }
 

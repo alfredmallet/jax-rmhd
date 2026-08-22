@@ -2577,8 +2577,9 @@ async function fieldLineHook(sv) {
 // CALLER is what pauses the run (setRunning(false)) before it and resumes after — the
 // snapshot has to be frozen for the rows to be comparable, and pausing is a UI act, not a
 // solver one. Per band:
-//   band ends -> the sweep's Mode uniform  ->  the BAND-GATED prepGrads (its own pipeline;
-//   the RHS's is untouched)  ->  the same eight inverse transforms the RHS does  ->  the
+//   band ends -> the sweep's Mode uniform  ->  the BAND-GATED prepGrads, one pipeline per
+//   gradient pair (the RHS's four are untouched)  ->  the same per-pair inverse chain the
+//   RHS runs, through the same encoder  ->  the
 //   field-line march on GEN_SIDE^2 seeds  ->  flSmp back  ->  flSpectrum, the very Hann
 //   periodogram the "k∥ (field line)" spectrum curve is drawn from, so a row means exactly
 //   what that curve means and carries the same units.
