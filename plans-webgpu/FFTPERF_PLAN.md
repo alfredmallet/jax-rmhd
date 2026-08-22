@@ -304,9 +304,21 @@ post-A**: it clears the 30% `T_bf` bar on the 2D row kernels (35–39%), not on 
 (15–24%) nor on any column/z kernel; half the rows' `T_bf` is 5–8% of a 2D step, ~3.5% of 3D.
 **C goes ahead** (0.975× ≤ 1.03×). "Both dead" does not apply. The column and z kernels —
 18–36% of the step — are 76–100% memory floor (the strided `NKY`/`NMP` read) and outside this
-plan's reach; the audit's fuse/transpose route stays closed. Still to come: the phone's
-direction check (2D 256² `all` suffices); optional laptop cells 3D 64²×256 (the z kernel at
-its longest line) and 256²×64.
+plan's reach; the audit's fuse/transpose route stays closed.
+
+**Laptop, 3D 256²×64 (2026-08-21).** Whole step **99.355 ms** (48.4 GB/s, 9.53 G bf/s); the
+ten cells sum to 99.2% of it. Per kernel (µs, share of step): zInv 4,646 (14.0%), colsInv
+4,948 (14.9%), rowsC2R 8,558 (25.8%), rowsR2C 2,028 (6.1%), colsFwd 1,260 (3.8%), zFwd 1,182
+(3.6%), prepGrads 3,024 (9.1%), bracket 2,874 (8.7%), nlAssemble 1,216 (3.7%), stage 3,102
+(9.4%); all FFTs 68% (rows 32%, cols 19%, z 18%). Ladder (T_mem / T_bf / T_tw, %): rowsC2R
+52 / 13 / 34, rowsR2C 57 / 7 / 37, colsInv 97 / 1 / 1, colsFwd 97 / 0 / 3, zInv 102 / −3 / 1,
+zFwd 101 / −1 / 1. `T_tw` over a step ≈ 11.7% (upper bound), `T_bf` ≈ 3.8%. Grad chain:
+batch 8 = 18,780 µs, 4 × batch 2 = 18,530 → **0.987×**. The 256-point row lines carry the
+largest transcendental share measured anywhere (34–37%) with the smallest butterfly share
+(7–13%): A is carried by the row kernels at every grid on both pages, B has nothing to take
+in 3D, C stays under its bar. Laptop complete; 3D 64²×256 not run (the z kernel at its
+longest line — optional, the z kernels show a pure memory floor at every measured grid).
+Still to come: the phone's direction check (2D 256² `all` suffices).
 
 ## 5. Phase 2A — the twiddle table
 
