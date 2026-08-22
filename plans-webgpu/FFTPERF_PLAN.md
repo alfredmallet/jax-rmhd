@@ -318,7 +318,29 @@ largest transcendental share measured anywhere (34–37%) with the smallest butt
 (7–13%): A is carried by the row kernels at every grid on both pages, B has nothing to take
 in 3D, C stays under its bar. Laptop complete; 3D 64²×256 not run (the z kernel at its
 longest line — optional, the z kernels show a pure memory floor at every measured grid).
-Still to come: the phone's direction check (2D 256² `all` suffices).
+
+**Phone, `apple apple apple apple` (Safari), 2D 256² and 3D 128²×64 (2026-08-21).** Safari
+quantizes `performance.now()` to 1 ms, so per-dispatch cells resolve to 20 µs at reps 50:
+the 2D 256² ladder (cells of 20–260 µs) is ±1 quantum and is NOT read for shares; the 3D
+cells are hundreds to thousands of µs and are. Whole step 1.75 ms (2D 256², 40.7 GB/s,
+6.76 G bf/s — 1.16× the laptop) and 35.15 ms (3D, 34.4 GB/s, 6.09 G bf/s — 1.38× the
+laptop); the ten 3D cells sum to 99% of the step. 3D ladder (T_mem / T_bf / T_tw, %): zInv
+82 / 13 / 5, colsInv 70 / 24 / 6, rowsC2R 68 / 26 / 6, rowsR2C 69 / 27 / 4, colsFwd
+71 / 25 / 4, zFwd 76 / 19 / 5. Grad chain: batch 8 = 7,400 µs, 4 × batch 2 = 7,400 →
+**1.00×**. (2D 256² whole step per kernel, ±20 µs: rowsC2R 260, colsInv 140, rowsR2C 60,
+colsFwd 40, the four non-FFT kernels 20 each.)
+
+**The phone disagrees with the laptop in direction on A**: `T_tw` is 4–6% on every kernel
+(laptop rows 25–37%), `T_bf` 13–27% on every kernel (laptop: rows 24–39%, cols/z ~0), the
+memory floor 68–82% (laptop: rows 32–57%, cols/z 76–102%). Likely cause, unmeasured: the
+browser's fast-math policy (WebKit → Metal with hardware sin/cos; Dawn → precise software
+sin/cos), not the GPU — which would also make the phone's transform the less accurate one
+today; the analytic self-test row's relL2 on both devices is the one-click check. Verdicts
+with both devices: **A** go on the laptop (realistic ~10% 2D, ~6% 3D), ≤5% ceiling and a
+possible small regression on the phone — 2A's timing gate becomes two-sided (laptop gain
+≥ 0.7·T_tw on the row kernels; phone whole step ≤ 1.02×; analytic relL2 not worse on
+either); **B** held (under the bar on the phone everywhere, marginal on the laptop); **C** go
+(1.00× phone, 0.975–0.987× laptop). §9.1 raised to Alfred.
 
 ## 5. Phase 2A — the twiddle table
 
