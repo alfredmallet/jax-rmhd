@@ -32,10 +32,23 @@ Inherited from `plans/MEMORY_PERF_PLAN.md` §0, restated where they bite here:
    drift is a bug or a §9 decision for Alfred, never a reason to regenerate — and never a
    reason to restructure floating-point op order to make a comparator clean (bitwise gates
    are evidence, not a goal; MEMORY_PERF_PLAN §0.3).
-4. **Memory is a gate too.** `tests/test_hoist_propagator.py::test_unhoisted_graph_stays_memory_light`
-   stays green, and the phases that touch compiled graphs (C, L) compare the probe
+4. **No performance impact — speed or memory — and it is gated, not asserted.** Memory:
+   `tests/test_hoist_propagator.py::test_unhoisted_graph_stays_memory_light` stays green,
+   and the phases that touch compiled graphs (C, L) compare the probe
    (`bench/memory_probe.py`, laptop profile, both precisions) against the Phase-0 JSON to
-   ≤ 0.05 u per case.
+   ≤ 0.05 u per case. Speed: wall-clock on a shared laptop is too noisy to be a gate, so
+   the gate is the compiled graph itself — the Phase-0 reference records, per config, the
+   opcode histogram (count per HLO op type, plus total instruction and fusion counts) of
+   the optimized HLO of the jitted `block_of_steps`, and `tests/test_refactor_reference.py`
+   asserts it unchanged. Bitwise-identical output AND an identical op histogram means the
+   same compute, hence the same step time. The one allowed difference is Phase G's: in
+   configs with an inactive term, FEWER `add`/`broadcast`/`constant` ops and nothing
+   else (G records the before/after counts in its notes; the reference is then
+   regenerated for the histogram only, fields untouched, as a dated §10 note). After the
+   final merge one quiet-machine ms/step run of the probe against the Phase-0 JSON is the
+   sanity check (expected within noise, ±3%; quoted as measured against that named
+   reference, never chained). Python-side cost (properties on `Parameters`, NamedTuple
+   construction, trace-time term filtering) is paid once per trace, not per step.
 5. **Disjoint file ownership.** Four agents edit one tree's history concurrently; §6 is the
    ownership table and it is binding. A needed edit to a file you do not own is a message to
    the overseer, not an edit. Shared docs (CLAUDE.md, docs/*.md, this file) are the
@@ -74,7 +87,12 @@ named scheme and dt mode:
 | `gdi2d_fixed_lsrk33` | GDI 2D, fixed dt, IF | putzer2 under IF, `_lin_dt_safety` not engaged |
 | `gdi3d_fixed_imexcb3e` | GDI 3D z_spectral, fixed dt, 16²×8 | z-extent L, `D_par·kz²` |
 
-The npz stores `fields` and `t` per key. The test asserts `np.array_equal` at fp64 AND fp32
+The npz stores `fields` and `t` per key, and — the speed gate, §0.4 — the opcode histogram
+of the optimized HLO of the jitted `block_of_steps` for that config
+(`jitted.lower(...).compile().as_text()`, instructions counted by opcode inside and
+outside fusions, plus total instruction and fusion counts; `bench/hlo_audit.py` already
+parses HLO text — reuse its approach), stored as a JSON sidecar
+`tests/data/refactor_reference_hlo_fp{64,32}.json`. The test asserts `np.array_equal` at fp64 AND fp32
 on the recording machine (jax 0.10.0, the M1 laptop), under gate 6's host convention:
 the npz records `hostname`/`jax_version`/`platform`/`python_version` and the test
 print-skips (not fails) when any of the four differs — copy that logic from
@@ -424,9 +442,11 @@ reboot.
 **Gate list for every phase branch** (all must be green, none may be skipped or loosened):
 `make test` (fp64 and fp32 sessions); `tests/test_refactor_reference.py`,
 `tests/test_particles_coupled.py` (gate 6 and 6c), `tests/test_forcing_spinup.py`,
-`tests/test_precision_fp32.py` bitwise with no regeneration; `tests/test_hoist_propagator.py`
-including the memory-light gate; for C and L the probe comparison ≤ 0.05 u per case against
-`bench/memory_probe_refactor_base*.json`; `ruff` clean as the CI workflow runs it.
+`tests/test_precision_fp32.py` bitwise with no regeneration; the HLO opcode histograms in
+`tests/test_refactor_reference.py` unchanged (G: fewer adds only, §0.4);
+`tests/test_hoist_propagator.py` including the memory-light gate; for C and L the probe
+comparison ≤ 0.05 u per case against `bench/memory_probe_refactor_base*.json`; `ruff`
+clean as the CI workflow runs it.
 
 ## 9. Decisions for Alfred
 
