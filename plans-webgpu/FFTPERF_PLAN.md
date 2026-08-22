@@ -699,3 +699,13 @@ campaign still the two proxy cells with their note), so the browser had served t
 scripts — a stale cache or a reload before the Pages deploy finished. A genuine after-run
 is one whose `whole` record says `bytes_per_step: 77549568` and whose `chains` record has
 the single `gradient chain` cell. Gate pending.
+
+**Genuine after-run (2026-08-22, hard-reloaded, `chains` showing the single `gradient
+chain` cell): bitwise gate PASSED** — all 32 lane digests and the four `hash_all` equal the
+table, compared by script. **Timing: the `gradient chain` cell FAILS its ≤ 1.03× bar** —
+5,520 µs against 4,720 (**1.17×**) at 128²×64, 21,740 against 18,780 (**1.16×**) at 256²×64.
+The Phase 1 proxy (0.975×/0.987×) was the cache-optimistic one the record warned about; the
+real per-pair chain is 4× the dispatches (16 per stage against 4) and `prepGrads` moves
+1.5× the bytes (Appendix A). The chain is ~18.5% of the 3D step, so the predicted whole-step
+ratio is ~1.03 at both grids — measurement pending, and the decision (§9.3: the ceiling
+against the cost, per device) is raised with it.
