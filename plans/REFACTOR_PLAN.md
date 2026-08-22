@@ -470,5 +470,19 @@ shared tree.
 
 ## 10. Results
 
-(filled by the overseer at close-out: base SHA, per-phase gate numbers, drift findings,
-what the sweep changed, what moved to `plans/old/`)
+**Phase 0 (2026-08-22).** `b4de4d5` (0a+0b) and `3073df4` (0c) — **the fan-out base is
+`3073df4`**; worktrees `/private/tmp/taranis-wt-{L,G,R,C}` on branches `refactor/{L,G,R,C}`.
+Twelve-config reference recorded on Alfreds-MacBook-Pro.local / jax 0.10.0 / cpu / py
+3.11.5, determinism double-record bitwise (24 arrays + 12 HLO histograms, both
+precisions); probe baseline 28 cases per precision. `make test` at 0c: fp64 247 passed /
+23 skipped, fp32 224 / 46. Gate 6, spinup, fp32 and the new reference all green after 0c
+with no regeneration; the three new restart tests and the widened gate 6c fail on the
+unfixed tree. Side findings for the sweep (from `plans/refactor_notes/phase0.md`):
+CLAUDE.md's `GRAD_CHUNK` "bitwise identical" is one ulp too strong in 3D (637/2304
+elements at 1.1e-16 between chunk 1 and 2/4; 2D exact); under fp32, `t` is stored fp64
+but accumulates fp32-rounded `gamma*dt` increments in the IF steppers (0.059999998 after
+6×0.01) while imexcb3f reaches 0.06 exactly — `t` is a live comparator in the reference.
+Phase 0 review: pending.
+
+(per-phase gate numbers, drift findings, the sweep, and what moved to `plans/old/`: below
+as they land)
