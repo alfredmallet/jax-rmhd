@@ -69,7 +69,7 @@ out["fft_output"] = c2j(np.fft.rfft2(ftest))
 # ---- static grids the browser must reproduce ----
 out["dealias"] = np.asarray(kgrid.dealias, dtype=np.float64).tolist()
 out["fmask"] = np.asarray(kgrid.fmask, dtype=np.float64).tolist()
-out["lin_L"] = r2j(np.asarray(kgrid.lin_L[0, 0].real))   # -diss*ksq^hyper (diagonal, real)
+out["lin_L"] = r2j(np.asarray(kgrid.lin.L[0, 0].real))   # -diss*ksq^hyper (diagonal, real)
 
 # ---- initial condition (k-space, dealiased) ----
 state = initialize(ic, params)

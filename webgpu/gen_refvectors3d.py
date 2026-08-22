@@ -12,7 +12,6 @@ from taranis.run import initialize, _advance_forcing, _refresh_forcing_scale
 from taranis.timestepping import get_scheme
 from taranis.physics import equation_registry, construct_rhs
 from taranis.physics import rmhd, shared_physics
-from taranis.propagators import get_propagator
 from taranis.diagnostics import energy
 
 NX = NY = 16
@@ -81,7 +80,7 @@ out["A_forcing_B"] = c2j(A.forcing_state[:, 1])
 out["A_forcing_scale"] = r2j(A.forcing_scale)
 
 # ---- propagator vector: one exp(L*tau) application ----
-prop = get_propagator(kgrid, params)
+prop = kgrid.lin
 tau = 0.1
 out["prop_in"] = out["A_fields_k"]
 out["prop_tau"] = tau

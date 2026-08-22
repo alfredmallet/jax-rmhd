@@ -109,20 +109,56 @@ putzer2 gap the memory-light gate measures is therefore intact at the graph leve
   op-by-op evaluation, not a Phase-L effect. Test 2 asserts bitwise on the elementwise
   backends and round-off there, with the reason in the check line.
 
-## Consumers OUTSIDE the L ownership row that now need an edit
+## The webgpu reference-vector generators
 
-None of these is touched on this branch (§6 forbids it), none is reached by `make test`
-(`testpaths = ["tests"]`) or by `ruff check .` (pyflakes does not resolve attributes), and
-all three break at runtime as they stand:
+Added to the L row by the overseer after the first review pass, and done in the follow-up
+commit:
 
-- `bench/step_accounting.py:196,200,204,253-254` — monkeypatches `propagators.SeparablePropagator`,
-  `Putzer2Propagator`, `DiagonalPropagator`, `IdentityPropagator` (`.exp_op` in the
-  `noexpform` ablation and in the scoped-timer wiring). Rename to the four `*Operator`
-  classes / `SeparableL`, and the `noexpform` lambda's `self.sep.dperp/dz/kz` become
-  `self.dperp/dz/kz`. The `*Exp` classes it also patches are unchanged.
-- `webgpu/gen_refvectors3d.py:15,84` — `from taranis.propagators import get_propagator`,
-  `prop = get_propagator(kgrid, params)` → `prop = kgrid.lin` (drop the import).
-- `webgpu/gen_refvectors.py:72` — `kgrid.lin_L[0, 0].real` → `kgrid.lin.L[0, 0].real`.
+- `webgpu/gen_refvectors3d.py` — the `from taranis.propagators import get_propagator` import
+  dropped, `prop = get_propagator(kgrid, params)` → `prop = kgrid.lin`.
+- `webgpu/gen_refvectors.py` — `kgrid.lin_L[0, 0].real` → `kgrid.lin.L[0, 0].real`.
+
+Both were run end to end (32² 2D and 16²×8 z_spectral, seconds each) and produce their JSON.
+**Their output is byte-identical to the same generators run on the Phase-0 base `3073df4`**
+(`git archive` copy in a scratch dir, `PYTHONPATH` at that copy, `cmp` clean on both files;
+md5 `fecc1d07…` / `338b3e54…` from both trees). The regenerated `webgpu/refvectors.json` and
+`webgpu/refvectors3d.json` were restored with `git checkout --` and are NOT part of any
+commit here — the tracked assets keep their committed md5s `ecb55bbd…` / `4831609b…`.
+
+Aside, pre-existing and NOT Phase L's: a fresh run on this laptop does not reproduce the
+committed assets bit for bit — 17 of 36 keys in the 2D file and 27 of 46 in the 3D one differ
+at relative 1e-15…1e-16. The give-away is `fft_input`, a pure `np.sin/np.cos` expression with
+no taranis in it, differing by 1 ulp on 84 of 1024 elements: the committed vectors were
+recorded on a different machine or library build. The browser self-test compares with
+fp32-appropriate tolerances, so this is harmless, but it means those two JSONs are not a
+bitwise gate for anything.
+
+Note for anyone rerunning them from a worktree: `python webgpu/gen_refvectors.py` puts
+`webgpu/` on `sys.path[0]`, so `import taranis` resolves to the editable install (the shared
+main tree), not the worktree. Run with `PYTHONPATH=<worktree>`.
+
+## Consumers OUTSIDE the L ownership row that still need an edit
+
+`bench/step_accounting.py` is **deferred** by the overseer: Phase G is editing it concurrently
+(lines 167/260) and these hunks would conflict at rebase. To be applied on `main` after L and
+G are both merged. Not reached by `make test` (`testpaths = ["tests"]`) nor by `ruff check .`
+(pyflakes does not resolve attributes), so no gate catches it; it breaks at runtime as it
+stands. The exact edit list:
+
+- line 196: `(propagators.SeparablePropagator,` → `(propagators.SeparableL,`
+- lines 198-199, the `noexpform` lambda's body for that entry:
+  `jnp.ones_like(self.sep.dperp)` → `jnp.ones_like(self.dperp)`,
+  `jnp.ones_like(self.sep.dz)` → `jnp.ones_like(self.dz)`,
+  `jnp.zeros_like(self.sep.kz)` → `jnp.zeros_like(self.kz)`
+- line 200: `(propagators.Putzer2Propagator,` → `(propagators.Putzer2Operator,`
+- line 204: `(propagators.DiagonalPropagator,` → `(propagators.DiagonalOperator,`
+- lines 253-254: `for cls in (propagators.SeparablePropagator, propagators.Putzer2Propagator,
+  propagators.DiagonalPropagator, propagators.IdentityPropagator):` →
+  `SeparableL, Putzer2Operator, DiagonalOperator, IdentityOperator`
+
+The `*Exp` classes it also monkeypatches (lines 190-192, 251-252) are unchanged, and
+`cls.exp_op = ...` / `cls.apply = ...` assignment still works: a `typing.NamedTuple`
+subclass is an ordinary class at runtime. `step_accounting.py` reads no `lin_*` slot.
 
 Comment-only, cosmetic, no runtime effect: `tests/test_dissipation.py:3` and
 `tests/test_time_order.py:13` say `kgrid.lin_L` in their header prose, and
