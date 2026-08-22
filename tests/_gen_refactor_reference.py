@@ -119,11 +119,12 @@ def hlo_reference_path(precision=None):
                         f"refactor_reference_hlo_fp{prec}.json")
 
 
-# one HLO instruction line: "%name = shape opcode(operands...)". The shape may itself
-# contain spaces (tuple types), so the opcode is the last token before the paren.
-# bench/hlo_audit.py's scan; matching every line of the module counts fusion bodies
-# (their own computations) along with the entry computation.
-_HLO_INSTR = re.compile(r"^\s*%?(\S+) = (.+?) ([a-z0-9\-]+)\(")
+# one HLO instruction line: "%name = shape opcode(operands...)", with the optional ROOT
+# prefix each computation's final instruction carries. The shape may itself contain spaces
+# (tuple types), so the opcode is the last token before the paren. bench/hlo_audit.py's
+# scan; matching every line of the module counts fusion bodies (their own computations)
+# along with the entry computation.
+_HLO_INSTR = re.compile(r"^\s*(?:ROOT\s+)?%?(\S+) = (.+?) ([a-z0-9\-]+)\(")
 
 
 def hlo_histogram(text):

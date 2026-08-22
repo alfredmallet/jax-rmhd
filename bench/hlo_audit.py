@@ -116,7 +116,7 @@ lines = text.splitlines()
 COLLECTIVES = ("all-reduce", "collective-permute", "all-gather", "reduce-scatter",
                "all-to-all", "collective-broadcast")
 # shape may be a tuple type containing spaces, e.g. "(f32[2]{0}, f32[2]{0})"
-op_re = re.compile(r"^\s*%?(\S+) = (.+?) ([a-z0-9\-]+)\(")
+op_re = re.compile(r"^\s*(?:ROOT\s+)?%?(\S+) = (.+?) ([a-z0-9\-]+)\(")
 by_op = collections.Counter()
 instrs = []          # (index, name, shape, opcode)
 for i, line in enumerate(lines):

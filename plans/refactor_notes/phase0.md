@@ -38,22 +38,23 @@ Two independent recordings per precision, separate processes, compared bitwise:
 
 | config | t_final (fp64) | HLO instrs / fusions (fp64) | (fp32) |
 |---|---|---|---|
-| fd_fixed_lsrk54 | 0.06 | 2913 / 104 | 2247 / 104 |
-| fd_cfl2_lsrk33 | 0.2973286 | 3096 / 115 | 2431 / 115 |
-| fd_adapt_rk44 | 0.29090542 | 3854 / 127 | 3188 / 127 |
-| sep_fixed_lsrk54 | 0.06 | 2949 / 105 | 2283 / 105 |
-| put_cfl2_lsrk54 | 0.29579613 | 4372 / 140 | 3707 / 140 |
-| put_cfl2_lsrk54_nohoist | 0.29579613 | 3506 / 124 | 2841 / 124 |
-| put_adapt_lsrk33_unrolled | 0.28895684 | 3574 / 117 | 2910 / 117 |
-| rmhd2d_adapt_lsrk33_mom | 0.16124561 | 2627 / 92 | 1962 / 92 |
-| rmhd2d_fixed_imexcb3f | 0.06 | 3585 / 111 | 2918 / 111 |
-| gdi2d_fixed_imexcb3e | 0.06 | 552 / 28 | 552 / 28 |
-| gdi2d_fixed_lsrk33 | 0.06 | 1295 / 52 | 1296 / 52 |
-| gdi3d_fixed_imexcb3e | 0.06 | 552 / 28 | 552 / 28 |
+| fd_fixed_lsrk54 | 0.06 | 3040 / 110 | 2374 / 110 |
+| fd_cfl2_lsrk33 | 0.2973286 | 3239 / 122 | 2574 / 122 |
+| fd_adapt_rk44 | 0.29090542 | 4003 / 132 | 3337 / 132 |
+| sep_fixed_lsrk54 | 0.06 | 3077 / 111 | 2411 / 111 |
+| put_cfl2_lsrk54 | 0.29579613 | 4540 / 147 | 3875 / 147 |
+| put_cfl2_lsrk54_nohoist | 0.29579613 | 3658 / 131 | 2993 / 131 |
+| put_adapt_lsrk33_unrolled | 0.28895684 | 3713 / 122 | 3049 / 122 |
+| rmhd2d_adapt_lsrk33_mom | 0.16124561 | 2744 / 98 | 2079 / 98 |
+| rmhd2d_fixed_imexcb3f | 0.06 | 3716 / 116 | 3049 / 116 |
+| gdi2d_fixed_imexcb3e | 0.06 | 587 / 30 | 587 / 30 |
+| gdi2d_fixed_lsrk33 | 0.06 | 1354 / 54 | 1355 / 54 |
+| gdi3d_fixed_imexcb3e | 0.06 | 587 / 30 | 587 / 30 |
 
 Every config's fields are finite; the hoisted and unhoisted putzer2 cells agree bitwise in
-fields (as `test_hoist_propagator` claims) and differ by 866 instructions / 16 fusions in
-the graph, which is the memory-light difference the knob exists for.
+fields (as `test_hoist_propagator` claims) and differ by 882 instructions / 16 fusions in
+the graph, which is the memory-light difference the knob exists for. The HLO counts are
+ROOT-inclusive (see the review section).
 
 ### Teeth
 
@@ -112,21 +113,35 @@ skips (`fp32`/`fp64`/`multidev`/`mpi`), unchanged from before Phase 0.
 
 ## Bitwise-adjacent observations
 
-1. **`GRAD_CHUNK` is not bitwise across chunk sizes in 3D on this host.** CLAUDE.md says
-   "All values are bitwise identical and `4` reproduces the pre-F1 graph byte-exactly".
-   Measured here (jax 0.10.0 / CPU / fp64, 16²×8 FD-z, 6 steps): `GRAD_CHUNK` 2 and 4 both
-   differ from 1 in 637 of 2304 elements, max 1.42e-14, rel 1.08e-16 — one ulp, the fusion
-   class. The 2D config is exactly bitwise at every chunk size. Nothing depends on this
-   (the default is 1 everywhere) but the CLAUDE.md sentence is stronger than the machine.
-2. **`t` is not always the same fp64 number across schemes at fp32.** At
-   `TARANIS_PRECISION=32` the IF schemes accumulate `t` to 0.059999998 over 6 fixed steps
-   of 0.01 while `imexcb3f` lands on exactly 0.06, and `gdi2d_fixed_lsrk33` on 0.059999999.
-   `t` is documented as always fp64; the difference is the dt the stepper adds being cast
-   to the field precision on some paths. Recorded as found — the reference pins whatever
-   each path does — but a later phase that touches `timestepping.py` should expect `t` to
-   be a live comparator, not a formality.
-3. Hoisted vs unhoisted putzer2 is bitwise in fields but a 25 % larger graph
-   (4372 vs 3506 instructions at fp64), consistent with `test_unhoisted_graph_stays_memory_light`.
+1. **`GRAD_CHUNK` leaves the gradient bitwise but the stepped solution 1 ulp off in 3D.**
+   CLAUDE.md's "All values are bitwise identical" is TRUE of what it describes:
+   `tests/test_grad_memory.py` pins `grad_fields`' OUTPUT as bitwise across chunk sizes,
+   and it is. What is not bitwise is the SOLUTION after stepping: measured here (jax
+   0.10.0 / CPU / fp64, 16²×8 FD-z, 6 steps) `GRAD_CHUNK` 2 and 4 both differ from 1 in
+   637 of 2304 elements, max 1.42e-14, rel 1.08e-16 — one ulp, arriving downstream through
+   XLA fusing the restacked gradient differently inside the step. The 2D config is exactly
+   bitwise at every chunk size. Nothing depends on it (the default is 1 everywhere); it is
+   worth a sentence only so a future reader does not take the gradient gate as a
+   whole-solver guarantee.
+2. **`t` is not the same fp64 number across IF paths at fp32, and `lsrk_scan` changes it.**
+   Measured over 6 fixed steps of `dt = 0.01` at `TARANIS_PRECISION=32`:
+
+   | path | final `t` |
+   |---|---|
+   | lsrk54, `lsrk_scan=True` | 0.05999999830964953 |
+   | lsrk33, `lsrk_scan=True` | 0.05999999865889549 (= 6·fp32(0.01)) |
+   | lsrk54, `lsrk_scan=False` | 0.060000000000000005 |
+   | rk44, imexcb3f | exactly 0.06 |
+
+   Mechanism: `timestepping.py:114-116,139` — `gammas_arr` is built at FIELD precision, so
+   `gamma*dt` is a weakly-typed fp32 product that is then added to the fp64 `t`. Both the
+   scheme and the stage-loop structure therefore move `t` at fp32, which is why
+   `lsrk_scan` True and False disagree in `t` there. Pre-existing, not introduced by Phase
+   0; the reference pins whatever each path does. A phase touching `timestepping.py`
+   should expect `t` to be a live comparator, not a formality.
+3. Hoisted vs unhoisted putzer2 is bitwise in fields but a larger graph (4540 vs 3658
+   instructions at fp64, ROOT-inclusive), consistent with
+   `test_unhoisted_graph_stays_memory_light`.
 
 ## Proposed CLAUDE.md wording (for the close-out sweep)
 
@@ -151,3 +166,45 @@ skips (`fp32`/`fp64`/`multidev`/`mpi`), unchanged from before Phase 0.
   force-added) pin twelve solver paths — 3D FD-z, z_spectral separable and putzer2, GDI IF
   and IMEX, adaptive/cfl-block/fixed dt, rk44, imexcb3f, hoist on/off — bitwise in fields
   and t AND in the optimized-HLO opcode histogram."
+
+## Review fix (Phase 0 review)
+
+The HLO instruction regex — taken from `bench/hlo_audit.py:119`, which has the same bug —
+never matched XLA's `ROOT %name = shape op(...)` lines, so every computation's final
+instruction went uncounted. Fixed in both files by one token,
+`^\s*(?:ROOT\s+)?%?(\S+) = ...`.
+
+Verified against two real optimized-HLO dumps: every `ROOT` line now matches and none
+matched before, and the only line containing `" = "` that the regex still does not match
+is the `HloModule` header, i.e. matched now equals the instruction lines exactly.
+
+| config | ROOT lines | before | after (= instruction lines) | fusions before → after |
+|---|---|---|---|---|
+| `gdi2d_fixed_imexcb3e` | 35 | 552 | 587 (of 588 `" = "` lines) | 28 → 30 |
+| `fd_fixed_lsrk54` | 127 | 2913 | 3040 (of 3041 `" = "` lines) | 104 → 110 |
+
+Missed instructions included both `while` loops, 3 `exponential`, 2 `reduce` and several
+fusions — exactly the ops a structural refactor would move, so the gate was materially
+blunt before this.
+
+Only the two HLO sidecars were regenerated (the generator takes the npz path and the JSON
+path as its two arguments, so the JSON can be rewritten alone). The npz files are
+untouched, byte for byte:
+
+| file | sha256 before | sha256 after |
+|---|---|---|
+| `refactor_reference_fp64.npz` | `f5b19b56d4123c89822dbfdcb20511adf5d75c45cb94b3aa6110e942fe8c386d` | *(identical)* |
+| `refactor_reference_fp32.npz` | `294cb946157b9d7f363561748355a4d2518f3d6e6223ca47e12e927f937569d6` | *(identical)* |
+
+Determinism re-confirmed on the new parse: two more independent recordings per precision
+agree on all 12 histograms and all 24 arrays, and the freshly computed arrays are bitwise
+equal to the committed npz — which is the direct evidence the npz did not need rewriting.
+
+The sidecars' `git_commit` field now reads `cb9e22b` (the plans-only commit that was
+HEAD while they were recorded) while the npz files still read `4fe4841`; both are only
+printed, never compared.
+
+Also cosmetic, same commit: the `t`-mismatch diagnostic in
+`tests/test_refactor_reference.py` printed 0-d arrays at numpy's 8-digit repr
+(`array(0.2973286) vs array(0.2973286)` on a real failure) and now prints `%.17g` of
+`float(...)` on both sides.

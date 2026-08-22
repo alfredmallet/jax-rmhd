@@ -95,7 +95,8 @@ def test_solver_paths_match_the_phase0_reference():
                           f"{float(np.max(d) / np.max(np.abs(want_f))):.3e}")
             c.check(f"{name}: fields bitwise identical to the reference", same, detail)
             c.check(f"{name}: t bitwise identical to the reference",
-                    got["t"] == want_t, f"{got['t']!r} vs {want_t!r}")
+                    got["t"] == want_t,
+                    "%.17g vs %.17g" % (float(got["t"]), float(want_t)))
 
 
 def _opcode_diff(got, want):
