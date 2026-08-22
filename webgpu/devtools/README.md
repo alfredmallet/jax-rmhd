@@ -22,7 +22,12 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   text with a sign flip, a pair built from the wrong field, swapped lanes, the eight-lane
   emission left in place, a missing pair and a pair that is the whole text; on the 2D list,
   a page that has started emitting pairs, one emitting pairs beside the whole-stack kernel,
-  and one whose text is not base's — each must come back named.
+  and one whose text is not base's — each must come back named. `CHUNKS` is not the only
+  place a page's chunk list is assumed: `checkiso` leg 2b builds its own cases from it and
+  reads the 3D list as four ONE-PAIR chunks, `check2dspec` leg 3 executes the banded
+  emissions with a two-lane `outg` buffer, and both bench specs take their lane count `gl`
+  and read count `gf` off `gc[0]` alone, i.e. assume every chunk of a page is the same
+  width — so a change to `GRAD_CHUNKS_2D` / `GRAD_CHUNKS_3D` is a change to those too.
 - `stubenv.js` — the shared stub: a DOM + WebGPU stub good enough to run a real app
   page (the classic `<script src>` files the page's own markup names, in document order —
   common.js + physics.js, plus solver2d.js on the 2D page — then its inline script) under
@@ -88,7 +93,7 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   2D, 64²×32 through 256²×64 plus 64²×128 and 64²×256 in 3D — and it has to stay that way:
   a kernel that differs only at a line length the dump never visits (the 1024 row, the long
   z pass) is invisible to the byte-diff, whatever else is green. 155 kernels on rmhd2d,
-  378 on rmhd3d.
+  420 on rmhd3d.
 - `wgslparse.mjs` — parse all emitted kernels with wgsl_reflect (closest available
   compile check; npm i wgsl_reflect first, or `WGSL_REFLECT=<path-to-wgsl_reflect.module.js>`,
   the same idiom names.mjs uses for acorn).
@@ -803,9 +808,9 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   group it names must be one the solver's own `step()` dispatched, at the spec's extent and
   lane count, with the FFT cells' `bufs` equal to that bind group's buffers in binding
   order — and every byte-table entry dispatched exactly `n` times (a spec name may stand for
-  a GROUP of pipelines built from one template, as the four `prepGrads` do, and the group is
-  counted together), with nothing dispatched
-  the table has neither counted nor excused and each excused kernel dispatched exactly as
+  a GROUP of pipelines built from one template, as the 3D page's four `prepGrads` do, and
+  the group is counted together), with nothing dispatched the table has neither counted nor
+  excused and each excused kernel dispatched exactly as
   often as the table assumes. Since FFTPERF_PLAN 2C the same leg pins the chain's WIRING,
   which nothing else can see: its row-kernel dispatches bind `realGrads` at
   `2·(first pair)·nr·4` with `size 2·(pairs)·nr·4` — one window per CHUNK of the page's own

@@ -137,9 +137,8 @@ const GRAD_PAIRS = [
   { of: "vort", src: "phi", expr: "-g.z * phi" },
   { of: "jpar", src: "psi", expr: "-g.z * psi" }
 ];
-// how many pairs one dispatch of the kernel above does, per page (FFTPERF_PLAN 2C):
-// the 2D page does all four at once -- one dispatch, the eight-lane stack, and the kernel
-// text it had before the phase -- and the 3D page one pair per dispatch.
+// how many pairs one dispatch of the kernel above does, per page: the 2D page all four at
+// once (one dispatch, the eight-lane stack), the 3D page one pair per dispatch.
 const GRAD_CHUNKS_2D = [[0, 1, 2, 3]];
 const GRAD_CHUNKS_3D = [[0], [1], [2], [3]];
 // the emitted kernel's name suffix for chunk i: a page with a single chunk keeps the plain
@@ -148,8 +147,7 @@ const gradChunkSuffix = (chunks, i) => (chunks.length > 1 ? String(i) : "");
 // where chunk `ch`'s lanes start inside the eight-lane real-space gradient stack, and how
 // wide they are. The row kernel reaches them as its target binding's OFFSET and SIZE, which
 // is why its text is the same for every chunk -- so the offset has to meet the
-// storage-binding alignment every backend asks for (256 bytes; any nr >= 32 does, and both
-// apps' smallest grid is 128^2).
+// storage-binding alignment (256 bytes).
 function gradChunkWindow(nr, ch) {
   const off = 2 * ch[0] * nr * 4;
   if (off % 256) throw new Error("realGrads chunk offset " + off
