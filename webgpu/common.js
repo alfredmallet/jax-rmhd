@@ -8891,6 +8891,10 @@ function wireTestButton(fn) {
 // The per-kernel and ladder campaigns run kernels on the SOLVER'S OWN buffers, so the
 // fields are garbage afterwards; each of those campaigns ends by calling solver.setIC().
 //
+// The grads hash campaign times nothing: it re-applies the page's IC, encodes ONE
+// gradient chain and hashes the real-space gradients it leaves, so two page loads -- or
+// two revisions of the chain -- can be compared lane by lane through their digests.
+//
 // The per-page half -- which kernels, over which buffers, at which dispatch shape, and
 // the step's dispatch list the byte count is summed from -- lives in each app's own
 // script (benchSpec2D / benchSpec3D); everything below is dimension-agnostic.
@@ -8928,6 +8932,25 @@ function benchLoop(cell, reps) {
   for (let i = 0; i < reps; i++) p.dispatchWorkgroups(cell.d[0], cell.d[1] || 1);
   p.end();
   device.queue.submit([enc.finish()]);
+}
+// ONE dispatch of one cell, its pipeline and bind group set from the cell itself: a page
+// whose spec builds a chain out of its own cells encodes it through this (benchLoop sets
+// the pair once and repeats the dispatch instead).
+function benchDispatch(pass, cell) {
+  pass.setPipeline(cell.pipe);
+  pass.setBindGroup(0, cell.bg);
+  pass.dispatchWorkgroups(cell.d[0], cell.d[1] || 1);
+}
+// 32-bit FNV-1a over the bytes of a Uint32Array, each word taken low byte first by SHIFT
+// rather than through a byte view, so the digest of a readback does not depend on the
+// device's endianness. Returned unsigned.
+function benchHash32(u) {
+  let h = 2166136261;
+  for (let i = 0; i < u.length; i++) {
+    const w = u[i];
+    for (let s = 0; s < 32; s += 8) h = Math.imul(h ^ ((w >>> s) & 255), 16777619);
+  }
+  return h >>> 0;
 }
 // re-emit a page's kernels with a ladder probe in force. FFT_PROBE is the seam, set
 // only here and only around this one call, so nothing the app builds can see it.
@@ -9059,9 +9082,31 @@ async function benchChains() {
   rec.cells = cells;
   return rec;
 }
+// the real-space gradients one gradient chain produces, hashed lane by lane.
+// The page's own IC is applied first and the chain encoded is the one the RHS encodes,
+// so the digest is a function of (page, IC, resolution, device) alone -- which is what
+// makes it a comparison across a change to the chain rather than a timing.
+async function benchGrads() {
+  const spec = benchSpec(), c = spec.grads;
+  await benchRestore();
+  const enc = device.createCommandEncoder();
+  const p = enc.beginComputePass();
+  c.encode(p);
+  p.end();
+  device.queue.submit([enc.finish()]);
+  const lane = c.bytes, n = c.lanes * lane, w = lane >> 2;
+  const f = await readBufOnce(device, c.buf, n);
+  const u = new Uint32Array(f.buffer, f.byteOffset, f.byteLength >> 2);
+  const lanes = [];
+  for (let i = 0; i < c.lanes; i++) lanes.push(benchHash32(u.subarray(i * w, (i + 1) * w)));
+  const rec = benchHead(spec, "grads hash");
+  rec.cells = [{ cell: "grads hash", bytes: n, lane_bytes: lane,
+                 hash_lane: lanes, hash_all: benchHash32(u) }];
+  return rec;
+}
 async function benchAll() {
   const parts = [];
-  for (const f of [benchWhole, benchKernels, benchLadder, benchChains]) parts.push(await f());
+  for (const f of [benchWhole, benchKernels, benchLadder, benchChains, benchGrads]) parts.push(await f());
   const rec = benchHead(benchSpec(), "all");
   rec.parts = parts;
   return rec;
@@ -9127,12 +9172,14 @@ function benchBuild(page) {
   btn("benchBtnKernels", "per kernel", benchKernels);
   btn("benchBtnLadder", "FFT ladder", benchLadder);
   if (page.chains) btn("benchBtnChains", "grad chain", benchChains);
+  btn("benchBtnGrads", "grads hash", benchGrads);
   btn("benchBtnAll", "all", benchAll);
   const clr = _mk("button", null, row);
   clr.id = "benchBtnClear"; clr.textContent = "clear";
   clr.onclick = () => { el("benchout").value = ""; el("benchstatus").textContent = "idle"; };
   window.bench = { whole: () => benchGo(benchWhole), kernels: () => benchGo(benchKernels),
                    ladder: () => benchGo(benchLadder), chains: () => benchGo(benchChains),
+                   gradsHash: () => benchGo(benchGrads),
                    all: () => benchGo(benchAll), spec: benchSpec, cfg: benchCfg,
                    text: () => el("benchout").value,
                    clear: () => { el("benchout").value = ""; } };

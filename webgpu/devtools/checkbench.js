@@ -11,7 +11,10 @@
 //        off (no steps, no render, no readStats) and leave the hero button paused, must
 //        let the frame ALREADY in flight finish before it times anything, and must
 //        restore through the page's own applyIC; and one cell must drain R + 1 times and
-//        report the median and min of the reps it kept, the first discarded.
+//        report the median and min of the reps it kept, the first discarded. The grads
+//        hash cell (FFTPERF_PLAN item C's instrument) gets its own leg: the digest
+//        against hand-computed FNV-1a values, the cell encoding the step's own gradient
+//        chain, and the byte length it reads back and hashes per lane.
 //   ii   fftKernel / fftRowPair with NO probe are byte-identical to the emission
 //        captured from the pre-phase tree (fixtures/fftkernel_<base>.json: every offered
 //        line length, both directions, with and without `lpb`), and so is the text the
@@ -82,7 +85,8 @@ async function legGate(page) {
      hasEl(env, "benchpanel") && hasEl(env, "benchout"),
      "panel " + hasEl(env, "benchpanel") + ", textarea " + hasEl(env, "benchout"));
   const api = env.sandbox.window.bench;
-  const want = ["whole", "kernels", "ladder", "chains", "all", "spec", "cfg", "text", "clear"];
+  const want = ["whole", "kernels", "ladder", "chains", "gradsHash", "all", "spec", "cfg",
+                "text", "clear"];
   ok(page + ": ... and window.bench exposes the campaigns",
      !!api && want.every(k => api[k] !== undefined),
      api ? Object.keys(api).join(",") : "undefined");
@@ -164,6 +168,82 @@ function legWiring(env, page) {
   ok(page + ": ... and each kernel the table excuses is dispatched exactly as often as it assumes",
      overUn.length === 0,
      overUn.map(n => n + ": " + UNCOUNTED[n] + " assumed, " + (per.get(meta.pl[n]) || 0) + " seen").join(", "));
+}
+
+// ---------------------------------------------------------------------------
+// (i.e) the grads hash cell
+// ---------------------------------------------------------------------------
+// FFTPERF_PLAN item C's gate is "the real-space gradients, bitwise, before and after",
+// and the comparison itself is a readback on a device. What is checkable without one is
+// the INSTRUMENT: the digest against hand-computed FNV-1a values, the cell running the
+// solver's OWN gradient chain (the step's first dispatches -- same pipelines, same bind
+// groups, same extents, in order), and the byte length it reads back and hashes per lane.
+// The stub hands back zeros, so the digests it produces are the model's digest of zeros:
+// what that pins is the length and the lane split, not the gradients.
+const fnv1a = u => {
+  let h = 2166136261;
+  for (let i = 0; i < u.length; i++) {
+    const w = u[i];
+    for (let s = 0; s < 32; s += 8) h = Math.imul(h ^ ((w >>> s) & 255), 16777619);
+  }
+  return h >>> 0;
+};
+async function legGradsHash(env, page) {
+  // the model first, against digests computed by hand from the 32-bit offset basis
+  // (2166136261) and prime (16777619) over each word's bytes, low byte first
+  ok("the check's own FNV-1a model reproduces hand-computed digests",
+     fnv1a(new Uint32Array(0)) === 2166136261 &&
+     fnv1a(new Uint32Array([1, 2, 3])) === 2034659765 &&
+     fnv1a(new Uint32Array([0xffffffff])) === 3809873841,
+     [fnv1a(new Uint32Array(0)), fnv1a(new Uint32Array([1, 2, 3])),
+      fnv1a(new Uint32Array([0xffffffff]))].join(", "));
+  const cases = [[], [1, 2, 3], [1, 2, 4], [0xffffffff]];
+  const got = env.run("(cs) => cs.map(c => benchHash32(new Uint32Array(c)))", cases);
+  const want = cases.map(c => fnv1a(new Uint32Array(c)));
+  ok(page + ": benchHash32 is that same digest, and one changed word changes it",
+     want.every((v, i) => v === got[i]) && got[1] !== got[2],
+     got.join(", ") + " vs " + want.join(", "));
+  // the cell's chain against the step's own: the gradient chain is what a step encodes
+  // first (prepGrads, then the inverse pair -- three dispatches in 2D, four in 3D)
+  const nchain = env.is3d ? 4 : 3;
+  env.gpuReset();
+  env.run("() => solver.step(1)");
+  const chain = env.gpu.dispatches.slice(0, nchain);
+  env.gpuReset();
+  const rec = await env.run("() => window.bench.gradsHash()");
+  const tail = env.gpu.dispatches.slice(-nchain);
+  const off = chain.map((e, i) => (tail[i] && tail[i].pipe === e.pipe && tail[i].bg === e.bg &&
+                                   same(shape(tail[i].d), shape(e.d)) ? null : i)).filter(i => i !== null);
+  ok(page + ": the grads hash cell encodes the step's own gradient chain, in order",
+     tail.length === nchain && off.length === 0,
+     tail.map(e => e.pipe.__name + JSON.stringify(e.d)).join(" ") + " vs " +
+     chain.map(e => e.pipe.__name + JSON.stringify(e.d)).join(" "));
+  ok(page + ": ... and dispatches nothing else after the IC it re-applies",
+     env.gpu.dispatches.length > nchain &&
+     env.gpu.dispatches.slice(-nchain - 1)[0].pipe !== chain[0].pipe,
+     env.gpu.dispatches.length + " dispatches in all");
+  // the readback: eight lanes of one real field each, hashed lane by lane and whole
+  const nr = env.run("() => solver.nr");
+  const cell = (rec && rec.cells && rec.cells[0]) || {};
+  ok(page + ": the record is one grads hash cell over 8 * nr * 4 = " + 8 * nr * 4 + " bytes",
+     rec.campaign === "grads hash" && cell.cell === "grads hash" &&
+     cell.bytes === 8 * nr * 4 && cell.lane_bytes === nr * 4,
+     JSON.stringify({ campaign: rec && rec.campaign, bytes: cell.bytes, lane: cell.lane_bytes }));
+  ok(page + ": ... with eight lane digests and one over the whole buffer",
+     Array.isArray(cell.hash_lane) && cell.hash_lane.length === 8 &&
+     typeof cell.hash_all === "number",
+     JSON.stringify({ lanes: cell.hash_lane, all: cell.hash_all }));
+  const zl = fnv1a(new Uint32Array(nr)), za = fnv1a(new Uint32Array(8 * nr));
+  ok(page + ": ... and they are the model's digests of what the stub read back (zeros)",
+     (cell.hash_lane || []).every(h => h === zl) && cell.hash_all === za,
+     "lane " + (cell.hash_lane || [])[0] + " vs " + zl + ", all " + cell.hash_all + " vs " + za);
+  // a digest that depended on anything but (page, IC, resolution) would move between runs
+  const again = await env.run("() => window.bench.gradsHash()");
+  const c2 = (again && again.cells && again.cells[0]) || {};
+  ok(page + ": ... and a second run of the cell reports the same digests",
+     c2.hash_all === cell.hash_all &&
+     (c2.hash_lane || []).every((h, i) => h === (cell.hash_lane || [])[i]),
+     c2.hash_all + " vs " + cell.hash_all);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,10 +396,12 @@ async function legCampaigns(env, page, chains) {
     " s.setIC = function (z) { window.__ic.setIC++; return si(z); }; }");
   await env.run("() => window.bench.all()");
   const ic = env.run("() => window.__ic");
-  ok(page + ": each campaign that trampled the fields restored them through applyIC",
-     ic.applyIC === (chains ? 3 : 2) && ic.setIC <= ic.applyIC,
-     ic.applyIC + " applyIC, " + ic.setIC + " setIC (expected " + (chains ? 3 : 2) +
-     " restores: per kernel, ladder" + (chains ? ", chains" : "") + ")");
+  // per kernel, ladder, (chains), and the grads hash cell -- which applies the IC at its
+  // START, so that the chain it hashes runs on a state a reload reproduces
+  ok(page + ": each campaign that trampled or depended on the fields went through applyIC",
+     ic.applyIC === (chains ? 4 : 3) && ic.setIC <= ic.applyIC,
+     ic.applyIC + " applyIC, " + ic.setIC + " setIC (expected " + (chains ? 4 : 3) +
+     ": per kernel, ladder" + (chains ? ", chains" : "") + ", grads hash)");
   const txt = env.run("() => window.bench.text()");
   const recs = txt.trim().split("\n").filter(l => l).map(l => JSON.parse(l));
   ok(page + ": one JSON record landed in the textarea", recs.length === 1,
@@ -330,7 +412,7 @@ async function legCampaigns(env, page, chains) {
      r.page === page.replace(".html", "") && "gpu" in r &&
      r.nx === spec.res[0] && r.ny === spec.res[1] && r.nz === spec.res[2],
      JSON.stringify({ page: r.page, gpu: r.gpu, nx: r.nx, ny: r.ny, nz: r.nz }));
-  ok(page + ": ... and carries all four campaigns", parts.length === 4,
+  ok(page + ": ... and carries all five campaigns", parts.length === 5,
      parts.map(p => p.campaign).join(", "));
   const whole = parts[0] || {};
   ok(page + ": ... the whole-step cell quotes bytes, GB/s and butterflies",
@@ -615,6 +697,9 @@ async function legAnalyticRows(env, page) {
   console.log("(i.b) the spec's pipelines, extents and buffers are the step's own");
   legWiring(e2, "rmhd2d.html");
   legWiring(e3, "rmhd3d.html");
+  console.log("(i.e) the grads hash cell runs the step's own gradient chain");
+  await legGradsHash(e2, "rmhd2d.html");
+  await legGradsHash(e3, "rmhd3d.html");
   console.log("(i.c) a campaign holds the frame loop off");
   await legLoopHold("rmhd2d.html");
   await legLoopHold("rmhd3d.html");

@@ -2292,6 +2292,7 @@ function icInfoLine(sz) {
 //
 // `chains` drives the gradient-chain question (FFTPERF_PLAN item C) with no chunking
 // code: one encodeInv3D at batch 8 against four at batch 2 over the same bind groups.
+// `grads` is that chain as the RHS encodes it, plus the buffer the hash cell reads back.
 //
 // `stepIO` is the step's dispatch list with the bytes each dispatch moves, in
 // FFTPERF_PLAN appendix A's terms: cx = one complex field, rx = one real field, and a
@@ -2321,6 +2322,9 @@ function benchSpec3D(s) {
   ];
   return {
     res: [nx, ny, nz], g: g, build: buildShaders, ffts: ffts,
+    // the gradient chain the hash cell runs -- the solver's own encoder -- and the
+    // eight real-space lanes it leaves in realGrads
+    grads: { buf: B.realGrads, lanes: 8, bytes: rx, encode: p => s.encodeGrads(p) },
     kernels: ffts.concat([
       { name: "prepGrads", pipe: P.prepGrads, bg: G.prepGrads, d: [Math.ceil(nm / 64)] },
       { name: "bracket", pipe: P.bracket, bg: G.bracket, d: [Math.ceil(nr / 256)] },
