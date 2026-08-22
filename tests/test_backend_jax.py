@@ -11,6 +11,7 @@ from _rmhd_testing import bootstrap, checks, managed_manager, snap_dir, zero_ic
 
 bootstrap()
 
+import dataclasses
 import functools
 import json
 import os
@@ -55,7 +56,7 @@ def _fresh_mpi4jax_params(rank=None, size=None, **overrides):
     (snapshot-layout tricks only -- never hand these to jitted physics)."""
     p = jr.Parameters(comm_backend="mpi4jax", **dict(_KW, **overrides))
     if size is not None:
-        p.size, p.rank = size, rank
+        p.runtime = dataclasses.replace(p.runtime, rank=rank, size=size)
     return p
 
 

@@ -10,7 +10,9 @@
 #   - unknown keys and a precision mismatch warn but do not fail;
 #   - explicit overrides win;
 #   - transport (comm/rank/size) is never persisted, and comm_backend is recorded but
-#     excluded from the differing-record comparison (runs must restart across backends).
+#     excluded from the differing-record comparison (runs must restart across backends);
+#   - a comms.Runtime passed as runtime= is injected, never recorded, and the transport
+#     attributes forward to it read-only.
 #
 # NOTE: _capture() collects BOTH stdout and the warnings module, so the assertions hold
 # whichever channel config.py uses (it warns via warnings.warn).
@@ -21,6 +23,7 @@ from _rmhd_testing import bootstrap, checks, fresh_params, mpi_size, snap_dir
 bootstrap()
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -305,6 +308,60 @@ def test_transport_is_not_persisted_or_compared():
                     f"(got {err!r})", err is None)
             c.check("the flipped backend is left on disk (recorded, not compared)",
                     _read_record(d)["comm_backend"] == "jax")
+
+
+def test_runtime_is_injectable_but_never_recorded():
+    # comms.Runtime is a live transport object (communicators, rank/size): it can be handed
+    # to Parameters so a parameter scan shares one set of communicators, but it is not a
+    # recordable ctor arg, and the transport attributes forward to it read-only.
+    if _single_process_only("test_runtime_is_injectable_but_never_recorded"):
+        return
+    p = fresh_params(**_KW)
+    rt = p.runtime
+    p2 = fresh_params(runtime=rt, **_KW)
+    with snap_dir() as d:
+        p.save(d)
+        rec = _read_record(d)
+        p3 = jr.Parameters.from_snapshot(d, runtime=rt)
+        with checks() as c:
+            c.check("runtime is not among the captured ctor args",
+                    "runtime" not in p._init_args)
+            c.check("runtime is not recorded in params.json", "runtime" not in rec)
+            c.check("an explicit runtime is reused, not re-resolved", p2.runtime is rt)
+            c.check("the transport properties forward to the shared runtime",
+                    (p2.comm_backend, p2.comm, p2.rank, p2.size, p2.cart_comm,
+                     p2.left_neighbor, p2.right_neighbor)
+                    == (rt.backend, rt.comm, rt.rank, rt.size, rt.cart_comm,
+                        rt.left_neighbor, rt.right_neighbor))
+            c.check("from_snapshot(..., runtime=rt) injects it and restores every ctor arg",
+                    p3.runtime is rt and p3._init_args == p._init_args)
+            c.check("comm_backend equal to runtime.backend is accepted",
+                    fresh_params(runtime=rt, comm_backend=rt.backend, **_KW).runtime is rt)
+            other = "serial" if rt.backend != "serial" else "mpi4jax"
+            try:
+                fresh_params(runtime=rt, comm_backend=other, **_KW)
+                err = None
+            except ValueError as e:
+                err = str(e)
+            c.check(f"comm_backend={other!r} contradicting runtime.backend={rt.backend!r} "
+                    f"raises", err is not None and "runtime.backend" in err, err)
+            try:
+                p2.rank = 3
+                ro = None
+            except AttributeError as e:
+                ro = str(e)
+            c.check("params.rank cannot be assigned (spoofing means replacing the runtime)",
+                    ro is not None, ro)
+            # a shared runtime is reused without re-resolving, so nz % size is re-checked
+            # against ITS size for every Parameters built on it (_KW has nz=8)
+            try:
+                fresh_params(runtime=dataclasses.replace(rt, size=3), **_KW)
+                nzerr = None
+            except ValueError as e:
+                nzerr = str(e)
+            c.check("nz % runtime.size is re-checked against the shared runtime's size",
+                    nzerr is not None and "divisible by the number of MPI ranks (3)" in nzerr,
+                    nzerr)
 
 
 def test_constructor_rejects_malformed_arguments():

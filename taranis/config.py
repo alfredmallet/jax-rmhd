@@ -2,7 +2,9 @@ import numpy as np
 import copy
 from . import comms
 from . import _precision
-from ._mpi_compat import HAVE_MPI4JAX, HAVE_MPI4PY, MPI, _NullComm, launcher_world_size
+# imported BY VALUE: these three names are the substitution point comms._resolve_backend
+# reads (HAVE_MPI4JAX only through it, hence the noqa)
+from ._mpi_compat import HAVE_MPI4JAX, HAVE_MPI4PY, MPI  # noqa: F401
 from .physics import equation_registry
 import os
 import json
@@ -46,68 +48,22 @@ def _lists_to_tuples(v):
         return {k: _lists_to_tuples(x) for k, x in v.items()}
     return v
 
-_MPI_HINT = ('install the MPI extra: pip install "taranis[mpi]" (or use '
-             "comm_backend='serial'/None for single-process runs)")
-
-def _resolve_backend(requested):
-    # pick the transport for THIS process. requested=None (the default) auto-resolves:
-    # mpi4py+mpi4jax -> "mpi4jax" (the unchanged production path), else "serial". Never
-    # "serial" under a real multi-rank launcher — every rank would run the full domain and
-    # overwrite the others' snapshots — so the launcher env is sniffed on every path.
-    nlaunch, definitive = launcher_world_size()
-    if HAVE_MPI4PY:
-        size = MPI.COMM_WORLD.Get_size()
-        if definitive and nlaunch > 1 and size == 1:
-            raise RuntimeError(
-                f"this process was launched as one rank of a {nlaunch}-rank job, but mpi4py "
-                "reports MPI_COMM_WORLD size 1 — mpi4py is built against a different MPI than "
-                "the launcher, so every rank would run the full domain and overwrite the "
-                "others' snapshots. Rebuild mpi4py against the launcher's MPI, e.g. "
-                "MPICC=$(which mpicc) pip install --no-binary mpi4py --force-reinstall mpi4py")
-    else:
-        # no mpi4py: the launcher environment is the only evidence of a multi-rank job
-        size = nlaunch if definitive else 1
-    if requested is not None:
-        if requested in ("mpi4jax", "jax") and not HAVE_MPI4PY:
-            raise ImportError(f"comm_backend={requested!r} needs mpi4py, which is not "
-                              f"importable — {_MPI_HINT}")
-        if requested == "mpi4jax" and not HAVE_MPI4JAX:
-            raise ImportError(f"comm_backend='mpi4jax' needs mpi4jax, which is not "
-                              f"importable — {_MPI_HINT}")
-        if requested == "serial" and size > 1:
-            raise ValueError(f"comm_backend='serial' is single-process only, but this process "
-                             f"is one of {size} ranks; use comm_backend='mpi4jax'")
-        return requested
-    if HAVE_MPI4PY and HAVE_MPI4JAX:
-        return "mpi4jax"
-    if HAVE_MPI4PY:
-        # half-installed (mpi4py builds easily, mpi4jax needs a matching jax): fine serially
-        if size > 1:
-            raise RuntimeError(f"this is a {size}-rank MPI run, but mpi4jax is not importable "
-                               f"and multi-rank transport needs it — {_MPI_HINT}")
-        return "serial"
-    if size > 1:
-        raise RuntimeError(
-            f"this process was launched as one rank of a {nlaunch}-rank MPI job, but mpi4py is "
-            "not importable — refusing to fall back to comm_backend='serial', where every rank "
-            f"would run the full domain and overwrite the others' snapshots. {_MPI_HINT}")
-    if nlaunch > 1:
-        # allocation-wide task count only: a plain `python` inside a batch script looks like
-        # this, so it is a warning, not an error
-        warnings.warn(f"the batch environment advertises {nlaunch} tasks, but this process was "
-                      "not started by an MPI launcher and mpi4py is not importable: running "
-                      "single-process with comm_backend='serial'.", stacklevel=3)
-    return "serial"
+# backend resolution lives in comms, next to the Runtime it builds; it reads this module's
+# HAVE_MPI4PY/HAVE_MPI4JAX/MPI names (imported above BY VALUE from _mpi_compat, so this is
+# where they can be substituted), and is re-exported here for callers of config._resolve_backend
+_resolve_backend = comms._resolve_backend
 
 class Parameters():
     # stores all static parameters for the problem
     def __init__(self,nx,ny,Lx,Ly,cfl_safety,eqpars=None,dt=0.1,adaptive_timestep=True,dims=2,nz=1,Lz=2*np.pi,z_diss=0.25,z_diss_hyper=2.0,z_diff_order=4,eqtype="RMHD",
                  forcing=False,forcing_mode="momentum",forcing_power=1.0,forcing_power_elsasser=(1.0,1.0),forcing_tau=1.0,fshell=(1,2),forcing_seed=0,forcing_scale_max=1.0e4,
                  forcing_norm_per_step=True,lsrk_scan=True,forcing_shell_noise=False,comm_backend=None,
-                 cfl_every=1,z_spectral=False,particles=None,hoist_propagator=True):
+                 cfl_every=1,z_spectral=False,particles=None,hoist_propagator=True,runtime=None):
         # capture the constructor arguments (before any normalization below) so
-        # save()/from_snapshot() can reproduce this object exactly via __init__
+        # save()/from_snapshot() can reproduce this object exactly via __init__.
+        # runtime is a live transport object, not a recordable value: it is popped below
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
+        self._init_args.pop("runtime")
         if eqtype not in equation_registry:
             raise ValueError(f"eqtype must be one of {list(equation_registry)}, got {eqtype!r}")
         self.eqtype=eqtype
@@ -159,59 +115,22 @@ class Parameters():
         else:
             self.nz=1
         #MPI
-        # transport used by taranis.comms for halos/allreduces (static: dispatched in plain python)
-        # comm_backend=None auto-resolves to mpi4jax (MPI present) or serial (no MPI toolchain)
-        if comm_backend is not None and comm_backend not in comms.COMM_BACKENDS:
-            raise ValueError(f"comm_backend must be one of {comms.COMM_BACKENDS} or None (auto), "
-                             f"got {comm_backend!r}")
-        self.comm_backend = _resolve_backend(comm_backend)
+        # transport used by taranis.comms for halos/allreduces (static: dispatched in plain
+        # python). runtime=None resolves one for this process (comm_backend=None then
+        # auto-resolves to mpi4jax with MPI present, serial without); an explicit Runtime is
+        # reused as is, so a parameter scan shares one set of communicators
+        if runtime is None:
+            self.runtime = comms.Runtime.resolve(comm_backend, dims=self.spatial_dimensions,
+                                                 nz=self.nz)
+        else:
+            if comm_backend is not None and comm_backend != runtime.backend:
+                raise ValueError(f"comm_backend={comm_backend!r} contradicts the given "
+                                 f"runtime.backend={runtime.backend!r}: pass comm_backend=None "
+                                 f"(or the runtime's own backend) alongside runtime=")
+            self.runtime = runtime
         # record what actually ran, not the request: params.json documents the resolved backend
         self._init_args["comm_backend"] = self.comm_backend
-        self.comm=_NullComm() if self.comm_backend=="serial" else MPI.COMM_WORLD
-        self.rank=self.comm.Get_rank()
-        self.size=self.comm.Get_size()
-        if self.size > 1:
-            # all ranks must read the same TARANIS_PRECISION
-            precs = self.comm.allgather(_precision.precision)
-            if len(set(precs)) != 1:
-                raise RuntimeError(
-                    f"TARANIS_PRECISION differs across ranks: rank {self.rank} sees "
-                    f"{_precision.precision!r}, gathered {precs!r} — export the same "
-                    "TARANIS_PRECISION in every rank's environment")
-        if self.comm_backend=="jax" and self.spatial_dimensions!=3:
-            raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
-        if self.spatial_dimensions==3:
-            if self.nz % self.size != 0:
-                raise ValueError(f"nz={self.nz} must be divisible by the number of MPI ranks ({self.size})")
-            if self.comm_backend=="serial":
-                self.cart_comm = None
-                self.left_neighbor = None
-                self.right_neighbor = None
-            else:
-                self.cart_comm = self.comm.Create_cart(dims=[self.size],periods=[True],reorder=False)
-                self.left_neighbor, self.right_neighbor = self.cart_comm.Shift(direction=0, disp=1)
-        else:
-            self.cart_comm = None
-            self.left_neighbor = None
-            self.right_neighbor = None
-            if self.size > 1 and self.rank==0:
-                warnings.warn("You probably should only run a 2D run on one device, since this "
-                              "isn't parallelized.", stacklevel=2)
         self.z_spectral = bool(z_spectral)
-        if self.z_spectral:
-            if self.spatial_dimensions != 3:
-                raise ValueError("z_spectral=True requires dims=3 (there is no z axis to "
-                                 "transform in 2D)")
-            if self.size != 1:
-                raise ValueError(f"z_spectral=True is single-process only (the z-FFT needs the "
-                                 f"whole z domain on one rank), but this process is one of "
-                                 f"{self.size} ranks")
-            if self.comm_backend == "jax":
-                raise ValueError("z_spectral=True is incompatible with comm_backend='jax' "
-                                 "(the jax backend exists to decompose z across devices)")
-        # bring up the chosen transport (jax.distributed + z mesh for "jax"; no-op otherwise).
-        # must happen before any jax device work
-        comms.init_backend(self)
         #forcing
         self.forcing = forcing
         if forcing_mode not in ("momentum","elsasser"):
@@ -261,6 +180,70 @@ class Parameters():
                 raise ValueError(f"particles must be a dict of particle configuration (e.g. "
                                  f"{{'n': 1024, 'ensembles': [{{'qm': 15.0, 'init': ...}}]}}), "
                                  f"got {particles!r}")
+            # imported here, not at module scope: config itself does not depend on the
+            # particle package (nothing under particles/ imports config — no cycle)
+            from .particles.state import normalize_config
+            self.particles = normalize_config(particles)
+            self.n_ens = len(self.particles["ensembles"])
+            self._init_args["particles"] = copy.deepcopy(particles)  # decoupled from the caller's dict
+        self._validate_compat()
+
+    # transport lives on the Runtime; these forward so every params.<attr> reader keeps
+    # working, and none of them can be assigned on a Parameters (spoofing a rank means
+    # dataclasses.replace on the runtime)
+    @property
+    def comm_backend(self):
+        return self.runtime.backend
+
+    @property
+    def comm(self):
+        return self.runtime.comm
+
+    @property
+    def rank(self):
+        return self.runtime.rank
+
+    @property
+    def size(self):
+        return self.runtime.size
+
+    @property
+    def cart_comm(self):
+        return self.runtime.cart_comm
+
+    @property
+    def left_neighbor(self):
+        return self.runtime.left_neighbor
+
+    @property
+    def right_neighbor(self):
+        return self.runtime.right_neighbor
+
+    def _validate_compat(self):
+        # the compatibility matrix — backend x dims x size, z_spectral, particles — in one
+        # place, called once from __init__ with every attribute it reads set. The nz % size
+        # and jax-needs-3D checks are also in Runtime.resolve, which a Parameters built on a
+        # shared Runtime does not re-run.
+        if self.comm_backend=="jax" and self.spatial_dimensions!=3:
+            raise ValueError("comm_backend='jax' requires dims=3 (there is no z decomposition to map in 2D)")
+        if self.spatial_dimensions==3:
+            if self.nz % self.size != 0:
+                raise ValueError(f"nz={self.nz} must be divisible by the number of MPI ranks ({self.size})")
+        elif self.size > 1 and self.rank==0:
+            warnings.warn("You probably should only run a 2D run on one device, since this "
+                          "isn't parallelized.", stacklevel=3)
+        if self.z_spectral:
+            if self.spatial_dimensions != 3:
+                raise ValueError("z_spectral=True requires dims=3 (there is no z axis to "
+                                 "transform in 2D)")
+            if self.size != 1:
+                raise ValueError(f"z_spectral=True is single-process only (the z-FFT needs the "
+                                 f"whole z domain on one rank), but this process is one of "
+                                 f"{self.size} ranks")
+            if self.comm_backend == "jax":
+                raise ValueError("z_spectral=True is incompatible with comm_backend='jax' "
+                                 "(the jax backend exists to decompose z across devices)")
+        if self.particles is not None:
             if self.eqtype != "RMHD" or self.size != 1 or self.comm_backend == "jax":
                 raise ValueError(f"test particles require eqtype='RMHD', a single process and "
                                  f"a non-sharded backend (the gather needs the whole z domain "
@@ -268,10 +251,6 @@ class Parameters():
                                  f"size={self.size}, comm_backend={self.comm_backend!r}; "
                                  f"z-decomposed particles are unimplemented "
                                  f"(plans/TESTPART_PLAN.md §4)")
-            # imported here, not at module scope: config itself does not depend on the
-            # particle package (nothing under particles/ imports config — no cycle)
-            from .particles.state import normalize_config
-            self.particles = normalize_config(particles)
             if self.spatial_dimensions == 3:
                 bad = sorted({e["B0"] for e in self.particles["ensembles"] if e["B0"] != 1.0})
                 if bad:
@@ -286,8 +265,6 @@ class Parameters():
                         f"is set by the forcing amplitude and Lz instead (v_A = 1 on a box Lz "
                         f"is the same system as v_A = B0 on a box B0*Lz); B0 stays the free "
                         f"per-ensemble knob in 2D, which has no Alfven term")
-            self.n_ens = len(self.particles["ensembles"])
-            self._init_args["particles"] = copy.deepcopy(particles)  # decoupled from the caller's dict
 
     def save(self, snap_path, filename="params.json"):
         # record the constructor arguments (not derived attrs) to snap_path/filename, so a

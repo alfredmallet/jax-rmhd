@@ -197,9 +197,9 @@ def fresh_params(**overrides):
 def fake_ranked_params(rank, size, **overrides):
     """Uncached Parameters with spoofed rank/size (snapshot-layout tricks). Never
     pass these to jitted physics -- they lie about the decomposition."""
+    import dataclasses
     p = fresh_params(**overrides)
-    p.rank = rank
-    p.size = size
+    p.runtime = dataclasses.replace(p.runtime, rank=rank, size=size)
     return p
 
 
