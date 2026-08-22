@@ -96,65 +96,76 @@ const IO4_INSERTS = [
 ];
 
 // THE SECOND SANCTIONED EDIT, in the same idiom: FFTPERF_PLAN 2C's gradient chunking. The
-// gradient chain runs one (x, y) pair at a time now, which touches the two definitions
-// this file pins -- `buildShaders` emits four prepGrads instead of one, and `class Solver`
-// builds four pipelines and four row-kernel targets, holds a two-lane k-space stack, and
-// encodes the chain in one method the RHS calls. Recorded as REPLACEMENTS (`was` = the
-// lines at BASE, `lines` = the lines now) at their base positions, so leg 5 puts base's
-// text back and then still demands it byte for byte: any OTHER change to either definition
-// fails, and a block that has stopped being there fails as a stale allowance.
+// gradient chain runs one CHUNK of (x, y) pairs at a time now and each page ships its own
+// chunk list, which touches the two definitions this file pins -- `buildShaders` emits one
+// prepGrads per chunk, and `class Solver` sizes the k-space stack by the chunk, builds a
+// pipeline and a row-kernel window per chunk, and encodes the chain in one method the RHS
+// calls. The 2D page's list is ONE whole-stack chunk, so its emitted WGSL is unmoved (the
+// byte-identity leg above compares it plainly); what moves is this JavaScript. Recorded as
+// REPLACEMENTS (`was` = the lines at BASE, `lines` = the lines now) at their base
+// positions, so leg 5 puts base's text back and then still demands it byte for byte: any
+// OTHER change to either definition fails, and a block that has stopped being there fails
+// as a stale allowance.
 const FFT2C_SHADERS = [
-  { tag: "the four per-pair prepGrads emissions (the kernel list comment)", at: 53,
+  { tag: "the per-chunk prepGrads emissions (the kernel list comment)", at: 53,
     was: ["  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar"],
     lines: [
-   "  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar -- one pair per",
-   "  //               emission, four of them (physics.js GRAD_PAIRS)"] },
+   "  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar -- one emission",
+   "  //               per chunk of this page's chunk list (physics.js GRAD_CHUNKS_2D)"] },
   { tag: "... and the emission itself", at: 56,
     was: ["  S.prepGrads = prepGradsWGSL(C);"],
     lines: [
-   "  GRAD_PAIRS.forEach((p, k) => { S[\"prepGrads\" + k] = prepGradsWGSL(Object.assign({}, C, { gpair: k })); });"] }
+   "  GRAD_CHUNKS_2D.forEach((ch, i) => {",
+   "    S[\"prepGrads\" + gradChunkSuffix(GRAD_CHUNKS_2D, i)] =",
+   "      prepGradsWGSL(Object.assign({}, C, { gchunk: ch }));",
+   "  });"] }
 ];
 const FFT2C_SOLVER = [
-  { tag: "the two-lane gradient stack (_buildBuffers)", at: 44,
+  { tag: "the chunk's lane count (_buildBuffers)", at: 40, lines: [
+   "    const gcx = 2 * Math.max.apply(null, GRAD_CHUNKS_2D.map(ch => ch.length)); // lanes per chunk"] },
+  { tag: "... which sizes the gradient stack (_buildBuffers)", at: 44,
     was: ["      gradsK: d.createBuffer({ size: 8 * cx, usage: SQ }),",
           "      specTmp: d.createBuffer({ size: 8 * cx, usage: SQ }),"],
     lines: [
-   "      // the gradient chain transforms ONE (x, y) pair at a time, so the k-space stack and",
-   "      // the column pass's target hold two lanes, not eight",
-   "      gradsK: d.createBuffer({ size: 2 * cx, usage: SQ }),",
-   "      specTmp: d.createBuffer({ size: 2 * cx, usage: SQ }),"] },
-  { tag: "the four prepGrads pipelines (_buildPipelines)", at: 209,
+   "      // the gradient chain transforms one CHUNK at a time, so the k-space stack and the",
+   "      // column pass's target hold the widest chunk's lanes (GRAD_CHUNKS_2D)",
+   "      gradsK: d.createBuffer({ size: gcx * cx, usage: SQ }),",
+   "      specTmp: d.createBuffer({ size: gcx * cx, usage: SQ }),"] },
+  { tag: "one prepGrads pipeline per chunk (_buildPipelines)", at: 209,
     was: ["      prepGrads: cp(S.prepGrads, \"prepGrads\"), bracket: cp(S.bracket, \"bracket\"),"],
     lines: [
-   "      prepGrads: GRAD_PAIRS.map((p, k) => cp(S[\"prepGrads\" + k], \"prepGrads\" + k)),",
+   "      prepGrads: GRAD_CHUNKS_2D.map((ch, i) => {",
+   "        const n = \"prepGrads\" + gradChunkSuffix(GRAD_CHUNKS_2D, i);",
+   "        return cp(S[n], n);",
+   "      }),",
    "      bracket: cp(S.bracket, \"bracket\"),"] },
-  { tag: "their bind groups, and the row kernel's per-pair target (_buildPipelines)", at: 240,
+  { tag: "their bind groups, and the row kernel's per-chunk window (_buildPipelines)", at: 240,
     was: ["      prepGrads: bg(this.pl.prepGrads, [B.fields, B.gridA, B.gradsK]),",
           "      colsInvGrads: bg(this.pl.colsInv, [B.gradsK, B.specTmp]),",
           "      rowsC2RGrads: bg(this.pl.rowsC2R, [B.specTmp, B.realGrads]),"],
     lines: [
    "      prepGrads: this.pl.prepGrads.map(p => bg(p, [B.fields, B.gridA, B.gradsK])),",
    "      colsInvGrads: bg(this.pl.colsInv, [B.gradsK, B.specTmp]),",
-   "      // one target per pair: the same row kernel, its store landing in the pair's own two",
-   "      // lanes of realGrads through the binding's offset (physics.js gradPairOffset)",
-   "      rowsC2RGrads: GRAD_PAIRS.map((p, k) => bg(this.pl.rowsC2R,",
-   "        [B.specTmp,",
-   "         { buffer: B.realGrads, offset: gradPairOffset(this.nr, k), size: 2 * this.nr * 4 }])),"] },
+   "      // one target per chunk: the same row kernel, its store landing in the chunk's own",
+   "      // lanes of realGrads through the binding's window (physics.js gradChunkWindow)",
+   "      rowsC2RGrads: GRAD_CHUNKS_2D.map(ch => bg(this.pl.rowsC2R,",
+   "        [B.specTmp, Object.assign({ buffer: B.realGrads }, gradChunkWindow(this.nr, ch))])),"] },
   { tag: "the encodeGrads method", at: 392, lines: [
    "  // the eight perpendicular gradients, into realGrads (lanes 0,1 = grad phi, 2,3 = grad",
-   "  // psi, 4..7 = grad vorticity / current): one pair at a time, each prepGrads writing the",
-   "  // two-lane k-space stack and the two inverse passes carrying it to the pair's own lanes",
-   "  // of realGrads. The only place the chain is encoded.",
+   "  // psi, 4..7 = grad vorticity / current): one chunk at a time, each prepGrads writing the",
+   "  // chunk's lanes of the k-space stack and the two inverse passes carrying them to the",
+   "  // chunk's own lanes of realGrads. The only place the chain is encoded.",
    "  encodeGrads(pass) {",
    "    const nm = this.g.nm, nky = this.g.nky, nx = this.g.nx;",
-   "    for (let k = 0; k < this.pl.prepGrads.length; k++) {",
-   "      pass.setPipeline(this.pl.prepGrads[k]); pass.setBindGroup(0, this.bg.prepGrads[k]);",
+   "    GRAD_CHUNKS_2D.forEach((ch, i) => {",
+   "      const lanes = 2 * ch.length;",
+   "      pass.setPipeline(this.pl.prepGrads[i]); pass.setBindGroup(0, this.bg.prepGrads[i]);",
    "      pass.dispatchWorkgroups(Math.ceil(nm / 64));",
    "      pass.setPipeline(this.pl.colsInv); pass.setBindGroup(0, this.bg.colsInvGrads);",
-   "      pass.dispatchWorkgroups(2 * nky);",
-   "      pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads[k]);",
-   "      pass.dispatchWorkgroups(2 * nx);",
-   "    }",
+   "      pass.dispatchWorkgroups(lanes * nky);",
+   "      pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads[i]);",
+   "      pass.dispatchWorkgroups(lanes * nx);",
+   "    });",
    "  }",
    ""] },
   { tag: "... which encodeRHS now calls instead of encoding the chain itself", at: 396,
@@ -206,12 +217,13 @@ const lastLine = r => ((r.stdout || "") + (r.stderr || "")).trim().split("\n").p
 const read = f => fs.readFileSync(f, "utf8");
 const sha = b => require("crypto").createHash("sha256").update(b).digest("hex");
 const OFF = require("./dispoffsets");
-// a dump's sha with the sections the chunk allowance names taken out of it, on both sides
-function shaNoChunk(file) {
+// a dump's sha with the sections the chunk allowance names on THIS page taken out of it,
+// on both sides -- on a page that chunks nothing, nothing comes out
+function shaNoChunk(file, page) {
   const parts = read(file).split(/^########## (.*) ##########$/m);
   let out = parts[0];
   for (let i = 1; i < parts.length; i += 2)
-    if (!OFF.isChunkLabel(parts[i]) && !OFF.isGradsLabel(parts[i]))
+    if (!OFF.isChunked(page, parts[i]))
       out += "########## " + parts[i] + " ##########" + parts[i + 1];
   return sha(out);
 }
@@ -341,28 +353,30 @@ else {
     const moved = [], gone = [], added = new Set();
     for (const key of keys) {
       if (base[key] === k[key]) continue;
-      // prepGrads is four per-pair emissions since FFTPERF_PLAN 2C (dispoffsets.js)
-      if (OFF.isGradsLabel(key) || OFF.isChunkLabel(key)) continue;
+      // where the page chunks prepGrads (FFTPERF_PLAN 2C, dispoffsets.js) the audit below
+      // is what judges its emissions
+      if (OFF.isChunked(page, key)) continue;
       if (base[key] === undefined) { added.add(key.split(" :: ")[1]); continue; }
       if (k[key] === undefined) { gone.push(key); continue; }
       moved.push(key);
     }
-    const CH = OFF.chunkAudit(base, k);
+    const CH = OFF.chunkAudit(page, base, k);
     for (const n of CH.added) added.add(n);
     ok(page + ": every kernel that existed at " + BASE + " is byte-identical",
        moved.length === 0 && gone.length === 0,
        moved.length + " moved, " + gone.length + " vanished" +
        (moved.length ? " (" + moved[0] + ")" : ""));
-    ok("  ... but for prepGrads, chunked into its four pairs",
+    ok("  ... and prepGrads is " + BASE + "'s own text over this page's chunk list, "
+       + JSON.stringify(OFF.CHUNKS[page]),
        CH.bad.length === 0 && CH.reduced.length + CH.added.length > 0,
-       CH.bad[0] || CH.reduced.length + " emissions chunked");
+       CH.bad[0] || CH.reduced.length + " emissions");
     const want = ADDED[page].slice().sort().join(",");
     ok("  ... and it adds exactly [" + (want || "nothing") + "]",
        Array.from(added).sort().join(",") === want, Array.from(added).sort().join(",") || "nothing");
     // belt and braces: the WHOLE dump, kernel order and headers included -- every kernel
     // the chunk allowance does NOT name, since a chunked emission has no base section to
     // hash against (the leg above is what pins those, text for text)
-    const hb = shaNoChunk(b.file), hc = shaNoChunk(cur[page].file);
+    const hb = shaNoChunk(b.file, page), hc = shaNoChunk(cur[page].file, page);
     ok("  ... and the whole dump hashes the same", hb === hc, hc.slice(0, 16) + " vs " + hb.slice(0, 16));
   }
 }

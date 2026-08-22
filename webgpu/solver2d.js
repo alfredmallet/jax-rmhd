@@ -125,11 +125,14 @@ const NKY_: u32 = ${nky}u;`;
   });
 
   // ---- shared physics kernels (physics.js) --------------------------------
-  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar -- one pair per
-  //               emission, four of them (physics.js GRAD_PAIRS)
+  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar -- one emission
+  //               per chunk of this page's chunk list (physics.js GRAD_CHUNKS_2D)
   //   bracket     the two Poisson brackets in real space
   //   nlAssemble  the nonlinear RHS (dealias here and ONLY here)
-  GRAD_PAIRS.forEach((p, k) => { S["prepGrads" + k] = prepGradsWGSL(Object.assign({}, C, { gpair: k })); });
+  GRAD_CHUNKS_2D.forEach((ch, i) => {
+    S["prepGrads" + gradChunkSuffix(GRAD_CHUNKS_2D, i)] =
+      prepGradsWGSL(Object.assign({}, C, { gchunk: ch }));
+  });
   S.bracket = bracketWGSL(C);
   S.nlAssemble = nlAssembleWGSL(C);
 
@@ -328,14 +331,15 @@ class Solver {
   _buildBuffers() {
     const d = this.device, nm = this.g.nm, nr = this.nr;
     const cx = nm * 8; // one complex field
+    const gcx = 2 * Math.max.apply(null, GRAD_CHUNKS_2D.map(ch => ch.length)); // lanes per chunk
     this.buf = {
       fields: d.createBuffer({ size: 2 * cx, usage: SQ }),
       delta: d.createBuffer({ size: 2 * cx, usage: SQ }),
       rhs: d.createBuffer({ size: 2 * cx, usage: SQ }),
-      // the gradient chain transforms ONE (x, y) pair at a time, so the k-space stack and
-      // the column pass's target hold two lanes, not eight
-      gradsK: d.createBuffer({ size: 2 * cx, usage: SQ }),
-      specTmp: d.createBuffer({ size: 2 * cx, usage: SQ }),
+      // the gradient chain transforms one CHUNK at a time, so the k-space stack and the
+      // column pass's target hold the widest chunk's lanes (GRAD_CHUNKS_2D)
+      gradsK: d.createBuffer({ size: gcx * cx, usage: SQ }),
+      specTmp: d.createBuffer({ size: gcx * cx, usage: SQ }),
       nlk: d.createBuffer({ size: 2 * cx, usage: SQ }),
       forcing: d.createBuffer({ size: 2 * cx, usage: SQ }),
       gridA: d.createBuffer({ size: nm * 16, usage: SQ }),
@@ -512,7 +516,10 @@ class Solver {
     this.pl = {
       rowsR2C: cp(S.rowsR2C, "rowsR2C"), rowsC2R: cp(S.rowsC2R, "rowsC2R"),
       colsFwd: cp(S.colsFwd, "colsFwd"), colsInv: cp(S.colsInv, "colsInv"),
-      prepGrads: GRAD_PAIRS.map((p, k) => cp(S["prepGrads" + k], "prepGrads" + k)),
+      prepGrads: GRAD_CHUNKS_2D.map((ch, i) => {
+        const n = "prepGrads" + gradChunkSuffix(GRAD_CHUNKS_2D, i);
+        return cp(S[n], n);
+      }),
       bracket: cp(S.bracket, "bracket"),
       nlAssemble: cp(S.nlAssemble, "nlAssemble"), forcingAdd: cp(S.forcingAdd, "forcingAdd"),
       stage: cp(S.stage, "stage"), cflPartial: cp(S.cflPartial, "cflPartial"),
@@ -546,11 +553,10 @@ class Solver {
     this.bg = {
       prepGrads: this.pl.prepGrads.map(p => bg(p, [B.fields, B.gridA, B.gradsK])),
       colsInvGrads: bg(this.pl.colsInv, [B.gradsK, B.specTmp]),
-      // one target per pair: the same row kernel, its store landing in the pair's own two
-      // lanes of realGrads through the binding's offset (physics.js gradPairOffset)
-      rowsC2RGrads: GRAD_PAIRS.map((p, k) => bg(this.pl.rowsC2R,
-        [B.specTmp,
-         { buffer: B.realGrads, offset: gradPairOffset(this.nr, k), size: 2 * this.nr * 4 }])),
+      // one target per chunk: the same row kernel, its store landing in the chunk's own
+      // lanes of realGrads through the binding's window (physics.js gradChunkWindow)
+      rowsC2RGrads: GRAD_CHUNKS_2D.map(ch => bg(this.pl.rowsC2R,
+        [B.specTmp, Object.assign({ buffer: B.realGrads }, gradChunkWindow(this.nr, ch))])),
       bracket: bg(this.pl.bracket, [B.realGrads, B.realNL]),
       rowsR2CNL: bg(this.pl.rowsR2C, [B.realNL, B.specTmp]),
       colsFwdNL: bg(this.pl.colsFwd, [B.specTmp, B.nlk]),
@@ -701,19 +707,20 @@ class Solver {
   }
 
   // the eight perpendicular gradients, into realGrads (lanes 0,1 = grad phi, 2,3 = grad
-  // psi, 4..7 = grad vorticity / current): one pair at a time, each prepGrads writing the
-  // two-lane k-space stack and the two inverse passes carrying it to the pair's own lanes
-  // of realGrads. The only place the chain is encoded.
+  // psi, 4..7 = grad vorticity / current): one chunk at a time, each prepGrads writing the
+  // chunk's lanes of the k-space stack and the two inverse passes carrying them to the
+  // chunk's own lanes of realGrads. The only place the chain is encoded.
   encodeGrads(pass) {
     const nm = this.g.nm, nky = this.g.nky, nx = this.g.nx;
-    for (let k = 0; k < this.pl.prepGrads.length; k++) {
-      pass.setPipeline(this.pl.prepGrads[k]); pass.setBindGroup(0, this.bg.prepGrads[k]);
+    GRAD_CHUNKS_2D.forEach((ch, i) => {
+      const lanes = 2 * ch.length;
+      pass.setPipeline(this.pl.prepGrads[i]); pass.setBindGroup(0, this.bg.prepGrads[i]);
       pass.dispatchWorkgroups(Math.ceil(nm / 64));
       pass.setPipeline(this.pl.colsInv); pass.setBindGroup(0, this.bg.colsInvGrads);
-      pass.dispatchWorkgroups(2 * nky);
-      pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads[k]);
-      pass.dispatchWorkgroups(2 * nx);
-    }
+      pass.dispatchWorkgroups(lanes * nky);
+      pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads[i]);
+      pass.dispatchWorkgroups(lanes * nx);
+    });
   }
 
   // ---- RHS + one LSRK33 step ---------------------------------------------

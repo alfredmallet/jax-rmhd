@@ -110,13 +110,15 @@ const _zSlot = (C, slot) => (C.hasZ ? slot + 1 : slot);
 // nothing is written back: the state is never touched, no scratch copy of it exists, and
 // the gradients land in the RHS's own stack.
 //
-// ONE PAIR PER DISPATCH. `C.gpair` picks a field out of the GRAD_PAIRS table and the kernel
-// computes that field's (x, y) gradient alone, into lanes 0 and 1 of a two-lane target --
-// so the chain that follows transforms two lanes four times over instead of eight at once,
-// and the k-space stack it needs is a quarter of the size. Four pipelines, one template;
-// vort and jpar are rebuilt from their own field (one multiply) inside their own chunk
-// rather than carried between chunks. The lane a pair lands in downstream is the row
-// kernel's bind-group offset into realGrads, not anything this kernel says.
+// ONE CHUNK PER DISPATCH. `C.gchunk` is an ordered list of GRAD_PAIRS indices and the
+// kernel computes those pairs alone: pair j of the chunk writes lanes 2j and 2j+1 of a
+// 2*len(chunk)-lane target, and each pair's field is read (phi, psi) or rebuilt from its
+// own field by one multiply (vort, jpar) inside the chunk that needs it. One template, one
+// pipeline per chunk; a page that asks for the whole stack in one chunk gets the eight-lane
+// kernel, a page that asks for one pair per chunk gets four kernels over a quarter of the
+// k-space stack. Which lanes a chunk lands in downstream is the row kernel's bind-group
+// offset into realGrads, not anything this kernel says. Each page's chunk list is a
+// structural constant of that page (GRAD_CHUNKS_2D / GRAD_CHUNKS_3D below).
 // `C.gband` is the box k1 the two band ends are measured in, exactly as `C.band` is for
 // prepDisp, and it is a COMPILE-TIME option for the same reason: the RHS's own prepGrads
 // is emitted from this template WITHOUT it and is the pre-plan text byte for byte, so the
@@ -135,15 +137,24 @@ const GRAD_PAIRS = [
   { of: "vort", src: "phi", expr: "-g.z * phi" },
   { of: "jpar", src: "psi", expr: "-g.z * psi" }
 ];
-// where pair k's two lanes start inside the eight-lane real-space gradient stack. The row
-// kernel reaches them as its target binding's OFFSET, which is why its text is the same
-// for every pair -- so the offset has to meet the storage-binding alignment every backend
-// asks for (256 bytes; any nr >= 32 does, and both apps' smallest grid is 128^2).
-function gradPairOffset(nr, k) {
-  const off = 2 * k * nr * 4;
-  if (off % 256) throw new Error("realGrads pair offset " + off
+// how many pairs one dispatch of the kernel above does, per page (FFTPERF_PLAN 2C):
+// the 2D page does all four at once -- one dispatch, the eight-lane stack, and the kernel
+// text it had before the phase -- and the 3D page one pair per dispatch.
+const GRAD_CHUNKS_2D = [[0, 1, 2, 3]];
+const GRAD_CHUNKS_3D = [[0], [1], [2], [3]];
+// the emitted kernel's name suffix for chunk i: a page with a single chunk keeps the plain
+// `prepGrads`, so its kernel keeps its name as well as its text
+const gradChunkSuffix = (chunks, i) => (chunks.length > 1 ? String(i) : "");
+// where chunk `ch`'s lanes start inside the eight-lane real-space gradient stack, and how
+// wide they are. The row kernel reaches them as its target binding's OFFSET and SIZE, which
+// is why its text is the same for every chunk -- so the offset has to meet the
+// storage-binding alignment every backend asks for (256 bytes; any nr >= 32 does, and both
+// apps' smallest grid is 128^2).
+function gradChunkWindow(nr, ch) {
+  const off = 2 * ch[0] * nr * 4;
+  if (off % 256) throw new Error("realGrads chunk offset " + off
                                  + " is not 256-byte aligned (nr = " + nr + ")");
-  return off;
+  return { offset: off, size: 2 * ch.length * nr * 4 };
 }
 
 function prepGradsWGSL(C) {
@@ -155,14 +166,28 @@ function prepGradsWGSL(C) {
   const bandLet = C.gband
     ? `  let bf: f32 = bandFac(sqrt(g.z) * INVKU, md.klo, md.khi);\n` : "";
   const bm = C.gband ? "bf * " : "";
-  const p = GRAD_PAIRS[C.gpair];
-  // the pair's source field, then the multiply that builds vort / jpar out of it
-  const rd = `  let ${p.src}: vec2<f32> = ${bm}fields[${p.src === "psi" ? "NM + m" : "m"}];\n`;
-  const mk = p.expr ? `  let ${p.of}: vec2<f32> = ${p.expr};\n` : "";
-  // ... and the two writes, into lanes 0 and 1, with the second operand of each vec2 in
-  // the column it has whichever field the pair is (3-letter names get one space more)
-  const wr = (lhs, c) => `  ${lhs.padEnd(18)}= vec2<f32>(-g.${c} * ${p.of}.y,`
-    + `${" ".repeat(5 - p.of.length)}g.${c} * ${p.of}.x);\n`;
+  // the chunk's fields in first-use order: each pair's source read, then the multiply that
+  // builds vort / jpar out of it, each emitted once however many pairs want it
+  const pairs = C.gchunk.map(k => GRAD_PAIRS[k]), have = new Set(), lets = [];
+  for (const p of pairs) {
+    if (!have.has(p.src)) {
+      have.add(p.src);
+      lets.push(`  let ${p.src}: vec2<f32> = ${bm}fields[${p.src === "psi" ? "NM + m" : "m"}];`);
+    }
+    if (p.expr && !have.has(p.of)) {
+      have.add(p.of);
+      lets.push(`  let ${p.of}: vec2<f32> = ${p.expr};`);
+    }
+  }
+  // ... and the writes: pair j of the chunk into lanes 2j and 2j+1, the second operand of
+  // each vec2 in the column it has whichever field the pair is (3-letter names get one
+  // space more), and the first two lanes' index expressions spelled without their factor
+  const lane = L => (L === 0 ? "outg[m]" : L === 1 ? "outg[NM + m]" : `outg[${L}u*NM + m]`);
+  const wr = [];
+  pairs.forEach((p, j) => ["x", "y"].forEach((c, i) => {
+    wr.push(`  ${lane(2 * j + i).padEnd(18)}= vec2<f32>(-g.${c} * ${p.of}.y,`
+            + `${" ".repeat(5 - p.of.length)}g.${c} * ${p.of}.x);`);
+  }));
   return C.pre + `
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
@@ -172,7 +197,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m: u32 = gid.x;
   if (m >= NM) { return; }
   let g: vec4<f32> = gridA[${_mpExpr(C)}];
-${bandLet}${rd}${mk}${wr("outg[m]", "x")}${wr("outg[NM + m]", "y")}}`;
+${bandLet}${lets.concat(wr).join("\n")}
+}`;
 }
 
 // ---------------------------------------------------------------------------

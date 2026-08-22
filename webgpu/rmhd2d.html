@@ -575,11 +575,16 @@ function benchSpec2D(s) {
   const g = s.g, nx = g.nx, ny = g.ny, nky = g.nky, nm = g.nm, nr = s.nr;
   const B = s.buf, P = s.pl, G = s.bg;
   const cx = nm * 8, rx = nr * 4, gr = nm * 16, bl = benchLineBf;
+  // the gradient chain's lane count and dispatch count are this page's chunk list
+  const gc = GRAD_CHUNKS_2D, gl = 2 * gc[0].length;
+  // ... and how many DISTINCT state fields one chunk's prep reads (vort rides phi's
+  // read, jpar rides psi's)
+  const gf = new Set(gc[0].map(k => GRAD_PAIRS[k].src)).size;
   const ffts = [
-    { name: "rowsC2R", key: "rowsC2R", lanes: 2, pipe: P.rowsC2R, bg: G.rowsC2RGrads[0],
-      bufs: [B.specTmp, B.realGrads], d: [2 * nx] },
-    { name: "colsInv", key: "colsInv", lanes: 2, pipe: P.colsInv, bg: G.colsInvGrads,
-      bufs: [B.gradsK, B.specTmp], d: [2 * nky] },
+    { name: "rowsC2R", key: "rowsC2R", lanes: gl, pipe: P.rowsC2R, bg: G.rowsC2RGrads[0],
+      bufs: [B.specTmp, B.realGrads], d: [gl * nx] },
+    { name: "colsInv", key: "colsInv", lanes: gl, pipe: P.colsInv, bg: G.colsInvGrads,
+      bufs: [B.gradsK, B.specTmp], d: [gl * nky] },
     { name: "rowsR2C", key: "rowsR2C", lanes: 2, pipe: P.rowsR2C, bg: G.rowsR2CNL,
       bufs: [B.realNL, B.specTmp], d: [2 * nx] },
     { name: "colsFwd", key: "colsFwd", lanes: 2, pipe: P.colsFwd, bg: G.colsFwdNL,
@@ -587,8 +592,10 @@ function benchSpec2D(s) {
   ];
   return {
     res: [nx, ny, 1], g: g, build: buildShaders, ffts: ffts,
-    // the gradient chain the hash cell runs, and the eight real-space lanes it leaves
-    grads: { buf: B.realGrads, lanes: 8, bytes: rx, encode: p => s.encodeGrads(p) },
+    // the gradient chain the hash cell runs, its chunk list, and the eight real-space
+    // lanes it leaves
+    grads: { buf: B.realGrads, lanes: 8, bytes: rx, chunks: gc,
+             encode: p => s.encodeGrads(p) },
     kernels: ffts.concat([
       { name: "prepGrads", pipe: P.prepGrads[0], bg: G.prepGrads[0], d: [Math.ceil(nm / 64)] },
       { name: "bracket", pipe: P.bracket, bg: G.bracket, d: [Math.ceil(nr / 64)] },
@@ -596,11 +603,12 @@ function benchSpec2D(s) {
       { name: "stage", pipe: P.stage, bg: G.stage[0], d: [Math.ceil(2 * nm / 64)] }
     ]),
     stepIO: [
-      // the chain runs per pair: four preps and four two-lane inverse chains per stage,
-      // each prep reading ONE state field (phi or psi) and the grid
-      { name: "prepGrads", n: 12, bytes: cx + gr + 2 * cx },
-      { name: "colsInv:2", n: 12, bytes: 2 * (2 * cx), bf: 2 * nky * bl(nx) },
-      { name: "rowsC2R:2", n: 12, bytes: 2 * (cx + rx), bf: 2 * nx * bl(ny) },
+      // the chain runs per chunk: one prep and one inverse chain per chunk per stage, the
+      // prep reading the state fields its chunk's pairs need (both, in one whole-stack
+      // chunk) and the grid, and writing the chunk's lanes
+      { name: "prepGrads", n: 3 * gc.length, bytes: gf * cx + gr + gl * cx },
+      { name: "colsInv:" + gl, n: 3 * gc.length, bytes: gl * (2 * cx), bf: gl * nky * bl(nx) },
+      { name: "rowsC2R:" + gl, n: 3 * gc.length, bytes: gl * (cx + rx), bf: gl * nx * bl(ny) },
       { name: "bracket", n: 3, bytes: 10 * rx },
       { name: "rowsR2C:2", n: 3, bytes: 2 * (rx + cx), bf: 2 * nx * bl(ny) },
       { name: "colsFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nky * bl(nx) },

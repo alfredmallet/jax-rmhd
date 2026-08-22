@@ -56,10 +56,11 @@ const BASE = "ad080a2";
 const ADDED = { "rmhd2d.html": ["eigfGather"], "rmhd3d.html": ["prepGradsBand", "specParBand"] };
 // the selftest grid's instances (16 x 16 x 8: NM = 1152, NMP = 144, NZB = 4) -- the size
 // the WGSL interpreter runs in milliseconds
-// ... one label per gradient PAIR since FFTPERF_PLAN 2C: four emissions of one template,
-// each writing a single field's (x, y) gradient into lanes 0-1
-const K_GRADS = OFF.gpairKeys("selftest :: prepGrads");
-const K_GRADSB = OFF.gpairKeys("selftest :: prepGradsBand");
+// ... one label per CHUNK since FFTPERF_PLAN 2C -- on this page's 3D app, four emissions of
+// one template, each writing a single field's (x, y) gradient into lanes 0-1
+const GCH = OFF.CHUNKS["rmhd3d.html"];
+const K_GRADS = OFF.chunkKeys("selftest :: prepGrads", GCH);
+const K_GRADSB = OFF.chunkKeys("selftest :: prepGradsBand", GCH);
 const K_PAR = "selftest :: specPar", K_PARB = "selftest :: specParBand";
 const K_DISP = "selftest :: prepDisp";
 
@@ -212,9 +213,9 @@ function legEmission(state) {
     const moved = [], gone = [], shifted = [], added = new Set();
     for (const k of new Set(Object.keys(base).concat(Object.keys(cur)))) {
       if (base[k] === cur[k]) continue;
-      // prepGrads and its banded twin are four per-pair emissions each since FFTPERF_PLAN
-      // 2C (dispoffsets.js): the chunk audit below is what judges them
-      if (OFF.isGradsLabel(k) || OFF.isChunkLabel(k)) continue;
+      // where the page CHUNKS prepGrads and its banded twin (FFTPERF_PLAN 2C,
+      // dispoffsets.js) the chunk audit below is what judges them
+      if (OFF.isChunked(page, k)) continue;
       if (base[k] === undefined) added.add(k.split(" :: ")[1]);
       else if (cur[k] === undefined) gone.push(k);
       // ... except prepDisp, which BASE predates the 2D display offset by (dispoffsets.js):
@@ -237,11 +238,11 @@ function legEmission(state) {
     // ... including the kernel the RHS steps through: every one of its four pair
     // emissions is BASE's own prepGrads reduced to that pair, at every preset, so any
     // other change to the stepping kernel fails here
-    const CH = OFF.chunkAudit(base, cur);
+    const CH = OFF.chunkAudit(page, base, cur);
     for (const n of CH.added) added.add(n);
     ok("  ... including the kernel the RHS steps through, prepGrads, at every preset",
        CH.bad.length === 0 && CH.reduced.length >= 4,
-       CH.bad[0] || CH.reduced.length + " emissions chunked into " + OFF.NPAIR + " pairs each");
+       CH.bad[0] || CH.reduced.length + " emissions over " + JSON.stringify(OFF.CHUNKS[page]));
     const gotA = [...added].sort().join(", "), wantA = ADDED[page].join(", ");
     ok("  ... and what it ADDS is exactly [" + (wantA || "nothing") + "]",
        gotA === wantA, gotA || "none");
@@ -558,7 +559,7 @@ async function legInvariance(state) {
   const BG = env.run(BGNAMES);
   ok("(d) BOUND: every banded prep reads the STATE and writes the RHS's gradient scratch, "
      + "in prepGradsBand's own binding order",
-     !!BG && BG.prep.length === OFF.NPAIR &&
+     !!BG && BG.prep.length === GCH.length &&
      BG.prep.every(b => b === "fields,gridA,gradsK,genMode"),
      BG ? BG.prep.map(b => "[" + b + "]").join(" ") : "no bind groups recorded");
   ok("  ... the sweep's field-line march reads realGrads and writes its OWN polyline pair",
@@ -631,9 +632,12 @@ async function legInvariance(state) {
   const gg = env.run("function(){ const g = solver.g;"
     + " return { nmp: g.nmp, nz: g.nz, nky: g.nky, nx: g.nx }; }");
   const wantSeq = [];
-  for (let k = 0; k < OFF.NPAIR; k++)
-    wantSeq.push(["prepGradsBand" + k, expPrep, 1], ["zInv", gg.nmp, 2],
-                 ["colsInv", gg.nz * gg.nky, 2], ["rowsC2R", gg.nz * gg.nx, 2]);
+  GCH.forEach((ch, i) => {
+    const lanes = 2 * ch.length;
+    wantSeq.push(["prepGradsBand" + (GCH.length > 1 ? i : ""), expPrep, 1],
+                 ["zInv", gg.nmp, lanes], ["colsInv", gg.nz * gg.nky, lanes],
+                 ["rowsC2R", gg.nz * gg.nx, lanes]);
+  });
   wantSeq.push(["fieldLine", expMarch, 1]);
   const want = JSON.stringify(wantSeq);
   let badd = 0, firstd = "";

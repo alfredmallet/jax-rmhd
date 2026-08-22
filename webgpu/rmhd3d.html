@@ -318,15 +318,17 @@ const NMP_: u32 = ${nmp}u;`;
   //   bracket     the two Poisson brackets in real space
   //   nlAssemble  the nonlinear RHS; 3D dealias = perpendicular ellipse AND
   //               |iz_signed| < nz/3
-  //   ... and ONE (x, y) pair per emission, four of them (physics.js GRAD_PAIRS)
+  //   ... one emission per chunk of this page's chunk list (physics.js GRAD_CHUNKS_3D),
+  //               i.e. one (x, y) pair each
   // ... plus the SAME template with the k_perp band gate on its (phi, psi) read path
   // (ANISO_PLAN_2 A): the generated E(k_perp, k_par) card's sweep runs through those,
   // the RHS through the ones above, which is why the stepping kernel keeps its text and its
   // ALU exactly as they were. Emitting them costs four strings; their pipelines are built
   // only on the first generate press (Solver._genInit).
-  GRAD_PAIRS.forEach((p, k) => {
-    S["prepGrads" + k] = prepGradsWGSL(Object.assign({}, C, { gpair: k }));
-    S["prepGradsBand" + k] = prepGradsWGSL(Object.assign({}, C, { gpair: k, gband: g.kunit }));
+  GRAD_CHUNKS_3D.forEach((ch, i) => {
+    const sfx = gradChunkSuffix(GRAD_CHUNKS_3D, i);
+    S["prepGrads" + sfx] = prepGradsWGSL(Object.assign({}, C, { gchunk: ch }));
+    S["prepGradsBand" + sfx] = prepGradsWGSL(Object.assign({}, C, { gchunk: ch, gband: g.kunit }));
   });
   S.bracket = bracketWGSL(C);
   S.nlAssemble = nlAssembleWGSL(C);
@@ -1211,13 +1213,15 @@ class Solver {
   _buildBuffers() {
     const d = this.device, nm = this.g.nm, nmp = this.g.nmp, nr = this.nr, nrs = this.nrs;
     const cx = nm * 8; // one complex 3D field
+    const gcx = 2 * Math.max.apply(null, GRAD_CHUNKS_3D.map(ch => ch.length)); // lanes per chunk
     this.buf = {
       fields: d.createBuffer({ size: 2 * cx, usage: SQ }),
       delta: d.createBuffer({ size: 2 * cx, usage: SQ }),
       rhs: d.createBuffer({ size: 2 * cx, usage: SQ }),
-      // ONE (x, y) gradient pair at a time; the complex transform passes run IN PLACE here
-      // (that is what replaces the 2D page's specTmp ping-pong buffer)
-      gradsK: d.createBuffer({ size: 2 * cx, usage: SQ }),
+      // one CHUNK of the gradient stack at a time (GRAD_CHUNKS_3D: one (x, y) pair); the
+      // complex transform passes run IN PLACE here (that is what replaces the 2D page's
+      // specTmp ping-pong buffer)
+      gradsK: d.createBuffer({ size: gcx * cx, usage: SQ }),
       nlk: d.createBuffer({ size: 2 * cx, usage: SQ }),
       // forcing state (n_ou=2) x (A,B) x perpendicular grid -- NOT a 3D array
       forcing: d.createBuffer({ size: 4 * nmp * 8, usage: SQ }),
@@ -1272,7 +1276,7 @@ class Solver {
     // the band-gated prepGrads is kept as TEXT and compiled only if the generate sweep is
     // ever pressed (ANISO_PLAN_2 A); everything it then needs is built there, at once.
     // The coordinate panel's binning kernel (B) rides along on exactly the same terms.
-    this._genWGSL = GRAD_PAIRS.map((p, k) => S["prepGradsBand" + k]);
+    this._genWGSL = GRAD_CHUNKS_3D.map((ch, i) => S["prepGradsBand" + gradChunkSuffix(GRAD_CHUNKS_3D, i)]);
     this._gen2dWGSL = S.specParBand;
     this._gen = null;
     const mod = shaderModuleFactory(d);
@@ -1283,7 +1287,10 @@ class Solver {
       rowsR2C: cp(S.rowsR2C, "rowsR2C"), rowsC2R: cp(S.rowsC2R, "rowsC2R"),
       colsFwd: cp(S.colsFwd, "colsFwd"), colsInv: cp(S.colsInv, "colsInv"),
       zFwd: cp(S.zFwd, "zFwd"), zInv: cp(S.zInv, "zInv"),
-      prepGrads: GRAD_PAIRS.map((p, k) => cp(S["prepGrads" + k], "prepGrads" + k)),
+      prepGrads: GRAD_CHUNKS_3D.map((ch, i) => {
+        const n = "prepGrads" + gradChunkSuffix(GRAD_CHUNKS_3D, i);
+        return cp(S[n], n);
+      }),
       bracket: cp(S.bracket, "bracket"),
       nlAssemble: cp(S.nlAssemble, "nlAssemble"), forcingAdd: cp(S.forcingAdd, "forcingAdd"),
       envExpand: cp(S.envExpand, "envExpand"),
@@ -1349,11 +1356,10 @@ class Solver {
       prepGrads: this.pl.prepGrads.map(p => bg(p, [B.fields, B.gridA, B.gradsK])),
       zInvGrads: bg(this.pl.zInv, [B.gradsK]),                     // in place
       colsInvGrads: bg(this.pl.colsInv, [B.gradsK]),               // in place
-      // one target per pair: the same row kernel, its store landing in the pair's own two
-      // lanes of realGrads through the binding's offset (physics.js gradPairOffset)
-      rowsC2RGrads: GRAD_PAIRS.map((p, k) => bg(this.pl.rowsC2R,
-        [B.gradsK,
-         { buffer: B.realGrads, offset: gradPairOffset(this.nr, k), size: 2 * this.nr * 4 }])),
+      // one target per chunk: the same row kernel, its store landing in the chunk's own
+      // lanes of realGrads through the binding's window (physics.js gradChunkWindow)
+      rowsC2RGrads: GRAD_CHUNKS_3D.map(ch => bg(this.pl.rowsC2R,
+        [B.gradsK, Object.assign({ buffer: B.realGrads }, gradChunkWindow(this.nr, ch))])),
       bracket: bg(this.pl.bracket, [B.realGrads, B.realNL]),
       rowsR2CNL: bg(this.pl.rowsR2C, [B.realNL, B.nlk]),
       colsFwdNL: bg(this.pl.colsFwd, [B.nlk]),                     // in place
@@ -1805,18 +1811,20 @@ class Solver {
 
   // the perpendicular gradient volume: the eight i*k gradients, inverse-transformed into
   // realGrads (slots 0,1 = grad phi, 2,3 = grad psi, 4..7 = grad vorticity / current).
-  // ONE (x, y) pair at a time: each prep writes the two-lane k-space stack and the three
-  // inverse passes carry it to the pair's own slots of realGrads. The RHS's first move,
+  // ONE CHUNK at a time (GRAD_CHUNKS_3D: one (x, y) pair): each prep writes the chunk's
+  // lanes of the k-space stack and the three inverse passes carry them to the chunk's own
+  // slots of realGrads. The RHS's first move,
   // the whole of the field-line pass's volume prep (K.1), and -- through `pl` / `bgs`, the
   // sweep's own banded preps over the same scratch -- the generate path's (ANISO_PLAN_2 A).
   // The only place the chain is encoded.
   encodeGrads(pass, pl, bgs) {
     const P = pl || this.pl.prepGrads, G = bgs || this.bg.prepGrads;
-    for (let k = 0; k < P.length; k++) {
-      pass.setPipeline(P[k]); pass.setBindGroup(0, G[k]);
+    GRAD_CHUNKS_3D.forEach((ch, i) => {
+      pass.setPipeline(P[i]); pass.setBindGroup(0, G[i]);
       pass.dispatchWorkgroups(Math.ceil(this.g.nm / 64));
-      this.encodeInv3D(pass, 2, this.bg.zInvGrads, this.bg.colsInvGrads, this.bg.rowsC2RGrads[k]);
-    }
+      this.encodeInv3D(pass, 2 * ch.length, this.bg.zInvGrads, this.bg.colsInvGrads,
+                       this.bg.rowsC2RGrads[i]);
+    });
   }
 
   // ---- RHS + one LSRK33 step ---------------------------------------------
@@ -2145,7 +2153,7 @@ class Solver {
     const cp = (code, name) => d.createComputePipeline({
       layout: "auto", compute: { module: mod(code, name), entryPoint: "main" }
     });
-    const pl = this._genWGSL.map((c, k) => cp(c, "prepGradsBand" + k));
+    const pl = this._genWGSL.map((c, i) => cp(c, "prepGradsBand" + gradChunkSuffix(GRAD_CHUNKS_3D, i)));
     const pl2d = cp(this._gen2dWGSL, "specParBand");
     const bg = (pipe, entries) => d.createBindGroup({
       layout: pipe.getBindGroupLayout(0),
@@ -2320,13 +2328,18 @@ function benchSpec3D(s) {
   const g = s.g, nx = g.nx, ny = g.ny, nz = g.nz, nky = g.nky, nmp = g.nmp, nm = g.nm;
   const nr = s.nr, B = s.buf, P = s.pl, G = s.bg;
   const cx = nm * 8, rx = nr * 4, grp = nmp * 16, grz = nz * 16, bl = benchLineBf;
+  // the gradient chain's lane count and dispatch count are this page's chunk list
+  const gc = GRAD_CHUNKS_3D, gl = 2 * gc[0].length;
+  // ... and how many DISTINCT state fields one chunk's prep reads (vort rides phi's
+  // read, jpar rides psi's)
+  const gf = new Set(gc[0].map(k => GRAD_PAIRS[k].src)).size;
   const ffts = [
-    { name: "zInv", key: "zInv", lanes: 2, pipe: P.zInv, bg: G.zInvGrads,
-      bufs: [B.gradsK], d: [nmp, 2] },
-    { name: "colsInv", key: "colsInv", lanes: 2, pipe: P.colsInv, bg: G.colsInvGrads,
-      bufs: [B.gradsK], d: [nz * nky, 2] },
-    { name: "rowsC2R", key: "rowsC2R", lanes: 2, pipe: P.rowsC2R, bg: G.rowsC2RGrads[0],
-      bufs: [B.gradsK, B.realGrads], d: [nz * nx, 2] },
+    { name: "zInv", key: "zInv", lanes: gl, pipe: P.zInv, bg: G.zInvGrads,
+      bufs: [B.gradsK], d: [nmp, gl] },
+    { name: "colsInv", key: "colsInv", lanes: gl, pipe: P.colsInv, bg: G.colsInvGrads,
+      bufs: [B.gradsK], d: [nz * nky, gl] },
+    { name: "rowsC2R", key: "rowsC2R", lanes: gl, pipe: P.rowsC2R, bg: G.rowsC2RGrads[0],
+      bufs: [B.gradsK, B.realGrads], d: [nz * nx, gl] },
     { name: "rowsR2C", key: "rowsR2C", lanes: 2, pipe: P.rowsR2C, bg: G.rowsR2CNL,
       bufs: [B.realNL, B.nlk], d: [nz * nx, 2] },
     { name: "colsFwd", key: "colsFwd", lanes: 2, pipe: P.colsFwd, bg: G.colsFwdNL,
@@ -2336,9 +2349,10 @@ function benchSpec3D(s) {
   ];
   return {
     res: [nx, ny, nz], g: g, build: buildShaders, ffts: ffts,
-    // the gradient chain the hash cell runs -- the solver's own encoder -- and the
-    // eight real-space lanes it leaves in realGrads
-    grads: { buf: B.realGrads, lanes: 8, bytes: rx, encode: p => s.encodeGrads(p) },
+    // the gradient chain the hash cell runs -- the solver's own encoder -- its chunk list,
+    // and the eight real-space lanes it leaves in realGrads
+    grads: { buf: B.realGrads, lanes: 8, bytes: rx, chunks: gc,
+             encode: p => s.encodeGrads(p) },
     kernels: ffts.concat([
       { name: "prepGrads", pipe: P.prepGrads[0], bg: G.prepGrads[0], d: [Math.ceil(nm / 64)] },
       { name: "bracket", pipe: P.bracket, bg: G.bracket, d: [Math.ceil(nr / 256)] },
@@ -2349,12 +2363,13 @@ function benchSpec3D(s) {
       { name: "gradient chain", encode: p => s.encodeGrads(p) }
     ],
     stepIO: [
-      // the chain runs per pair: four preps and four two-lane inverse chains per stage,
-      // each prep reading ONE state field (phi or psi) and the perpendicular grid
-      { name: "prepGrads", n: 12, bytes: cx + grp + 2 * cx },
-      { name: "zInv:2", n: 12, bytes: 2 * (2 * cx), bf: 2 * nmp * bl(nz) },
-      { name: "colsInv:2", n: 12, bytes: 2 * (2 * cx), bf: 2 * nz * nky * bl(nx) },
-      { name: "rowsC2R:2", n: 12, bytes: 2 * (cx + rx), bf: 2 * nz * nx * bl(ny) },
+      // the chain runs per chunk: one prep and one inverse chain per chunk per stage, the
+      // prep reading the ONE state field its pair needs (phi or psi) and the perpendicular
+      // grid, and writing the chunk's lanes
+      { name: "prepGrads", n: 3 * gc.length, bytes: gf * cx + grp + gl * cx },
+      { name: "zInv:" + gl, n: 3 * gc.length, bytes: gl * (2 * cx), bf: gl * nmp * bl(nz) },
+      { name: "colsInv:" + gl, n: 3 * gc.length, bytes: gl * (2 * cx), bf: gl * nz * nky * bl(nx) },
+      { name: "rowsC2R:" + gl, n: 3 * gc.length, bytes: gl * (cx + rx), bf: gl * nz * nx * bl(ny) },
       { name: "bracket", n: 3, bytes: 10 * rx },
       { name: "rowsR2C:2", n: 3, bytes: 2 * (rx + cx), bf: 2 * nz * nx * bl(ny) },
       { name: "colsFwd:2", n: 3, bytes: 2 * (2 * cx), bf: 2 * nz * nky * bl(nx) },

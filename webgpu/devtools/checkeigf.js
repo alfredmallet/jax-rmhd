@@ -239,9 +239,9 @@ const cur = {};
     const moved = [], gone = [], shifted = [], added = new Set();
     for (const k of keys) {
       if (base[k] === cur[page][k]) continue;
-      // prepGrads is four per-pair emissions since FFTPERF_PLAN 2C (dispoffsets.js): the
-      // one that vanished and the four that appeared are the chunk audit's, below
-      if (OFF.isGradsLabel(k) || OFF.isChunkLabel(k)) continue;
+      // where the page CHUNKS prepGrads (FFTPERF_PLAN 2C, dispoffsets.js) its emissions
+      // are the chunk audit's, below; a one-chunk page is compared here like any other
+      if (OFF.isChunked(page, k)) continue;
       if (base[k] === undefined) { added.add(k.split(" :: ")[1]); continue; }
       if (cur[page][k] === undefined) { gone.push(k); continue; }
       // ... except prepDisp, which BASE predates the 2D display offset by (dispoffsets.js):
@@ -249,7 +249,7 @@ const cur = {};
       if (OFF.isMove(page, k, base[k], cur[page][k])) { shifted.push(k); continue; }
       moved.push(k);
     }
-    const CH = OFF.chunkAudit(base, cur[page]);
+    const CH = OFF.chunkAudit(page, base, cur[page]);
     for (const n of CH.added) added.add(n);
     ok(page + ": every kernel that existed at " + BASE + " is byte-identical",
        moved.length === 0 && gone.length === 0,
@@ -257,9 +257,10 @@ const cur = {};
        (moved.length ? " (" + moved[0] + ")" : ""));
     // ... and each per-pair prepGrads IS base's own text reduced to that pair, so any
     // OTHER change to it fails here
-    ok("  ... but for prepGrads, chunked into its four pairs",
+    ok("  ... and prepGrads is base's own text over this page's chunk list, "
+       + JSON.stringify(OFF.CHUNKS[page]),
        CH.bad.length === 0 && CH.reduced.length + CH.added.length > 0,
-       CH.bad[0] || CH.reduced.length + " emissions chunked");
+       CH.bad[0] || CH.reduced.length + " emissions");
     // ... and the allowance is spent EXACTLY: every emission it names carries the offset,
     // so the block going missing fails here rather than passing as "nothing moved"
     const wantS = OFF.moved(page, Object.keys(cur[page]));

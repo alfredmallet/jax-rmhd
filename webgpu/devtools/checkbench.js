@@ -151,38 +151,40 @@ function legWiring(env, page) {
                     : c.bufs.length + " of " + got.length + " bound");
     }
   }
-  // the gradient chain's four row-kernel targets: the SAME buffer, four windows into it,
-  // in pair order, each two real lanes wide (FFTPERF_PLAN 2C). The stub keeps a binding's
-  // {buffer, offset, size}, so a chain that wrote every pair over lane 0 -- or bound the
-  // whole eight-lane stack four times -- is visible here and nowhere else.
-  const gradRows = env.run("() => { const s = solver;" +
+  // the gradient chain's row-kernel targets: the SAME buffer, one window into it per CHUNK
+  // of the page's own chunk list, at the chunk's first lane and as wide as the chunk
+  // (FFTPERF_PLAN 2C). The stub keeps a binding's {buffer, offset, size}, so a chain that
+  // wrote every chunk over lane 0 -- or bound the whole eight-lane stack every time -- is
+  // visible here and nowhere else.
+  const gradRows = env.run("() => { const s = solver, sp = benchSpec();" +
     " return { bg: s.bg.rowsC2RGrads, real: s.buf.realGrads, nr: s.nr," +
-    "          prep: s.pl.prepGrads.map(p => p.__name) }; }");
-  const npair = gradRows.bg.length, lane2 = 2 * gradRows.nr * 4;
-  const wantOff = gradRows.bg.map((b, k) => k * lane2);
+    "          chunks: sp.grads.chunks, prep: s.pl.prepGrads.map(p => p.__name) }; }");
+  const nchunk = gradRows.chunks.length, lane = 2 * gradRows.nr * 4;
+  const wantOff = gradRows.chunks.map(ch => ch[0] * lane);
+  const wantSize = gradRows.chunks.map(ch => ch.length * lane);
   const winOf = e => {
     const w = e.bg.__bindings && e.bg.__bindings.filter(x => x.buffer === gradRows.real)[0];
     return w ? [w.offset, w.size] : null;
   };
   const rows = disp.filter(e => gradRows.bg.indexOf(e.bg) >= 0);
   const perBg = gradRows.bg.map(b => rows.filter(e => e.bg === b).length);
-  const firstRows = rows.slice(0, npair).map(winOf);
-  ok(page + ": the chain's four row-kernel targets are realGrads at " +
-     JSON.stringify(wantOff) + ", two lanes (" + lane2 + " B) each, in pair order",
-     firstRows.length === npair &&
-     firstRows.every((w, k) => w && w[0] === wantOff[k] && w[1] === lane2),
+  const firstRows = rows.slice(0, nchunk).map(winOf);
+  ok(page + ": the chain's " + nchunk + " row-kernel target(s) are realGrads at " +
+     JSON.stringify(wantOff) + ", " + JSON.stringify(wantSize) + " B wide, in chunk order",
+     firstRows.length === nchunk &&
+     firstRows.every((w, k) => w && w[0] === wantOff[k] && w[1] === wantSize[k]),
      JSON.stringify(firstRows));
-  ok(page + ":   ... and the step runs each of the four the same number of times",
-     rows.length === npair * perBg[0] && perBg.every(n => n === perBg[0]),
+  ok(page + ":   ... and the step runs each of them the same number of times",
+     rows.length === nchunk * perBg[0] && perBg.every(n => n === perBg[0]),
      perBg.join(", ") + " dispatches, " + rows.length + " in the step");
-  // ... off four DISTINCT prep pipelines: four instantiations of one template, in pair
-  // order, not one pipeline dispatched four times
+  // ... each off its OWN prep pipeline: one instantiation of the template per chunk, in
+  // chunk order, not one pipeline dispatched for every chunk
   const preps = disp.filter(e => gradRows.prep.indexOf(e.pipe.__name) >= 0);
-  const firstPreps = preps.slice(0, npair);
+  const firstPreps = preps.slice(0, nchunk);
   ok(page + ":   ... each behind its own prepGrads pipeline, " + gradRows.prep.join(", "),
-     preps.length === npair * perBg[0] &&
+     preps.length === nchunk * perBg[0] &&
      same(firstPreps.map(e => e.pipe.__name), gradRows.prep) &&
-     new Set(firstPreps.map(e => e.pipe)).size === npair,
+     new Set(firstPreps.map(e => e.pipe)).size === nchunk,
      firstPreps.map(e => e.pipe.__name).join(", ") || "none");
 
   // the byte table's `n` column against the same recorded step, and nothing dispatched
@@ -242,8 +244,8 @@ async function legGradsHash(env, page) {
      want.every((v, i) => v === got[i]) && got[1] !== got[2],
      got.join(", ") + " vs " + want.join(", "));
   // the cell's chain against the step's own: the gradient chain is what a step encodes
-  // first -- one prep and its inverse passes (two in 2D, three in 3D) per gradient pair
-  const nchain = env.run("() => GRAD_PAIRS.length") * (env.is3d ? 4 : 3);
+  // first -- one prep and its inverse passes (two in 2D, three in 3D) per CHUNK
+  const nchain = env.run("() => benchSpec().grads.chunks.length") * (env.is3d ? 4 : 3);
   env.gpuReset();
   env.run("() => solver.step(1)");
   const chain = env.gpu.dispatches.slice(0, nchain);
@@ -260,24 +262,26 @@ async function legGradsHash(env, page) {
      env.gpu.dispatches.length > nchain &&
      env.gpu.dispatches.slice(-nchain - 1)[0].pipe !== chain[0].pipe,
      env.gpu.dispatches.length + " dispatches in all");
-  // ONE chain, so the four pairs are exactly four dispatches here: four distinct prep
-  // pipelines, and four windows into realGrads at 2*k*nr*4, two lanes wide (2C). A chain
-  // that wrote every pair over lane 0 would hash the same buffer four times and be
+  // ONE chain, so a chunk is exactly one dispatch here: one prep pipeline per chunk, and
+  // one window into realGrads per chunk, at its first lane and as wide as the chunk (2C).
+  // A chain that wrote every chunk over lane 0 would hash the same lanes repeatedly and be
   // invisible to the digest itself.
   const G = env.run("() => ({ real: solver.buf.realGrads, nr: solver.nr," +
+    " chunks: benchSpec().grads.chunks," +
     " prep: solver.pl.prepGrads.map(p => p.__name) })");
-  const lane2 = 2 * G.nr * 4;
+  const lane = 2 * G.nr * 4;
+  const wantW = G.chunks.map(ch => [ch[0] * lane, ch.length * lane]);
   const wins = tail.filter(e => e.bg.__bindings &&
                                 e.bg.__bindings.some(x => x.buffer === G.real))
     .map(e => e.bg.__bindings.filter(x => x.buffer === G.real)
                              .map(x => [x.offset, x.size])[0]);
-  ok(page + ": ... the chain's four writes are realGrads at 0, " + lane2 + ", " + 2 * lane2
-     + ", " + 3 * lane2 + ", two lanes each",
-     wins.length === G.prep.length &&
-     wins.every((w, k) => w[0] === k * lane2 && w[1] === lane2),
+  ok(page + ": ... the chain's writes are realGrads at " + JSON.stringify(wantW)
+     + " (offset, size) -- one window per chunk",
+     wins.length === wantW.length &&
+     wins.every((w, k) => w[0] === wantW[k][0] && w[1] === wantW[k][1]),
      JSON.stringify(wins));
   const preps = tail.filter(e => G.prep.indexOf(e.pipe.__name) >= 0);
-  ok(page + ": ... and its four preps are the four distinct pipelines, in pair order",
+  ok(page + ": ... and its preps are one distinct pipeline per chunk, in chunk order",
      same(preps.map(e => e.pipe.__name), G.prep) &&
      new Set(preps.map(e => e.pipe)).size === G.prep.length,
      preps.map(e => e.pipe.__name).join(", ") || "none");
@@ -610,16 +614,18 @@ function legSeamRestore(env) {
 // (one real field), and each grid buffer a kernel binds (gr / grp perpendicular, grz in
 // z). A buffer both read and written by the same kernel is counted twice.
 //
-// Since FFTPERF_PLAN 2C the gradient chain runs one (x, y) PAIR at a time: four preps and
-// four two-lane inverse chains per stage, so those rows are dispatched 12 times per step
-// and not 3, and each prep reads ONE state field (phi or psi) and writes two lanes. The
-// transforms move the same bytes either way -- 12 x 2 lanes is 3 x 8 -- and prepGrads is
-// the row that grows: 12(3cx + gr) against 3(10cx + gr).
+// Since FFTPERF_PLAN 2C the gradient chain runs one CHUNK of (x, y) pairs at a time, and
+// each page ships its own chunk list (§9.3). The 2D page's is one whole-stack chunk, so its
+// chain is the pre-2C one and its number is the pre-2C number. The 3D page's is four
+// one-pair chunks: four preps and four two-lane inverse chains per stage, so those rows are
+// dispatched 12 times per step and not 3, and each prep reads ONE state field (phi or psi)
+// and writes two lanes. The transforms move the same bytes either way -- 12 x 2 lanes is
+// 3 x 8 -- and prepGrads is the row that grows there: 12(3cx + grp) against 3(10cx + grp).
 //
 // 2D 256^2: nm = 256*129 = 33024, nr = 65536 -> cx = 264192, rx = 262144, gr = 528384.
-//   prepGrads   x12  cx + gr + 2cx          =  1320960 ->  15851520
-//   colsInv:2   x12  4cx                    =  1056768 ->  12681216
-//   rowsC2R:2   x12  2cx + 2rx              =  1052672 ->  12632064
+//   prepGrads   x3   2cx + gr + 8cx         =  3170304 ->   9510912
+//   colsInv:8   x3   16cx                   =  4227072 ->  12681216
+//   rowsC2R:8   x3   8cx + 8rx              =  4210688 ->  12632064
 //   bracket     x3   10rx                   =  2621440 ->   7864320
 //   rowsR2C:2   x3   2rx + 2cx              =  1052672 ->   3158016
 //   colsFwd:2   x3   4cx                    =  1056768 ->   3170304
@@ -627,7 +633,7 @@ function legSeamRestore(env) {
 //   forcingAdd  x3   2cx + 2cx + 2cx        =  1585152 ->   4755456
 //   stage       x3   10cx + gr              =  3170304 ->   9510912
 //   energyPartial x1 2cx + 2gr              =  1585152 ->   1585152
-//   TOTAL                                                = 77549568
+//   TOTAL                                                = 71208960
 //
 // 3D 128^2 x 64: nmp = 128*65 = 8320, nm = 64*8320 = 532480, nr = 1048576 ->
 // cx = 4259840, rx = 4194304, grp = nmp*16 = 133120, grz = nz*16 = 1024.
@@ -644,7 +650,7 @@ function legSeamRestore(env) {
 //   stage       x3   10cx + grp + grz       = 42732544 -> 128197632
 //   energyPartial x1 2cx + 2grp + grz       =  8786944 ->   8786944
 //   TOTAL                                                = 1236886528
-const BYTES = { "rmhd2d.html": { fn: "benchSpec2D", res: [256, 256, 1], bytes: 77549568,
+const BYTES = { "rmhd2d.html": { fn: "benchSpec2D", res: [256, 256, 1], bytes: 71208960,
                                  eqsrc: true },
                 "rmhd3d.html": { fn: "benchSpec3D", res: [128, 128, 64], bytes: 1236886528 } };
 function legBytes(env, page) {

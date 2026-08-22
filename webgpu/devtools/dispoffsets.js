@@ -64,69 +64,103 @@ function moved(page, keys) {
 // ---------------------------------------------------------------------------
 // 2. the second allowance: FFTPERF_PLAN 2C's gradient chunking
 // ---------------------------------------------------------------------------
-// `prepGrads` (and the sweep's band-gated twin) used to be ONE kernel writing all eight
-// i*k gradient lanes. It is now four emissions of one template, each computing a single
-// field's (x, y) pair into lanes 0-1 -- so every gate that pins physics WGSL against a
-// commit older than 2C sees one kernel vanish and four appear, at every preset.
+// `prepGrads` (and the sweep's band-gated twin) writes the eight i*k gradient lanes one
+// CHUNK of (x, y) pairs at a time, and each page picks its own chunk list (§9.3): the 2D
+// page does all four pairs in one dispatch -- which is BASE's kernel, byte for byte, under
+// BASE's name, so nothing is excused there and the pin is plain identity -- and the 3D page
+// one pair per dispatch, four emissions where the base commit had one.
 //
-// The substitution, per pair k, is a pure LINE selection out of the base text:
-//   * the `let` lines: only the pair's own source field, plus (vort / jpar) the multiply
-//     that builds it -- the other two are dropped;
-//   * the eight `outg[...]` writes: only the pair's two, and they take the LHS of lanes 0
-//     and 1, so the pair lands at the start of a two-lane target.
-// Everything else -- bindings, workgroup size, the m / g preamble, the band block where
-// the emission has one -- is base's text, line for line. So a gate can keep its base
-// commit and still fail on any OTHER change to prepGrads, which is the whole point.
+// The substitution, per chunk, is a pure LINE selection out of the base text:
+//   * the `let` lines: only the fields the chunk's pairs read or build, in first-use order;
+//   * the eight `outg[...]` writes: only the chunk's, taking the LHS of lanes 0, 1, 2, ...
+//     so the chunk lands at the start of its own target.
+// Everything else -- bindings, workgroup size, the m / g preamble, the band block where the
+// emission has one -- is base's text, line for line, and the whole-stack chunk [0,1,2,3]
+// reproduces base exactly. So a gate can keep its base commit and still fail on any OTHER
+// change to prepGrads, which is the whole point.
 const G_KERNELS = ["prepGrads", "prepGradsBand"];
 const NPAIR = 4;
+// each page's chunk list, as it ships. A page whose list this does not describe fails the
+// audit -- including a 2D page that has started emitting pairs.
+const CHUNKS = { "rmhd2d.html": [[0, 1, 2, 3]], "rmhd3d.html": [[0], [1], [2], [3]] };
 const LET = /^  let (\w+): vec2<f32> = /;
 const OUT = /^(  outg\[[^\]]*\] *)= vec2<f32>\(-g\.([xy]) \* (\w+)\.y, +g\.\2 \* \3\.x\);$/;
 // the state field each written field is read from (vort is built out of phi, jpar of psi)
 const OF_SRC = { phi: "phi", psi: "psi", vort: "phi", jpar: "psi" };
 
-// base's eight-lane prepGrads text -> pair k's text, or null if `base` is not one
-function gpairApplied(base, k) {
-  const L = String(base).split("\n");
-  const out = [];
+// base's eight-lane prepGrads text -> the text of one chunk of pairs, or null if `base` is
+// not an eight-lane emission or the chunk is not a set of pair indices
+function chunkApplied(base, chunk) {
+  const L = String(base).split("\n"), out = [];
   for (let i = 0; i < L.length; i++) if (OUT.test(L[i])) out.push(i);
-  if (out.length !== 2 * NPAIR || !(k >= 0 && k < NPAIR)) return null;
-  const of = OUT.exec(L[out[2 * k]])[3];
-  if (!OF_SRC[of] || OUT.exec(L[out[2 * k + 1]])[3] !== of) return null;
-  const keep = new Set([OF_SRC[of], of]);
+  if (out.length !== 2 * NPAIR) return null;
+  if (!Array.isArray(chunk) || !chunk.length ||
+      chunk.some(k => !(k >= 0 && k < NPAIR)) || new Set(chunk).size !== chunk.length) return null;
+  // the fields the chunk needs, in first-use order, and the lines that make them
+  const of = chunk.map(k => OUT.exec(L[out[2 * k]])[3]);
+  if (of.some((f, j) => !OF_SRC[f] || OUT.exec(L[out[2 * chunk[j] + 1]])[3] !== f)) return null;
+  const want = [];
+  of.forEach(f => { for (const n of [OF_SRC[f], f]) if (want.indexOf(n) < 0) want.push(n); });
+  const lets = new Map();
+  for (const l of L) { const m = LET.exec(l); if (m) lets.set(m[1], l); }
   const res = [];
+  let done = false;
   for (let i = 0; i < L.length; i++) {
-    const ml = LET.exec(L[i]);
-    if (ml) { if (keep.has(ml[1])) res.push(L[i]); continue; }
+    if (LET.test(L[i])) {                       // the whole block, once, where it stood
+      if (done) continue;
+      done = true;
+      for (const n of want) if (lets.has(n)) res.push(lets.get(n));
+      continue;
+    }
     const j = out.indexOf(i);
     if (j < 0) { res.push(L[i]); continue; }
-    if (j === 2 * k || j === 2 * k + 1) res.push(OUT.exec(L[out[j - 2 * k]])[1]
-                                                + L[i].slice(L[i].indexOf("= ")));
+    if (j !== 0) continue;                      // the writes go in as one block too
+    chunk.forEach((k, jj) => {
+      for (const h of [0, 1])
+        res.push(OUT.exec(L[out[2 * jj + h]])[1] + L[out[2 * k + h]].slice(L[out[2 * k + h]].indexOf("= ")));
+    });
   }
   return res.join("\n");
 }
 
 const kernelOf = label => String(label).split(" :: ").pop();
-// the four dump labels one base label becomes
-const gpairKeys = label => Array.from({ length: NPAIR }, (_, k) => label + k);
-// "prepGrads2" -> "prepGrads" (a pair emission's kernel), else null
+// the dump labels one base label becomes under a chunk list: a single chunk keeps the
+// base name, so its emission is compared as the base kernel it still is
+const chunkKeys = (label, chunks) =>
+  chunks.map((ch, i) => label + (chunks.length > 1 ? String(i) : ""));
+// "prepGrads2" -> "prepGrads" (a per-chunk emission's kernel), else null
 function chunkName(name) {
   const m = /^(\w+?)(\d)$/.exec(String(name));
   return m && G_KERNELS.indexOf(m[1]) >= 0 && +m[2] < NPAIR ? m[1] : null;
 }
 const isChunkLabel = label => !!chunkName(kernelOf(label));
 const isGradsLabel = label => G_KERNELS.indexOf(kernelOf(label)) >= 0;
+// a label the chunking really moves ON THIS PAGE, i.e. one a byte-identity leg should hand
+// to the audit below instead of comparing itself. A page that emits ONE chunk moves
+// nothing: its kernel keeps base's name AND base's text, and is compared like any other.
+function isChunked(page, label) {
+  const chunks = CHUNKS[page];
+  if (!chunks || chunks.length < 2) return false;
+  return isGradsLabel(label) || isChunkLabel(label);
+}
 
-// audit two dumps (label -> text): every chunked kernel the BASE emitted must be gone and
-// its four pairs present and EXACTLY the reduction; a pair emission whose base label does
-// not exist at all is an ADDITION, named by its kernel so the gate's own ADDED list still
-// judges it. `bad` is empty or says what is wrong, first offender first.
-function chunkAudit(base, cur) {
-  const bad = [], reduced = [], added = new Set();
+// audit two dumps (label -> text) against the page's own chunk list: every gradient kernel
+// the BASE emitted must appear as exactly the emissions that list calls for, each EXACTLY
+// base's text reduced to its chunk, and nothing else of that kernel may be emitted. A
+// per-chunk emission whose base label does not exist at all is an ADDITION, named by its
+// kernel so the gate's own ADDED list still judges it. `bad` is empty or says what is
+// wrong, first offender first.
+function chunkAudit(page, base, cur) {
+  const chunks = CHUNKS[page], bad = [], reduced = [], added = new Set();
+  if (!chunks) return { reduced: reduced, added: [], bad: ["no chunk list recorded for " + page] };
   for (const label of Object.keys(base)) {
     if (!isGradsLabel(label)) continue;
-    if (cur[label] !== undefined) { bad.push(label + ": still emitted whole"); continue; }
-    const miss = gpairKeys(label).filter((c, k) => cur[c] !== gpairApplied(base[label], k));
-    if (miss.length) bad.push(miss[0] + ": not " + label + "'s text reduced to that pair");
+    const keys = chunkKeys(label, chunks);
+    const stray = [label].concat(chunkKeys(label, [0, 1, 2, 3]))
+      .filter(k => keys.indexOf(k) < 0 && cur[k] !== undefined);
+    if (stray.length) { bad.push(stray[0] + ": emitted where the page's chunk list has no such kernel"); continue; }
+    const miss = keys.filter((k, i) => cur[k] !== chunkApplied(base[label], chunks[i]));
+    if (miss.length) bad.push(miss[0] + ": not " + label + "'s text over the chunk the page ships");
     else reduced.push(label);
   }
   for (const label of Object.keys(cur)) {
@@ -137,5 +171,5 @@ function chunkAudit(base, cur) {
 }
 
 module.exports = { COMMIT, PAGE, KERNEL, PHASE, applied, isMove, moved,
-                   G_KERNELS, NPAIR, gpairApplied, gpairKeys, chunkName,
-                   isChunkLabel, isGradsLabel, chunkAudit };
+                   G_KERNELS, NPAIR, CHUNKS, chunkApplied, chunkKeys, chunkName,
+                   isChunkLabel, isGradsLabel, isChunked, chunkAudit };

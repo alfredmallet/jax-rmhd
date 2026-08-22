@@ -101,9 +101,9 @@ controller and no `timestamp-query`.
   the buffer bytes one step binds and reads/writes (the table in FFTPERF_PLAN Appendix A) as
   GB/s, and butterflies as G butterflies/s.
 - **per kernel** — each kernel alone: `reps` dispatches of one pipeline in one compute
-  pass, on the solver's own buffers at the dispatch shape the step gives it (the gradient
-  chain's kernels at one two-lane chunk — four chunks per stage, so ×12 per step — and the
-  nonlinear chain's at its two lanes), µs per dispatch.
+  pass, on the solver's own buffers at the dispatch shape the step gives it (FFT kernels at
+  their own chain's lane count: the nonlinear chain's 2; the gradient chain's 8 on 2D, and
+  on 3D one two-lane chunk — four chunks per stage, so ×12 per step), µs per dispatch.
 - **FFT ladder** — each FFT kernel three ways: the shipped kernel; one with the `cos`/`sin`
   twiddle lines replaced by constants (`consttw`); one that keeps only the load and the
   store (`copy`). Read them as `T_mem` = copy (memory traffic, strided reads included),

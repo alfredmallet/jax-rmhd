@@ -9,14 +9,20 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   and still fail on any OTHER change. (1) 268100f ("webgpu perp offsets") gave the 2D card
   its display offset, which moves the Mode struct line and inserts the translation phase:
   `applied(base)` is base's prepDisp text plus exactly that, so any other change to
-  prepDisp — or the offset going missing — still fails. (2) FFTPERF_PLAN 2C turned one
-  eight-lane `prepGrads` (and the sweep's banded twin) into four per-pair emissions:
-  `gpairApplied(base, k)` is base's own text reduced to pair k — its source `let`s, its
-  two writes, moved to lanes 0 and 1 — and `chunkAudit(base, cur)` spends that allowance
-  exactly, demanding the eight-lane emission be GONE and all four pairs present and equal
-  to the reduction. `checkiso` leg 2b is the allowance's own gate: BASE's text with a sign
-  flip, a pair built from the wrong field, swapped lanes, the eight-lane emission left in
-  place, a missing pair and a pair that is the whole text must each come back named.
+  prepDisp — or the offset going missing — still fails. (2) FFTPERF_PLAN 2C made
+  `prepGrads` (and the sweep's banded twin) one emission per CHUNK of (x, y) gradient pairs,
+  with a chunk list PER PAGE (`CHUNKS`, §9.3): the 2D page's one whole-stack chunk, which is
+  base's kernel under base's name byte for byte, and the 3D page's four one-pair chunks.
+  `chunkApplied(base, chunk)` is base's own text over that chunk — the `let`s its pairs
+  need, its writes moved to lanes 0, 1, … — and `chunkAudit(page, base, cur)` spends the
+  allowance exactly, demanding the emissions the page's list calls for, each equal to that
+  text, and NOTHING else of that kernel emitted. `isChunked(page, label)` is what a
+  byte-identity leg skips: on a one-chunk page nothing is excused, so its `prepGrads` is
+  compared plainly. `checkiso` leg 2b is the allowance's own gate: on the 3D list, BASE's
+  text with a sign flip, a pair built from the wrong field, swapped lanes, the eight-lane
+  emission left in place, a missing pair and a pair that is the whole text; on the 2D list,
+  a page that has started emitting pairs, one emitting pairs beside the whole-stack kernel,
+  and one whose text is not base's — each must come back named.
 - `stubenv.js` — the shared stub: a DOM + WebGPU stub good enough to run a real app
   page (the classic `<script src>` files the page's own markup names, in document order —
   common.js + physics.js, plus solver2d.js on the 2D page — then its inline script) under
@@ -658,9 +664,10 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `prepDisp` bind groups and `encodeExport`, buffers and bind groups only, which is why the
   WGSL leg above does not move with it; `FFT2C_SOLVER` / `FFT2C_SHADERS`: FFTPERF_PLAN 2C's
   gradient chunking, recorded as REPLACEMENTS — the base lines and the lines that stand in
-  for them — the two-lane `gradsK`/`specTmp`, the four `prepGrads` pipelines and their bind
-  groups, the row kernel's per-pair `realGrads` window, `encodeGrads`, and the four
-  emissions in `buildShaders`). The allowances are the `dispoffsets.js` idiom: they are put
+  for them — the chunk-sized `gradsK`/`specTmp`, the per-chunk `prepGrads` pipelines and
+  their bind groups, the row kernel's per-chunk `realGrads` window, `encodeGrads`, and the
+  per-chunk emission in `buildShaders`. The 2D page ships ONE chunk, so its emitted WGSL is
+  unmoved and this is an allowance on the JavaScript alone). The allowances are the `dispoffsets.js` idiom: they are put
   back and the base text is then still demanded byte for byte, so any OTHER change to
   either definition fails, and a companion leg fails it as STALE if a recorded block has
   stopped being there or moved off its recorded base line, or as VACUOUS if there was
@@ -799,16 +806,19 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   a GROUP of pipelines built from one template, as the four `prepGrads` do, and the group is
   counted together), with nothing dispatched
   the table has neither counted nor excused and each excused kernel dispatched exactly as
-  often as the table assumes. Since FFTPERF_PLAN 2C the same leg pins the chunked chain's
-  WIRING, which nothing else can see: its four row-kernel dispatches bind `realGrads` at
-  `2·k·nr·4` with `size 2·nr·4` — four windows into one buffer, in pair order, the stub
-  keeping each binding's `{buffer, offset, size}` and rejecting a misaligned or overrunning
-  one as a device would — each behind its own `prepGrads<k>` pipeline, four distinct
-  pipelines and not one dispatched four times. The `grads hash` cell, which encodes exactly
-  one chain, is held to the same four windows and four pipelines.
-  NOTE that the per-kernel `prepGrads` / `colsInv` / `rowsC2R` cells now time ONE two-lane
-  chunk, dispatched 12 times a step, so they are not comparable with the Phase 1 rows (which
-  timed the eight-lane form, 3 times a step) without a factor of four. Then the LOOP: with frames driven from inside
+  often as the table assumes. Since FFTPERF_PLAN 2C the same leg pins the chain's WIRING,
+  which nothing else can see: its row-kernel dispatches bind `realGrads` at
+  `2·(first pair)·nr·4` with `size 2·(pairs)·nr·4` — one window per CHUNK of the page's own
+  chunk list, in chunk order, the stub keeping each binding's `{buffer, offset, size}` and
+  rejecting a misaligned or overrunning one as a device would — each behind its own
+  `prepGrads` pipeline, one distinct pipeline per chunk and not one dispatched for every
+  chunk. On the 2D page that is one window `[0, 8·nr·4]` and one pipeline `prepGrads`; on
+  the 3D page four windows and `prepGrads0..3`. The `grads hash` cell, which encodes exactly
+  one chain, is held to the same windows and pipelines.
+  NOTE that on the 3D page the per-kernel `prepGrads` / `zInv` / `colsInv` / `rowsC2R` cells
+  time ONE two-lane chunk, dispatched 12 times a step, so they are not comparable with the
+  Phase 1 rows (which timed the eight-lane form, 3 times a step) without a factor of four;
+  the 2D cells are the eight-lane form and are directly comparable. Then the LOOP: with frames driven from inside
   the queue drains, a campaign must encode no display chain, read no stats, and leave the
   hero button paused — and the next frame after it must draw again. Its second half is the
   frame ALREADY in flight when the button is pressed: a frame is parked on its own drain
@@ -830,13 +840,15 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   lines and keeps every barrier, `copy` has no stage loop at all and still carries the load
   and store bodies verbatim, all three parse, and a build that THROWS still hands the seam
   back. Then BYTES: the per-step sum reproduces a
-  hand-computed number for 2D 256² (**77,549,568**) and 3D 128²×64 (**1,236,886,528**)
+  hand-computed number for 2D 256² (**71,208,960**) and 3D 128²×64 (**1,236,886,528**)
   exactly, with the appendix-A arithmetic written out in the check, and a 2D `eqsrc` solver
-  counts its extra `eqk` binding on top. Both numbers grew with FFTPERF_PLAN 2C and only in
-  the `prepGrads` row: the gradient chain runs four per-pair preps per stage, each reading
-  ONE state field (phi or psi) plus the grid and writing two lanes, so it is 12 dispatches
-  of `cx + gr + 2cx` a step where it was 3 of `2cx + gr + 8cx`; the transforms move the same
-  bytes either way (12 × 2 lanes = 3 × 8) and the butterfly count does not move at all.
+  counts its extra `eqk` binding on top. Only the 3D number moved with FFTPERF_PLAN 2C, and
+  only in the `prepGrads` row: that page's chain runs four per-pair preps per stage, each
+  reading ONE state field (phi or psi) plus the grid and writing two lanes, so it is 12
+  dispatches of `cx + grp + 2cx` a step where it was 3 of `2cx + grp + 8cx`; the transforms
+  move the same bytes either way (12 × 2 lanes = 3 × 8) and the butterfly count does not
+  move at all. The 2D page ships one whole-stack chunk, so its chain and its number are the
+  pre-2C ones.
   Last, `fftAnalyticCase` — the self-test's analytic reference —
   returns three nonzero bins at the flat indices it reports, zeros everywhere else, and
   each bin holding `amp·nr/2·exp(i·phase)`; and `fftAnalyticRows` adds two rows on a live

@@ -177,23 +177,25 @@ function legByteIdentical(state) {
     for (const k of keys) {
       const name = k.split(" :: ")[1];
       if (base[k] === cur[k]) continue;
-      // prepGrads is four per-pair emissions since FFTPERF_PLAN 2C (dispoffsets.js): the
-      // one that vanished and the four that appeared are the chunk audit's, one leg down
-      if (OFF.isGradsLabel(k) || OFF.isChunkLabel(k)) continue;
+      // where the page CHUNKS prepGrads (FFTPERF_PLAN 2C, dispoffsets.js) the emission
+      // that vanished and the ones that appeared are the chunk audit's, one leg down; a
+      // page that emits one chunk is compared here like any other kernel
+      if (OFF.isChunked(page, k)) continue;
       if (base[k] === undefined) { added.add(name); continue; }
       if (DISPLAY.has(name)) { touched.add(name); continue; }
       moved.push(k);                     // a physics kernel, or one that VANISHED
     }
     // ... and each of those four IS base's own prepGrads reduced to its pair, so any OTHER
     // change to it fails here. A kernel the base commit never had is an addition still.
-    const CH = OFF.chunkAudit(base, cur);
+    const CH = OFF.chunkAudit(page, base, cur);
     for (const n of CH.added) added.add(n);
     ok(page + ": physics WGSL byte-identical to " + BASE,
        moved.length === 0, moved.length ? moved.length + " changed, first: " + moved[0]
                                         : Object.keys(cur).length + " kernels");
-    ok("  ... but for prepGrads, at every preset " + BASE + "'s own text reduced to one pair",
+    ok("  ... and prepGrads is " + BASE + "'s own text over this page's chunk list ("
+       + JSON.stringify(OFF.CHUNKS[page]) + "), at every preset",
        CH.bad.length === 0 && CH.reduced.length + CH.added.length > 0,
-       CH.bad[0] || CH.reduced.length + " emissions chunked, " + CH.added.length
+       CH.bad[0] || CH.reduced.length + " emissions, " + CH.added.length
                     + " chunked kernels added");
     const got = [...touched].sort().join(", "), want = TOUCHED[page].join(", ");
     ok("  ... and the display kernels that moved are exactly Phase B's", got === want,
@@ -1203,27 +1205,33 @@ async function legFilter(state) {
 // ---------------------------------------------------------------------------
 // 2b. the chunk allowance itself: what it must REFUSE
 // ---------------------------------------------------------------------------
-// dispoffsets' chunk audit is what lets four per-pair prepGrads emissions past a byte
-// identity pin, so its own failure modes have to be exercised or the pin is a rubber
-// stamp. BASE's own eight-lane text is the input; the cases below are the ways a chunked
-// emission can be wrong, each built by editing the CORRECT reduction, and every one of
-// them must come back named in `bad`. (The positive case is the same audit passing.)
+// dispoffsets' chunk audit is what lets a page's per-chunk prepGrads emissions past a byte
+// identity pin, so its own failure modes have to be exercised or the pin is a rubber stamp.
+// BASE's own eight-lane text is the input; the cases below are the ways a chunked emission
+// can be wrong, each built by editing the CORRECT set, and every one must come back named
+// in `bad`. Both pages' chunk lists are driven: the 3D page's four one-pair chunks, and the
+// 2D page's single whole-stack chunk, whose "reduction" IS base's text -- so what the audit
+// has to refuse there is a page that has started emitting pairs.
 function legChunkAllowance(state) {
-  const base = state.base["rmhd2d.html"] || {};
+  const P3 = "rmhd3d.html", P2 = "rmhd2d.html";
+  const base = state.base[P3] || {};
   const label = Object.keys(base).filter(k => OFF.isGradsLabel(k)).sort()[0];
-  if (!label) { ok("a BASE prepGrads emission to reduce", false, "none in the base dump"); return; }
-  const src = base[label], keys = OFF.gpairKeys(label);
-  const good = () => { const c = {}; keys.forEach((k, j) => { c[k] = OFF.gpairApplied(src, j); }); return c; };
-  const B = { [label]: src };
-  const audit = c => OFF.chunkAudit(B, c);
-  const ref = audit(good());
-  ok("the chunk audit passes the four correct reductions",
-     ref.bad.length === 0 && ref.reduced.length === 1 && ref.added.length === 0,
-     ref.bad[0] || ref.reduced.join(", "));
-  ok("  ... and every pair is a DIFFERENT text (a reduction that ignored k would not be)",
-     new Set(Object.values(good())).size === OFF.NPAIR,
-     new Set(Object.values(good())).size + " distinct of " + OFF.NPAIR);
-  // each case: a name, and the edit it makes to the correct set
+  if (!label) { ok("a BASE prepGrads emission to chunk", false, "none in the base dump"); return; }
+  const src = base[label], B = { [label]: src };
+  const good = page => {
+    const c = {};
+    OFF.chunkKeys(label, OFF.CHUNKS[page]).forEach((k, i) => {
+      c[k] = OFF.chunkApplied(src, OFF.CHUNKS[page][i]);
+    });
+    return c;
+  };
+  const keys = OFF.chunkKeys(label, OFF.CHUNKS[P3]);
+  const r3 = OFF.chunkAudit(P3, B, good(P3));
+  ok("the chunk audit passes the 3D page's four correct per-pair emissions",
+     r3.bad.length === 0 && r3.reduced.length === 1, r3.bad[0] || r3.reduced.join(", "));
+  ok("  ... and every pair is a DIFFERENT text (a reduction that ignored the chunk would not be)",
+     new Set(Object.values(good(P3))).size === OFF.NPAIR,
+     new Set(Object.values(good(P3))).size + " distinct of " + OFF.NPAIR);
   const CASES = [
     ["a sign flip in one pair's write", c => {
       c[keys[1]] = c[keys[1]].replace("vec2<f32>(-g.x", "vec2<f32>(+g.x"); }],
@@ -1239,9 +1247,28 @@ function legChunkAllowance(state) {
     ["a pair that is the WHOLE eight-lane text", c => { c[keys[0]] = src; }]
   ];
   for (const [name, edit] of CASES) {
-    const c = good();
+    const c = good(P3);
     edit(c);
-    const r = audit(c);
+    const r = OFF.chunkAudit(P3, B, c);
+    ok("  ... and refuses " + name, r.bad.length > 0 && r.reduced.length === 0,
+       r.bad[0] || "ACCEPTED as " + r.reduced.join(", "));
+  }
+  // the 2D page's single chunk: its emission IS base's text, under base's name
+  const r2 = OFF.chunkAudit(P2, B, good(P2));
+  ok("the 2D page's one whole-stack chunk IS base's own kernel, name and text",
+     r2.bad.length === 0 && r2.reduced.length === 1 &&
+     Object.keys(good(P2)).join(",") === label && good(P2)[label] === src,
+     r2.bad[0] || Object.keys(good(P2)).join(", "));
+  const C2 = [
+    ["a 2D page that has started emitting pairs", () => {
+      const c = good(P3); delete c[label]; return c; }],
+    ["a 2D page emitting pairs BESIDE the whole-stack kernel", () => {
+      const c = good(P3); c[label] = src; return c; }],
+    ["a 2D kernel whose text is not base's", () => {
+      const c = good(P2); c[label] = src.replace("vec2<f32>(-g.x", "vec2<f32>(+g.x"); return c; }]
+  ];
+  for (const [name, mk] of C2) {
+    const r = OFF.chunkAudit(P2, B, mk());
     ok("  ... and refuses " + name, r.bad.length > 0 && r.reduced.length === 0,
        r.bad[0] || "ACCEPTED as " + r.reduced.join(", "));
   }
@@ -1251,7 +1278,7 @@ function legChunkAllowance(state) {
 const LEGS = [
   ["1. every kernel parses; names / duplication discipline", legDiscipline],
   ["2. physics WGSL byte-identical to " + BASE, legByteIdentical],
-  ["2b. the chunk allowance refuses a wrong pair set", legChunkAllowance],
+  ["2b. the chunk allowance refuses a wrong chunk set, on either page", legChunkAllowance],
   ["3. box-unit aspect: cubeQuads / cubeFrame across every Lz (Phase A)", legAspect],
   ["4. the ASPECT_CAP display cap, as the one-line on-device edit", legCap],
   ["5. the volume ray: volRay inverts cubeQuads, and marches the drawn box (Phase B)", legRay],
