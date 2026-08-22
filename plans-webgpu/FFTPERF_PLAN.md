@@ -256,11 +256,57 @@ could take about half on the row kernels only. `colsFwd` is the one noisy cell (
 workgroups; med/min 48/36); re-run the 2-lane cells at `reps` 200. A second standalone
 "per kernel" run drifted ≤ 5% from the one inside `all`.
 
-Against the decision table: **A goes ahead** (`T_tw` ≥ 15% on every FFT kernel; realistic
-whole-step gain 10–14%); **B is marginal** — passes the 30% `T_bf` bar on the row kernels
-only, ~7% of the step at best, decided after A per §4; "both dead" does not apply (`T_mem`
-≥ 70% on the columns only, and nothing in this plan touches that floor). Still to come: 2D
-512²/1024², the 3D cells (the z kernel and the grad-chain cell for C), the phone.
+**Laptop, same device and settings, 2D 512² and 1024², 3D 128²×64 (2026-08-21).** Whole step
+6.705 ms (512², 42.4 GB/s, 7.93 G bf/s), 30.18 ms (1024², 37.6 GB/s, 7.82 G bf/s),
+25.475 ms (3D, 47.5 GB/s, 8.40 G bf/s). **Step time scales as N log N, not N**: the
+256²→512²→1024² ratios are 4.43 and 4.50 (N log N predicts 4.50 and 4.44; bytes 3.99), the
+butterfly rate is flat at 7.8–7.9 G/s across the three grids and 8.4 G/s in 3D while GB/s
+falls 47→42→38. The audit's 4.00 was read through the adaptive loop; the direct step
+measurement pins the step to butterflies, not bytes.
+
+Per-kernel shares of the step (cells sum to 93% / 94% / 99% of the whole step):
+
+| kernel (lanes) | 2D 512² µs | share | 2D 1024² µs | share | 3D 128²×64 µs | share |
+|---|---|---|---|---|---|---|
+| rowsC2R (8) | 672 | 30% | 3158 | 31% | 2254 | 26.5% |
+| colsInv (8) | 384 | 17% | 1806 | 18% | 1210 | 14.2% |
+| zInv (8) | — | — | — | — | 1202 | 14.2% |
+| rowsR2C (2) | 172 | 7.7% | 794 | 7.9% | 548 | 6.5% |
+| colsFwd (2) | 108 | 4.8% | 482 | 4.8% | 328 | 3.9% |
+| zFwd (2) | — | — | — | — | 310 | 3.7% |
+| prepGrads | 196 | 8.8% | 884 | 8.8% | 782 | 9.2% |
+| bracket | 186 | 8.3% | 728 | 7.2% | 724 | 8.5% |
+| nlAssemble | 142 | 6.4% | 590 | 5.9% | 306 | 3.6% |
+| stage | 222 | 9.9% | 1048 | 10.4% | 752 | 8.9% |
+| all FFTs | | 60% | | 62% | | 69% |
+
+Ladder shares (T_mem / T_bf / T_tw, %; full / consttw / copy µs in the JSON):
+
+| kernel | 2D 512² | 2D 1024² | 3D 128²×64 |
+|---|---|---|---|
+| rowsC2R | 44 / 23 / 33 | 37 / 38 / 26 | 51 / 24 / 25 |
+| rowsR2C | 31 / 36 / 33 | 36 / 39 / 25 | 55 / 15 / 30 |
+| colsInv | 88 / 0 / 12 | 76 / 8 / 16 | 96 / 1 / 3 |
+| colsFwd | 75 / 2 / 23 | 76 / 8 / 16 | 87 / 1 / 12 |
+| zInv | — | — | 101 / 0 / −2 (noise) |
+| zFwd | — | — | 97 / −1 / 4 |
+
+3D grad chain (C's cell): batch 8 = 4,720 µs, 4 × batch 2 = 4,600 µs → **0.975×** (the
+cache-optimistic proxy; 2C's gate re-measures with real per-pair bind groups).
+
+`T_tw` summed over a step: 16% (256²), 16% (512²), 14% (1024²), 9.5% (3D) — upper bounds;
+`T_bf`: 14%, 10%, 17%, 7%, of which radix-4 could take about half, on the row kernels only.
+
+**Laptop verdicts against the decision table.** **A goes ahead**: `T_tw` 12–33% on every
+row/column kernel at every grid (the z kernels show none — they are a memory floor), realistic
+whole-step gain ~10% in 2D, ~6% in 3D, almost all from the row kernels. **B is held until
+post-A**: it clears the 30% `T_bf` bar on the 2D row kernels (35–39%), not on the 3D rows
+(15–24%) nor on any column/z kernel; half the rows' `T_bf` is 5–8% of a 2D step, ~3.5% of 3D.
+**C goes ahead** (0.975× ≤ 1.03×). "Both dead" does not apply. The column and z kernels —
+18–36% of the step — are 76–100% memory floor (the strided `NKY`/`NMP` read) and outside this
+plan's reach; the audit's fuse/transpose route stays closed. Still to come: the phone's
+direction check (2D 256² `all` suffices); optional laptop cells 3D 64²×256 (the z kernel at
+its longest line) and 256²×64.
 
 ## 5. Phase 2A — the twiddle table
 
