@@ -70,12 +70,12 @@ def _carry_pstate(carry, params):
     return carry[1] if params.particles is not None else None
 
 def _refresh_forcing_scale(state, kgrid, params):
-    # recompute the per-step scale for the initial state at dt = 0 (repaired legacy
-    # snapshots carry zeros and hand-built states may be stale). Since selfnorm_scale
-    # (2026-08-08) the dt=0 guard returns the safe_scale value, not the stored dt>0 one,
-    # so this OVERWRITES a checkpoint's forcing_scale: a forced restart at the default
-    # forcing_norm_per_step=True is not bitwise (fix filed separately).
+    # compute the per-step scale at dt = 0 only for a state that carries none -- an
+    # all-zero forcing_scale, which is what initialize and a repaired legacy snapshot
+    # produce. A nonzero stored scale is the lagged one the next step uses, so it is kept.
     if params.forcing and params.forcing_norm_per_step:
+        if not bool(jnp.all(state.forcing_scale == 0)):
+            return state
         scale_func = equation_registry[params.eqtype].forcing_scale_func
         if params.comm_backend == "jax":
             # the psum inside needs a shard_map context

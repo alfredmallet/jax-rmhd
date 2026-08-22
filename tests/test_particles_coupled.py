@@ -1095,24 +1095,20 @@ def test_particles_on_leaves_the_solver_bitwise_identical():
                         on["nrows"] is None)
 
 
-# restart is bitwise only when the driver's start-up does not recompute anything: with
-# forcing_norm_per_step=True (the default) `run._refresh_forcing_scale` recomputes the
-# forcing scale with dt = 0 at every simulate*/ call, so even a PARTICLE-FREE restart is
-# not bitwise. That is pre-existing solver behaviour, not A2, so this gate runs forcing
-# live with forcing_norm_per_step=False (the per-stage normalization path).
-_RESTART_KWARGS = dict(_CONFIG_BY_NAME["scan_fixed"][0], forcing_norm_per_step=False)
+# both normalization modes: the per-stage path (forcing_norm_per_step=False) and the
+# production default, where the checkpoint's stored forcing_scale is the lagged one the
+# next step uses and run._refresh_forcing_scale keeps it.
+_RESTART_KWARG_SETS = (
+    dict(_CONFIG_BY_NAME["scan_fixed"][0], forcing_norm_per_step=False),
+    dict(_CONFIG_BY_NAME["scan_fixed"][0], forcing_norm_per_step=True),
+)
 _RESTART_T_SNAP = 0.04     # < the 0.05 a 5-step block covers, so every block snapshots
 
 
-def test_restart_continues_fields_and_trajectories_bitwise():
-    """Gate 6c: load_snapshot + load_particles from a mid-run snapshot and continuing must
-    reproduce the uninterrupted run bitwise in BOTH the fields and the particle
-    trajectories -- the point of storing the carry at snapshot cadence. Also the
-    missing-item policy: a snapshot written without particles is never silently re-inited;
-    it is a FileNotFoundError naming init_on_restart, and only that flag turns it into a
-    fresh ensemble -- while a snapshot step that does not exist at all stays a
-    FileNotFoundError whatever the flag says."""
-    params = fresh_params(particles=_G6_PARTICLES, **_RESTART_KWARGS)
+def _restart_case(restart_kwargs):
+    """One uninterrupted run, one restart from its middle snapshot, and the missing-item
+    policy probes, at the given kwargs. Host copies only (the carries are donated)."""
+    params = fresh_params(particles=_G6_PARTICLES, **restart_kwargs)
     kgrid = jr.setup_kgrids(params)
     with snap_dir() as d1, managed_manager(params, d1, nsnap=10) as mngr:
         end, pend = jr.simulate_scan(make_state(params, ic=_gate6_ic), kgrid, params,
@@ -1125,6 +1121,10 @@ def test_restart_continues_fields_and_trajectories_bitwise():
         state_mid = load_snapshot(mid, d1, params)
         pstate_mid = load_particles(mid, d1, params)
         t_mid = float(state_mid.t)
+        restored_carry_ok = (isinstance(pstate_mid, ParticleState)
+                             and pstate_mid.x.dtype == jnp.float64
+                             and pstate_mid.v.dtype == jnp.float64
+                             and pstate_mid.w.dtype == jnp.float64)
         with snap_dir() as d2, managed_manager(params, d2, nsnap=10) as mngr2:
             end2, pend2 = jr.simulate_scan(state_mid, kgrid, params, NBLOCK_SCAN,
                                            _RESTART_T_SNAP, T_END, mngr2, save=True,
@@ -1144,7 +1144,7 @@ def test_restart_continues_fields_and_trajectories_bitwise():
         except FileNotFoundError as e:
             missing_msg = str(e)
         reinit_params = fresh_params(particles=dict(_G6_PARTICLES, init_on_restart=True),
-                                     **_RESTART_KWARGS)
+                                     **restart_kwargs)
         reinit = load_particles(step0, d3, reinit_params)
         fresh = init_particles(reinit_params)
         # a snapshot index that does not exist at all: init_on_restart must NOT cover it
@@ -1153,35 +1153,56 @@ def test_restart_continues_fields_and_trajectories_bitwise():
             absent_msg = "no FileNotFoundError"
         except FileNotFoundError as e:
             absent_msg = str(e)
+    return dict(ref=ref, got=got, mid=mid, t_mid=t_mid, missing_msg=missing_msg,
+                absent_msg=absent_msg, restored_carry_ok=restored_carry_ok,
+                reinit=(np.asarray(reinit.x), np.asarray(reinit.v)),
+                fresh=(np.asarray(fresh.x), np.asarray(fresh.v)))
 
-    print(f"gate 6c: restarted from snapshot {mid} at t = {t_mid} of {ref[3]}")
+
+def test_restart_continues_fields_and_trajectories_bitwise():
+    """Gate 6c: load_snapshot + load_particles from a mid-run snapshot and continuing must
+    reproduce the uninterrupted run bitwise in BOTH the fields and the particle
+    trajectories -- the point of storing the carry at snapshot cadence. Run at both
+    forcing_norm_per_step settings: the per-stage path and the production default, where
+    the stored forcing_scale is what makes the restart continue the run. Also the
+    missing-item policy: a snapshot written without particles is never silently re-inited;
+    it is a FileNotFoundError naming init_on_restart, and only that flag turns it into a
+    fresh ensemble -- while a snapshot step that does not exist at all stays a
+    FileNotFoundError whatever the flag says."""
     with checks() as c:
-        c.check(f"the restart lands on the same final time ({got[3]!r} vs {ref[3]!r})",
-                got[3] == ref[3])
-        c.check("restarted fields are bitwise identical", np.array_equal(got[0], ref[0]))
-        c.check("restarted particle positions are bitwise identical",
-                np.array_equal(got[1], ref[1]))
-        c.check("restarted particle velocities are bitwise identical",
-                np.array_equal(got[2], ref[2]))
-        c.check("restarted work accumulators are bitwise identical (w rides the same "
-                "checkpoint item, so the heating attribution survives a restart)",
-                np.array_equal(got[4], ref[4]))
-        c.check("a mid-run snapshot really was mid-run (not the final state)",
-                0.0 < t_mid < ref[3], f"t_mid={t_mid}, t_end={ref[3]}")
-        c.check("restoring a particle-less snapshot raises FileNotFoundError naming "
-                "init_on_restart", "init_on_restart" in missing_msg, missing_msg)
-        c.check("a MISSING SNAPSHOT is a FileNotFoundError even with init_on_restart=True "
-                "(the flag covers a missing particles item, not a missing step)",
-                "no snapshot" in absent_msg and "init_on_restart" not in absent_msg,
-                absent_msg)
-        c.check("init_on_restart=True returns init_particles(params) bitwise instead",
-                np.array_equal(np.asarray(reinit.x), np.asarray(fresh.x))
-                and np.array_equal(np.asarray(reinit.v), np.asarray(fresh.v)))
-        c.check("the restored carry is a ParticleState of fp64 leaves",
-                isinstance(pstate_mid, ParticleState)
-                and pstate_mid.x.dtype == jnp.float64 and pstate_mid.v.dtype == jnp.float64
-                and pstate_mid.w.dtype == jnp.float64)
-
+        for restart_kwargs in _RESTART_KWARG_SETS:
+            lbl = f"norm_per_step={restart_kwargs['forcing_norm_per_step']}"
+            r = _restart_case(restart_kwargs)
+            ref, got = r["ref"], r["got"]
+            print(f"gate 6c [{lbl}]: restarted from snapshot {r['mid']} at "
+                  f"t = {r['t_mid']} of {ref[3]}")
+            c.check(f"{lbl}: the restart lands on the same final time "
+                    f"({got[3]!r} vs {ref[3]!r})", got[3] == ref[3])
+            c.check(f"{lbl}: restarted fields are bitwise identical",
+                    np.array_equal(got[0], ref[0]))
+            c.check(f"{lbl}: restarted particle positions are bitwise identical",
+                    np.array_equal(got[1], ref[1]))
+            c.check(f"{lbl}: restarted particle velocities are bitwise identical",
+                    np.array_equal(got[2], ref[2]))
+            c.check(f"{lbl}: restarted work accumulators are bitwise identical (w rides "
+                    f"the same checkpoint item, so the heating attribution survives a "
+                    f"restart)", np.array_equal(got[4], ref[4]))
+            c.check(f"{lbl}: a mid-run snapshot really was mid-run (not the final state)",
+                    0.0 < r["t_mid"] < ref[3], f"t_mid={r['t_mid']}, t_end={ref[3]}")
+            c.check(f"{lbl}: restoring a particle-less snapshot raises FileNotFoundError "
+                    f"naming init_on_restart", "init_on_restart" in r["missing_msg"],
+                    r["missing_msg"])
+            c.check(f"{lbl}: a MISSING SNAPSHOT is a FileNotFoundError even with "
+                    f"init_on_restart=True (the flag covers a missing particles item, not "
+                    f"a missing step)",
+                    "no snapshot" in r["absent_msg"]
+                    and "init_on_restart" not in r["absent_msg"], r["absent_msg"])
+            c.check(f"{lbl}: init_on_restart=True returns init_particles(params) bitwise "
+                    f"instead",
+                    np.array_equal(r["reinit"][0], r["fresh"][0])
+                    and np.array_equal(r["reinit"][1], r["fresh"][1]))
+            c.check(f"{lbl}: the restored carry is a ParticleState of fp64 leaves",
+                    r["restored_carry_ok"])
 
 if __name__ == "__main__":
     import sys
