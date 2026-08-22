@@ -56,7 +56,10 @@ const BASE = "ad080a2";
 const ADDED = { "rmhd2d.html": ["eigfGather"], "rmhd3d.html": ["prepGradsBand", "specParBand"] };
 // the selftest grid's instances (16 x 16 x 8: NM = 1152, NMP = 144, NZB = 4) -- the size
 // the WGSL interpreter runs in milliseconds
-const K_GRADS = "selftest :: prepGrads", K_GRADSB = "selftest :: prepGradsBand";
+// ... one label per gradient PAIR since FFTPERF_PLAN 2C: four emissions of one template,
+// each writing a single field's (x, y) gradient into lanes 0-1
+const K_GRADS = OFF.gpairKeys("selftest :: prepGrads");
+const K_GRADSB = OFF.gpairKeys("selftest :: prepGradsBand");
 const K_PAR = "selftest :: specPar", K_PARB = "selftest :: specParBand";
 const K_DISP = "selftest :: prepDisp";
 
@@ -209,6 +212,9 @@ function legEmission(state) {
     const moved = [], gone = [], shifted = [], added = new Set();
     for (const k of new Set(Object.keys(base).concat(Object.keys(cur)))) {
       if (base[k] === cur[k]) continue;
+      // prepGrads and its banded twin are four per-pair emissions each since FFTPERF_PLAN
+      // 2C (dispoffsets.js): the chunk audit below is what judges them
+      if (OFF.isGradsLabel(k) || OFF.isChunkLabel(k)) continue;
       if (base[k] === undefined) added.add(k.split(" :: ")[1]);
       else if (cur[k] === undefined) gone.push(k);
       // ... except prepDisp, which BASE predates the 2D display offset by (dispoffsets.js):
@@ -228,9 +234,14 @@ function legEmission(state) {
        + " emission" + (wantS.length ? "" : " (none on this page)"),
        shifted.slice().sort().join(",") === wantS.slice().sort().join(","),
        shifted.length + " of " + wantS.length);
-    const gk = Object.keys(cur).filter(k => / :: prepGrads$/.test(k));
+    // ... including the kernel the RHS steps through: every one of its four pair
+    // emissions is BASE's own prepGrads reduced to that pair, at every preset, so any
+    // other change to the stepping kernel fails here
+    const CH = OFF.chunkAudit(base, cur);
+    for (const n of CH.added) added.add(n);
     ok("  ... including the kernel the RHS steps through, prepGrads, at every preset",
-       gk.length >= 4 && gk.every(k => base[k] === cur[k]), gk.length + " emissions");
+       CH.bad.length === 0 && CH.reduced.length >= 4,
+       CH.bad[0] || CH.reduced.length + " emissions chunked into " + OFF.NPAIR + " pairs each");
     const gotA = [...added].sort().join(", "), wantA = ADDED[page].join(", ");
     ok("  ... and what it ADDS is exactly [" + (wantA || "nothing") + "]",
        gotA === wantA, gotA || "none");
@@ -281,12 +292,14 @@ function legTemplates(state) {
   ok("the half-cosine band block is lifted out of prepDisp's own emission",
      !!BLOCK && BLOCK.length > 200 && /bandFac/.test(BLOCK),
      BLOCK ? BLOCK.split("\n").length + " lines" : "not found");
-  for (const [nm, k] of [["prepGradsBand", K_GRADSB], ["specParBand", K_PARB]]) {
+  for (const [nm, k] of K_GRADSB.map((k, j) => ["prepGradsBand" + j, k])
+                                 .concat([["specParBand", K_PARB]])) {
     ok(nm + " carries that factor VERBATIM (one factor, three consumers)",
        !!BLOCK && (cur[k] || "").indexOf(BLOCK) >= 0);
   }
-  ok("prepGradsBand reads prepDisp's own Mode struct, not a second one",
-     !!sm && (cur[K_GRADSB] || "").indexOf(sm[0]) >= 0, sm ? sm[0].slice(0, 60) + "..." : "none");
+  ok("every prepGradsBand pair reads prepDisp's own Mode struct, not a second one",
+     !!sm && K_GRADSB.every(k => (cur[k] || "").indexOf(sm[0]) >= 0),
+     sm ? sm[0].slice(0, 60) + "..." : "none");
   // Every preset this app ships fixes Lx = Ly = 2*pi, so kunit == 1 and INVKU == 1 -- which
   // makes "measured in the spectrum chart's own k unit" true of ANY conversion, including
   // none at all. So the same templates are re-emitted through the page's own makeGrid /
@@ -300,13 +313,17 @@ function legTemplates(state) {
      altKU === 2 && kconst(cur["selftest :: spectrum"] || "", "INVKU") === 1,
      "INVKU = " + kconst(cur["selftest :: spectrum"] || "", "INVKU") + " at 2pi, "
      + altKU + " at 4pi");
-  for (const [nm, kb, k1, E] of [["prepGradsBand", K_GRADSB, K_GRADS, EXPECT.grads],
-                                 ["specParBand", K_PARB, K_PAR, EXPECT.par]]) {
+  for (const [nm, kb, k1, E] of K_GRADSB.map((k, j) => ["prepGradsBand" + j, k, K_GRADS[j],
+                                                       EXPECT.grads])
+                                 .concat([["specParBand", K_PARB, K_PAR, EXPECT.par]])) {
     const a = cur[k1] || "", b = cur[kb] || "";
     const D = lineDiff(a, b);
     const shared = new Set((BLOCK ? BLOCK.replace(/\n$/, "").split("\n") : [])
                            .concat(sm ? [sm[0]] : []));
-    const rwA = E.rewrite.map(r => r[0]), rwB = E.rewrite.map(r => r[1]);
+    // a gradient PAIR reads one state field, not both, so only the read line it has is
+    // rewritten -- the ones it does not have must not be claimed
+    const RW = E.rewrite.filter(r => a.indexOf(r[0]) >= 0);
+    const rwA = RW.map(r => r[0]), rwB = RW.map(r => r[1]);
     const leftA = D.onlyA.filter(l => rwA.indexOf(l) < 0);
     const leftB = D.onlyB.filter(l => rwB.indexOf(l) < 0 && !shared.has(l)
                                       && !E.add.some(re => re.test(l)));
@@ -315,7 +332,7 @@ function legTemplates(state) {
        rwA.every(l => D.onlyA.indexOf(l) >= 0) && rwB.every(l => D.onlyB.indexOf(l) >= 0),
        leftA.length || leftB.length
          ? "unexpected: " + JSON.stringify((leftA[0] || leftB[0] || "").slice(0, 64))
-         : E.rewrite.length + " lines rewritten, " + (D.onlyB.length - E.rewrite.length) + " added");
+         : RW.length + " lines rewritten, " + (D.onlyB.length - RW.length) + " added");
     // the band ends are measured in the SPECTRUM chart's own k unit, as prepDisp's are:
     // a factor measuring k_perp in anything else would be a lie on the card's x axis. Made
     // at BOTH box sizes, so it is the conversion that is asserted and not the identity.
@@ -455,7 +472,7 @@ const BGNAMES = `function(){
   const nameOf = b => { for (const k of Object.keys(sv.buf)) if (sv.buf[k] === b) return k;
                         return "(not the solver's)"; };
   const of = bg => { const e = rec.get(bg); return e ? e.map(nameOf).join(",") : "(unrecorded)"; };
-  return { prep: of(g.bgPrep), fl: of(g.bgFL), g2d: of(g.bg2d) }; }`;
+  return { prep: g.bgPrep.map(of), fl: of(g.bgFL), g2d: of(g.bg2d) }; }`;
 // a captured word array back as f32 (the uniforms are written through Float32Array views,
 // so the expected values are compared at f32 precision -- Math.fround, not the double)
 const f32of = w => new Float32Array(Uint32Array.from(w).buffer);
@@ -464,8 +481,8 @@ async function legInvariance(state) {
   const M = state.M, cur = state.cur["rmhd3d.html"] || {};
   // ---- (a) the kernels, executed ------------------------------------------
   if (M) {
-    const src = cur[K_GRADSB], psrc = cur[K_PARB];
-    const N = { nm: kconst(src, "NM"), nmp: kconst(src, "NMP"), nzb: kconst(psrc, "NZB") };
+    const srcs = K_GRADSB.map(k => cur[k]), psrc = cur[K_PARB];
+    const N = { nm: kconst(srcs[0], "NM"), nmp: kconst(srcs[0], "NMP"), nzb: kconst(psrc, "NZB") };
     const gA = new Float32Array(4 * N.nmp), gB = new Float32Array(4 * N.nmp);
     for (let mp = 0; mp < N.nmp; mp++) {
       gA[4 * mp] = 0.25 * ((mp % 7) - 3); gA[4 * mp + 1] = 0.5 * (mp % 5);
@@ -474,11 +491,7 @@ async function legInvariance(state) {
     const f0 = synthState(N.nm), before = Array.from(bits(f0));
     const bands = [[0, 0], [1, 3], [2.5, 4], [0, 2]];
     for (const [lo, hi] of bands) {
-      const u = new ArrayBuffer(32), uf = new Float32Array(u);
-      uf[4] = lo; uf[5] = hi;
-      new M.WgslExec(new M.WgslParser().parse(src)).dispatchWorkgroups("main",
-        [N.nm, 1, 1],
-        { 0: { 0: f0, 1: gA, 2: new Float32Array(16 * N.nm), 3: new Uint32Array(u) } });
+      runGrads(M, srcs, N, f0, gA, [lo, hi]);
       const bnd = new Float32Array(4);
       bnd[0] = lo; bnd[1] = hi;
       new M.WgslExec(new M.WgslParser().parse(psrc)).dispatchWorkgroups("main",
@@ -534,10 +547,11 @@ async function legInvariance(state) {
 
   // ---- (d) the press, BOUND ------------------------------------------------
   const BG = env.run(BGNAMES);
-  ok("(d) BOUND: the banded prep reads the STATE and writes the RHS's gradient scratch, "
+  ok("(d) BOUND: every banded prep reads the STATE and writes the RHS's gradient scratch, "
      + "in prepGradsBand's own binding order",
-     !!BG && BG.prep === "fields,gridA,gradsK,genMode",
-     BG ? "[" + BG.prep + "]" : "no bind groups recorded");
+     !!BG && BG.prep.length === OFF.NPAIR &&
+     BG.prep.every(b => b === "fields,gridA,gradsK,genMode"),
+     BG ? BG.prep.map(b => "[" + b + "]").join(" ") : "no bind groups recorded");
   ok("  ... the sweep's field-line march reads realGrads and writes its OWN polyline pair",
      !!BG && BG.fl === "realGrads,genPos,genSmp,genCfg", BG ? "[" + BG.fl + "]" : "-");
   ok("  ... and the coordinate pass reads the state and both grids, plus the band table",
@@ -600,7 +614,7 @@ async function legInvariance(state) {
   const wgSize = src => { const m = /@workgroup_size\((\d+)\)/.exec(src || ""); return m ? parseInt(m[1], 10) : NaN; };
   const nmApp = env.run("function(){ return solver.g.nm; }");
   const sideApp = env.run("function(){ return GEN_SIDE; }");
-  const expPrep = Math.ceil(nmApp / wgSize(cur[K_GRADSB]));
+  const expPrep = Math.ceil(nmApp / wgSize(cur[K_GRADSB[0]]));
   const expMarch = Math.ceil((sideApp * sideApp) / wgSize(cur["selftest :: fieldLine"]));
   const bandPasses = (DISP || []).filter(c => c.length > 1);
   let badd = 0, firstd = "";
@@ -724,23 +738,30 @@ function rowJs(smp, nl, nz) {
   }
   return out;
 }
-// the emitted prepGrads / prepGradsBand, EXECUTED. The interpreter runs six invocations
-// per workgroup rather than the 64 the kernel declares, so dispatch NM workgroups and let
-// the kernel's own `m >= NM` test discard the surplus: over-dispatch, never under (a mode
-// it skipped would show up as a mismatch below, not as a silent pass).
-function runGrads(M, src, N, fields, gridA, band) {
+// the emitted prepGrads / prepGradsBand, EXECUTED -- all four PAIR kernels, their two-lane
+// outputs assembled back into the eight-lane stack the chain leaves in real space. The
+// interpreter runs six invocations per workgroup rather than the 64 the kernel declares, so
+// dispatch NM workgroups and let the kernel's own `m >= NM` test discard the surplus:
+// over-dispatch, never under (a mode it skipped would show up as a mismatch below, not as
+// a silent pass).
+function runGrads(M, srcs, N, fields, gridA, band) {
   const outg = new Float32Array(16 * N.nm);
   const b = new ArrayBuffer(32), f = new Float32Array(b);
   f[4] = band[0]; f[5] = band[1];
-  new M.WgslExec(new M.WgslParser().parse(src)).dispatchWorkgroups("main",
-    [N.nm, 1, 1], { 0: { 0: fields, 1: gridA, 2: outg, 3: new Uint32Array(b) } });
+  srcs.forEach((src, k) => {
+    const pair = new Float32Array(4 * N.nm);
+    new M.WgslExec(new M.WgslParser().parse(src)).dispatchWorkgroups("main",
+      [N.nm, 1, 1], { 0: { 0: fields, 1: gridA, 2: pair, 3: new Uint32Array(b) } });
+    outg.set(pair, 4 * N.nm * k);
+  });
   return outg;
 }
 async function legMirror(state) {
   const M = state.M;
   if (!M) { ok("wgsl_reflect is installed", false, "npm i wgsl_reflect in devtools/"); return; }
   const cur = state.cur["rmhd3d.html"] || {};
-  const src = cur[K_GRADSB], psrc = cur[K_PARB], src1 = cur[K_GRADS];
+  const srcs = K_GRADSB.map(k => cur[k]), psrc = cur[K_PARB], src1s = K_GRADS.map(k => cur[k]);
+  const src = srcs[0];
   const env = state.env3d || (state.env3d = await boot(dir, "rmhd3d.html"));
   const G0 = env.run(GRIDSNIP);
   const G = { nx: G0.nx, ny: G0.ny, nz: G0.nz, nkx: G0.nkx, nky: G0.nky };
@@ -758,7 +779,7 @@ async function legMirror(state) {
     const gs = new Float32Array(4 * nS), fs2 = new Float32Array(4 * N.nm);
     for (let i = 0; i < nS; i++) { const k = knAt(i) * ku; gs[4 * i] = 1; gs[4 * i + 2] = k * k; }
     for (let m = 0; m < N.nm; m++) fs2[2 * m] = 1;
-    const g = runGrads(M, src, N, fs2, gs, BAND);
+    const g = runGrads(M, srcs, N, fs2, gs, BAND);
     let em = 0, out01 = 0, mono = 0, notOne = 0, notZero = 0, prev = -1;
     for (let i = 0; i < nS; i++) {
       const kn = knAt(i), v = g[2 * i + 1];
@@ -795,11 +816,11 @@ async function legMirror(state) {
     // is handed k_perp in absolute units and must still land on the fp64 band at k/kunit,
     // so a conversion that is missing, inverted or doubled is a factor of two HERE and
     // exactly nothing on the shipped presets (all of which fix kunit = 1).
-    const asrc = (state.alt || {})[K_GRADSB] || "";
-    const kua = 1 / kconst(asrc, "INVKU");
+    const asrcs = K_GRADSB.map(k => (state.alt || {})[k] || "");
+    const kua = 1 / kconst(asrcs[0], "INVKU");
     const gsA = new Float32Array(4 * nS);
     for (let i = 0; i < nS; i++) { const k = knAt(i) * kua; gsA[4 * i] = 1; gsA[4 * i + 2] = k * k; }
-    const ga = runGrads(M, asrc, N, fs2, gsA, BAND);
+    const ga = runGrads(M, asrcs, N, fs2, gsA, BAND);
     let em3 = 0;
     for (let i = 0; i < nS; i++)
       em3 = Math.max(em3, Math.abs(ga[2 * i + 1] - bandFacJs(knAt(i), BAND[0], BAND[1], E)));
@@ -813,7 +834,7 @@ async function legMirror(state) {
     const st = synthState(N.nm, 777);
     let worst = 0, n = 0;
     for (const band of [[0, 0], [2, 5], [1.5, 2.5]]) {
-      const g = runGrads(M, src, N, st, gA, band);
+      const g = runGrads(M, srcs, N, st, gA, band);
       for (let m = 0; m < N.nm; m++) {
         const mp = m % N.nmp, kx = gA[4 * mp], ky = gA[4 * mp + 1], ksq = gA[4 * mp + 2];
         const bf = bandFacJs(Math.sqrt(ksq) / ku, band[0], band[1], E);
@@ -834,7 +855,7 @@ async function legMirror(state) {
     }
     ok("(b) the eight band-passed gradient lanes match the fp64 mirror", worst < 1e-5,
        "max relative error " + worst.toExponential(2) + " over " + n + " values, 3 bands");
-    const a = runGrads(M, src1, N, st, gA, [0, 0]), b = runGrads(M, src, N, st, gA, [0, 0]);
+    const a = runGrads(M, src1s, N, st, gA, [0, 0]), b = runGrads(M, srcs, N, st, gA, [0, 0]);
     const x = bits(a), y = bits(b);
     let dbad = 0;
     for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) dbad++;
@@ -856,7 +877,7 @@ async function legMirror(state) {
     const bands = [[0, 0], [2, 6], [3, 4]];
     let worst = 0, peak = 0;
     for (const band of bands) {
-      const g = runGrads(M, src, N, st, gA, band);
+      const g = runGrads(M, srcs, N, st, gA, band);
       const dx = toReal(m => [g[2 * m], g[2 * m + 1]], G);                     // d_x phi
       const dy = toReal(m => [g[2 * (N.nm + m)], g[2 * (N.nm + m) + 1]], G);   // d_y phi
       const smp = new Float64Array(4 * nl * nz);

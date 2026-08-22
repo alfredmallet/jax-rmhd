@@ -177,13 +177,24 @@ function legByteIdentical(state) {
     for (const k of keys) {
       const name = k.split(" :: ")[1];
       if (base[k] === cur[k]) continue;
+      // prepGrads is four per-pair emissions since FFTPERF_PLAN 2C (dispoffsets.js): the
+      // one that vanished and the four that appeared are the chunk audit's, one leg down
+      if (OFF.isGradsLabel(k) || OFF.isChunkLabel(k)) continue;
       if (base[k] === undefined) { added.add(name); continue; }
       if (DISPLAY.has(name)) { touched.add(name); continue; }
       moved.push(k);                     // a physics kernel, or one that VANISHED
     }
+    // ... and each of those four IS base's own prepGrads reduced to its pair, so any OTHER
+    // change to it fails here. A kernel the base commit never had is an addition still.
+    const CH = OFF.chunkAudit(base, cur);
+    for (const n of CH.added) added.add(n);
     ok(page + ": physics WGSL byte-identical to " + BASE,
        moved.length === 0, moved.length ? moved.length + " changed, first: " + moved[0]
                                         : Object.keys(cur).length + " kernels");
+    ok("  ... but for prepGrads, at every preset " + BASE + "'s own text reduced to one pair",
+       CH.bad.length === 0 && CH.reduced.length + CH.added.length > 0,
+       CH.bad[0] || CH.reduced.length + " emissions chunked, " + CH.added.length
+                    + " chunked kernels added");
     const got = [...touched].sort().join(", "), want = TOUCHED[page].join(", ");
     ok("  ... and the display kernels that moved are exactly Phase B's", got === want,
        got || "none");

@@ -155,19 +155,23 @@ function legWiring(env, page) {
   // that the table neither counts nor names as uncounted
   const per = new Map();
   for (const e of disp) per.set(e.pipe, (per.get(e.pipe) || 0) + 1);
-  const wrong = meta.stepIO.filter(e => per.get(meta.pl[e.name]) !== e.n);
+  // a solver pipeline slot may hold a GROUP of pipelines built from one template (the four
+  // per-pair prepGrads); the table's `n` counts the group's dispatches together
+  const group = n => (Array.isArray(meta.pl[n]) ? meta.pl[n] : [meta.pl[n]]);
+  const count = n => group(n).reduce((t, p) => t + (per.get(p) || 0), 0);
+  const wrong = meta.stepIO.filter(e => count(e.name) !== e.n);
   ok(page + ": every stepIO entry is dispatched exactly `n` times per step",
      wrong.length === 0,
-     wrong.map(e => e.name + ": " + e.n + " claimed, " + (per.get(meta.pl[e.name]) || 0) + " seen").join(", "));
+     wrong.map(e => e.name + ": " + e.n + " claimed, " + count(e.name) + " seen").join(", "));
   const un = Object.keys(UNCOUNTED);
-  const named = new Set(meta.stepIO.map(e => e.name).concat(un).map(n => meta.pl[n]));
+  const named = new Set([].concat.apply([], meta.stepIO.map(e => e.name).concat(un).map(group)));
   const stray = [...per.keys()].filter(p => !named.has(p));
   ok(page + ": ... and the step dispatches nothing the table has not accounted for",
      stray.length === 0, stray.map(p => p.__name).join(", "));
-  const overUn = un.filter(n => (per.get(meta.pl[n]) || 0) !== UNCOUNTED[n]);
+  const overUn = un.filter(n => count(n) !== UNCOUNTED[n]);
   ok(page + ": ... and each kernel the table excuses is dispatched exactly as often as it assumes",
      overUn.length === 0,
-     overUn.map(n => n + ": " + UNCOUNTED[n] + " assumed, " + (per.get(meta.pl[n]) || 0) + " seen").join(", "));
+     overUn.map(n => n + ": " + UNCOUNTED[n] + " assumed, " + count(n) + " seen").join(", "));
 }
 
 // ---------------------------------------------------------------------------
@@ -204,8 +208,8 @@ async function legGradsHash(env, page) {
      want.every((v, i) => v === got[i]) && got[1] !== got[2],
      got.join(", ") + " vs " + want.join(", "));
   // the cell's chain against the step's own: the gradient chain is what a step encodes
-  // first (prepGrads, then the inverse pair -- three dispatches in 2D, four in 3D)
-  const nchain = env.is3d ? 4 : 3;
+  // first -- one prep and its inverse passes (two in 2D, three in 3D) per gradient pair
+  const nchain = env.run("() => GRAD_PAIRS.length") * (env.is3d ? 4 : 3);
   env.gpuReset();
   env.run("() => solver.step(1)");
   const chain = env.gpu.dispatches.slice(0, nchain);
@@ -383,8 +387,8 @@ async function legCampaigns(env, page, chains) {
   ok(page + ": the spec lists every FFT kernel and the four step kernels",
      spec.kernels.length === spec.ffts.length + 4 && spec.ffts.length === (chains ? 6 : 4),
      spec.kernels.join(" | "));
-  ok(page + ": ... and the gradient-chain cells are " + (chains ? "there" : "absent"),
-     spec.chains.length === (chains ? 2 : 0), spec.chains.join(" | "));
+  ok(page + ": ... and the gradient-chain cell is " + (chains ? "there" : "absent"),
+     spec.chains.length === (chains ? 1 : 0), spec.chains.join(" | "));
   // the stub validates every dispatch extent and every bind group as the campaigns run
   env.run("() => { window.bench.cfg.K = 2; window.bench.cfg.R = 1; " +
           "window.bench.cfg.reps = 3; window.bench.cfg.chainReps = 2; }");
@@ -551,39 +555,43 @@ function legSeamRestore(env) {
 // (one real field), and each grid buffer a kernel binds (gr / grp perpendicular, grz in
 // z). A buffer both read and written by the same kernel is counted twice.
 //
+// Since FFTPERF_PLAN 2C the gradient chain runs one (x, y) PAIR at a time: four preps and
+// four two-lane inverse chains per stage, so those rows are dispatched 12 times per step
+// and not 3, and each prep reads ONE state field (phi or psi) and writes two lanes. The
+// transforms move the same bytes either way -- 12 x 2 lanes is 3 x 8 -- and prepGrads is
+// the row that grows: 12(3cx + gr) against 3(10cx + gr).
+//
 // 2D 256^2: nm = 256*129 = 33024, nr = 65536 -> cx = 264192, rx = 262144, gr = 528384.
-//   prepGrads   2cx + gr + 8cx          = 3170304
-//   colsInv:8   16cx                    = 4227072
-//   rowsC2R:8   8cx + 8rx               = 4210688
-//   bracket     10rx                    = 2621440
-//   rowsR2C:2   2rx + 2cx               = 1052672
-//   colsFwd:2   4cx                     = 1056768
-//   nlAssemble  2cx + 2gr + 2cx         = 2113536
-//   forcingAdd  2cx + 2cx + 2cx         = 1585152
-//   stage       10cx + gr               = 3170304
-//   per stage                           = 23207936   x3 = 69623808
-//   energyPartial 2cx + 2gr             = 1585152
-//   TOTAL                               = 71208960
+//   prepGrads   x12  cx + gr + 2cx          =  1320960 ->  15851520
+//   colsInv:2   x12  4cx                    =  1056768 ->  12681216
+//   rowsC2R:2   x12  2cx + 2rx              =  1052672 ->  12632064
+//   bracket     x3   10rx                   =  2621440 ->   7864320
+//   rowsR2C:2   x3   2rx + 2cx              =  1052672 ->   3158016
+//   colsFwd:2   x3   4cx                    =  1056768 ->   3170304
+//   nlAssemble  x3   2cx + 2gr + 2cx        =  2113536 ->   6340608
+//   forcingAdd  x3   2cx + 2cx + 2cx        =  1585152 ->   4755456
+//   stage       x3   10cx + gr              =  3170304 ->   9510912
+//   energyPartial x1 2cx + 2gr              =  1585152 ->   1585152
+//   TOTAL                                                = 77549568
 //
 // 3D 128^2 x 64: nmp = 128*65 = 8320, nm = 64*8320 = 532480, nr = 1048576 ->
 // cx = 4259840, rx = 4194304, grp = nmp*16 = 133120, grz = nz*16 = 1024.
-//   prepGrads   2cx + grp + 8cx         = 42731520
-//   zInv:8      16cx                    = 68157440
-//   colsInv:8   16cx                    = 68157440
-//   rowsC2R:8   8cx + 8rx               = 67633152
-//   bracket     10rx                    = 41943040
-//   rowsR2C:2   2rx + 2cx               = 16908288
-//   colsFwd:2   4cx                     = 17039360
-//   zFwd:2      4cx                     = 17039360
-//   nlAssemble  2cx + 2grp + grz + 2cx  = 17306624
-//   forcingAdd  4*nmp*8 + 2*(4*nmp*8)   = 798720
-//   stage       10cx + grp + grz        = 42732544
-//   per stage                           = 400447488  x3 = 1201342464
-//   energyPartial 2cx + 2grp + grz      = 8786944
-//   TOTAL                               = 1210129408
-const BYTES = { "rmhd2d.html": { fn: "benchSpec2D", res: [256, 256, 1], bytes: 71208960,
+//   prepGrads   x12  cx + grp + 2cx         = 12912640 -> 154951680
+//   zInv:2      x12  4cx                    = 17039360 -> 204472320
+//   colsInv:2   x12  4cx                    = 17039360 -> 204472320
+//   rowsC2R:2   x12  2cx + 2rx              = 16908288 -> 202899456
+//   bracket     x3   10rx                   = 41943040 -> 125829120
+//   rowsR2C:2   x3   2rx + 2cx              = 16908288 ->  50724864
+//   colsFwd:2   x3   4cx                    = 17039360 ->  51118080
+//   zFwd:2      x3   4cx                    = 17039360 ->  51118080
+//   nlAssemble  x3   2cx + 2grp + grz + 2cx = 17306624 ->  51919872
+//   forcingAdd  x3   4*nmp*8 + 2*(4*nmp*8)  =   798720 ->   2396160
+//   stage       x3   10cx + grp + grz       = 42732544 -> 128197632
+//   energyPartial x1 2cx + 2grp + grz       =  8786944 ->   8786944
+//   TOTAL                                                = 1236886528
+const BYTES = { "rmhd2d.html": { fn: "benchSpec2D", res: [256, 256, 1], bytes: 77549568,
                                  eqsrc: true },
-                "rmhd3d.html": { fn: "benchSpec3D", res: [128, 128, 64], bytes: 1210129408 } };
+                "rmhd3d.html": { fn: "benchSpec3D", res: [128, 128, 64], bytes: 1236886528 } };
 function legBytes(env, page) {
   const w = BYTES[page];
   const got = env.run("(fn) => { const s = new Solver(device, {}); const sp = globalThis[fn](s);" +

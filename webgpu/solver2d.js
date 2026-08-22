@@ -125,10 +125,11 @@ const NKY_: u32 = ${nky}u;`;
   });
 
   // ---- shared physics kernels (physics.js) --------------------------------
-  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar
+  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar -- one pair per
+  //               emission, four of them (physics.js GRAD_PAIRS)
   //   bracket     the two Poisson brackets in real space
   //   nlAssemble  the nonlinear RHS (dealias here and ONLY here)
-  S.prepGrads = prepGradsWGSL(C);
+  GRAD_PAIRS.forEach((p, k) => { S["prepGrads" + k] = prepGradsWGSL(Object.assign({}, C, { gpair: k })); });
   S.bracket = bracketWGSL(C);
   S.nlAssemble = nlAssembleWGSL(C);
 
@@ -331,8 +332,10 @@ class Solver {
       fields: d.createBuffer({ size: 2 * cx, usage: SQ }),
       delta: d.createBuffer({ size: 2 * cx, usage: SQ }),
       rhs: d.createBuffer({ size: 2 * cx, usage: SQ }),
-      gradsK: d.createBuffer({ size: 8 * cx, usage: SQ }),
-      specTmp: d.createBuffer({ size: 8 * cx, usage: SQ }),
+      // the gradient chain transforms ONE (x, y) pair at a time, so the k-space stack and
+      // the column pass's target hold two lanes, not eight
+      gradsK: d.createBuffer({ size: 2 * cx, usage: SQ }),
+      specTmp: d.createBuffer({ size: 2 * cx, usage: SQ }),
       nlk: d.createBuffer({ size: 2 * cx, usage: SQ }),
       forcing: d.createBuffer({ size: 2 * cx, usage: SQ }),
       gridA: d.createBuffer({ size: nm * 16, usage: SQ }),
@@ -509,7 +512,8 @@ class Solver {
     this.pl = {
       rowsR2C: cp(S.rowsR2C, "rowsR2C"), rowsC2R: cp(S.rowsC2R, "rowsC2R"),
       colsFwd: cp(S.colsFwd, "colsFwd"), colsInv: cp(S.colsInv, "colsInv"),
-      prepGrads: cp(S.prepGrads, "prepGrads"), bracket: cp(S.bracket, "bracket"),
+      prepGrads: GRAD_PAIRS.map((p, k) => cp(S["prepGrads" + k], "prepGrads" + k)),
+      bracket: cp(S.bracket, "bracket"),
       nlAssemble: cp(S.nlAssemble, "nlAssemble"), forcingAdd: cp(S.forcingAdd, "forcingAdd"),
       stage: cp(S.stage, "stage"), cflPartial: cp(S.cflPartial, "cflPartial"),
       cflFinal: cp(S.cflFinal, "cflFinal"), energyPartial: cp(S.energyPartial, "energyPartial"),
@@ -540,9 +544,13 @@ class Solver {
       entries: entries.map((r, i) => ({ binding: i, resource: r.buffer ? r : { buffer: r } }))
     });
     this.bg = {
-      prepGrads: bg(this.pl.prepGrads, [B.fields, B.gridA, B.gradsK]),
+      prepGrads: this.pl.prepGrads.map(p => bg(p, [B.fields, B.gridA, B.gradsK])),
       colsInvGrads: bg(this.pl.colsInv, [B.gradsK, B.specTmp]),
-      rowsC2RGrads: bg(this.pl.rowsC2R, [B.specTmp, B.realGrads]),
+      // one target per pair: the same row kernel, its store landing in the pair's own two
+      // lanes of realGrads through the binding's offset (physics.js gradPairOffset)
+      rowsC2RGrads: GRAD_PAIRS.map((p, k) => bg(this.pl.rowsC2R,
+        [B.specTmp,
+         { buffer: B.realGrads, offset: gradPairOffset(this.nr, k), size: 2 * this.nr * 4 }])),
       bracket: bg(this.pl.bracket, [B.realGrads, B.realNL]),
       rowsR2CNL: bg(this.pl.rowsR2C, [B.realNL, B.specTmp]),
       colsFwdNL: bg(this.pl.colsFwd, [B.specTmp, B.nlk]),
@@ -692,16 +700,27 @@ class Solver {
     this.rng = new Gauss(q.seed);
   }
 
+  // the eight perpendicular gradients, into realGrads (lanes 0,1 = grad phi, 2,3 = grad
+  // psi, 4..7 = grad vorticity / current): one pair at a time, each prepGrads writing the
+  // two-lane k-space stack and the two inverse passes carrying it to the pair's own lanes
+  // of realGrads. The only place the chain is encoded.
+  encodeGrads(pass) {
+    const nm = this.g.nm, nky = this.g.nky, nx = this.g.nx;
+    for (let k = 0; k < this.pl.prepGrads.length; k++) {
+      pass.setPipeline(this.pl.prepGrads[k]); pass.setBindGroup(0, this.bg.prepGrads[k]);
+      pass.dispatchWorkgroups(Math.ceil(nm / 64));
+      pass.setPipeline(this.pl.colsInv); pass.setBindGroup(0, this.bg.colsInvGrads);
+      pass.dispatchWorkgroups(2 * nky);
+      pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads[k]);
+      pass.dispatchWorkgroups(2 * nx);
+    }
+  }
+
   // ---- RHS + one LSRK33 step ---------------------------------------------
   encodeRHS(pass, opts) {
     const doCFL = !!(opts && opts.cfl), doForce = !(opts && opts.forcing === false);
     const nm = this.g.nm, nky = this.g.nky, nx = this.g.nx;
-    pass.setPipeline(this.pl.prepGrads); pass.setBindGroup(0, this.bg.prepGrads);
-    pass.dispatchWorkgroups(Math.ceil(nm / 64));
-    pass.setPipeline(this.pl.colsInv); pass.setBindGroup(0, this.bg.colsInvGrads);
-    pass.dispatchWorkgroups(8 * nky);
-    pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads);
-    pass.dispatchWorkgroups(8 * nx);
+    this.encodeGrads(pass);
     if (doCFL) {
       pass.setPipeline(this.pl.cflPartial); pass.setBindGroup(0, this.bg.cflPartial);
       pass.dispatchWorkgroups(this.nPartR);

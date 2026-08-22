@@ -108,7 +108,15 @@ const _zSlot = (C, slot) => (C.hasZ ? slot + 1 : slot);
 // the field band-passed to one k_perp band, and what has to be band-passed is exactly
 // what this kernel reads -- so the factor rides here, on the (phi, psi) READ path, and
 // nothing is written back: the state is never touched, no scratch copy of it exists, and
-// the eight gradients land in the RHS's own stack.
+// the gradients land in the RHS's own stack.
+//
+// ONE PAIR PER DISPATCH. `C.gpair` picks a field out of the GRAD_PAIRS table and the kernel
+// computes that field's (x, y) gradient alone, into lanes 0 and 1 of a two-lane target --
+// so the chain that follows transforms two lanes four times over instead of eight at once,
+// and the k-space stack it needs is a quarter of the size. Four pipelines, one template;
+// vort and jpar are rebuilt from their own field (one multiply) inside their own chunk
+// rather than carried between chunks. The lane a pair lands in downstream is the row
+// kernel's bind-group offset into realGrads, not anything this kernel says.
 // `C.gband` is the box k1 the two band ends are measured in, exactly as `C.band` is for
 // prepDisp, and it is a COMPILE-TIME option for the same reason: the RHS's own prepGrads
 // is emitted from this template WITHOUT it and is the pre-plan text byte for byte, so the
@@ -118,6 +126,26 @@ const _zSlot = (C, slot) => (C.hasZ ? slot + 1 : slot);
 // this file -- and it keeps that phase's exact-1.0 passthrough: with both ends 0 the
 // factor is the literal 1.0 and `1.0 * v` is v bit for bit, so a row taken with the band
 // off is the unfiltered gradient.
+
+// the four gradient pairs in lane order: the field differentiated, the state field it is
+// read or built from, and (where it is built) the k-space expression that builds it
+const GRAD_PAIRS = [
+  { of: "phi",  src: "phi" },
+  { of: "psi",  src: "psi" },
+  { of: "vort", src: "phi", expr: "-g.z * phi" },
+  { of: "jpar", src: "psi", expr: "-g.z * psi" }
+];
+// where pair k's two lanes start inside the eight-lane real-space gradient stack. The row
+// kernel reaches them as its target binding's OFFSET, which is why its text is the same
+// for every pair -- so the offset has to meet the storage-binding alignment every backend
+// asks for (256 bytes; any nr >= 64 does, and both apps' smallest grid is 128^2).
+function gradPairOffset(nr, k) {
+  const off = 2 * k * nr * 4;
+  if (off % 256) throw new Error("realGrads pair offset " + off
+                                 + " is not 256-byte aligned (nr = " + nr + ")");
+  return off;
+}
+
 function prepGradsWGSL(C) {
   // the uniform is the Mode one (modeWords' 32-byte layout), so the two band ends sit
   // where prepDisp's do; mode / zslice / cmap are simply not read here.
@@ -127,6 +155,14 @@ function prepGradsWGSL(C) {
   const bandLet = C.gband
     ? `  let bf: f32 = bandFac(sqrt(g.z) * INVKU, md.klo, md.khi);\n` : "";
   const bm = C.gband ? "bf * " : "";
+  const p = GRAD_PAIRS[C.gpair];
+  // the pair's source field, then the multiply that builds vort / jpar out of it
+  const rd = `  let ${p.src}: vec2<f32> = ${bm}fields[${p.src === "psi" ? "NM + m" : "m"}];\n`;
+  const mk = p.expr ? `  let ${p.of}: vec2<f32> = ${p.expr};\n` : "";
+  // ... and the two writes, into lanes 0 and 1, with the second operand of each vec2 in
+  // the column it has whichever field the pair is (3-letter names get one space more)
+  const wr = (lhs, c) => `  ${lhs.padEnd(18)}= vec2<f32>(-g.${c} * ${p.of}.y,`
+    + `${" ".repeat(5 - p.of.length)}g.${c} * ${p.of}.x);\n`;
   return C.pre + `
 @group(0) @binding(0) var<storage, read> fields: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
@@ -136,19 +172,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m: u32 = gid.x;
   if (m >= NM) { return; }
   let g: vec4<f32> = gridA[${_mpExpr(C)}];
-${bandLet}  let phi: vec2<f32> = ${bm}fields[m];
-  let psi: vec2<f32> = ${bm}fields[NM + m];
-  let vort: vec2<f32> = -g.z * phi;
-  let jpar: vec2<f32> = -g.z * psi;
-  outg[m]           = vec2<f32>(-g.x * phi.y,  g.x * phi.x);
-  outg[NM + m]      = vec2<f32>(-g.y * phi.y,  g.y * phi.x);
-  outg[2u*NM + m]   = vec2<f32>(-g.x * psi.y,  g.x * psi.x);
-  outg[3u*NM + m]   = vec2<f32>(-g.y * psi.y,  g.y * psi.x);
-  outg[4u*NM + m]   = vec2<f32>(-g.x * vort.y, g.x * vort.x);
-  outg[5u*NM + m]   = vec2<f32>(-g.y * vort.y, g.y * vort.x);
-  outg[6u*NM + m]   = vec2<f32>(-g.x * jpar.y, g.x * jpar.x);
-  outg[7u*NM + m]   = vec2<f32>(-g.y * jpar.y, g.y * jpar.x);
-}`;
+${bandLet}${rd}${mk}${wr("outg[m]", "x")}${wr("outg[NM + m]", "y")}}`;
 }
 
 // ---------------------------------------------------------------------------

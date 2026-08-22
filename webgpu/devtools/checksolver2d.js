@@ -93,23 +93,101 @@ const IO4_INSERTS = [
    "  }",
    ""] }
 ];
-// the text with those insertions taken back out, plus whichever blocks were not found
-// WHERE THEY ARE RECORDED. `cut` is how many lines have already come out, so the index a
-// block is found at IS its line in the base text -- earlier blocks are gone and later ones
-// are below it. A block in the wrong place is left in, so the byte-identity leg above goes
-// red with this one rather than silently absorbing the move.
-function io4Strip(txt) {
+
+// THE SECOND SANCTIONED EDIT, in the same idiom: FFTPERF_PLAN 2C's gradient chunking. The
+// gradient chain runs one (x, y) pair at a time now, which touches the two definitions
+// this file pins -- `buildShaders` emits four prepGrads instead of one, and `class Solver`
+// builds four pipelines and four row-kernel targets, holds a two-lane k-space stack, and
+// encodes the chain in one method the RHS calls. Recorded as REPLACEMENTS (`was` = the
+// lines at BASE, `lines` = the lines now) at their base positions, so leg 5 puts base's
+// text back and then still demands it byte for byte: any OTHER change to either definition
+// fails, and a block that has stopped being there fails as a stale allowance.
+const FFT2C_SHADERS = [
+  { tag: "the four per-pair prepGrads emissions (the kernel list comment)", at: 53,
+    was: ["  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar"],
+    lines: [
+   "  //   prepGrads   perpendicular i*k gradients of phi, psi, vort, jpar -- one pair per",
+   "  //               emission, four of them (physics.js GRAD_PAIRS)"] },
+  { tag: "... and the emission itself", at: 56,
+    was: ["  S.prepGrads = prepGradsWGSL(C);"],
+    lines: [
+   "  GRAD_PAIRS.forEach((p, k) => { S[\"prepGrads\" + k] = prepGradsWGSL(Object.assign({}, C, { gpair: k })); });"] }
+];
+const FFT2C_SOLVER = [
+  { tag: "the two-lane gradient stack (_buildBuffers)", at: 44,
+    was: ["      gradsK: d.createBuffer({ size: 8 * cx, usage: SQ }),",
+          "      specTmp: d.createBuffer({ size: 8 * cx, usage: SQ }),"],
+    lines: [
+   "      // the gradient chain transforms ONE (x, y) pair at a time, so the k-space stack and",
+   "      // the column pass's target hold two lanes, not eight",
+   "      gradsK: d.createBuffer({ size: 2 * cx, usage: SQ }),",
+   "      specTmp: d.createBuffer({ size: 2 * cx, usage: SQ }),"] },
+  { tag: "the four prepGrads pipelines (_buildPipelines)", at: 209,
+    was: ["      prepGrads: cp(S.prepGrads, \"prepGrads\"), bracket: cp(S.bracket, \"bracket\"),"],
+    lines: [
+   "      prepGrads: GRAD_PAIRS.map((p, k) => cp(S[\"prepGrads\" + k], \"prepGrads\" + k)),",
+   "      bracket: cp(S.bracket, \"bracket\"),"] },
+  { tag: "their bind groups, and the row kernel's per-pair target (_buildPipelines)", at: 240,
+    was: ["      prepGrads: bg(this.pl.prepGrads, [B.fields, B.gridA, B.gradsK]),",
+          "      colsInvGrads: bg(this.pl.colsInv, [B.gradsK, B.specTmp]),",
+          "      rowsC2RGrads: bg(this.pl.rowsC2R, [B.specTmp, B.realGrads]),"],
+    lines: [
+   "      prepGrads: this.pl.prepGrads.map(p => bg(p, [B.fields, B.gridA, B.gradsK])),",
+   "      colsInvGrads: bg(this.pl.colsInv, [B.gradsK, B.specTmp]),",
+   "      // one target per pair: the same row kernel, its store landing in the pair's own two",
+   "      // lanes of realGrads through the binding's offset (physics.js gradPairOffset)",
+   "      rowsC2RGrads: GRAD_PAIRS.map((p, k) => bg(this.pl.rowsC2R,",
+   "        [B.specTmp,",
+   "         { buffer: B.realGrads, offset: gradPairOffset(this.nr, k), size: 2 * this.nr * 4 }])),"] },
+  { tag: "the encodeGrads method", at: 392, lines: [
+   "  // the eight perpendicular gradients, into realGrads (lanes 0,1 = grad phi, 2,3 = grad",
+   "  // psi, 4..7 = grad vorticity / current): one pair at a time, each prepGrads writing the",
+   "  // two-lane k-space stack and the two inverse passes carrying it to the pair's own lanes",
+   "  // of realGrads. The only place the chain is encoded.",
+   "  encodeGrads(pass) {",
+   "    const nm = this.g.nm, nky = this.g.nky, nx = this.g.nx;",
+   "    for (let k = 0; k < this.pl.prepGrads.length; k++) {",
+   "      pass.setPipeline(this.pl.prepGrads[k]); pass.setBindGroup(0, this.bg.prepGrads[k]);",
+   "      pass.dispatchWorkgroups(Math.ceil(nm / 64));",
+   "      pass.setPipeline(this.pl.colsInv); pass.setBindGroup(0, this.bg.colsInvGrads);",
+   "      pass.dispatchWorkgroups(2 * nky);",
+   "      pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads[k]);",
+   "      pass.dispatchWorkgroups(2 * nx);",
+   "    }",
+   "  }",
+   ""] },
+  { tag: "... which encodeRHS now calls instead of encoding the chain itself", at: 396,
+    was: ["    pass.setPipeline(this.pl.prepGrads); pass.setBindGroup(0, this.bg.prepGrads);",
+          "    pass.dispatchWorkgroups(Math.ceil(nm / 64));",
+          "    pass.setPipeline(this.pl.colsInv); pass.setBindGroup(0, this.bg.colsInvGrads);",
+          "    pass.dispatchWorkgroups(8 * nky);",
+          "    pass.setPipeline(this.pl.rowsC2R); pass.setBindGroup(0, this.bg.rowsC2RGrads);",
+          "    pass.dispatchWorkgroups(8 * nx);"],
+    lines: ["    this.encodeGrads(pass);"] }
+];
+// every recorded block per pinned definition, in BASE-line order (which is what lets each
+// block's found index BE its base line -- see stripBlocks)
+const ALLOWED = {
+  "function buildShaders(g) {": FFT2C_SHADERS,
+  "class Solver {": FFT2C_SOLVER.concat(IO4_INSERTS).sort((a, b) => a.at - b.at)
+};
+// the text with every recorded block taken back out (a replacement putting its `was` lines
+// back), plus whichever blocks were not found WHERE THEY ARE RECORDED. Blocks are listed
+// in BASE-line order and each restores the text above the next one, so the index a block is
+// found at IS its line in the base text. A block in the wrong place is left in, so the
+// byte-identity leg above goes red with this one rather than silently absorbing the move.
+function stripBlocks(txt, blocks) {
   const lines = txt.split("\n"), miss = [];
   let cut = 0;
-  for (const blk of IO4_INSERTS) {
-    const b = blk.lines;
+  for (const blk of blocks) {
+    const b = blk.lines, was = blk.was || [];
     let at = -1;
     for (let i = 0; i + b.length <= lines.length && at < 0; i++) {
       if (b.every((l, j) => lines[i + j] === l)) at = i;
     }
-    if (at < 0) miss.push(blk.tag + ": not in the class at all");
+    if (at < 0) miss.push(blk.tag + ": not in the text at all");
     else if (at !== blk.at) miss.push(blk.tag + ": at base line " + at + ", recorded " + blk.at);
-    else { lines.splice(at, b.length); cut += b.length; }
+    else { lines.splice.apply(lines, [at, b.length].concat(was)); cut += b.length; }
   }
   return { txt: lines.join("\n"), miss: miss, cut: cut };
 }
@@ -126,6 +204,16 @@ const node = (args, opts) => sh(process.execPath, args, opts);
 const lastLine = r => ((r.stdout || "") + (r.stderr || "")).trim().split("\n").pop();
 const read = f => fs.readFileSync(f, "utf8");
 const sha = b => require("crypto").createHash("sha256").update(b).digest("hex");
+const OFF = require("./dispoffsets");
+// a dump's sha with the sections the chunk allowance names taken out of it, on both sides
+function shaNoChunk(file) {
+  const parts = read(file).split(/^########## (.*) ##########$/m);
+  let out = parts[0];
+  for (let i = 1; i < parts.length; i += 2)
+    if (!OFF.isChunkLabel(parts[i]) && !OFF.isGradsLabel(parts[i]))
+      out += "########## " + parts[i] + " ##########" + parts[i + 1];
+  return sha(out);
+}
 // the inline script of a page, exactly as stubenv and names.mjs slice it
 const inline = t => t.slice(t.indexOf("<script>\n") + 8, t.lastIndexOf("</script>"));
 // one top-level definition as TEXT: its header line down to the closing brace at column 0
@@ -252,19 +340,28 @@ else {
     const moved = [], gone = [], added = new Set();
     for (const key of keys) {
       if (base[key] === k[key]) continue;
+      // prepGrads is four per-pair emissions since FFTPERF_PLAN 2C (dispoffsets.js)
+      if (OFF.isGradsLabel(key) || OFF.isChunkLabel(key)) continue;
       if (base[key] === undefined) { added.add(key.split(" :: ")[1]); continue; }
       if (k[key] === undefined) { gone.push(key); continue; }
       moved.push(key);
     }
+    const CH = OFF.chunkAudit(base, k);
+    for (const n of CH.added) added.add(n);
     ok(page + ": every kernel that existed at " + BASE + " is byte-identical",
        moved.length === 0 && gone.length === 0,
        moved.length + " moved, " + gone.length + " vanished" +
        (moved.length ? " (" + moved[0] + ")" : ""));
+    ok("  ... but for prepGrads, chunked into its four pairs",
+       CH.bad.length === 0 && CH.reduced.length + CH.added.length > 0,
+       CH.bad[0] || CH.reduced.length + " emissions chunked");
     const want = ADDED[page].slice().sort().join(",");
     ok("  ... and it adds exactly [" + (want || "nothing") + "]",
        Array.from(added).sort().join(",") === want, Array.from(added).sort().join(",") || "nothing");
-    // belt and braces: the WHOLE dump, kernel order and headers included
-    const hb = sha(fs.readFileSync(b.file)), hc = sha(fs.readFileSync(cur[page].file));
+    // belt and braces: the WHOLE dump, kernel order and headers included -- every kernel
+    // the chunk allowance does NOT name, since a chunked emission has no base section to
+    // hash against (the leg above is what pins those, text for text)
+    const hb = shaNoChunk(b.file), hc = shaNoChunk(cur[page].file);
     ok("  ... and the whole dump hashes the same", hb === hc, hc.slice(0, 16) + " vs " + hb.slice(0, 16));
   }
 }
@@ -344,16 +441,17 @@ if (bd) {
     // `class Solver` is compared with the ONE recorded allowance stripped; the other two
     // definitions are still compared raw, and must never need one.
     const st = raw === null ? null
-             : h === "class Solver {" ? io4Strip(raw) : { txt: raw, miss: [] };
+             : ALLOWED[h] ? stripBlocks(raw, ALLOWED[h]) : { txt: raw, miss: [] };
     const b = st && st.txt;
     ok("  " + h.replace(/ \{$/, "") + ": byte-identical to its text at " + BASE,
        a !== null && b !== null && a === b,
        a === null ? "not found at " + BASE : b === null ? "not found in solver2d.js"
          : a === b ? a.split("\n").length + " lines" : "differs");
-    if (h !== "class Solver {") continue;
+    if (!ALLOWED[h]) continue;
     // ... and the allowance is neither stale nor vacuous: every recorded block is really
-    // in the file, and stripping them really did change something
-    ok("    ... and the IO_PLAN item 4 allowance is the WHOLE of the difference",
+    // in the file, at its recorded place, and putting base's lines back really did change
+    // something
+    ok("    ... and the recorded allowance is the WHOLE of the difference",
        !!st && st.miss.length === 0 && raw !== a && b === a,
        !st ? "no text" : st.miss.length ? "allowance: " + st.miss.join(" | ")
          : raw === a ? "the allowance is vacuous -- nothing to strip"

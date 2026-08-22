@@ -8933,14 +8933,6 @@ function benchLoop(cell, reps) {
   p.end();
   device.queue.submit([enc.finish()]);
 }
-// ONE dispatch of one cell, its pipeline and bind group set from the cell itself: a page
-// whose spec builds a chain out of its own cells encodes it through this (benchLoop sets
-// the pair once and repeats the dispatch instead).
-function benchDispatch(pass, cell) {
-  pass.setPipeline(cell.pipe);
-  pass.setBindGroup(0, cell.bg);
-  pass.dispatchWorkgroups(cell.d[0], cell.d[1] || 1);
-}
 // 32-bit FNV-1a over the bytes of a Uint32Array, each word taken low byte first by SHIFT
 // rather than through a byte view, so the digest of a readback does not depend on the
 // device's endianness. Returned unsigned.
