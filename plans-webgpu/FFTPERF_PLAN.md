@@ -1,7 +1,7 @@
 # FFTPERF_PLAN — what the step's transforms cost, then twiddle table / radix-4 / gradient chunking
 
-Written 2026-08-21. **Phase 0 landed and Phase 1 measured 2026-08-21** (execution notes at the end;
-the Phase 1 record is in §4): A and B not taken (§9.1), **2C in progress**. Prompted by `plans/MEMORY_PERF_PLAN.md` closing on the
+Written 2026-08-21. **Closed 2026-08-22**: Phase 0 landed, Phase 1 measured (§4), A and B declined
+(§9.1), 2C landed as 3D-only chunking (§9.3); execution notes at the end. Prompted by `plans/MEMORY_PERF_PLAN.md` closing on the
 solver: of its four shipped phases, Z1 (the Elsasser-separable propagator) is what
 `rmhd3d.html`'s stage kernel has always been, Z2/F2 have no counterpart here, F4 is dead
 (`realGrads` is shared with the field-line pass), and F1's diagnosis — the eight-lane gradient
@@ -754,3 +754,12 @@ every mutation red (let-order reversed, `vort` sign, `[[1,0,2,3]]`, a 2D two-chu
 unrecorded and recorded lines inside `class Solver`/`buildShaders`, stepIO counts). Noted
 for the next change to a chunk list: `checkiso` leg 2b, `check2dspec` leg 3 and the bench
 specs assume the shipped lists (devtools README says so).
+
+**2C CLOSED (2026-08-22, page `294acb0` deployed, laptop).** 2D `grads hash` at 256² and
+1024² equal the pre-2C table rows (16/16 lane digests, both `hash_all`; compared by script);
+2D whole step at 1024² **30.28 ms against 30.18** (1.003×), record signature
+`bytes_per_step: 1134182400` = the one-chunk value (the four-chunk page read 1,235,042,304).
+3D stands on its earlier on-device run (`07ea844`: 32/32 digests, 1.00×/1.02×), its WGSL and
+encoder being `cmp`-identical since. Final state: 3D four one-pair chunks (`gradsK` 129 →
+32 MiB at 256²×64), 2D the pre-2C chain byte for byte. Every phase of this plan is now
+executed or decided: 0 landed, 1 measured, 2A/2B declined (§9.1), 2C landed (§9.3).

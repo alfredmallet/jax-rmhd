@@ -23,15 +23,17 @@ disagree, the file is right.
 
 ## Live
 
-- **FFTPERF_PLAN.md** — what the step's transforms actually cost, then whichever of a twiddle
-  table / radix-4 / gradient chunking the numbers justify. Written 2026-08-21; **Phase 0
-  (the `?bench` harness and production-N self-test rows) landed the same day**, Phase 1 —
-  Alfred's on-device campaign — not started. Reopens AUDIT item 6 on the record: the 2026-08-12 closure counted a
-  transcendental as one op and its 4.00 scaling ratio separates launch-bound from work-bound,
-  not bandwidth from ALU from barriers — so Phase 0 is a `?bench` harness with a three-rung
-  ladder per FFT kernel (copy-only / constant-twiddle / full) and Phase 1 is Alfred's
-  on-device campaign; nothing ships without it. Gradient chunking is the resolution-ceiling
-  item (256²×64 fits the default binding limits after it) and cannot move `steps/s`.
+- **FFTPERF_PLAN.md** — what the step's transforms actually cost, and what to do about it.
+  Written 2026-08-21, **closed 2026-08-22**. Phase 0 built the `?bench` harness (whole-step,
+  per-kernel, a copy / constant-twiddle / full ladder per FFT kernel, a per-lane `grads hash`)
+  and the production-N self-test rows; Phase 1 measured laptop and phone: the step scales as
+  N log N, the row kernels split three ways (memory / butterflies / transcendentals), the
+  column and z kernels are a strided-read memory floor, and the phone sees ~5%
+  transcendentals where the laptop sees 25–37% — so the twiddle table (A) and radix-4 (B)
+  were declined at 5–10% (§9.1; AUDIT item 6's closure stands, now with the numbers). 2C,
+  gradient chunking, shipped **3D-only** (§9.3): `gradsK` 129 → 32 MiB at 256²×64, bit-identical
+  gradients, 0–2% on the step; on 2D the full-grid `gridA` re-reads cost 7% at 1024², so 2D
+  keeps the pre-2C chain byte for byte through the same template.
 - **IO_PLAN.md** — data in and out: expression ICs (`x, y, z` in code units, a hand-written
   parser, non-periodic warned about per axis and never forbidden), a save button on chart
   cards, save-all-cards as one ZIP, a "download fields" export of real-space φ/ψ as `.npz`,
