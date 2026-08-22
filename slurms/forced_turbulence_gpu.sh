@@ -47,6 +47,12 @@ echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 
 export TARANIS_PRECISION=64
 
+# XLA latency-hiding scheduler: a no-op on the single GPU this script asks for (no
+# collectives to hide), set here so scaling this job to several GPUs inherits the production
+# configuration -- 1.31x at 16 GPUs, measured 2026-08-21, job 37912751. See
+# docs/performance.md, "XLA latency-hiding scheduler".
+export XLA_FLAGS="${XLA_FLAGS:---xla_gpu_enable_latency_hiding_scheduler=true}"
+
 # Do NOT set/override CUDA_VISIBLE_DEVICES -- Slurm's --gres=gpu already scopes this
 # process to its assigned GPU.
 

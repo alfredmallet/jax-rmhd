@@ -95,6 +95,68 @@ Scaling 4→16: jax 4.15×, mpi4jax 1.72×. The jax curve holds **across node bo
 plain TCP** — no InfiniBand userspace, PCIe peer-to-peer disabled. On NVLink/IB hardware
 the margin can only grow.
 
+### XLA latency-hiding scheduler (16×GTX2080Ti, 2026-08-21, job 37912751)
+
+`slurms/bench_xla_flags_2080.sh` (probe → HLO audit → timed matrix → profile) with
+`bench/hlo_audit.py`. 512²×256 fp32, `nps cfl1`, `backend=jax`, lsrk54, `halo_start` at its
+jax default (on), 2 passes × 120 timed steps per case. jax 0.10.2. The whole matrix — 28
+`srun` steps — cost 16 minutes and ~32 SU; compile is ~12 s per case, so a flag matrix is
+cheap even with the compilation cache deliberately off (each flagset must compile its own
+binary or the experiment is meaningless).
+
+**Static, from the optimized+scheduled HLO.** Collectives are async (`-start`/`-done`)
+even with no flags — but at base the scheduler emits the `-done` immediately after the
+`-start`:
+
+| flagset | async pairs (scan) | overlap window, median instrs | temp (scan) |
+|---|---|---|---|
+| base (no flags) | 6 | **0** | 219 MB (6.8 u) |
+| `lhs` = `--xla_gpu_enable_latency_hiding_scheduler=true` | 6 | **23** | 227 MB (7.1 u) |
+| `lhsdec` = `lhs` + `--xla_gpu_collective_permute_decomposer_threshold=0` | 6 | 23 | 227 MB (7.1 u) |
+
+`--xla_gpu_enable_pipelined_collectives` no longer exists in this XLA build and was dropped
+by the script's phase-0 probe. `lhsdec` produced HLO byte-identical to `lhs`, which makes it
+a free control rather than a third data point.
+
+**Dynamic**, mean ms/step over both passes:
+
+| 16 GPUs (4 nodes) | base | `lhs` | `lhsdec` | `lhs` vs base |
+|---|---|---|---|---|
+| scan | 60.46 | 46.22 | 45.31 | **1.31×** |
+| unrolled | 65.95 | 54.79 | 57.04 | **1.20×** |
+
+| 4 GPUs (1 node) | base | `lhs` | `lhs` vs base |
+|---|---|---|---|
+| scan | 145.54 | 142.24 | 1.02× |
+| unrolled | 172.82 | 168.15 | 1.03× |
+
+**The noise floor is measured, not assumed:** `lhs` and `lhsdec` compile to identical HLO,
+so their timing gap is pure run-to-run spread — 2.0% (scan), 4.1% (unrolled), with
+pass-to-pass spread inside one config ≤3.2%. The 16-GPU win clears that by ~6×. The 4-GPU
+repeats are tighter (<0.3%), so even 2.3% there is real, just small. The win scales with
+communication, which is what the overlap story predicts: ~2% single-node where there is
+bandwidth to spare, ~24% across four nodes on plain TCP.
+
+**What this says about `halo_start`.** The hook is enabled by default on the jax backend, so
+every base row above already pre-issues the halo exchange — and the schedule still leaves a
+zero-instruction window. That is why it "buys nothing measurable": not a physics result, a
+scheduling one. Under `lhs` there is finally a window for the pre-issued exchange to fill,
+so the `halo_early`/`halo_late` A/B is worth running again. It has not been.
+
+**What this says about unrolling.** `lsrk_scan=False` loses at every GPU count here — it
+costs 18.7% more time per step (4 GPUs, base), 18.2% (4, `lhs`), 18.5% (16, `lhs`), and
+9.1% at 16 GPUs base, the one outlier. The consistent ~18% is unroll's extra compute; at 16 GPUs base the step is
+comm-bound, so the stall *hides* half the penalty. Latency hiding does not flip the sign, it
+unmasks it. The audit agrees: unrolling exposes 12 async collectives instead of 6, but each
+gets a worse window (median 6 vs 23). The earlier −38% at this same configuration did not
+reproduce.
+
+**One number not to chain.** Base here is 60.46 ms/step where the scaling table above records
+48 for what is nominally the same case (`j16`: 512²×256 fp32, `nps cfl1`, backend=jax,
+16×2080Ti). Different job, different allocation, different nodes — not a controlled
+comparison, and it is not called a regression on this evidence. The base-vs-`lhs` delta *is*
+controlled (one job, one allocation) and stands on its own.
+
 ### Cost per timestep (fp32, 512²×128)
 
 | Hardware | ms/step | SU/hr | SU per 1000 steps |
@@ -117,10 +179,11 @@ CPU there; on full-rate-fp64 hardware (A100/GH200/H100) the economics carry over
 | `forcing_norm_per_step` | +8% at fp64/32 ranks | default on |
 | `cfl_every` | +1.3% (N=20) at 32 ranks, +8.9% at 128 | 10–20 at ≥128 ranks, **developed states only** |
 | `lsrk_scan=True` (scan) | ~20% faster than unrolled on CPU | default |
-| `lsrk_scan=False` (unrolled) | +21% mpi4jax-GPU, +12% jax single-node, **−38% jax multi-node** | per-machine knob, benchmark it |
+| `lsrk_scan=False` (unrolled) | +21% mpi4jax-GPU, +12% jax single-node; on the **jax** backend a loss at every GPU count re-measured 2026-08-21 (−9% at 16 GPUs base, −18% at 4, −18% at 16 under latency hiding; 1.10× on the P100) | per-machine knob, benchmark it; scan is the jax default |
 | `forcing_shell_noise` | faster single-device, ~5% *slower* on Savio CPU at 32 ranks | opt-in; revisit on GPU |
-| `halo_start` | neutral (≤2%, sub-noise) everywhere measured | see below |
+| `halo_start` | neutral (≤2%, sub-noise) everywhere measured — but every jax measurement predates the latency-hiding flag, under which the overlap window it feeds was structurally zero | see below; worth one re-test under `lhs` |
 | `hoist_propagator` | **putzer2 only** — 1.22× (P100) / 1.80× (CPU) slower off on GDI-IF; scheme-dependent memory, see below | default on; turn off only on a memory-bound putzer2 grid |
+| `XLA_FLAGS=--xla_gpu_enable_latency_hiding_scheduler=true` | **1.31× at 16 GPUs** (jax/NCCL, 4 nodes), 1.02× at 4 GPUs on one node | set it on every multi-GPU jax run — see below |
 | `GRAD_CHUNK` (module constant, not a `Parameters` attribute) | chunk 2 costs 1.25–1.54× the step on XLA:CPU and gains only 1.8–3.3% on the 2080Ti, but gains 3–20% on the P100 | default 1 everywhere; the one per-card tuning worth knowing |
 
 **`hoist_propagator` after Z1/Z2 (2026-08-20).** It only reaches the putzer2 backend now:
@@ -147,14 +210,21 @@ N=5 survives. Use N>1 only from developed states.
 
 Recorded so they are not re-investigated.
 
-- **Early halo issue (`halo_start`) buys nothing measurable.** On mpi4jax there is no fp64
-  win at any rank count (−0.6% at 32, sub-noise at 128) because the token chain serializes
-  communication with compute regardless. On the jax backend it is neutral on Savio at
-  bench sizes, including multi-node NCCL. The hook is kept and enabled for `"jax"` because
-  the answer plausibly changes with a different scheme or on NVLink/IB hardware, but it is
-  not currently earning its keep.
-- **Unrolled LSRK is not a universal win.** It helps every configuration except the one
-  that matters most for scaling, jax multi-node, where it costs 38%.
+- **Early halo issue (`halo_start`) buys nothing measurable — and on the jax backend the
+  reason is now known.** On mpi4jax there is no fp64 win at any rank count (−0.6% at 32,
+  sub-noise at 128) because the token chain serializes communication with compute
+  regardless. On the jax backend it is neutral on Savio at bench sizes, including
+  multi-node NCCL — but the 2026-08-21 HLO audit shows why: without the latency-hiding
+  scheduler XLA leaves a **zero-instruction** window between each collective's `-start` and
+  `-done`, so pre-issuing the exchange cannot help by construction. The hook is kept and
+  enabled for `"jax"`. **This entry is not settled under `lhs`**, where the window is a
+  median of 23 instructions; that A/B has not been run.
+- **Unrolled LSRK is not a universal win.** It helps mpi4jax-GPU (+21%) and jax
+  single-node on the A5000 (+12%). On the **jax** backend on the 2080Ti it loses at every
+  GPU count (2026-08-21: +9% at 16 GPUs base, +18% at 4 and at 16 under `lhs`), and the
+  P100 probe has it at 1.10× for FD-z lsrk54. The earlier −38% at 16 GPUs did not
+  reproduce; it is now +9%, and the flag that removes the comm stall widens unroll's loss
+  rather than reversing it.
 - **shard_map on CPU** — measured slow, which is why `mpi4jax` remains the CPU backend.
 
 ## Test particles overhead (laptop)
@@ -1079,7 +1149,10 @@ at the end of the run — was planned and never implemented. It needs care aroun
 **CPU clusters:** `mpi4jax`, fp64, `forcing_norm_per_step=True`, `cfl_every` 10–20 at
 ≥128 ranks from developed states.
 
-**Savio GPU:** `comm_backend="jax"`, fp32 workloads, sizes per the cost table above.
+**Savio GPU:** `comm_backend="jax"`, fp32 workloads, sizes per the cost table above, and
+`export XLA_FLAGS="--xla_gpu_enable_latency_hiding_scheduler=true"` on anything multi-GPU
+(1.31× at 16 GPUs; ~2% at 4, so it is never worth omitting). `lsrk_scan` stays at its
+default True on this backend.
 
 **z_spectral (single process):** at ν = η (equal `diss` entries) the separable backend
 (Z1, 2026-08-20) makes every step cheap — adaptive `cfl_every=1` included — at ~20 u

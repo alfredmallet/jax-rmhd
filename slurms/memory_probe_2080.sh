@@ -25,6 +25,13 @@ export PYTHONNOUSERSITE=1
 NVLIBS=$("$HOME/.conda/envs/jax_gpu/bin/python" -c "import nvidia,os;print(':'.join(os.path.join(p,d,'lib') for p in nvidia.__path__ for d in sorted(os.listdir(p)) if os.path.isdir(os.path.join(p,d,'lib'))))" 2>/dev/null || true)
 [ -n "$NVLIBS" ] && export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export NCCL_P2P_DISABLE=1
+
+# XLA_FLAGS is deliberately NOT set here. The latency-hiding scheduler
+# (--xla_gpu_enable_latency_hiding_scheduler=true, now default in the bench_phase3_* and
+# production GPU scripts -- job 37912751, 2026-08-21) shifts temp memory by ~4% and step
+# time by up to 1.31x at 16 GPUs, which would silently break comparability with the
+# baseline/postF/postFZ JSON series this probe exists to extend. Add it explicitly, as a
+# NEW measurement point, if you want the production configuration measured.
 export RMHD_REQUIRE_GPU=1
 export MPI4JAX_USE_CUDA_MPI=${CUDA_MPI:-0}
 MPI_MODE=${MPI_MODE:-pmix}

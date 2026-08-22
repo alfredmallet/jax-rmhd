@@ -117,6 +117,22 @@ attached. Also required for the jax backend: launch WITHOUT `--gpu-bind` (all jo
 visible; `comms._local_device_ids` pins per-process ordinals) — mpi4jax launches keep
 `--gpu-bind=single:1`.
 
+XLA scheduling note (measured 2026-08-21, job 37912751): without
+`--xla_gpu_enable_latency_hiding_scheduler=true` XLA emits the halo ppermutes and the two
+allreduces as async `-start`/`-done` pairs but schedules **zero** instructions between them,
+so comms are serialized with compute. Every multi-GPU jax-backend job should export
+
+```bash
+export XLA_FLAGS="--xla_gpu_enable_latency_hiding_scheduler=true"
+```
+
+worth 1.31× at 16 GPUs (4 nodes) and ~1.02× at 4 GPUs on one node, for ~4% more temp
+memory. Confirm the flag took with `bench/hlo_audit.py` (the overlap column should read a
+median of ~23 instructions, not 0) before believing any timing that depends on it, and note
+that flag names drift between XLA versions — `--xla_gpu_enable_pipelined_collectives` was
+accepted once and no longer exists in jax 0.10.2, so probe before you rely on one. Full
+result: docs/performance.md, "XLA latency-hiding scheduler".
+
 If the CUDA bridge import fails: rerun the mpi4jax install with `-v` and look for the
 `CUDA INFO: {...}` line (detection worked) vs the `CUDA path not found` warning (it didn't
 — check `module load cuda` was active, or export `CUDA_ROOT` to the toolkit prefix and
@@ -235,6 +251,10 @@ g4     3d_forced  nx=512 nz=128 ranks=4 [scan+nps+cfl1+halo_late] steps=80  ... 
 `pkg=` proves which package version was imported (the `RMHD_PKG` mechanism — never PYTHONPATH,
 the editable install's import finder beats it), `backend=` is `params.comm_backend`, `dev=` is
 rank 0's bound device, and every option under test appears in the `[tags]` bracket.
+
+`slurms/bench_xla_flags_2080.sh` is the XLA compiler-flag matrix (probe → HLO audit → timed
+matrix → profile) and `bench/hlo_audit.py` its compile-only static half — that one runs on a
+login node or a laptop, and `BENCH_SETS_16`, `PASSES`, `NX`, `NZ` are all env-overridable.
 
 Bench flags used by these jobs (`bench/bench_phase1.py`): `nx<N>`/`nz<N>` grid sizes,
 `backend=mpi4jax|jax`, `halo_early`/`halo_late` (T7 hook forced on/off, the GPU overlap pair),

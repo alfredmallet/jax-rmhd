@@ -82,6 +82,11 @@ TMO="timeout 900"
 # support; revisit if they fix it (SHM adds host-memory hops, so NCCL numbers here
 # UNDERSTATE a P2P/NVLink-capable cluster).
 export NCCL_P2P_DISABLE=1
+
+# XLA_FLAGS is deliberately NOT set here: this job is about correctness, and the
+# latency-hiding scheduler (see docs/performance.md, "XLA latency-hiding scheduler") is a
+# scheduling change that would add a variable to any tolerance comparison. Export it by
+# hand if you specifically want the production GPU configuration under test.
 # Per-rank python stack dumps every 120 s while hung (see test_backend_jax_mpi.py).
 export RMHD_DEBUG_HANG=1
 

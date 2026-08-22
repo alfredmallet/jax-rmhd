@@ -49,6 +49,15 @@ echo "NVLIBS=${NVLIBS:-EMPTY}"   # visible proof in the .out that this block ran
 # Revisit if they fix it (SHM adds host-memory hops, so NCCL numbers here UNDERSTATE a
 # P2P/NVLink-capable cluster).
 export NCCL_P2P_DISABLE=1
+
+# XLA latency-hiding scheduler (measured 2026-08-21, job 37912751): without it XLA emits the
+# halo ppermutes and the two allreduces as async -start/-done pairs but schedules ZERO
+# instructions between them, so comms are serialized with compute. Worth 1.31x at 16 GPUs
+# (4 nodes) and ~1.02x at 4 on one node, for ~4% more temp memory. Clear it
+# (--export=ALL,XLA_FLAGS=) to reproduce a number recorded before that date -- the scaling
+# tables in docs/performance.md predate this flag.
+LHS_FLAG="--xla_gpu_enable_latency_hiding_scheduler=true"
+export XLA_FLAGS="${XLA_FLAGS:-$LHS_FLAG}"
 export RMHD_REQUIRE_GPU=1  # abort any case where a rank silently falls back to CPU (job 35894622)
 
 export TARANIS_PRECISION=32   # A40 fp64 is ~1/32 of fp32; the fp64 anchor is the V100 job
