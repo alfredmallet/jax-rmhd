@@ -1,20 +1,20 @@
-# The Elsasser-separable propagator backend (propagators.SeparableL /
-# SeparablePropagator), which RMHD uses under z_spectral when nu == eta.
+# The Elsasser-separable propagator backend (propagators.SeparableL), which RMHD uses
+# under z_spectral when nu == eta.
 #
 # There L = d*I + i*kz*sigma_x with a real, separable d = dperp(k_perp) + dz(kz), so
 # exp(L*tau) and (I - a*L)^-1 have closed forms built from (nkx,nky) and (nz,1,1) arrays
 # only -- no full-grid operator is stored or formed. What is checked here:
 #
-#   1. backend selection both ways: z_spectral + nu == eta -> separable (kgrid.lin_L None,
-#      the three separable entries populated); nu != eta -> putzer2; FD-z / 2D -> diagonal.
+#   1. backend selection both ways: z_spectral + nu == eta -> kgrid.lin is a SeparableL
+#      holding the three plane-sized entries; nu != eta -> putzer2; FD-z / 2D -> diagonal.
 #      The separable backend is hoistable and its whole per-stage ExpOp stack is a fraction
 #      of one field array (test_hoist_propagator owns the hoisted == unhoisted cells).
 #   2. the separable exp / solve_shifted / apply_L agree with the putzer2 backend running
-#      on the SAME operator, materialised by propagators.dense_operator.
+#      on the SAME operator, materialised by kgrid.lin.dense().
 #   3. exp_op(tau).apply(arr) is apply_exp(arr, tau), bitwise (the propagators contract).
 #   4. a real field stays real: the rfft2/rfftn conjugate rows survive 20 steps, which is
 #      what the Nyquist-kz rule buys.
-#   5. dense_operator of the separable entries reproduces rmhd.linear_matrix's dense form
+#   5. dense() of the separable entries reproduces rmhd.linear_matrix's dense form
 #      bitwise, and setup rejects separable operators that would break reality.
 #   6. FD-z and 2D are untouched: their solver output is bitwise identical with the
 #      dense-path switch (rmhd.SEPARABLE_L) either way, and the z_spectral separable and
@@ -73,8 +73,7 @@ def _random_fields(kgrid, params, seed=7):
 
 def _dense_putzer(kgrid):
     # the putzer2 backend running on the operator the separable entries encode
-    return propagators.Putzer2Propagator(
-        *propagators.putzer2_precompute(propagators.dense_operator(kgrid)))
+    return propagators.Putzer2Operator(*propagators.putzer2_precompute(kgrid.lin.dense()))
 
 
 def _rel(a, b):
@@ -108,28 +107,25 @@ def test_backend_selection():
         for label, kw in (("2D", dict(dims=2)), ("FD-z", {})):
             params, kgrid = _ctx(**kw)
             c.check(f"{label}: diagonal backend",
-                    isinstance(propagators.get_propagator(kgrid, params),
-                               propagators.DiagonalPropagator))
-            c.check(f"{label}: no separable entries",
-                    kgrid.lin_dperp is None and kgrid.lin_dz is None
-                    and kgrid.lin_kz is None and kgrid.lin_L is not None)
+                    isinstance(kgrid.lin, propagators.DiagonalOperator))
+            c.check(f"{label}: the operator carries a dense diagonal L and nothing else",
+                    kgrid.lin._fields == ("L",) and kgrid.lin.L.ndim == 4)
         if mpi_size() > 1:
             return
         params, kgrid = _ctx(**_ZS)
-        prop = propagators.get_propagator(kgrid, params)
+        prop = kgrid.lin
         nkx, nky = params.nx, params.ny // 2 + 1
         c.check("z_spectral nu == eta: separable backend",
-                isinstance(prop, propagators.SeparablePropagator))
-        c.check("z_spectral nu == eta: lin_L / lin_m / lin_s are all None",
-                kgrid.lin_L is None and kgrid.lin_m is None and kgrid.lin_s is None)
+                isinstance(prop, propagators.SeparableL))
+        c.check("z_spectral nu == eta: no dense operator is stored",
+                prop._fields == ("dperp", "dz", "kz"))
         c.check("z_spectral nu == eta: the three separable entries are populated, real "
                 "and plane-sized",
-                kgrid.lin_dperp.shape == (nkx, nky)
-                and kgrid.lin_dz.shape == (params.nz, 1, 1)
-                and kgrid.lin_kz.shape == (params.nz, 1, 1)
-                and not any(jnp.iscomplexobj(a) for a in
-                            (kgrid.lin_dperp, kgrid.lin_dz, kgrid.lin_kz)),
-                f"{kgrid.lin_dperp.shape} {kgrid.lin_dz.shape} {kgrid.lin_kz.shape}")
+                prop.dperp.shape == (nkx, nky)
+                and prop.dz.shape == (params.nz, 1, 1)
+                and prop.kz.shape == (params.nz, 1, 1)
+                and not any(jnp.iscomplexobj(a) for a in prop),
+                f"{prop.dperp.shape} {prop.dz.shape} {prop.kz.shape}")
         # hoistable: the per-stage ExpOps are (nkx,nky) + 2*(nz,1,1), so hoisting the
         # coefficient evaluation off the stage costs a fraction of one field array
         c.check("the separable backend is hoistable", prop.hoistable is True)
@@ -155,12 +151,9 @@ def test_backend_selection():
 
         params, kgrid = _ctx(**_UNEQ)
         c.check("z_spectral nu != eta: putzer2 backend",
-                isinstance(propagators.get_propagator(kgrid, params),
-                           propagators.Putzer2Propagator))
-        c.check("z_spectral nu != eta: dense lin_L, no separable entries",
-                kgrid.lin_L is not None and kgrid.lin_L.ndim == 5
-                and kgrid.lin_dperp is None and kgrid.lin_dz is None
-                and kgrid.lin_kz is None)
+                isinstance(kgrid.lin, propagators.Putzer2Operator))
+        c.check("z_spectral nu != eta: a dense 5-d L, not the separable entries",
+                kgrid.lin.L.ndim == 5 and kgrid.lin._fields == ("L", "m", "s"))
         stepper, scheme = get_scheme("lsrk33")
         c.check("z_spectral nu != eta: stage_exp_ops still hoists putzer2",
                 stage_exp_ops(kgrid, params, scheme, stepper, params.dt) is not None)
@@ -170,18 +163,18 @@ def test_separable_agrees_with_putzer2_on_the_same_operator():
     if mpi_size() > 1:
         return
     params, kgrid = _ctx(**_ZS)
-    sep = propagators.get_propagator(kgrid, params)
+    sep = kgrid.lin
     put = _dense_putzer(kgrid)
     arr = _random_fields(kgrid, params)
     with checks() as c:
         for tau in _TAUS:
-            c.check(f"apply_exp(tau={tau:g}) matches putzer2 on dense_operator",
+            c.check(f"apply_exp(tau={tau:g}) matches putzer2 on the dense operator",
                     _rel(sep.apply_exp(arr, tau), put.apply_exp(arr, tau)) < _RTOL,
                     f"rel {_rel(sep.apply_exp(arr, tau), put.apply_exp(arr, tau)):.2e}")
-            c.check(f"solve_shifted(a={tau:g}) matches putzer2 on dense_operator",
+            c.check(f"solve_shifted(a={tau:g}) matches putzer2 on the dense operator",
                     _rel(sep.solve_shifted(arr, tau), put.solve_shifted(arr, tau)) < _RTOL,
                     f"rel {_rel(sep.solve_shifted(arr, tau), put.solve_shifted(arr, tau)):.2e}")
-        c.check("apply_L matches putzer2 on dense_operator",
+        c.check("apply_L matches putzer2 on the dense operator",
                 _rel(sep.apply_L(arr), put.apply_L(arr)) < _RTOL,
                 f"rel {_rel(sep.apply_L(arr), put.apply_L(arr)):.2e}")
         # scaled(dt) is the form every LSRK stage uses
@@ -198,9 +191,8 @@ def test_exp_op_is_apply_exp_bitwise():
     params, kgrid = _ctx(**_ZS)
     arr = _random_fields(kgrid, params)
     with checks() as c:
-        for prop, label in ((propagators.get_propagator(kgrid, params), "separable"),
-                            (propagators.get_propagator(kgrid, params).scaled(0.021),
-                             "separable scaled(dt)")):
+        for prop, label in ((kgrid.lin, "separable"),
+                            (kgrid.lin.scaled(0.021), "separable scaled(dt)")):
             for tau in _TAUS:
                 a = jax.jit(lambda x, t=tau, p=prop: p.exp_op(t).apply(x))(arr)
                 b = jax.jit(lambda x, t=tau, p=prop: p.apply_exp(x, t))(arr)
@@ -226,16 +218,14 @@ def test_reality_is_preserved():
                     np.all(np.isfinite(end)) and np.max(np.abs(end)) > 0.0)
 
 
-def test_dense_operator_reproduces_the_dense_linear_matrix_bitwise():
+def test_dense_reproduces_the_dense_linear_matrix_bitwise():
     if mpi_size() > 1:
         return
     params, kgrid = _ctx(**_ZS)
     reference = _dense_linear_matrix(kgrid, params)
     with checks() as c:
-        c.check("dense_operator(separable entries) == rmhd.linear_matrix's dense form, "
-                "bitwise",
-                np.array_equal(np.asarray(propagators.dense_operator(kgrid)),
-                               np.asarray(reference)))
+        c.check("kgrid.lin.dense() == rmhd.linear_matrix's dense form, bitwise",
+                np.array_equal(np.asarray(kgrid.lin.dense()), np.asarray(reference)))
 
 
 def test_particle_psi_diagonal_reads_both_separable_terms():
@@ -247,17 +237,17 @@ def test_particle_psi_diagonal_reads_both_separable_terms():
     from taranis.particles import fields as pfields
     params, kgrid = _ctx(**_ZS)
     psi_diag = np.asarray(pfields._psi_linear_diagonal(kgrid, params))
-    dense_psi = np.asarray(propagators.dense_operator(kgrid)[1, 1])
-    dz = np.asarray(kgrid.lin_dz)
+    dense_psi = np.asarray(kgrid.lin.dense()[1, 1])
+    dz = np.asarray(kgrid.lin.dz)
     with checks() as c:
         c.check("the dz term is actually nonzero here (z_diss_k != 0)",
                 float(np.max(np.abs(dz))) > 0.0, f"max|dz| = {np.max(np.abs(dz)):.3e}")
-        c.check("_psi_linear_diagonal == dense_operator[1,1] exactly",
+        c.check("_psi_linear_diagonal == kgrid.lin.dense()[1,1] exactly",
                 np.array_equal(psi_diag, dense_psi),
                 f"max diff {float(np.max(np.abs(psi_diag - dense_psi))):.3e}")
         # dperp alone (the term the sum could silently lose) is measurably different
         c.check("dropping dz would be visible",
-                not np.array_equal(np.broadcast_to(np.asarray(kgrid.lin_dperp),
+                not np.array_equal(np.broadcast_to(np.asarray(kgrid.lin.dperp),
                                                    psi_diag.shape), psi_diag))
 
 
@@ -308,17 +298,17 @@ def test_setup_rejects_separable_operators_that_break_reality_or_shape():
     if mpi_size() > 1:
         return
     params, kgrid = _ctx(**_ZS)
-    good = propagators.SeparableL(kgrid.lin_dperp, kgrid.lin_dz, kgrid.lin_kz)
+    good = kgrid.lin
     nz = params.nz
     bad = {
         "a kz whose Nyquist plane is not zeroed":
             good._replace(kz=kgrid.kz),
         "a kz that is not antisymmetric":
-            good._replace(kz=jnp.abs(kgrid.lin_kz)),
+            good._replace(kz=jnp.abs(good.kz)),
         "a complex dperp":
-            good._replace(dperp=kgrid.lin_dperp.astype(_precision.ctype)),
+            good._replace(dperp=good.dperp.astype(_precision.ctype)),
         "a dz that is not symmetric under kz -> -kz":
-            good._replace(dz=kgrid.lin_kz),
+            good._replace(dz=good.kz),
         "a dperp of the wrong shape":
             good._replace(dperp=jnp.zeros((params.nx, 3), dtype=_precision.ftype)),
         "a dz of the wrong z extent":
@@ -326,14 +316,14 @@ def test_setup_rejects_separable_operators_that_break_reality_or_shape():
     }
     with checks() as c:
         try:
-            propagators.linear_fields(good, params)
+            propagators.build(good, params)
             err = None
         except (ValueError, NotImplementedError) as e:
             err = str(e)
         c.check("the RMHD separable operator passes setup", err is None, f"raised {err!r}")
         for name, sep in bad.items():
             try:
-                propagators.linear_fields(sep, params)
+                propagators.build(sep, params)
                 err = None
             except (ValueError, NotImplementedError) as e:
                 err = str(e)

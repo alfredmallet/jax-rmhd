@@ -1,12 +1,17 @@
 # Exact per-mode propagators for the k-local linear part of an equation set.
 # Sign convention: a recipe's linear_matrix_func returns L with
 #       dt f = L f + N(f)          ->   propagator = exp(L*tau)
-# Timesteppers never see L: they only call
+# build(L, params) validates it and returns the operator, which grids.setup_kgrids parks in
+# the single K_Grids slot `lin`. The operators are pytrees (NamedTuples of arrays with
+# methods), so a kgrid rides through jit unchanged. Timesteppers never touch their arrays:
+# they only call
 #   apply_exp(arr, tau)     multiply by exp(L*tau)        (integrating-factor schemes)
 #   solve_shifted(arr, a)   apply (I - a*L)^-1            (IMEX schemes)
 #   apply_L(arr)            multiply by L                 (IMEX schemes)
 # plus scaled(factor), which returns the propagator of factor*L (see LSRK note below), and
 #   exp_op(tau)             the precomputed exp(L*tau) as an ExpOp pytree with .apply(arr)
+# dense() materialises the (2, 2, nz-or-1, nkx, nky) L behind any backend; it is 4 u, for
+# tests and validation only, and must never be formed inside a step.
 # for the hoisted path: when dt is frozen over a block (fixed dt, or a cfl_every block)
 # run.py builds every stage's ExpOp ONCE per block (timestepping.stage_exp_ops) instead of
 # re-evaluating the matrix exponential inside every stage of every step. The ExpOps hold
@@ -24,9 +29,10 @@
 #
 # Backends are selected by what a recipe's linear_matrix_func returns (built once in
 # grids.setup_kgrids):
-#   diagonal   L.ndim == 4: (nfields-or-1, nz-or-1, nkx, nky)  elementwise
-#   putzer2    L.ndim == 5: (2, 2, nz-or-1, nkx, nky)          closed-form 2x2 exponential
-#   separable  a SeparableL: L = d*I + i*kz*sigma_x with real d = dperp(k_perp) + dz(kz)
+#   DiagonalOperator   L.ndim == 4: (nfields-or-1, nz-or-1, nkx, nky)  elementwise
+#   Putzer2Operator    L.ndim == 5: (2, 2, nz-or-1, nkx, nky)  closed-form 2x2 exponential
+#   SeparableL         L = d*I + i*kz*sigma_x with real d = dperp(k_perp) + dz(kz)
+#   IdentityOperator   no linear_matrix_func: L = 0
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -56,7 +62,7 @@ class DiagonalExp(NamedTuple):
         return self.e*arr
 
 class Putzer2Exp(NamedTuple):
-    m00: jnp.ndarray        # the four entries of exp(L*tau), as Putzer2Propagator.apply_exp
+    m00: jnp.ndarray        # the four entries of exp(L*tau), as Putzer2Operator.apply_exp
     m01: jnp.ndarray        # forms them
     m10: jnp.ndarray
     m11: jnp.ndarray
@@ -79,9 +85,16 @@ def stack_exp_ops(ops):
     # tuple of same-kind ExpOps -> one ExpOp with a leading stage axis (scan xs)
     return jax.tree.map(lambda *xs: jnp.stack(xs), *ops)
 
-class IdentityPropagator:
+# ---------------------------------------------------------------- the operators
+# NamedTuples of arrays, so K_Grids.lin is a pytree the jitted steppers take as an argument.
+# An empty NamedTuple is falsy: never test kgrid.lin for truthiness.
+
+class IdentityOperator(NamedTuple):
     # L = 0
-    hoistable = False
+
+    @property
+    def hoistable(self):
+        return False
 
     def scaled(self, factor):
         return self
@@ -98,16 +111,21 @@ class IdentityPropagator:
     def apply_L(self, arr):
         return jnp.zeros_like(arr)
 
-class DiagonalPropagator:
-    # L diagonal in fields and k: everything is elementwise.
-    hoistable = False     # see the header: nothing to gain, and it keeps the FD-z/2D graph
+    def dense(self):
+        raise ValueError("this kgrid carries no linear operator (the identity backend)")
 
-    def __init__(self, L):
-        self.L = L
+class DiagonalOperator(NamedTuple):
+    # L diagonal in fields and k: everything is elementwise.
+    L: jnp.ndarray          # (nfields-or-1, nz-or-1, nkx, nky)
+
+    @property
+    def hoistable(self):
+        # see the header: nothing to gain, and it keeps the FD-z/2D graph
+        return False
 
     def scaled(self, factor):
         # propagator of factor*L (LSRK pre-scales by dt: see lsrk_advance)
-        return DiagonalPropagator(self.L*factor)
+        return DiagonalOperator(self.L*factor)
 
     def exp_op(self, tau):
         return DiagonalExp(jnp.exp(self.L*tau))
@@ -121,22 +139,32 @@ class DiagonalPropagator:
     def apply_L(self, arr):
         return self.L*arr
 
-class Putzer2Propagator:
+    def dense(self):
+        if self.L.shape[0] not in (1, 2):
+            raise ValueError(f"a diagonal operator with leading axis {self.L.shape[0]} is "
+                             f"not a 2x2 L")
+        d0, d1 = (self.L[0], self.L[0]) if self.L.shape[0] == 1 else (self.L[0], self.L[1])
+        zero = jnp.zeros_like(d0)
+        return jnp.stack([jnp.stack([d0, zero]), jnp.stack([zero, d1])])
+
+class Putzer2Operator(NamedTuple):
     # nfields=2: exp(L*tau) = e^(m*tau)[cosh(s*tau) I + (sinh(s*tau)/s)(L - m I)] with
     # m = tr L/2 and s^2 = m^2 - det L (Putzer/Sylvester).
-    # m and s = sqrt(s^2) are precomputed at setup.
+    # m and s = sqrt(s^2) are precomputed at setup (putzer2_precompute).
     # all of the arithmetic is complex (waves)
-    hoistable = True      # the per-stage coefficient evaluation is what hoisting removes
+    L: jnp.ndarray          # (2, 2, nz-or-1, nkx, nky)
+    m: jnp.ndarray          # tr L / 2
+    s: jnp.ndarray          # sqrt((tr L/2)^2 - det L)
 
-    def __init__(self, L, m, s):
-        self.L = L
-        self.m = m
-        self.s = s
+    @property
+    def hoistable(self):
+        # the per-stage coefficient evaluation is what hoisting removes
+        return True
 
     def scaled(self, factor):
         # L -> factor*L scales the trace and s by factor (cosh(s*tau) and sinh(s*tau)/s are
         # even in s, so the sign the sqrt branch picks does not matter)
-        return Putzer2Propagator(self.L*factor, self.m*factor, self.s*factor)
+        return Putzer2Operator(self.L*factor, self.m*factor, self.s*factor)
 
     def _coeffs(self, tau):
         # (cosh(z), tau*sinh(z)/z) at z = s*tau, from w = exp(z): cosh = (w + 1/w)/2 and
@@ -187,31 +215,32 @@ class Putzer2Propagator:
         return jnp.stack([self.L[0,0]*arr[0] + self.L[0,1]*arr[1],
                           self.L[1,0]*arr[0] + self.L[1,1]*arr[1]])
 
+    def dense(self):
+        return self.L
+
 class SeparableL(NamedTuple):
     # nfields=2 with L = d*I + i*kz*sigma_x, d = dperp(k_perp) + dz(kz); all three entries
     # real. A recipe's linear_matrix_func may return this instead of a dense array.
+    # exp(L*tau) = exp(dperp*tau)*exp(dz*tau)*[cos(kz*tau) I + i sin(kz*tau) sigma_x] and
+    # (I - a*L)^-1 = [(1-a*d) I + i*a*kz*sigma_x]/((1-a*d)^2 + (a*kz)^2): every per-stage
+    # array is (nkx,nky) or (nz,1,1), never full-grid.
     dperp: jnp.ndarray      # (nkx, nky)
     dz: jnp.ndarray         # (nz, 1, 1)
     kz: jnp.ndarray         # (nz, 1, 1)
 
-class SeparablePropagator:
-    # exp(L*tau) = exp(dperp*tau)*exp(dz*tau)*[cos(kz*tau) I + i sin(kz*tau) sigma_x] and
-    # (I - a*L)^-1 = [(1-a*d) I + i*a*kz*sigma_x]/((1-a*d)^2 + (a*kz)^2): every per-stage
-    # array is (nkx,nky) or (nz,1,1), never full-grid.
-    hoistable = True      # see the header: the per-stage coefficient evaluation is the cost
-
-    def __init__(self, sep):
-        self.sep = sep
+    @property
+    def hoistable(self):
+        # see the header: the per-stage coefficient evaluation is the cost
+        return True
 
     def scaled(self, factor):
         # propagator of factor*L: d and kz both scale by factor
-        return SeparablePropagator(SeparableL(self.sep.dperp*factor, self.sep.dz*factor,
-                                              self.sep.kz*factor))
+        return SeparableL(self.dperp*factor, self.dz*factor, self.kz*factor)
 
     def exp_op(self, tau):
-        ez = jnp.exp(self.sep.dz*tau)
-        theta = self.sep.kz*tau
-        return SeparableExp(P=jnp.exp(self.sep.dperp*tau),
+        ez = jnp.exp(self.dz*tau)
+        theta = self.kz*tau
+        return SeparableExp(P=jnp.exp(self.dperp*tau),
                             c=ez*jnp.cos(theta), s=ez*jnp.sin(theta))
 
     def apply_exp(self, arr, tau):
@@ -220,45 +249,22 @@ class SeparablePropagator:
     def solve_shifted(self, arr, a):
         # d <= 0, so for a > 0 the denominator is >= 1: this backend has no pole (unlike
         # putzer2's det(I - a*L); see its solve_shifted)
-        w = 1.0 - a*(self.sep.dperp + self.sep.dz)
-        akz = a*self.sep.kz
+        w = 1.0 - a*(self.dperp + self.dz)
+        akz = a*self.kz
         den = w*w + akz*akz
         return jnp.stack([(w*arr[0] + _mul_i(akz*arr[1]))/den,
                           (_mul_i(akz*arr[0]) + w*arr[1])/den])
 
     def apply_L(self, arr):
-        d = self.sep.dperp + self.sep.dz
-        return jnp.stack([d*arr[0] + _mul_i(self.sep.kz*arr[1]),
-                          _mul_i(self.sep.kz*arr[0]) + d*arr[1]])
+        d = self.dperp + self.dz
+        return jnp.stack([d*arr[0] + _mul_i(self.kz*arr[1]),
+                          _mul_i(self.kz*arr[0]) + d*arr[1]])
 
-def get_propagator(kgrid, params):
-    if kgrid.lin_dperp is not None:
-        return SeparablePropagator(SeparableL(kgrid.lin_dperp, kgrid.lin_dz, kgrid.lin_kz))
-    L = kgrid.lin_L
-    if L is None:
-        return IdentityPropagator()
-    if L.ndim == 4:
-        return DiagonalPropagator(L)
-    return Putzer2Propagator(L, kgrid.lin_m, kgrid.lin_s)
-
-def dense_operator(kgrid):
-    # the (2, 2, nz-or-1, nkx, nky) L behind whatever backend the kgrid carries. Tests and
-    # validation only: it is 4 u and must never be formed inside a step.
-    if kgrid.lin_dperp is not None:
-        d = kgrid.lin_dperp + kgrid.lin_dz
-        off = jnp.broadcast_to(1j*kgrid.lin_kz, d.shape)
+    def dense(self):
+        d = self.dperp + self.dz
+        off = jnp.broadcast_to(1j*self.kz, d.shape)
         zero = jnp.zeros_like(off)
         return jnp.stack([jnp.stack([d + zero, off]), jnp.stack([off, d + zero])])
-    L = kgrid.lin_L
-    if L is None:
-        raise ValueError("this kgrid carries no linear operator (the identity backend)")
-    if L.ndim == 5:
-        return L
-    if L.shape[0] not in (1, 2):
-        raise ValueError(f"a diagonal operator with leading axis {L.shape[0]} is not a 2x2 L")
-    d0, d1 = (L[0], L[0]) if L.shape[0] == 1 else (L[0], L[1])
-    zero = jnp.zeros_like(d0)
-    return jnp.stack([jnp.stack([d0, zero]), jnp.stack([zero, d1])])
 
 def _mirror_k(arr, axis):
     # index k -> -k along a two-sided FFT axis (0 and Nyquist map to themselves)
@@ -315,7 +321,7 @@ def _check_hermitian_separable(sep, params):
             f"planes, i.e. kz must vanish there); max violation "
             f"{float(np.max(np.abs(_mirror_k(kz, 0) + kz))):.3e}")
 
-def _separable_fields(sep, params, nz_local, nkx, nky):
+def _separable_operator(sep, params, nz_local, nkx, nky):
     if params.nfields != 2:
         raise ValueError(f"{params.eqtype}: the separable backend needs nfields=2, got "
                          f"{params.nfields}")
@@ -329,15 +335,15 @@ def _separable_fields(sep, params, nz_local, nkx, nky):
         raise NotImplementedError(f"{params.eqtype}: a z-dependent linear operator is not "
                                   "supported by comm_backend='jax' yet")
     _check_hermitian_separable(sep, params)
-    return dict(lin_dperp=sep.dperp, lin_dz=sep.dz, lin_kz=sep.kz)
+    return sep
 
-def linear_fields(L, params):
-    # Validate a recipe's L and return the K_Grids entries it populates (grids.setup_kgrids
-    # is the only caller: the propagator arrays are kgrid entries, not a separate object).
+def build(L, params):
+    # Validate a recipe's L and return the operator it selects (grids.setup_kgrids is the
+    # only caller; the result is K_Grids.lin).
     nz_local = params.nz//params.size if params.spatial_dimensions == 3 else 1
     nkx, nky = params.nx, params.ny//2 + 1
     if isinstance(L, SeparableL):
-        return _separable_fields(L, params, nz_local, nkx, nky)
+        return _separable_operator(L, params, nz_local, nkx, nky)
     if L.ndim == 4:
         if L.shape[0] not in (1, params.nfields):
             raise ValueError(f"{params.eqtype}: diagonal linear operator has leading axis "
@@ -366,12 +372,11 @@ def linear_fields(L, params):
                                   "supported by comm_backend='jax' yet")
     _check_hermitian_compatible(L, params)
     if L.ndim == 4:
-        return dict(lin_L=L)
-    Lc, m, s = putzer2_precompute(L)
-    return dict(lin_L=Lc, lin_m=m, lin_s=s)
+        return DiagonalOperator(L)
+    return Putzer2Operator(*putzer2_precompute(L))
 
 def putzer2_precompute(L):
-    # (L, tr L/2, sqrt((tr L/2)^2 - det L)) at complex dtype: the arrays Putzer2Propagator
+    # (L, tr L/2, sqrt((tr L/2)^2 - det L)) at complex dtype: the arrays Putzer2Operator
     # takes. local import: physics sits above this module (physics -> grids -> propagators)
     from .physics.shared_physics import eig2_ms
     Lc = jnp.asarray(L).astype(jnp.result_type(jnp.asarray(L).dtype, jnp.complex64))

@@ -129,7 +129,7 @@ def test_stage_exp_ops_structure():
         # the diagonal backend (FD-z) is never hoisted
         params, kgrid = ctx()
         c.check("3dfd (diagonal L): propagator is not hoistable",
-                propagators.get_propagator(kgrid, params).hoistable is False)
+                kgrid.lin.hoistable is False)
         for schemestr in ("lsrk33", "lsrk54", "rk44"):
             stepper, scheme = get_scheme(schemestr)
             c.check(f"3dfd (diagonal L) {schemestr}: stage_exp_ops is None",
@@ -169,16 +169,16 @@ def test_stage_exp_ops_structure():
                     stage_exp_ops(kg_off, p_off, scheme, stepper, p_off.dt) is None)
         cases["3dfd (diagonal L)"] = (dict(), propagators.DiagonalExp)
         # the identity backend: an ExpOp with no arrays that applies as the identity
-        ident = propagators.IdentityPropagator().exp_op(0.3)
+        ident = propagators.IdentityOperator().exp_op(0.3)
         x = jnp.ones((2, 3))
-        c.check("IdentityPropagator.exp_op applies as the identity and holds no arrays",
+        c.check("IdentityOperator.exp_op applies as the identity and holds no arrays",
                 isinstance(ident, propagators.IdentityExp) and ident.apply(x) is x
                 and jax.tree.leaves(ident) == [])
         # a stepper's two exp_op forms agree with apply_exp bitwise (the contract the whole
         # hoist rests on): exp_op(tau).apply(arr) is apply_exp(arr, tau)
         for label, (geom, _) in cases.items():
             params, kgrid = ctx(**geom)
-            prop = propagators.get_propagator(kgrid, params).scaled(params.dt)
+            prop = kgrid.lin.scaled(params.dt)
             arr = make_state(params, ic=_ic).fields
             c.check(f"{label}: exp_op(tau).apply(arr) == apply_exp(arr, tau) bitwise",
                     np.array_equal(np.asarray(jax.jit(lambda a: prop.exp_op(0.4).apply(a))(arr)),

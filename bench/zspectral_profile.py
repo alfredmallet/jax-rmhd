@@ -30,7 +30,6 @@ from taranis import run as jrun
 from taranis.physics import equation_registry, construct_rhs
 from taranis.physics import rmhd
 from taranis.physics.shared_physics import gradk
-from taranis.propagators import get_propagator
 from taranis.timestepping import get_scheme
 
 L = 2 * np.pi
@@ -124,7 +123,7 @@ def _pieces_ms(p, kg, state):
     # linear propagator: one apply_exp on the field stack, as an lsrk stage does (tau is
     # the stage's gamma*dt, a traced scalar there because the coefficients are scanned)
     def _exp(f, k, tau):
-        return get_propagator(k, p).scaled(DT).apply_exp(f, tau)
+        return k.lin.scaled(DT).apply_exp(f, tau)
     out["propagator apply_exp"] = _median_ms(jax.jit(_exp), fields, kg, jnp.float64(0.5))
     return out
 
@@ -137,7 +136,7 @@ def _swap_propagator(kg, p, kind):
     # mode a wave-like off-diagonal it does not really have.
     from taranis import propagators
     diss, hyper = rmhd._diss_hyper(p)
-    # z extent nz in BOTH modes (linear_fields allows zdim 1 or nz_local), so the
+    # z extent nz in BOTH modes (propagators.build allows zdim 1 or nz_local), so the
     # propagator does exactly the same arithmetic in the two rows and only the transforms
     # differ. Production finite-difference-z L is z-broadcast (zdim 1), so the "fd" rows
     # here sit slightly above the production fd step.
@@ -153,9 +152,7 @@ def _swap_propagator(kg, p, kind):
         off = jnp.broadcast_to(1j * kx, dphi.shape)
         L = jnp.stack([jnp.stack([dphi + 0j, off]), jnp.stack([off, dpsi + 0j])])
     dtype = _precision.ctype if jnp.iscomplexobj(L) else _precision.ftype
-    return kg._replace(lin_L=None, lin_m=None, lin_s=None, lin_dperp=None, lin_dz=None,
-                       lin_kz=None)._replace(
-        **propagators.linear_fields(L.astype(dtype), p))
+    return kg._replace(lin=propagators.build(L.astype(dtype), p))
 
 
 def _ablation_ms(p, kg, state):
@@ -167,7 +164,7 @@ def _ablation_ms(p, kg, state):
     # avals, so without it a monkeypatched propagator is silently ignored and every
     # variant re-reports the baseline.
     from taranis import propagators
-    P = propagators.Putzer2Propagator
+    P = propagators.Putzer2Operator
     orig_coeffs, orig_apply = P._coeffs, P.apply_exp
 
     def no_transcendental(self, tau):        # drop the putzer2 coefficient evaluation

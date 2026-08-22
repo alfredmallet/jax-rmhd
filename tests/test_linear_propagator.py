@@ -20,23 +20,31 @@
 #      (m, s^2, tau) covering both sides of the Taylor cutoff and |Re(s*tau)| up to the
 #      overflow limit, plus the cutoff neighbourhood against an accurate complex128
 #      reference (the w-form's cancellation is what sets the cutoff).
+#   8. the K_Grids.lin slot: its pytree leaves are exactly the operator arrays the recipe's
+#      L defines, for all four backends; the operator rides through jax.jit as an argument
+#      and applies bitwise identically there; and a recipe with linear_matrix_func=None
+#      gets an IdentityOperator.
 # The eqpars migration of old params.json records is tested in tests/test_params.py
 # (test_legacy_toplevel_diss_hyper_folds_into_eqpars), with the rest of the record tests.
 #
 # Dual precision: every test runs in BOTH sessions with precision-dependent tolerances
 # (no pytest.skip -- fp32 is the interesting case for the Taylor branch).
 # pytest: `pytest tests/test_linear_propagator.py`. Script: `python tests/...`.
-from _rmhd_testing import bootstrap, checks, ctx, fresh_params
+from _rmhd_testing import bootstrap, checks, ctx, fresh_params, mpi_size
 
 bootstrap()
 
+import contextlib
+import math
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.linalg
 
 import taranis as jr
 from taranis import _precision, propagators
-from taranis.physics import rmhd
+from taranis.physics import EquationRecipe, equation_registry, rmhd
 
 
 def _fp64():
@@ -55,7 +63,7 @@ def _batch(mats):
 
 
 def _putzer(mats):
-    return propagators.Putzer2Propagator(*propagators.putzer2_precompute(_batch(mats)))
+    return propagators.Putzer2Operator(*propagators.putzer2_precompute(_batch(mats)))
 
 
 def _columns(prop, n, tau):
@@ -145,8 +153,8 @@ def test_putzer2_of_a_rotated_diagonal_system_matches_the_diagonal_backend():
     L_rot = np.einsum("ij,jn,kj->ikn", R, lam, R)          # R diag(lam) R^T, per mode
     u0 = rng.normal(size=(2, n)) + 1j*rng.normal(size=(2, n))
 
-    diag = propagators.DiagonalPropagator(jnp.asarray(lam))
-    rot = propagators.Putzer2Propagator(*propagators.putzer2_precompute(jnp.asarray(L_rot)))
+    diag = propagators.DiagonalOperator(jnp.asarray(lam))
+    rot = propagators.Putzer2Operator(*propagators.putzer2_precompute(jnp.asarray(L_rot)))
     tau, nstep = 0.13, 7
     u_d = jnp.asarray(np.einsum("ji,jn->in", R, u0))       # R^T u0: the diagonal basis
     u_r = jnp.asarray(u0)
@@ -169,8 +177,8 @@ def test_solve_shifted_inverts_the_shifted_operator():
     Ld = jnp.asarray(-rng.uniform(0.1, 5.0, size=(2, n)))
     mats = [rng.normal(size=(2, 2)) + 1j*rng.normal(size=(2, 2)) for _ in range(n)]
     L2 = _batch(mats)
-    diag = propagators.DiagonalPropagator(Ld)
-    put = propagators.Putzer2Propagator(*propagators.putzer2_precompute(L2))
+    diag = propagators.DiagonalOperator(Ld)
+    put = propagators.Putzer2Operator(*propagators.putzer2_precompute(L2))
     with checks() as c:
         for a in (0.01, 0.5, 3.0):
             got = diag.solve_shifted(arr, a)
@@ -194,7 +202,7 @@ def test_scaled_matches_rescaling_tau():
     rng = np.random.default_rng(9)
     n = 12
     arr = jnp.asarray(rng.normal(size=(2, n)) + 1j*rng.normal(size=(2, n)))
-    diag = propagators.DiagonalPropagator(jnp.asarray(-rng.uniform(0.0, 3.0, size=(2, n))))
+    diag = propagators.DiagonalOperator(jnp.asarray(-rng.uniform(0.0, 3.0, size=(2, n))))
     put = _putzer([rng.normal(size=(2, 2)) for _ in range(n)])
     dt, gamma = 0.021, 0.37
     with checks() as c:
@@ -210,23 +218,23 @@ def test_rmhd_uses_the_diagonal_backend_with_eqpars_dissipation():
     # setup_kgrids builds L from the recipe; RMHD's is the old hdiss array, and the
     # hdiss field itself is gone (the steppers only see the hook now).
     params, kgrid = ctx(dims=2, diss=(0.01, 0.02), hyper=2)
-    prop = propagators.get_propagator(kgrid, params)
-    # dtype=ftype: kgrid.lin_L is built at FIELD precision (grids/rmhd pin it), so the
+    prop = kgrid.lin
+    # dtype=ftype: kgrid.lin.L is built at FIELD precision (grids/rmhd pin it), so the
     # reference has to be too -- a bare jnp.array is a strong float64 under x64.
     expected = -jnp.array((0.01, 0.02), dtype=_precision.ftype).reshape(-1, 1, 1, 1)*kgrid.ksq**2
     arr = jnp.ones((params.nfields, 1, params.nx, params.ny//2 + 1),
                    dtype=jnp.result_type(float, complex))
     with checks() as c:
         c.check("RMHD gets the diagonal backend",
-                isinstance(prop, propagators.DiagonalPropagator))
-        c.check("kgrid.lin_L is -diss*ksq**hyper",
-                bool(jnp.array_equal(kgrid.lin_L, expected)))
-        c.check("putzer2 precomputes are absent for a diagonal operator",
-                kgrid.lin_m is None and kgrid.lin_s is None)
+                isinstance(prop, propagators.DiagonalOperator))
+        c.check("kgrid.lin.L is -diss*ksq**hyper",
+                bool(jnp.array_equal(kgrid.lin.L, expected)))
+        c.check("a diagonal operator carries L and nothing else",
+                kgrid.lin._fields == ("L",))
         c.check("kgrid.hdiss is gone", not hasattr(kgrid, "hdiss"))
         c.check("apply_exp is exp(L*tau)*arr",
                 bool(jnp.array_equal(prop.apply_exp(arr, 0.25),
-                                     jnp.exp(kgrid.lin_L*0.25)*arr)))
+                                     jnp.exp(kgrid.lin.L*0.25)*arr)))
 
 
 def test_setup_rejects_operators_that_break_reality_or_shape():
@@ -241,7 +249,7 @@ def test_setup_rejects_operators_that_break_reality_or_shape():
     putzer_wrong_nfields = jnp.zeros((2, 2, 1, nkx, nky))
     with checks() as c:
         try:
-            propagators.linear_fields(good, params)
+            propagators.build(good, params)
             err = None
         except ValueError as e:
             err = str(e)
@@ -249,7 +257,7 @@ def test_setup_rejects_operators_that_break_reality_or_shape():
         for name, L in (("a non-hermitian-compatible ky=0 row", bad),
                         ("a leading axis that is neither 1 nor nfields", wrong_shape)):
             try:
-                propagators.linear_fields(L, params)
+                propagators.build(L, params)
                 err = None
             except ValueError as e:
                 err = str(e)
@@ -257,15 +265,149 @@ def test_setup_rejects_operators_that_break_reality_or_shape():
         # nfields=2 IS satisfied by RMHD, so the putzer2 shape is accepted here: check the
         # complementary failure, a 3-d operator that matches no backend
         try:
-            propagators.linear_fields(jnp.zeros((nkx, nky)), params)
+            propagators.build(jnp.zeros((nkx, nky)), params)
             err = None
         except ValueError as e:
             err = str(e)
         c.check("setup rejects an operator matching no backend", err is not None)
+        put = propagators.build(putzer_wrong_nfields, params)
         c.check("a (2,2,1,nkx,nky) operator is accepted for nfields=2 and precomputed",
-                set(propagators.linear_fields(putzer_wrong_nfields, params))
-                == {"lin_L", "lin_m", "lin_s"})
+                isinstance(put, propagators.Putzer2Operator)
+                and put._fields == ("L", "m", "s")
+                and all(a is not None for a in put))
 
+
+
+# ---------------------------------------------------------------- the K_Grids.lin slot
+# The four backends, as fresh_params overrides. z_spectral is size == 1 only.
+_ZS = dict(z_spectral=True, nz=8)
+
+
+def _lin_backends():
+    b = [("2D", dict(dims=2), propagators.DiagonalOperator),
+         ("FD-z", {}, propagators.DiagonalOperator)]
+    if mpi_size() == 1:
+        b.append(("z_spectral nu == eta", dict(_ZS), propagators.SeparableL))
+        b.append(("z_spectral nu != eta", dict(_ZS, diss=(1e-4, 2e-4)),
+                  propagators.Putzer2Operator))
+    return b
+
+
+def _expected_leaves(kgrid, params):
+    """The operator arrays rebuilt from the recipe's L, cast as grids casts it."""
+    L = rmhd.linear_matrix(kgrid, params)
+    if isinstance(L, propagators.SeparableL):
+        return [a.astype(_precision.ftype) for a in L]
+    L = L.astype(_precision.ctype if jnp.iscomplexobj(L) else _precision.ftype)
+    if L.ndim == 4:
+        return [L]
+    return list(propagators.putzer2_precompute(L))
+
+
+def test_kgrid_lin_leaves_are_the_operator_arrays():
+    with checks() as c:
+        for label, kw, kind in _lin_backends():
+            params = fresh_params(**kw)
+            kgrid = jr.setup_kgrids(params)
+            leaves = jax.tree.leaves(kgrid.lin)
+            expected = _expected_leaves(kgrid, params)
+            c.check(f"{label}: kgrid.lin is a {kind.__name__}",
+                    isinstance(kgrid.lin, kind), f"got {type(kgrid.lin).__name__}")
+            c.check(f"{label}: kgrid.lin's leaves are the operator arrays, bitwise",
+                    len(leaves) == len(expected)
+                    and all(np.array_equal(np.asarray(a), np.asarray(b))
+                            for a, b in zip(leaves, expected)),
+                    f"{[np.shape(a) for a in leaves]} vs "
+                    f"{[np.shape(b) for b in expected]}")
+            c.check(f"{label}: the leaves carry the operator's dtypes",
+                    all(np.asarray(a).dtype == np.asarray(b).dtype
+                        for a, b in zip(leaves, expected)),
+                    f"{[np.asarray(a).dtype for a in leaves]}")
+
+
+def test_kgrid_lin_rides_through_jit():
+    # the operator is a pytree, so a jitted function may take the whole kgrid and call the
+    # propagator hook on it. Two things are asserted: going through the kgrid is bitwise
+    # the same as passing the bare operator (the pytree rides along unchanged), and the
+    # traced value matches the eager one -- bitwise on the elementwise backends, and to
+    # round-off on the separable one, whose complex sums XLA fuses differently from eager
+    # (a property of the arithmetic, measured identical for the pre-Phase-L wrapper).
+    rtol = 1e-13 if _fp64() else 1e-5
+    rng = np.random.default_rng(17)
+    ops = (("apply_exp", lambda op, a: op.apply_exp(a, 0.25)),
+           ("scaled(dt).apply_exp", lambda op, a: op.scaled(0.021).apply_exp(a, 0.25)),
+           ("solve_shifted", lambda op, a: op.solve_shifted(a, 0.3)),
+           ("apply_L", lambda op, a: op.apply_L(a)))
+    with checks() as c:
+        for label, kw, kind in _lin_backends():
+            params = fresh_params(**kw)
+            kgrid = jr.setup_kgrids(params)
+            nz = params.nz if params.spatial_dimensions == 3 else 1
+            shape = (params.nfields, nz, params.nx, params.ny//2 + 1)
+            arr = jnp.asarray(rng.normal(size=shape) + 1j*rng.normal(size=shape),
+                              dtype=_precision.ctype)
+            exact = kind is not propagators.SeparableL
+            for name, fn in ops:
+                eager = np.asarray(fn(kgrid.lin, arr))
+                via_kgrid = np.asarray(jax.jit(lambda kg, a: fn(kg.lin, a))(kgrid, arr))
+                via_op = np.asarray(jax.jit(fn)(kgrid.lin, arr))
+                c.check(f"{label}: jitted through the kgrid == jitted on the bare "
+                        f"operator, {name}, bitwise", np.array_equal(via_kgrid, via_op),
+                        f"max diff {float(np.max(np.abs(via_kgrid - via_op))):.3e}")
+                rel = (float(np.max(np.abs(via_kgrid - eager)))
+                       / max(1e-300, float(np.max(np.abs(eager)))))
+                c.check(f"{label}: jitted kgrid.lin.{name} == eager"
+                        f"{' bitwise' if exact else ' to round-off'}",
+                        np.array_equal(via_kgrid, eager) if exact else rel < rtol,
+                        f"rel {rel:.3e}")
+
+
+@contextlib.contextmanager
+def _registered(name, recipe):
+    """Add a test-only entry to equation_registry for the duration of a test."""
+    equation_registry[name] = recipe
+    try:
+        yield
+    finally:
+        equation_registry.pop(name, None)
+
+
+def _noop_term(state, grads, kgrid, params, halo=None):
+    return jnp.zeros_like(state.fields)
+
+
+_NO_L_RECIPE = EquationRecipe(set_timestep_func=lambda grads, params: params.dt,
+                              term_funcs=(_noop_term,),
+                              grad_func=lambda state, kgrid, params: state.fields,
+                              nfields=1, linear_matrix_func=None)
+
+
+def test_a_recipe_without_a_linear_matrix_gets_the_identity_operator():
+    with _registered("NOLINEAR", _NO_L_RECIPE), checks() as c:
+        params = jr.Parameters(nx=8, ny=8, Lx=2*math.pi, Ly=2*math.pi, cfl_safety=0.5,
+                               dt=0.01, adaptive_timestep=False, dims=2,
+                               eqtype="NOLINEAR")
+        kgrid = jr.setup_kgrids(params)
+        arr = jnp.ones((1, 1, params.nx, params.ny//2 + 1),
+                       dtype=jnp.result_type(float, complex))
+        c.check("kgrid.lin is an IdentityOperator holding no arrays",
+                isinstance(kgrid.lin, propagators.IdentityOperator)
+                and jax.tree.leaves(kgrid.lin) == [])
+        c.check("it is not hoistable", kgrid.lin.hoistable is False)
+        c.check("scaled returns the same operator", kgrid.lin.scaled(0.5) is kgrid.lin)
+        c.check("apply_exp and solve_shifted are the identity",
+                kgrid.lin.apply_exp(arr, 0.25) is arr
+                and kgrid.lin.solve_shifted(arr, 0.25) is arr)
+        c.check("exp_op applies as the identity",
+                kgrid.lin.exp_op(0.25).apply(arr) is arr)
+        c.check("apply_L is zero",
+                bool(jnp.array_equal(kgrid.lin.apply_L(arr), jnp.zeros_like(arr))))
+        try:
+            kgrid.lin.dense()
+            err = None
+        except ValueError as e:
+            err = str(e)
+        c.check("dense() raises for the identity backend", err is not None, f"{err!r}")
 
 # ---------------------------------------------------------------- coefficient evaluation
 # The reference for the two tests below: the previous _coeffs, verbatim, with the cutoffs
@@ -349,7 +491,7 @@ def test_coeffs_match_the_previous_sqrt_cosh_sinh_form():
         for tau in (1.0, 0.017, 43.0):
             s = jnp.asarray(z/tau, dtype=_precision.ctype)
             s2 = jnp.asarray((z/tau)**2, dtype=_precision.ctype)
-            prop = propagators.Putzer2Propagator(None, None, s)
+            prop = propagators.Putzer2Operator(None, None, s)
             got_c, got_s = prop._coeffs(tau)
             ref_c, ref_s = _coeffs_old(s2, tau)
             # d(cosh z)/dz = sinh z and d(tau*sinh(z)/z)/dz ~ tau*cosh(z)/z, both bounded
@@ -382,7 +524,7 @@ def test_coeffs_at_the_taylor_cutoff_match_an_accurate_reference():
         sides = {}
         for side, frac in (("Taylor side", 0.999), ("w = exp(z) side", 1.001)):
             s = jnp.asarray(np.sqrt(frac)*zb*np.exp(1j*phases)/tau, dtype=_precision.ctype)
-            got_c, got_s = propagators.Putzer2Propagator(None, None, s)._coeffs(tau)
+            got_c, got_s = propagators.Putzer2Operator(None, None, s)._coeffs(tau)
             sides[side] = (got_c, got_s)
             # reference at the z the kernel really evaluates at: s is stored at field
             # precision, so this measures the evaluation, not the input quantization
@@ -423,7 +565,7 @@ def test_exp_op_matches_the_previous_evaluation():
                           np.stack([(s2 - a*a)/b, m - a])]).astype(complex)
             Lj = jnp.asarray(L, dtype=_precision.ctype)
             mj = jnp.asarray(m, dtype=_precision.ctype)
-            prop = propagators.Putzer2Propagator(Lj, mj,
+            prop = propagators.Putzer2Operator(Lj, mj,
                                                  jnp.asarray(z/tau, dtype=_precision.ctype))
             got = prop.exp_op(tau)
             ref = _exp_entries_old(Lj, mj, jnp.asarray(s2, dtype=_precision.ctype), tau)

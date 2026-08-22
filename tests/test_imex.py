@@ -250,7 +250,7 @@ def _mfg_N(fields, t, kgrid, params):
     Fh = _mfg_F(params)
     F2h = grids.fft(grids.ifft(Fh, params)**2, params)
     a = 1.0 + 0.5 * jnp.sin(t)
-    src = (0.5 * jnp.cos(t)) * Fh - kgrid.lin_L * (a * Fh) - (a * a) * F2h
+    src = (0.5 * jnp.cos(t)) * Fh - kgrid.lin.L * (a * Fh) - (a * a) * F2h
     return grids.fft(grids.ifft(fields, params)**2, params) + src
 
 
@@ -356,7 +356,7 @@ def test_low_storage_matches_dense_tableau():
         for name in IMEX_SCHEMES:
             _, sch = get_scheme(name)
             end = _toy_run(params, kgrid, u0, nsteps, name)
-            ref, _ = _dense_imex_steps(u0, 0.0, dt, nsteps, kgrid.lin_L, _mfg_N, sch,
+            ref, _ = _dense_imex_steps(u0, 0.0, dt, nsteps, kgrid.lin.L, _mfg_N, sch,
                                        kgrid, params)
             err = float(jnp.max(jnp.abs(end.fields - ref)) / jnp.max(jnp.abs(ref)))
             c.check(f"{name}: the {sch.registers}-register [{sch.structure}] stepper == the "

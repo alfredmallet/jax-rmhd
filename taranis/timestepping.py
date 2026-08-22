@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple,Tuple
-from .propagators import get_propagator, stack_exp_ops
+from .propagators import stack_exp_ops
 from . import _precision
 
 # Hoisted exp(L*tau): every IF stepper takes exp_ops=None. When run.py knows dt is frozen
@@ -19,7 +19,7 @@ def stage_exp_ops(kgrid, params, scheme, stepper, dt):
     # the step scan, which is the whole point.
     if not params.hoist_propagator:
         return None
-    prop = get_propagator(kgrid, params)
+    prop = kgrid.lin
     if not prop.hoistable:    # diagonal / identity: nothing to gain (propagators.py header)
         return None
     if stepper is lsrk_advance:
@@ -48,7 +48,7 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None,
     # since the same fixed L commutes with itself. exp_ops: (exp(L*dt/2), exp(L*dt))
     # precomputed per block by run.py (stage_exp_ops), else formed here
     if exp_ops is None:
-        prop = get_propagator(kgrid,params)
+        prop = kgrid.lin
         e_half, e_full = prop.exp_op(dt/2), prop.exp_op(dt)
     else:
         e_half, e_full = exp_ops
@@ -89,7 +89,7 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
     # forms it inside each stage -- with lsrk_scan that is inside the stage scan, where
     # gamma is a scanned value, i.e. the memory-light legacy graph XLA cannot hoist
     # (run.py relies on this for hoist_propagator=False, the knob for memory-bound grids).
-    prop = None if exp_ops is not None else get_propagator(kgrid,params).scaled(dt)
+    prop = None if exp_ops is not None else kgrid.lin.scaled(dt)
 
     if params.lsrk_scan:
         return _lsrk_scan_stages(state, kgrid, params, rhs, scheme, init_rhs, dt, prop, exp_ops)
@@ -203,7 +203,7 @@ def _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override):
 def imex2r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None, exp_ops=None):
     # exp_ops: accepted for the one-contract stepper signature, unused (no exponential here)
     init_rhs, dt = _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override)
-    prop = get_propagator(kgrid,params)
+    prop = kgrid.lin
     a_im, a_ex, b, c, s = _scheme_entries(scheme)
     x = state.fields
     y = init_rhs                    # g(u_1), u_1 = x_n since c_1 = 0
@@ -271,7 +271,7 @@ def _imex2r_scan_stages(state, kgrid, params, rhs, prop, scheme, dt, x, y, z):
 def imex3r_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=None, exp_ops=None):
     # exp_ops: accepted for the one-contract stepper signature, unused (no exponential here)
     init_rhs, dt = _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override)
-    prop = get_propagator(kgrid,params)
+    prop = kgrid.lin
     a_im, a_ex, b, c, s = _scheme_entries(scheme)
     y = state.fields                # x_n, held for the pending stage combination
     z_im = prop.apply_L(y)          # a^IM_{1,1} = 0: the stage-1 solve is the identity

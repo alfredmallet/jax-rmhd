@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import jax.numpy.fft as ft
 from jax.sharding import PartitionSpec as P
@@ -20,17 +21,10 @@ class K_Grids(NamedTuple):
     # parallel wavenumbers, shape (nz,1,1) so it broadcasts onto a (nz,nkx,nky) field.
     # built iff z_spectral=True
     kz: Optional[jnp.ndarray] = None
-    # linear-propagator entries (taranis.propagators): the equation set's k-local linear
-    # operator L and, for the putzer2 backend, its precomputed half-trace and the square
-    # root of its discriminant.
-    lin_L: Optional[jnp.ndarray] = None    # (nfields, nz-or-1, nkx, nky) or (2, 2, nz-or-1, nkx, nky)
-    lin_m: Optional[jnp.ndarray] = None    # putzer2 only: tr L / 2
-    lin_s: Optional[jnp.ndarray] = None    # putzer2 only: sqrt((tr L/2)^2 - det L)
-    # separable backend (propagators.SeparableL): L = d*I + i*kz*sigma_x with real
-    # d = dperp(k_perp) + dz(kz). Populated instead of lin_L/lin_m/lin_s, never alongside.
-    lin_dperp: Optional[jnp.ndarray] = None   # (nkx, nky)
-    lin_dz: Optional[jnp.ndarray] = None      # (nz, 1, 1)
-    lin_kz: Optional[jnp.ndarray] = None      # (nz, 1, 1)
+    # the equation set's k-local linear operator, as one of the taranis.propagators operator
+    # pytrees (IdentityOperator / DiagonalOperator / Putzer2Operator / SeparableL). Always
+    # populated by setup_kgrids; steppers use its methods, never its arrays.
+    lin: tuple = propagators.IdentityOperator()
     # forcing-only entries
     fmask: Optional[jnp.ndarray] = None
     z_envcos: Optional[jnp.ndarray] = None
@@ -106,33 +100,43 @@ def setup_kgrids(params):
     return kgrid
 
 def _attach_linear_operator(kgrid, params):
-    # builds the linear operator L (dt f = L f + N(f)) plus the propagator precomputes
+    # builds the linear operator L (dt f = L f + N(f)) and the propagator it selects
     from .physics import equation_registry   # local import: physics imports grids
     linear_matrix_func = equation_registry[params.eqtype].linear_matrix_func
     if linear_matrix_func is None:
-        return kgrid
+        return kgrid._replace(lin=propagators.IdentityOperator())
     L = linear_matrix_func(kgrid, params)
     if isinstance(L, propagators.SeparableL):
         # all three entries are real
         L = propagators.SeparableL(*(a.astype(_precision.ftype) for a in L))
     else:
         L = L.astype(_precision.ctype if jnp.iscomplexobj(L) else _precision.ftype)
-    # sets lin_L, and lin_m, lin_s or the separable entries as appropriate
-    return kgrid._replace(**propagators.linear_fields(L, params))
+    return kgrid._replace(lin=propagators.build(L, params))
 
 # K_Grids entries carrying a z axis (axis 0); everything else is perpendicular-only.
 _Z_KGRID_FIELDS = ("z_envcos", "z_envsin")
 
 def kgrid_specs(kgrid):
-    # shard_map in_specs for a K_Grids: z-envelopes z-sharded, all other entries replicated
-    return K_Grids(**{name: (None if val is None else
-                             (P(comms.Z_AXIS) if name in _Z_KGRID_FIELDS else P()))
-                      for name, val in zip(K_Grids._fields, kgrid)})
+    # shard_map in_specs for a K_Grids: z-envelopes z-sharded, every other entry -- the
+    # linear operator's leaves included -- replicated
+    def spec(name, val):
+        if name == "lin":
+            return jax.tree.map(lambda _: P(), val)
+        if val is None:
+            return None
+        return P(comms.Z_AXIS) if name in _Z_KGRID_FIELDS else P()
+    return K_Grids(**{name: spec(name, val) for name, val in zip(K_Grids._fields, kgrid)})
 
 def _kgrid_to_global(kgrid, params):
     # Process-local kgrid arrays -> global jax.Arrays matching kgrid_specs ("jax" backend).
-    return K_Grids(**{name: (None if val is None else
-                             comms.to_global(val, params, z_axis=0 if name in _Z_KGRID_FIELDS else None))
+    def to_global(name, val):
+        if name == "lin":
+            return jax.tree.map(lambda v: comms.to_global(v, params), val)
+        if val is None:
+            return None
+        return comms.to_global(val, params,
+                               z_axis=0 if name in _Z_KGRID_FIELDS else None)
+    return K_Grids(**{name: to_global(name, val)
                       for name, val in zip(K_Grids._fields, kgrid)})
 
 # forward/inverse transforms, unnormalized.
