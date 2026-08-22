@@ -524,7 +524,17 @@ on the separable backend eager vs jitted `apply_exp`/`solve_shifted` differ at ~
 (reproduced with the OLD class — XLA fusing complex sums), so the new jit test asserts
 round-off there and bitwise elsewhere; `webgpu/refvectors*.json` do not reproduce bitwise
 on this laptop (1-ulp differences in a pure numpy `fft_input` — recorded elsewhere; the
-browser self-test is fp32-tolerant). Review: pending.
+browser self-test is fp32-tolerant). Review (fresh Fable): **accepted** — every method
+compared against the base classes on all four backends, eager and traced, 0 mismatches;
+40 crafted bad inputs give identical exception type, message and raise order; pytree
+specs/leaf order verified; probe Δ = 0 on the spot-checked cases. Gate facts recorded:
+`test_hoist_propagator` cannot see an `exp_op` reassociation (hoisted and unhoisted share
+it) — the Phase-0 reference caught that mutation at ~1e-13 on the putzer2 configs and by
+histogram; the reference's separable configs have `dz ≡ 0` (no `z_diss_k`), so the
+separable `dz` arithmetic is NOT exercised by the gate — a coverage gap for a later
+reference addition (recorded at base via `git archive`), not this plan's. One narrative
+comment to strip (follow-up). Sweep list extended: `docs/performance.md:354`,
+`docs/numerics.md:392,394`, `webgpu/SPEC.md:93`.
 
 **Phase G** (`refactor/G`: `96a678b` + follow-up). fp64 253/23, fp32 230/46; 12/12 fields
 bitwise AND 12/12 histograms identical — **zero HLO movement**: XLA had already folded
