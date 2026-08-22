@@ -482,7 +482,23 @@ CLAUDE.md's `GRAD_CHUNK` "bitwise identical" is one ulp too strong in 3D (637/23
 elements at 1.1e-16 between chunk 1 and 2/4; 2D exact); under fp32, `t` is stored fp64
 but accumulates fp32-rounded `gamma*dt` increments in the IF steppers (0.059999998 after
 6×0.01) while imexcb3f reaches 0.06 exactly — `t` is a live comparator in the reference.
-Phase 0 review: pending.
+Phase 0 review (fresh Fable, same day): **accepted with one fix** — the HLO histogram regex
+(inherited from `bench/hlo_audit.py:119`) never matched XLA's `ROOT %name = ...` lines, so
+every computation's final instruction was uncounted (127/3040 on `fd_fixed_lsrk54`, both
+`while` loops among them; fusion count 104 vs real 110). The gate still bit on every
+mutation tried (a 1+1e-13 factor on `bracket`: 12/12 fields + histogram; `GRAD_CHUNK=2`:
+3D fields one ulp, 2D bitwise, histogram in all 12 — the pure-graph case IS caught). Fix +
+histogram-only regeneration landed on main before any merge (commit below). Also verified:
+restart rule correct on every entry path incl. the 4-fake-device jax backend and
+`forcing_power=0`; gate 6c keeps all ten checks per cell; no ownership/comment/skip
+violations. Sweep items from the review: `tests/test_particles_3d.py:849-852` and
+`plans/TESTPART_PLAN.md:517,594,1293` now describe the old refresh behaviour (the 3D gate
+could be widened to both settings like 6c); CLAUDE.md's `GRAD_CHUNK` sentence is true of
+`grad_fields`' output (`test_grad_memory` pins it) — it is the 3D stepped solution that is
+one ulp off. Pre-existing, outside the phase: `tests/test_backend_jax.py::
+test_same_seed_run_matches_serial_reference` fails under 4 forced host devices on this host
+(jax 0.10.0; identical on the unfixed tree) and `make test` skips every `multidev` test
+here because mpi4py imports — the jax backend is NOT covered by the local suite.
 
 (per-phase gate numbers, drift findings, the sweep, and what moved to `plans/old/`: below
 as they land)
