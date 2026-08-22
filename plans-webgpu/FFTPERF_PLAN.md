@@ -691,3 +691,9 @@ Phase 1 record; the 3D generate sweep and field-line view clean of validation er
 | 3D 256²×64 | 134,217,728 | 318975641 781519921 710674129 2467220641 1396472425 3371760281 1795061589 2403523413 | 4222161269 |
 
 The chunked page (`cc50ec4`) must reproduce every entry of this table.
+
+**Bitwise gate PASSED (2026-08-22):** the chunked page (`07ea844`, same laptop, same IC)
+reproduced all 32 lane digests and the four `hash_all` values exactly — compared by script
+against the table above, not by eye. Real-space gradients are bit-identical to the eight-lane
+chain on both pages at both grids. Timing gate pending (whole step and `gradient chain` vs
+the Phase 1 record).
