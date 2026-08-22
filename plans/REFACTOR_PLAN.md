@@ -529,7 +529,17 @@ browser self-test is fp32-tolerant). Review: pending.
 **Phase G** (`refactor/G`: `96a678b` + follow-up). fp64 253/23, fp32 230/46; 12/12 fields
 bitwise AND 12/12 histograms identical — **zero HLO movement**: XLA had already folded
 `add(x, broadcast(0))`, only pre-optimization StableHLO shrinks (6 lines per config with
-an inactive term). No sidecar regeneration needed. Review: pending.
+an inactive term). No sidecar regeneration needed. Follow-up `7604a99`: the three `Term`
+consumers (§6 amendment), with `test_z_stencils`' teeth re-proven by mutation at both
+precisions (×(1+1e-12) fp64 → 800/2304 differ; ×(1+1e-6) fp32 → 797/2304) and a guard so a
+no-op substitution can never pass again. Review (fresh Fable): **accepted** — every
+(eqtype, dims, z_spectral, forcing) sums the old nonzero set; predicates are exact
+negations of the old early returns; seven mutations each caught by a named test or the
+reference; the zero-opcode claim confirmed independently (optimized HLO 2457/2457, adds
+246/246 — XLA's simplifier folds `add(x, broadcast(0))`; pre-optimization StableHLO is where
+the 6 lines go). Two nits sent back as a one-line follow-up: `rmhd.halo_start` should read
+`not fd_linear_active(params)`; the proposed CLAUDE.md example for direct callers is
+`tests/test_forcing_smoke.py:125` / `tests/test_z_spectral.py:284`, not `_forcing_ez`.
 
 **Phase R** (`refactor/R`: `7f7c39c`). fp64 248/23, fp32 225/46 (base: 247/23 — exactly the
 one new test, identical skip list); reference fields + histograms unchanged; `params.json`
