@@ -359,6 +359,14 @@ Ownership amendment (2026-08-22, during G): consumers of `term_funcs` that nobod
 that `Term` breaks — `tests/test_z_stencils.py` (identity-matched `rmhd.FDLinearTerm`, went
 silently toothless), `bench/step_accounting.py` (`f.__name__`, `scoped(f)`) and the one
 line `bench/zspectral_profile.py:114` (non-overlapping with L's hunks) — are G's.
+During L: `webgpu/gen_refvectors3d.py:15,84` and `webgpu/gen_refvectors.py:72` (the deleted
+`get_propagator` / `lin_L`) are L's, in its branch; L's `bench/step_accounting.py` edits
+(lines 196–204, 253–254: the four deleted `*Propagator` monkeypatches and the
+`noexpform` lambda) are deferred to main AFTER the G merge, because G's follow-up edits
+the same file at 167/260. Neither bench nor webgpu generator is reached by `make test`
+or `ruff` — the §0.6 "benches pass unedited" clause was not enforceable by any gate and
+is amended to: every consumer outside `tests/` is listed and fixed by the phase that
+broke it, with a minimal run as evidence.
 
 Cross-phase interfaces, fixed now so nobody waits on anybody: G keeps `term_funcs` as the
 field name and bare callables valid (L's `test_imex.py` constructs recipes that way); L's
