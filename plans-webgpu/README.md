@@ -46,8 +46,9 @@ disagree, the file is right.
   buffer. Written 2026-08-12, **not started**. Item 7 of the audit.
 - **AUDIT_2026-08-12.md** — conciseness/duplication/efficiency audit of `webgpu/`. Items
   1–5 done the same day (render gate, dead code, staging pool, shared FFT row pair,
-  `Recorder` split); item 6 (twiddle table) is dead on the LOOPLAT evidence; item 7 is
-  VOLTEX_PLAN.md.
+  `Recorder` split); item 6 (twiddle table) was re-measured by FFTPERF_PLAN.md's ladder
+  (2026-08-21: 25–37% of the row kernels on the laptop, ~5% on the phone, ≤10% of a step)
+  and declined again; item 7 is VOLTEX_PLAN.md.
 
 ## Reverted — read before re-opening
 
