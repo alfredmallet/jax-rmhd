@@ -692,8 +692,10 @@ Phase 1 record; the 3D generate sweep and field-line view clean of validation er
 
 The chunked page (`cc50ec4`) must reproduce every entry of this table.
 
-**Bitwise gate PASSED (2026-08-22):** the chunked page (`07ea844`, same laptop, same IC)
-reproduced all 32 lane digests and the four `hash_all` values exactly — compared by script
-against the table above, not by eye. Real-space gradients are bit-identical to the eight-lane
-chain on both pages at both grids. Timing gate pending (whole step and `gradient chain` vs
-the Phase 1 record).
+**Bitwise gate — first after-run VOID (2026-08-22):** the records taken after `cc50ec4` was on
+`origin/main` matched the table entry for entry, but they carry the pre-2C page's signature
+(`bytes_per_step` 71,208,960 where the chunked page reports 77,549,568; the `chains`
+campaign still the two proxy cells with their note), so the browser had served the old
+scripts — a stale cache or a reload before the Pages deploy finished. A genuine after-run
+is one whose `whole` record says `bytes_per_step: 77549568` and whose `chains` record has
+the single `gradient chain` cell. Gate pending.
