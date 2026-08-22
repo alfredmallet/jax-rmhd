@@ -531,4 +531,16 @@ bitwise AND 12/12 histograms identical — **zero HLO movement**: XLA had alread
 `add(x, broadcast(0))`, only pre-optimization StableHLO shrinks (6 lines per config with
 an inactive term). No sidecar regeneration needed. Review: pending.
 
-(C, R, the merges, the sweep, and what moved to `plans/old/`: below as they land)
+**Phase R** (`refactor/R`: `7f7c39c`). fp64 248/23, fp32 225/46 (base: 247/23 — exactly the
+one new test, identical skip list); reference fields + histograms unchanged; `params.json`
+byte-identical to base apart from `_created`. Three raise-order deltas declared (nz%size and
+jax-needs-3D checked in both `Runtime.resolve` and `_validate_compat`; `z_spectral`
+rejections now after `init_backend`, reachable only at size>1 + jax; particles compat after
+`normalize_config`) — for the review. **Environment finding, affects every worktree:**
+`taranis` is pip-installed editable against the main tree, so SUBPROCESS and script-mode
+(`python tests/x.py`) imports inside a worktree resolve to `/Users/alfy/code/taranis`;
+`python -m pytest` from the worktree root is unaffected. R re-ran its subprocess-spawning
+tests with `PYTHONPATH=<worktree>` (green); the merge-step runs on main are authoritative
+for everyone. Review: pending.
+
+(C, the merges, the sweep, and what moved to `plans/old/`: below as they land)
