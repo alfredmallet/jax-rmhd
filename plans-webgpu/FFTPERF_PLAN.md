@@ -738,3 +738,19 @@ pairs.** One template, a per-page chunk size (a structural constant like `WGC`, 
 3D four one-pair chunks; 2D a single four-pair chunk, whose emitted `prepGrads` is the
 pre-2C kernel text byte for byte — so the 2D dump returns to 155/155 identical to `f83386e`
 and the 2D `prepGrads` pin needs no allowance. Memory win where a limit was met, no 2D cost.
+
+**Landed as `09d069e` (2026-08-22).** `prepGradsWGSL(C)` takes `C.gchunk`, an ordered pair
+list; `GRAD_CHUNKS_2D = [[0,1,2,3]]`, `GRAD_CHUNKS_3D = [[0],[1],[2],[3]]` in `physics.js`
+(structural constants, like `WGC`); buffers, windows, `encodeGrads`, the `gband` pipelines
+and both bench specs follow the page's list. A one-chunk page keeps the plain kernel name.
+Close-out review (fresh Fable): no BLOCKING, no MAJOR. Its one new instrument is the
+dispatch-log comparison — `solver.step(1)` recorded under the stub on the `f83386e` tree and
+on `09d069e`: the 2D logs are identical in every pipeline, extent and (buffer, offset, size)
+binding, and with `GRAD_CHUNKS_3D = [[0,1,2,3]]` the 3D dump and log reproduce `f83386e`
+too, so the template's whole-stack emission IS the pre-phase kernel on both pages. Gates:
+2D dump 155/155 and `cmp`-identical to the baseline; 3D dump `cmp`-identical to `cc50ec4`'s;
+every mutation red (let-order reversed, `vort` sign, `[[1,0,2,3]]`, a 2D two-chunk list, a
+3D page emitting the eight-lane kernel beside its pairs, windows of the wrong size,
+unrecorded and recorded lines inside `class Solver`/`buildShaders`, stepIO counts). Noted
+for the next change to a chunk list: `checkiso` leg 2b, `check2dspec` leg 3 and the bench
+specs assume the shipped lists (devtools README says so).
