@@ -730,3 +730,9 @@ fails it at 1024², where the saving (48 MB of ~190) meets no limit.** §9.3 rai
 options: 3D as landed + 2D back to one chunk of all four pairs (the pre-2C kernel text,
 through the same template — one template, a per-page chunk size like `WGC`); two-pair chunks
 on both pages (2D bytes +4.5%, ~+3%); keep as landed.
+
+**§9.3 decision (Alfred, 2026-08-22): 3D chunked as landed, 2D one chunk of all four
+pairs.** One template, a per-page chunk size (a structural constant like `WGC`, not a knob):
+3D four one-pair chunks; 2D a single four-pair chunk, whose emitted `prepGrads` is the
+pre-2C kernel text byte for byte — so the 2D dump returns to 155/155 identical to `f83386e`
+and the 2D `prepGrads` pin needs no allowance. Memory win where a limit was met, no 2D cost.
