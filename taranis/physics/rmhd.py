@@ -94,7 +94,7 @@ def set_timestep(grads,params):
 
 def halo_start(state,kgrid,params):
     # width must match what shared_physics.z_derivatives' stencil expects
-    if params.spatial_dimensions==2 or params.z_spectral:
+    if not fd_linear_active(params):
         return None
     return comms.halo_exchange(state.fields,params,width=2)
 

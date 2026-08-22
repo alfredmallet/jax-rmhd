@@ -27,10 +27,13 @@ selection is empty.
 
 **3. The predicates are the single source of truth.** `rmhd.fd_linear_active(params)` is
 `dims == 3 and not z_spectral`; `rmhd.forcing_active(params)` is `bool(params.forcing)`.
-`FDLinearTerm`/`ForcingTerm` keep their early `zeros_like` returns, now expressed through
-those predicates, because direct callers exist (`particles/fields.py::_forcing_ez`,
-`tests/test_forcing_modes.py`, `tests/test_z_spectral.py`). From the RHS they are never
-reached.
+`rmhd.halo_start` reads `fd_linear_active` too, so the mode test lives in exactly one
+place. `FDLinearTerm`/`ForcingTerm` keep their early `zeros_like` returns, now expressed
+through those predicates, because direct callers reach them:
+`tests/test_forcing_smoke.py:125` (`test_forcing_term_exact_noop_when_off`) and
+`tests/test_z_spectral.py:284` ("FDLinearTerm is exactly zero in z_spectral mode"). From
+the RHS they are never reached. (`particles/fields.py::_forcing_ez` does NOT reach
+`ForcingTerm`'s early return — it guards on `params.forcing` itself before calling.)
 
 Nothing else: `nfields`, the 5-positional-arg term contract, `halo`, `forcing_scale_func`
 and `halo_start_func` are untouched.
@@ -198,9 +201,11 @@ Architecture → "Parameters / physics registry":
   bare callable is accepted and means always active) and `construct_rhs` sums only the terms
   whose `active(params)` is true — plain python at TRACE time, `params` being static, so an
   inactive term never enters the graph; an empty selection is a `ValueError`. The predicates
-  are the single source of truth: `rmhd.fd_linear_active` (`dims==3 and not z_spectral`) and
-  `rmhd.forcing_active`; the term funcs keep their early `zeros_like` returns for direct
-  callers such as `particles/fields.py::_forcing_ez`."
+  are the single source of truth — `rmhd.fd_linear_active` (`dims==3 and not z_spectral`,
+  which `rmhd.halo_start` reads too) and `rmhd.forcing_active`; the term funcs keep their
+  early `zeros_like` returns for the direct callers that reach them
+  (`tests/test_forcing_smoke.py`'s `test_forcing_term_exact_noop_when_off`,
+  `tests/test_z_spectral.py`'s FDLinearTerm-is-zero check)."
 - The `grads` sentence. Today: "**`grads` is a TUPLE**, one real-space `(2,nz,nx,ny)` array
   per field in the equation set's `grad_func` order (RMHD: `gphi, gpsi, gvort, gjpar`),
   never a stacked `(nfields,2,…)` array — unpack it, never `.shape`/`grads[:2]` it."
