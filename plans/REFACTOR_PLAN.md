@@ -551,7 +551,15 @@ rejections now after `init_backend`, reachable only at size>1 + jax; particles c
 (`python tests/x.py`) imports inside a worktree resolve to `/Users/alfy/code/taranis`;
 `python -m pytest` from the worktree root is unaffected. R re-ran its subprocess-spawning
 tests with `PYTHONPATH=<worktree>` (green); the merge-step runs on main are authoritative
-for everyone. Review: pending.
+for everyone. Review (fresh Fable): **fixes required, small** — F1 a shared `"jax"`
+Runtime skipped `init_backend`'s `nz % ndev` check (nz=6 on 4 devices constructs, dies in
+`to_global`); F2 a dims=2 runtime reused for a 3D non-serial Parameters has no cart_comm
+(halo TypeError, allreduce identity → rank-local dt); F3 the `z_spectral` rejections ran
+after `init_backend`, changing the error shown and bringing up the mesh / `jax.distributed`
+for a refused config; F5/F6 two wrong sentences in the notes; F7 the §9.2 test asserted
+only the raising half. Everything else held: params.json byte-identical (3 configs vs a
+base archive), 104 property reads unchanged, identity hashing, the module-scope MPI rule,
+five mutations each caught. Fix-up: pending.
 
 **Phase C** (`refactor/C`: `c0df82a`). `run.py` 371 → 322 lines. fp64 247/23, fp32 224/46
 (identical counts and skip list to base); 12/12 fields bitwise, every histogram, instruction
