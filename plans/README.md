@@ -20,6 +20,14 @@ were corrected on the way out (see below).
 
 ## Live
 
+- **REFACTOR_PLAN.md** (written 2026-08-22) — the four behaviour-preserving structural
+  moves accepted from an outside refactoring assessment: transport out of
+  `Parameters.__init__` (R), one run-loop body over a uniform `(state, aux)` carry (C),
+  the linear operator as one typed pytree slot `kgrid.lin` (L), named `grads` and
+  statically filtered RHS terms (G) — plus the Phase-0 forced-restart fix and the 3D /
+  GDI / IMEX reference npz the gates need. §7 records what was rejected and why (hoist
+  unification, dropping `simulate`, ETDRK, config rewrite). Four opus agents in parallel
+  worktrees, every phase bitwise.
 - **GDI_PLAN.md** — roadmap from the current IF-dissipation-only solver to the 3D GDI
   equations (exact linear propagators, spectral-z, low-storage IMEX). Execution order
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
