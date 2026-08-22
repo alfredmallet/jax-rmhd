@@ -331,7 +331,7 @@ def test_kgrid_lin_rides_through_jit():
     # the same as passing the bare operator (the pytree rides along unchanged), and the
     # traced value matches the eager one -- bitwise on the elementwise backends, and to
     # round-off on the separable one, whose complex sums XLA fuses differently from eager
-    # (a property of the arithmetic, measured identical for the pre-Phase-L wrapper).
+    # op-by-op evaluation.
     rtol = 1e-13 if _fp64() else 1e-5
     rng = np.random.default_rng(17)
     ops = (("apply_exp", lambda op, a: op.apply_exp(a, 0.25)),

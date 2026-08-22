@@ -109,6 +109,25 @@ putzer2 gap the memory-light gate measures is therefore intact at the graph leve
   op-by-op evaluation, not a Phase-L effect. Test 2 asserts bitwise on the elementwise
   backends and round-off there, with the reason in the check line.
 
+## Which gate catches what (from the review's mutation pass)
+
+- **`tests/test_hoist_propagator.py` cannot see a reassociation inside `exp_op`.** Its
+  hoisted-vs-unhoisted cells compare two paths that both go through the SAME `exp_op`, so a
+  changed op order there moves both sides together and every cell stays green. The gate that
+  catches it is the Phase-0 reference: a mutated `exp_op` shows up as **374-494 elements at
+  ~1e-13** on the putzer2 configs of `tests/test_refactor_reference.py`. Anyone tempted to
+  treat the hoist test as the propagator-arithmetic gate should read that the other way
+  round.
+- **The reference's separable config carries no `z_diss_k`.** `sep_fixed_lsrk54` (the only
+  separable config in `tests/_gen_refactor_reference.py`) sets `diss=(1e-4, 1e-4), hyper=2`
+  and nothing else, so `rmhd.linear_matrix`'s `zdiss` defaults to 0 and `SeparableL.dz` is
+  exactly zero throughout it. The separable `dz` arithmetic — the `+ self.dz` in `apply_L` /
+  `solve_shifted` and the `exp(dz*tau)` prefactor — is therefore NOT exercised by the
+  reference bitwise gate. It is covered elsewhere (`tests/test_separable_propagator.py` runs
+  at `z_diss_k=1e-4`, and its `test_particle_psi_diagonal_reads_both_separable_terms` exists
+  precisely because every particle gate runs at `z_diss_k=0`), but a reference config with a
+  nonzero `z_diss_k` would close the gap. A coverage item for later, not for this plan.
+
 ## The webgpu reference-vector generators
 
 Added to the L row by the overseer after the first review pass, and done in the follow-up
@@ -200,15 +219,20 @@ for the 2×2 …)" → "stores it on the `K_Grids` as `lin`, an operator pytree"
 "`s` is formed once at setup (`kgrid.lin_s`)" → "(`kgrid.lin.s`)"; line ~354 "stores three
 small REAL arrays: `lin_dperp` (nkx,nky), `lin_dz` and `lin_kz` (nz,1,1) — against putzer2's
 6 u of resident complex full-grid `lin_L/lin_m/lin_s`" → the same three names without the
-`lin_` prefix, as `SeparableL`'s / `Putzer2Operator`'s fields; lines ~392-394
-"`propagators.dense_operator` helper exists for tests and `particles/fields.py` only" →
-"the operators' `dense()` method exists for …".
+`lin_` prefix, as `SeparableL`'s / `Putzer2Operator`'s fields; line 392
+"the `propagators.dense_operator` helper exists for tests and `particles/fields.py` only" →
+"the operators' `dense()` method exists for …"; line 394 "which is why `dense_operator` of
+the separable entries reproduces the dense L bitwise" → "which is why `SeparableL.dense()`
+reproduces …".
 
-**docs/performance.md** — lines ~456, 795, 817, 820, 838, 845, 1013 name `lin_L`, `lin_m`,
+**docs/performance.md** — line 354 "of `Putzer2Propagator` and re-times" →
+"of `Putzer2Operator`". Lines ~456, 795, 817, 820, 838, 845, 1013 name `lin_L`, `lin_m`,
 `lin_s2`, `lin_dperp/lin_dz/lin_kz` in measurement tables. These are records of what was
 measured; the names now read `lin.L`, `lin.m`, `lin.dperp` etc. Historical `lin_s2` mentions
 (pre-Z2) should stay as they are.
 
-`webgpu/SPEC.md:269` and `webgpu/README.md:1156` use `lin_L` as the name of a reference-vector
-entry produced by `webgpu/gen_refvectors.py`; whether that JSON key changes is the webgpu
-side's call, not this refactor's.
+**webgpu/SPEC.md** — line 93 "`lsrk_advance` + `DiagonalPropagator.apply_exp`" →
+"`DiagonalOperator.apply_exp`". `webgpu/SPEC.md:269` and `webgpu/README.md:1156` use `lin_L`
+as the name of a reference-vector JSON entry produced by `webgpu/gen_refvectors.py` (the key
+itself is unchanged by this phase — only the taranis-side attribute it is read from moved);
+whether that key is renamed is the webgpu side's call, not this refactor's.
