@@ -488,7 +488,11 @@ every computation's final instruction was uncounted (127/3040 on `fd_fixed_lsrk5
 `while` loops among them; fusion count 104 vs real 110). The gate still bit on every
 mutation tried (a 1+1e-13 factor on `bracket`: 12/12 fields + histogram; `GRAD_CHUNK=2`:
 3D fields one ulp, 2D bitwise, histogram in all 12 — the pure-graph case IS caught). Fix +
-histogram-only regeneration landed on main before any merge (commit below). Also verified:
+histogram-only regeneration landed on main before any merge: **`b990d9d`** (ROOT-inclusive
+totals 587/2913→3040 on the two configs; npz sha256 unchanged; two further double-records
+agree; `bench/hlo_audit.py` got the same one-token fix — its own op tables were
+under-counting ROOT lines). Branches cut from `3073df4` carry the old regex; the merge step
+re-runs the histogram gate on main with the fixed one. Also verified:
 restart rule correct on every entry path incl. the 4-fake-device jax backend and
 `forcing_power=0`; gate 6c keeps all ten checks per cell; no ownership/comment/skip
 violations. Sweep items from the review: `tests/test_particles_3d.py:849-852` and
