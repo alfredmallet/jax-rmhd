@@ -28,6 +28,7 @@
 # the read-only GDI observers live in taranis/diagnostics/gdi.py.
 
 import functools
+from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -35,6 +36,13 @@ import numpy as np
 from .. import comms, grids
 from . import shared_physics
 from .shared_physics import bracket, grad_fields
+
+
+class GDIGrads(NamedTuple):
+    # one real-space (d/dx, d/dy) pair per bracket operand, each (2,nz,nx,ny)
+    gphi: jnp.ndarray
+    gN: jnp.ndarray
+    gvort: jnp.ndarray      # vorticity, -ksq*phi
 
 
 def _check_supported(params):
@@ -159,16 +167,15 @@ def _max_re_lambda(params):        # cache would pin every Parameters in a long 
 
 
 def grad(state, kgrid, params):
-    # everything needed for the brackets: (gphi, gN, gvort), one real-space
-    # (2,nz,nx,ny) gradient per field
+    # everything needed for the brackets
     Nk = state.fields[0]
     phik = state.fields[1]
-    return grad_fields((phik, Nk, -kgrid.ksq*phik), kgrid, params)
+    return GDIGrads(*grad_fields((phik, Nk, -kgrid.ksq*phik), kgrid, params))
 
 
 def set_timestep(grads, params):
     # ExB CFL from |grad phi|
-    gphi, gN, gvort = grads
+    gphi = grads.gphi
     max_vy = jnp.max(jnp.abs(gphi[0]))
     max_vx = jnp.max(jnp.abs(gphi[1]))
     eps = shared_physics.QUIESCENT_EPS
@@ -185,9 +192,8 @@ def set_timestep(grads, params):
 
 
 def NonlinearTerm(state, grads, kgrid, params, halo=None):
-    gphi, gN, gvort = grads
-    NLTerm_N = -bracket(gphi, gN)
-    NLTerm_vort = -bracket(gphi, gvort)
+    NLTerm_N = -bracket(grads.gphi, grads.gN)
+    NLTerm_vort = -bracket(grads.gphi, grads.gvort)
     NLTerm_N_k, NLTerm_vort_k = grids.fft(jnp.stack([NLTerm_N, NLTerm_vort]), params)
     NLTerm_fields = jnp.stack([NLTerm_N_k, -kgrid.inv_ksq*NLTerm_vort_k]) * kgrid.dealias
     return NLTerm_fields

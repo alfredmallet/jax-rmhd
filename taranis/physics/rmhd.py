@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import jax.numpy as jnp
 import numpy as np
 from .. import grids
@@ -7,11 +9,17 @@ from .shared_physics import bracket,grad_fields,z_derivatives
 from .. import comms
 from ..propagators import SeparableL
 
+class RMHDGrads(NamedTuple):
+    # one real-space (d/dx, d/dy) pair per RMHD field, each (2,nz,nx,ny)
+    gphi: jnp.ndarray
+    gpsi: jnp.ndarray
+    gvort: jnp.ndarray      # vorticity, -ksq*phi
+    gjpar: jnp.ndarray      # parallel current, -ksq*psi
+
 def grad(state,kgrid,params):
-    # (gphi, gpsi, gvort, gjpar), one real-space (2,nz,nx,ny) gradient per field
     phik=state.fields[0]
     psik=state.fields[1]
-    return grad_fields((phik,psik,-kgrid.ksq*phik,-kgrid.ksq*psik),kgrid,params)
+    return RMHDGrads(*grad_fields((phik,psik,-kgrid.ksq*phik,-kgrid.ksq*psik),kgrid,params))
 
 # when False, z_spectral returns the dense 2x2 operator (the putzer2 backend) even at
 # nu == eta; benchmarks and tests flip it, nothing else reads it
@@ -72,8 +80,8 @@ def _diss_hyper(params):
 
 def set_timestep(grads,params):
     #Sets the timestep according to the CFL condition.
-    gphi = grads[0]
-    gpsi = grads[1]    
+    gphi = grads.gphi
+    gpsi = grads.gpsi
     max_vy_eff = jnp.max(jnp.abs(gphi[0])+jnp.abs(gpsi[0]))
     max_vx_eff = jnp.max(jnp.abs(gphi[1])+jnp.abs(gpsi[1]))
     max_all = jnp.maximum(max_vx_eff/params.dx, max_vy_eff/params.dy)
@@ -91,19 +99,26 @@ def halo_start(state,kgrid,params):
     return comms.halo_exchange(state.fields,params,width=2)
 
 def NonlinearTerm(state,grads,kgrid,params,halo=None):
-    gphi,gpsi,gvort,gjpar = grads
-    NLTerm_vort = bracket(gpsi,gjpar) - bracket(gphi,gvort)
-    NLTerm_psi = - bracket(gphi,gpsi)
+    NLTerm_vort = bracket(grads.gpsi,grads.gjpar) - bracket(grads.gphi,grads.gvort)
+    NLTerm_psi = - bracket(grads.gphi,grads.gpsi)
     (NLTerm_vort_k , NLTerm_psi_k) = grids.fft(jnp.stack([NLTerm_vort,NLTerm_psi]),params)
     NLTerm_fields = jnp.stack([-kgrid.inv_ksq*NLTerm_vort_k,NLTerm_psi_k])*kgrid.dealias
     return NLTerm_fields
+
+def fd_linear_active(params):
+    # FDLinearTerm carries the finite-difference-z physics: nothing to do in 2D, and under
+    # z_spectral the propagator owns the parallel operator
+    return params.spatial_dimensions==3 and not params.z_spectral
+
+def forcing_active(params):
+    return bool(params.forcing)
 
 def FDLinearTerm(state,grads,kgrid,params,halo=None):
     # the NON-k-local remainder of the linear physics: the finite-difference-z Alfven
     # stencil plus the d4/dz4 z filter. Live only for dims==3 without z_spectral; the
     # k-local part lives in linear_matrix and is applied by the propagators.
     # todo: add functionality for variable z_order
-    if params.spatial_dimensions==2 or params.z_spectral:
+    if not fd_linear_active(params):
         return jnp.zeros_like(state.fields)
     dz=params.dz
     diss=params.z_diss * (dz/2)**4
@@ -158,7 +173,7 @@ def forcing_scale(state,kgrid,params,dt):
 
 def ForcingTerm(state,grads,kgrid,params,halo=None):
     # RMHD-specific forcing: either in the momentum equation or elsasser forcing
-    if not params.forcing:
+    if not forcing_active(params):
         return jnp.zeros_like(state.fields)
     f_raw = shared_physics.reconstruct_envelope(state.forcing_state,kgrid,params)
     if params.forcing_norm_per_step:
