@@ -486,7 +486,8 @@ gradient stack stop being the reason. [As landed (`createBuffer` sizes): `gradsK
 32.06 → 8.02 MiB and `specTmp` the same; 3D 128²×64 32.5 → 8.13 MiB; 3D 256²×64
 **129.0 → 32.25 MiB**, `realGrads` 134,217,728 B = exactly the 128 MiB default binding
 limit (≤, allowed). The page still asks for `maxLimits` as margin — a §9 question, not a
-requirement of this phase.]
+requirement of this phase. After §9.3 the 2D rows revert: 2D keeps its eight-lane
+`gradsK`/`specTmp` (the pre-2C sizes); the 3D rows stand.]
 
 **Timing gate.** Whole step and the gradient chain at the Phase 1 cells: ≤ 1.03× the pre-2C
 page on every device measured (the Phase 1 batch-2 number is the prediction; this is the
@@ -555,10 +556,10 @@ in 2D and `nmp·16` in 3D (`gridA`/`gridB` are perpendicular-only there), `grZ =
 
 | kernel | 2D | 3D |
 |---|---|---|
-| `prepGrads` ×4 (2C: one field pair each) | read `cx + grA`, write `2cx` (each) | same |
-| `zInv` ×4 at 2 lanes | — | `4cx` (each) = `16cx` |
-| `colsInv` ×4 at 2 lanes | `4cx` (each) = `16cx` | same |
-| `rowsC2R` ×4 at 2 lanes | read `2cx`, write `2rx` (each) = `8cx + 8rx` | same |
+| `prepGrads` (2D: one chunk of all four pairs; 3D: ×4, one pair each — §9.3) | read `2cx + grA`, write `8cx` | ×4: read `cx + grA`, write `2cx` (each) |
+| `zInv` | — | ×4 at 2 lanes: `4cx` (each) = `16cx` |
+| `colsInv` | ×1 at 8 lanes: `16cx` | ×4 at 2 lanes: `16cx` |
+| `rowsC2R` | ×1 at 8 lanes: read `8cx`, write `8rx` | ×4 at 2 lanes: `8cx + 8rx` |
 | `bracket` | read `8rx`, write `2rx` | same |
 | `rowsR2C` ×2 | read `2rx`, write `2cx` | same |
 | `colsFwd` ×2 | `4cx` | `4cx` |
@@ -568,23 +569,24 @@ in 2D and `nmp·16` in 3D (`gridA`/`gridB` are perpendicular-only there), `grZ =
 | `stage` | read `fields 2cx + delta 2cx + rhs 2cx + grB`, write `fields 2cx + delta 2cx` = `10cx + grB` | `10cx + grB + grZ` |
 
 Per step: three stages plus `energyPartial` (read `2cx + grA + grB` in 2D, `+ grZ` in 3D).
-Before 2C the gradient chain was one `prepGrads` (read `2cx + grA`, write `8cx`) and one
-8-lane pass per transform — the same transform bytes, and `prepGrads` at `10cx + grA` per
-stage against 2C's `4(3cx + grA)`: every chunk re-reads the grid and reads one state field.
-The two hand numbers `checkbench.js` leg (iv) pins, pre-2C (Phase 0/1) and as landed (2C):
+The transform bytes are the same either way; `prepGrads` is `10cx + grA` per stage as one
+chunk and `4(3cx + grA)` as four — every chunk re-reads the grid and one state field, which
+is why 2D (full-grid `grA`) stays at one chunk (§9.3). The two hand numbers `checkbench.js`
+leg (iv) pins — 2D at one chunk (also the pre-2C number), 3D at four:
 
 - **2D 256²**: `nm = 33,024`, `nr = 65,536`, `cx = 264,192`, `rx = 262,144`, `grA = 528,384`.
   Per stage 3,170,304 + 4,227,072 + 4,210,688 + 2,621,440 + 1,052,672 + 1,056,768 +
   2,113,536 + 1,585,152 + 3,170,304 = 23,207,936; ×3 = 69,623,808; + `energyPartial`
-  1,585,152 = **71,208,960 B/step** pre-2C. Butterflies: 11,827,200. 2C: `prepGrads`
-  4 × 1,320,960 = 5,283,840 per stage in place of 3,170,304 → **77,549,568 B/step**
-  (+6,340,608, all `prepGrads`).
+  1,585,152 = **71,208,960 B/step** (one chunk — the shipped 2D form). Butterflies:
+  11,827,200. (Measured at four chunks before §9.3: 77,549,568, +6,340,608 all `prepGrads`;
+  1.07× at 1024².)
 - **3D 128²×64**: `nmp = 8,320`, `nm = 532,480`, `nr = 1,048,576`, `cx = 4,259,840`,
   `rx = 4,194,304`, `grA = 133,120`, `grZ = 1,024`. Per stage 42,731,520 + 68,157,440 +
   68,157,440 + 67,633,152 + 41,943,040 + 16,908,288 + 17,039,360 + 17,039,360 + 17,306,624 +
   798,720 + 42,732,544 = 400,447,488; ×3 = 1,201,342,464; + `energyPartial` 8,786,944 =
-  **1,210,129,408 B/step** pre-2C. Butterflies: 213,934,080. 2C: `prepGrads` 4 × 12,912,640
-  = 51,650,560 per stage in place of 42,731,520 → **1,236,886,528 B/step** (+26,757,120).
+  **1,210,129,408 B/step** at one chunk (pre-2C). Butterflies: 213,934,080. Shipped 3D form,
+  four chunks: `prepGrads` 4 × 12,912,640 = 51,650,560 per stage in place of 42,731,520 →
+  **1,236,886,528 B/step** (+26,757,120).
 
 The bench sums the same table from the page's own dispatch list so a kernel added later is
 counted; a disagreement between the check's literal and the function is a change to one of
