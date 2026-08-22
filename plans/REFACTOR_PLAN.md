@@ -543,4 +543,11 @@ rejections now after `init_backend`, reachable only at size>1 + jax; particles c
 tests with `PYTHONPATH=<worktree>` (green); the merge-step runs on main are authoritative
 for everyone. Review: pending.
 
-(C, the merges, the sweep, and what moved to `plans/old/`: below as they land)
+**Phase C** (`refactor/C`: `c0df82a`). `run.py` 371 → 322 lines. fp64 247/23, fp32 224/46
+(identical counts and skip list to base); 12/12 fields bitwise, every histogram, instruction
+and fusion count identical; probe max |Δ total_u| = 0.0000 u at both precisions, all 28
+cases each; memory-light gate green. Process note: two agents wrote `make test` logs to the
+same scratchpad filenames and clobbered each other — C re-ran cleanly into a worktree-local
+dir; briefs now say log paths are per-worktree. Review: pending.
+
+(the merges, the sweep, and what moved to `plans/old/`: below as they land)
