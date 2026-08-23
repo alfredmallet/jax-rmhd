@@ -194,15 +194,15 @@ def _apply_variant(variant):
     if variant == "noexpform":
         # keep the apply, drop the transcendental coefficient evaluation
         for cls, mk in (
-                (propagators.SeparablePropagator,
+                (propagators.SeparableL,
                  lambda self, tau: propagators.SeparableExp(
-                     P=jnp.ones_like(self.sep.dperp), c=jnp.ones_like(self.sep.dz),
-                     s=jnp.zeros_like(self.sep.kz))),
-                (propagators.Putzer2Propagator,
+                     P=jnp.ones_like(self.dperp), c=jnp.ones_like(self.dz),
+                     s=jnp.zeros_like(self.kz))),
+                (propagators.Putzer2Operator,
                  lambda self, tau: propagators.Putzer2Exp(
                      m00=jnp.ones_like(self.L[0, 0]), m01=jnp.zeros_like(self.L[0, 1]),
                      m10=jnp.zeros_like(self.L[1, 0]), m11=jnp.ones_like(self.L[1, 1]))),
-                (propagators.DiagonalPropagator,
+                (propagators.DiagonalOperator,
                  lambda self, tau: propagators.DiagonalExp(e=jnp.ones_like(self.L)))):
             cls.exp_op = mk
     if variant in ("norhs", "norhs_noprop"):
@@ -251,8 +251,8 @@ def _apply_scopes():
     for cls in (propagators.SeparableExp, propagators.Putzer2Exp, propagators.DiagonalExp,
                 propagators.IdentityExp):
         cls.apply = scoped("EXPAPPLY", cls.apply)
-    for cls in (propagators.SeparablePropagator, propagators.Putzer2Propagator,
-                propagators.DiagonalPropagator, propagators.IdentityPropagator):
+    for cls in (propagators.SeparableL, propagators.Putzer2Operator,
+                propagators.DiagonalOperator, propagators.IdentityOperator):
         cls.exp_op = scoped("EXPFORM", cls.exp_op)
     for eq, rec in list(equation_registry.items()):
         mod = rmhd if eq == "RMHD" else gdi
