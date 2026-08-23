@@ -569,13 +569,43 @@ after `init_backend`, changing the error shown and bringing up the mesh / `jax.d
 for a refused config; F5/F6 two wrong sentences in the notes; F7 the §9.2 test asserted
 only the raising half. Everything else held: params.json byte-identical (3 configs vs a
 base archive), 104 property reads unchanged, identity hashing, the module-scope MPI rule,
-five mutations each caught. Fix-up: pending.
+five mutations each caught. Fix-up `8e733ee` + `0f964a9`: F1 device-count re-check in
+`_validate_compat` (jax only; no mesh created elsewhere — probed), F2 a dims=2 runtime for a
+3D non-serial Parameters rejected naming the cause, F3 `Runtime.resolve(z_spectral=)` performs
+the three checks at the base constructor's position, before `init_backend` — an 18-config
+base-vs-branch probe at 1 and 4 devices matches error-for-error and warning-for-warning
+except ONE accepted pair (GDI + malformed ensemble: base "test particles require
+eqtype='RMHD'", branch "unknown init kind"; both refuse, no side effect precedes either,
+matching would split the particles check back out of `_validate_compat`); F7 both halves of
+§9.2 asserted; F8 a 4-device subprocess case pins the order (the mutation shows
+`ZS_MESH_BUILT True` — the regression it prevents). Re-review: **accepted**; final at
+`0f964a9`.
 
 **Phase C** (`refactor/C`: `c0df82a`). `run.py` 371 → 322 lines. fp64 247/23, fp32 224/46
 (identical counts and skip list to base); 12/12 fields bitwise, every histogram, instruction
 and fusion count identical; probe max |Δ total_u| = 0.0000 u at both precisions, all 28
 cases each; memory-light gate green. Process note: two agents wrote `make test` logs to the
 same scratchpad filenames and clobbered each other — C re-ran cleanly into a worktree-local
-dir; briefs now say log paths are per-worktree. Review: pending.
+dir; briefs now say log paths are per-worktree. Review (fresh Fable): **accepted** —
+line-by-line step semantics vs base (same (dt_override, exp_ops) per path, PRE-step t to
+forcing, (pstate, pre, post) to particles, exp_ops outside both scans); donation verified via
+`input_output_alias` on the tuple carry; a cross-tree particles-ON run 63/63 keys bitwise
+incl. the sidecar text and snapshot listing; M1/M2 mutations caught by gate 6 / the particle
+tests; probe Δ = 0. Gate fact: the "exp_ops formed OUTSIDE the step scan" rule is
+review-enforced only — forming them inside both scans leaves the memory-light gate (which
+measures the `exp_ops=None` branch) AND every histogram unchanged, because XLA's LICM hoists
+the loop-invariant formation itself. Sweep: C.md's "the ONE static `if params.particles`"
+overstates (`_step` and `simulate_scan` still branch on it — say "the only branch on the
+carry SHAPE is the `block_of_steps` wrapper"); stale `block_wrapped` in
+`tests/_gen_particles_gate6_reference.py:58`. Pre-existing: `tests/test_restart_resharding.py`
+in script mode at size 1 dies in phase B on base too (an mpirun script; never collected).
 
-(the merges, the sweep, and what moved to `plans/old/`: below as they land)
+**Merges.** L (`44c55e7` rebased → `57bf1c1`) then G (`959ea43` → `83b41d1`) fast-forwarded
+onto main, no conflicts; after each: fp64 250/23 then 256/23 (the +6 is
+`test_equation_interface`), fp32 227/46 then 233/46; 24/24 fields + t bitwise and 12/12
+ROOT-inclusive histograms identical at both precisions, live on this host; memory-light
+green; L's probe max |Δ| = 0.0000 u at both precisions over 28 cases. `bench/zspectral_profile.py`
+is the one two-phase file (L's renames + G's `.func`), merged clean and consistent.
+
+(the C and R merges, L's `step_accounting.py` edits on main, integration, the sweep, and what
+moved to `plans/old/`: below as they land)
