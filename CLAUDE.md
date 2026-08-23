@@ -135,7 +135,7 @@ The k-local LINEAR part is not an RHS term — `linear_matrix_func(kgrid, params
 (convention `dt f = L f + N(f)`) is validated by `propagators.build` and stored by
 `setup_kgrids` in the SINGLE slot `kgrid.lin`, always populated, as one of four operator
 pytrees (NamedTuples of arrays carrying the methods): `IdentityOperator()` (a recipe with
-no `linear_matrix_func`), `DiagonalOperator(L)` (dense 4-d L — FD-z and 2D),
+no `linear_matrix_func`), `DiagonalOperator(L)` (a 4-d diagonal L — FD-z and 2D),
 `Putzer2Operator(L, m, s)` (dense 2×2 5-d L, with `m` and `s = sqrt((tr L/2)^2 - det L)`
 precomputed at SETUP — never `lin_s2`, which Z2 retired) and `SeparableL(dperp, dz, kz)`
 (what `rmhd.linear_matrix` returns for `z_spectral` with `diss[0]==diss[1]`). The steppers

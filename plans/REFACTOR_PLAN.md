@@ -612,6 +612,22 @@ C merged as `0736ab8`, L's deferred `bench/step_accounting.py` edits landed on m
 no conflicts. `f838420` is the four-phase `main`; the close-out docs sweep follows it.
 Nothing moved to `plans/old/`.
 
+**Speed (§0.4 sanity check, quiet machine, HEAD `f838420`).** Against the Phase-0 JSONs the
+merged tree measured FASTER everywhere: fp64 median ratio 0.947 (24/28 outside ±3%, all
+faster), fp32 0.967 (18/28), reproduced on a re-run — with identical HLO histograms and
+identical `total_u`, which cannot be the code. Interleaved same-state A/B (`git archive
+3073df4` vs main, base64 → main64 → base32 → main32, default nrep=5/nblock=10): main/base-now
+median **0.997 (fp64)** and **1.000 (fp32)**, outliers 2/28 and 3/28 split across BOTH
+directions (fp64: `gdi2d_256_lsrk33` 1.034, `gdi3d_64x16_lsrk33` 0.935; fp32:
+`gdi3d_64x16_lsrk33` 1.046, `gdi2d_256_lsrk54` 1.040, `rmhd_fdz_64x16_lsrk33` 0.962); and
+base-now/Phase-0 median 0.941 (fp64) / 0.955 (fp32), 27/28 and 25/28 faster — the
+pre-refactor tree reproduces the offset, so it is the machine state at Phase-0 recording
+time, not the refactor. `total_u` identical to 0.0000 u in every comparison (28 cases × 2
+precisions × {main vs base-now, base-now vs Phase-0}). Protocol lesson, now in the probe
+rule: an ms/step reference is recorded in the same session as the measurement it gates
+(interleaved A/B against a base archive); the noise-free speed evidence is the opcode
+histogram.
+
 ## What landed
 
 **Phase 0.** `tests/_gen_refactor_reference.py` DEFINES the twelve configs, the IC, the
