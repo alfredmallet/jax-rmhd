@@ -109,6 +109,17 @@ sbatch slurms/run_test_suite_cpu.sh --list                        # print the ta
 python tests/run_savio_suite.py --list                            # same, from a login node
 ```
 
+Two narrower submissions exist for the REFACTOR_PLAN close-out checks (2026-08-22) and
+stay useful as the "did the multi-rank paths survive" pair after any core change:
+`sbatch slurms/refactor_check_cpu.sh` (savio3, ~15–20 min: the mpirun jobs —
+resharding 2→4, the 8-rank forced-turbulence checkpoint/reload, halos, stencils,
+`cfl_every`, the IF/IMEX steppers — plus the single-process files the refactor touched)
+and `sbatch slurms/refactor_check_gpu.sh` (savio4_gpu: the backend battery, the only
+real exercise of `comms.Runtime` bringing up `jax.distributed`, the `shard_call`
+boundary and `kgrid.lin` under a real mesh). Both forward extra arguments to the runner.
+`mpirun -n 4 python tests/test_snapshot_roundtrip.py` is not a check — that file
+soft-skips every test at `size > 1`.
+
 Adding a test to the suite = adding one entry to `tests/savio_manifest.py` (see the
 field comments there). The targeted single-purpose slurm scripts
 (`test_backend_jax_gpu.sh`, `test_restart_resharding.sh`, …) still work and remain

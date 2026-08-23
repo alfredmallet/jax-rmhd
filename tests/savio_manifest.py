@@ -76,6 +76,15 @@ JOBS = [
          phases=[dict(launch="serial", n=1)], precisions=_S),
     dict(name="particles_config", tier="cpu", script="tests/test_particles_config.py",
          phases=[dict(launch="serial", n=1)], precisions=_S),
+    # REFACTOR_PLAN (2026-08-22) gates. equation_interface is single-process by
+    # construction (2D / z_spectral cells; one cell gated on size==1). refactor_reference
+    # is host-keyed (bitwise + HLO-histogram reference recorded on the M1 laptop) and
+    # soft-skips everywhere else, including under mpirun -- it prints [SKIP] on Savio
+    # and is kept for the import and the banner, like backend_jax_serial below.
+    dict(name="equation_interface", tier="cpu", script="tests/test_equation_interface.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
+    dict(name="refactor_reference", tier="cpu", script="tests/test_refactor_reference.py",
+         phases=[dict(launch="serial", n=1)], precisions=_S),
     # multidev tests need >=4 XLA devices; under real MPI there is 1 CPU device per
     # process, so this file prints [SKIP] everywhere on Savio -- kept for the banner
     # (its real coverage is local fake-device pytest + the gpu tier below).
