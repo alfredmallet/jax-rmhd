@@ -494,7 +494,9 @@ unfixed tree. Side findings for the sweep (from `plans/refactor_notes/phase0.md`
 CLAUDE.md's `GRAD_CHUNK` "bitwise identical" is one ulp too strong in 3D (637/2304
 elements at 1.1e-16 between chunk 1 and 2/4; 2D exact); under fp32, `t` is stored fp64
 but accumulates fp32-rounded `gamma*dt` increments in the IF steppers (0.059999998 after
-6×0.01) while imexcb3f reaches 0.06 exactly — `t` is a live comparator in the reference.
+6×0.01) while every non-scan path (unrolled lsrk, rk44, the IMEX steppers) lands on the fp64
+sequential sum 0.060000000000000005 (the integration review corrected Phase 0's "imexcb3f
+reaches 0.06 exactly" — nothing does) — `t` is a live comparator in the reference.
 Phase 0 review (fresh Fable, same day): **accepted with one fix** — the HLO histogram regex
 (inherited from `bench/hlo_audit.py:119`) never matched XLA's `ROOT %name = ...` lines, so
 every computation's final instruction was uncounted (127/3040 on `fd_fixed_lsrk54`, both
@@ -628,6 +630,21 @@ rule: an ms/step reference is recorded in the same session as the measurement it
 (interleaved A/B against a base archive); the noise-free speed evidence is the opcode
 histogram.
 
+**Integration review (fresh Fable, HEAD `7d0a903`): accepted for the code.** `make test` on
+the merged tree fp64 258/23/1, fp32 235/46/1; reference 24/24 + 12/12 at both precisions;
+gate 6c printed both cells; ruff clean; 4-device `test_backend_jax` 13/1 with the recorded
+failure (which also misses the final `t` by one ulp — now in the three descriptions); every
+cross-phase consumer executes (`zspectral_profile`, two `step_accounting` jobs, the probe, both
+webgpu generators reproducing the committed JSONs to ≤2.1e-16). Five untried mutations, one
+per phase, all caught — and two gate facts: dropping the hoist in `_cfl_block`
+(`exp_ops=None`) is bitwise in fields and invisible to the hoist and memory-light tests, caught
+ONLY by the HLO histogram (`put_cfl2_lsrk54` 3658 vs 4540 instructions); and a rank
+permutation is the identity at size 1, caught locally only by `test_infra`'s
+`fake_ranked_params` self-test — multi-rank consumers rely on the Savio runs. Four doc
+corrections applied in the close-out commit (the fp32 `t` table: rk44/IMEX/unrolled all land
+on 0.060000000000000005, nothing reaches 0.06; `dense()` is for tests and validation only;
+the jax-backend failure's `t` ulp; the README's regeneration caveat).
+
 ## What landed
 
 **Phase 0.** `tests/_gen_refactor_reference.py` DEFINES the twelve configs, the IC, the
@@ -716,7 +733,8 @@ byte-identical to the base. Files: `taranis/config.py`, `taranis/comms.py`,
 - **The `"jax"` backend is not covered by local `make test`** on a host where mpi4py
   imports (no fake devices are installed then), and under
   `--xla_force_host_platform_device_count=4`
-  `tests/test_backend_jax.py::test_same_seed_run_matches_serial_reference` fails at 1.4e-13
+  `tests/test_backend_jax.py::test_same_seed_run_matches_serial_reference` fails (final `t`
+  by one ulp, and) at 1.4e-13
   in `forcing_state` on this laptop under jax 0.10.0 — pre-existing, identical on the
   pre-refactor tree, and owned by whoever owns that backend.
 - **The webgpu `lin_L` name.** `webgpu/SPEC.md:269`, `webgpu/README.md:1156`, the browser
@@ -725,5 +743,6 @@ byte-identical to the base. Files: `taranis/config.py`, `taranis/comms.py`,
   alone; renaming it is the webgpu side's call.
 - **fp32 `t` accumulation.** The IF steppers' scan path adds fp32-rounded `gamma*dt`
   increments to the fp64 `t`, so at `TARANIS_PRECISION=32` `lsrk_scan` True and False
-  disagree in `t` and neither reaches the exact value `rk44`/`imexcb3f` do. Pre-existing,
+  disagree in `t`, and neither matches the fp64 sequential sum the unrolled, rk44 and IMEX
+  paths all reach (0.060000000000000005 after 6×0.01 — not 0.06 exactly). Pre-existing,
   recorded in `docs/numerics.md`'s precision model.

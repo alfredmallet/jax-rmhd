@@ -35,9 +35,9 @@ savio, slow, fp32/fp64, multidev (skip logic in conftest + `_script_skip_reason`
 The 4 fake devices are installed only when mpi4py does NOT import, so on a host that has
 mpi4py `make test` skips every `multidev` test and **the `"jax"` backend is not covered
 locally**; exercise it with `XLA_FLAGS=--xla_force_host_platform_device_count=4`, where
-`tests/test_backend_jax.py::test_same_seed_run_matches_serial_reference` fails at 1.4e-13
-in `forcing_state` on this host under jax 0.10.0 — pre-existing, identical on the
-pre-refactor tree.
+`tests/test_backend_jax.py::test_same_seed_run_matches_serial_reference` fails on this
+host under jax 0.10.0 — `forcing_state` at 1.4e-13 and the final `t` by one ulp
+(0.5190212443929726 vs …27) — pre-existing, identical on the pre-refactor tree.
 2D (`dims=2`) is single-process only.
 `bench/savio_scaling/` (scaling benchmark, not a test) and `slurms/` are
 Savio-cluster-specific. How-to: docs/RUNNING_TESTS.md. Every notebook in `examples/`

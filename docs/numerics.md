@@ -100,14 +100,14 @@ Four rules govern any new code that touches both `t` and fields:
 field precision (`timestepping.py` ~114–139: `gammas_arr = jnp.array(scheme.gammas,
 dtype=_precision.ftype)`), so under `TARANIS_PRECISION=32` `t + gammas_arr[i]*dt` adds an
 fp32 product to the fp64 `t`; the unrolled path multiplies by the bare python `gamma`, and
-`rk44`/`imexcb3f` advance by `dt` itself. Six steps at `dt = 0.01` therefore end at
+`rk44`/the IMEX steppers advance by `dt` itself — every non-scan path is the fp64
+sequential sum. Six steps at `dt = 0.01` therefore end at
 
 | path | final `t` |
 |---|---|
 | lsrk54, `lsrk_scan=True` | 0.05999999830964953 |
 | lsrk33, `lsrk_scan=True` | 0.05999999865889549 |
-| lsrk54, `lsrk_scan=False` | 0.060000000000000005 |
-| rk44, imexcb3f | 0.06 exactly |
+| lsrk54 / lsrk33, `lsrk_scan=False`; rk44; imexcb2/3e/3c/3f | 0.060000000000000005 |
 
 so `lsrk_scan` True and False disagree in `t` at fp32, and `t` is a live comparator in any
 bitwise reference recorded there — not a formality.
@@ -412,7 +412,8 @@ Nyquist rule: the mirror maps index 0 and nz/2 to themselves, forcing kz = 0 at 
 `kz[0] = 0` holds anyway and `kz[nz/2]` is zeroed by `_kz_deriv`. These are checked on
 plane-sized arrays at setup; the dense operator (4 u, and transiently doubled by
 `_check_hermitian_compatible`'s host-numpy mirror) is never materialised — the
-operators' `dense()` method exists for tests and `particles/fields.py` only.
+operators' `dense()` method exists for tests and validation only (`particles/fields.py`
+dispatches on `rmhd.linear_matrix`'s return, not on `dense()`).
 The same `_kz_deriv` array feeds the off-diagonal and the kz⁴ term, exactly as the dense
 path does, which is why `SeparableL.dense()` reproduces the dense L bitwise.
 

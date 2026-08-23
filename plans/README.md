@@ -38,7 +38,9 @@ were corrected on the way out (see below).
   bitwise at the default `forcing_norm_per_step=True`) and the twelve-config reference the
   gates needed. Outcome: net source change negative (`run.py` 371 → 322 lines; six
   `K_Grids` slots and four propagator classes → one slot and four operator pytrees), and
-  **nothing moved**: every reference bitwise with no regeneration at both precisions —
+  **nothing moved**: every reference bitwise in fields and `t` with no regeneration at both
+precisions (the one regeneration was the HLO sidecars at `b990d9d`, histogram-only, for
+Phase 0's own ROOT-line regex fix) —
   gate 6/6b/6c, the spinup and fp32 references, and the new
   `tests/test_refactor_reference.py`, which pins `fields` and `t` AND the optimized-HLO
   opcode histogram of the jitted `block_of_steps` across twelve solver paths — zero opcode

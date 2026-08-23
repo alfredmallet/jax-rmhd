@@ -39,7 +39,7 @@ XLA_FLAGS=--xla_force_host_platform_device_count=4 python -m pytest tests/test_b
 
 Known there on the M1 laptop (jax 0.10.0, CPU):
 `test_same_seed_run_matches_serial_reference` fails with `forcing_state` differing by
-1.4e-13 between the backends. Pre-existing — it reproduces identically on the
+1.4e-13 between the backends and the final `t` by one ulp. Pre-existing — it reproduces identically on the
 pre-refactor tree — and worth a look by whoever owns the jax backend.
 
 **Running from a git worktree.** taranis is installed editable against the main checkout,
