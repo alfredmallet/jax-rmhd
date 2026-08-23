@@ -10,7 +10,7 @@
 #      reference and the only remaining error is the time integration. Nominal orders:
 #      3 (lsrk33), 4 (rk44, lsrk54).
 #   2. Nonlinear + dissipative. The integrating factor advances the fields by
-#      exp(L*dt*gamma) per stage (L = kgrid.lin_L); on a purely linear problem that is exact and
+#      exp(L*dt*gamma) per stage (L = kgrid.lin.L); on a purely linear problem that is exact and
 #      therefore says nothing, so the order is only meaningful with the nonlinear terms
 #      active. The reference is the same problem integrated with lsrk54 at
 #      _NL_T/_NL_REF_STEPS, i.e. 16x finer than the finest sweep point, so the

@@ -28,6 +28,26 @@ The serial tier (`comm_backend="serial"`, auto-selected when mpi4py/mpi4jax are 
 is what actually runs on laptops and in CI's `fast` lane; the stub exists only to keep
 the mpi4jax code path exercised, serially, alongside it.
 
+**A host with real mpi4py loses the multi-device coverage.** The 4 fake XLA devices are
+created only when mpi4py does *not* import, so wherever the real one is installed
+`make test` skips every `multidev` test and the `comm_backend="jax"` backend is not
+exercised at all. Force the devices to run those:
+
+```
+XLA_FLAGS=--xla_force_host_platform_device_count=4 python -m pytest tests/test_backend_jax.py
+```
+
+Known there on the M1 laptop (jax 0.10.0, CPU):
+`test_same_seed_run_matches_serial_reference` fails with `forcing_state` differing by
+1.4e-13 between the backends. Pre-existing — it reproduces identically on the
+pre-refactor tree — and worth a look by whoever owns the jax backend.
+
+**Running from a git worktree.** taranis is installed editable against the main checkout,
+so a subprocess — or a script-mode run (`python tests/test_x.py`, where `sys.path[0]` is
+`tests/`) — inside a worktree imports the MAIN tree, not the worktree. `python -m pytest`
+from the worktree root is unaffected (cwd wins), which is what `make test` runs. Set
+`PYTHONPATH=<worktree>` for anything that spawns a subprocess.
+
 ## Two kinds of test runs
 
 **Local (pytest).** `pytest tests` (or `make test`) discovers and runs everything
@@ -40,7 +60,7 @@ and `savio` — you get the fast tier. Markers:
 | `mpi` | needs a real `mpirun -n N` | run the file as a script under mpirun |
 | `savio` | needs cluster hardware/walltime | `RMHD_SAVIO=1` on the cluster |
 | `fp32` / `fp64` | needs that precision session | run under matching `TARANIS_PRECISION` |
-| `multidev` | needs ≥4 XLA devices | automatic (fake devices locally) |
+| `multidev` | needs ≥4 XLA devices | fake devices, but only on a host without mpi4py (above) |
 
 Precision is fixed once per process (read at `import taranis`), which is why
 `make test` runs two separate pytest sessions rather than mixing precisions.
@@ -176,8 +196,10 @@ Three things that will bite anyone editing these workflows:
 - `Array has been deleted` — you reused a donated state; see above.
 - `ValueError: ... holds a per-rank ... tree` — stale snapshot dir; use
   `snap_dir()` or delete the old `data/...` dir.
-- A `multidev` test skips with "needs >=4 devices" — something imported jax before
-  `bootstrap()` could set `XLA_FLAGS`; check the import order at the top of your file.
+- A `multidev` test skips with "needs >=4 devices" — either mpi4py imports on this host
+  (no fake devices are created then; force them with `XLA_FLAGS`, above), or something
+  imported jax before `bootstrap()` could set `XLA_FLAGS` — check the import order at the
+  top of your file.
 - A test passes under pytest but hangs under `mpirun` — usually a collective
   (allreduce, save, `params.save`) called on a subset of ranks. Every rank must make
   every collective call.

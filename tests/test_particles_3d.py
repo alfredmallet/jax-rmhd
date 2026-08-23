@@ -845,11 +845,10 @@ def test_epar_projection_removes_the_numerical_parallel_field_3d():
 # show is the rest of gate 6 -- particles on vs off bitwise in the same session, a
 # particles/ item at every written step, and a bitwise restart.
 #
-# Restart is bitwise only when the driver's start-up recomputes nothing: with
-# forcing_norm_per_step=True (the default) run._refresh_forcing_scale recomputes the
-# forcing scale at dt = 0 on every simulate*/ entry, so even a PARTICLE-FREE forced restart
-# is not bitwise. Pre-existing solver behaviour, not a particle issue (see the 2D gate 6c),
-# so this runs with forcing_norm_per_step=False.
+# run._refresh_forcing_scale computes a scale on simulate*/ entry only for a state whose
+# forcing_scale is all zeros, so a forced restart is bitwise at either
+# forcing_norm_per_step setting. This gate pins the =False setting; the 2D gate 6c runs
+# both.
 
 _G6_NX = 16
 _G6_NBLOCK = 5

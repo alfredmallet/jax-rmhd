@@ -55,7 +55,7 @@ _COMMON = dict(
 # (name, extra Parameters kwargs, driver) -- the npz key prefixes and the five run.py
 # code paths A2 will touch: simulate_scan/fixed-dt, simulate/fixed-dt,
 # simulate_scan/adaptive-with-cfl_every (_cfl_block), simulate/adaptive-with-cfl_every
-# (block_wrapped inside the while_loop) and simulate_scan with forcing off (no
+# (the block body inside the while_loop) and simulate_scan with forcing off (no
 # _advance_forcing, the path a particle push must mirror).
 CONFIGS = (
     ("scan_fixed", dict(_COMMON, adaptive_timestep=False, dt=0.01), "scan"),

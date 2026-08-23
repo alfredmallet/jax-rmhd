@@ -20,14 +20,6 @@ were corrected on the way out (see below).
 
 ## Live
 
-- **REFACTOR_PLAN.md** (written 2026-08-22) — the four behaviour-preserving structural
-  moves accepted from an outside refactoring assessment: transport out of
-  `Parameters.__init__` (R), one run-loop body over a uniform `(state, aux)` carry (C),
-  the linear operator as one typed pytree slot `kgrid.lin` (L), named `grads` and
-  statically filtered RHS terms (G) — plus the Phase-0 forced-restart fix and the 3D /
-  GDI / IMEX reference npz the gates need. §7 records what was rejected and why (hoist
-  unification, dropping `simulate`, ETDRK, config rewrite). Four opus agents in parallel
-  worktrees, every phase bitwise.
 - **GDI_PLAN.md** — roadmap from the current IF-dissipation-only solver to the 3D GDI
   equations (exact linear propagators, spectral-z, low-storage IMEX). Execution order
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
@@ -35,6 +27,30 @@ were corrected on the way out (see below).
   (repo hygiene) is partly open.
 
 ## Finished
+
+- **REFACTOR_PLAN.md** (landed 2026-08-22 on `main`, `f838420` plus the close-out docs
+  sweep) — four behaviour-preserving structural moves, one opus implementer per phase in
+  parallel worktrees with a fresh-Fable review each: the linear operator as one typed
+  pytree slot `kgrid.lin` (L), named `grads` NamedTuples and statically filtered
+  `physics.Term`s (G), one run-loop body over a uniform `(state, aux)` carry (C), transport
+  out of `Parameters.__init__` into `comms.Runtime` (R) — plus the Phase-0 forced-restart
+  fix (`_refresh_forcing_scale` keeps a stored nonzero scale, so a forced restart is
+  bitwise at the default `forcing_norm_per_step=True`) and the twelve-config reference the
+  gates needed. Outcome: net source change negative (`run.py` 371 → 322 lines; six
+  `K_Grids` slots and four propagator classes → one slot and four operator pytrees), and
+  **nothing moved**: every reference bitwise with no regeneration at both precisions —
+  gate 6/6b/6c, the spinup and fp32 references, and the new
+  `tests/test_refactor_reference.py`, which pins `fields` and `t` AND the optimized-HLO
+  opcode histogram of the jitted `block_of_steps` across twelve solver paths — zero opcode
+  movement in all twelve (XLA had already folded G's `add(x, broadcast(0))` away), and the
+  memory probe at max |Δ `total_u`| = 0.0000 u over 28 cases per precision. The durable
+  rules are in CLAUDE.md, `docs/numerics.md`, `docs/performance.md` and
+  `docs/RUNNING_TESTS.md`; §10 carries what landed per phase and the follow-ups (separable
+  reference config has `dz ≡ 0`; the 3D restart gate runs one `forcing_norm_per_step`
+  setting; the exp_ops-outside-the-step-scan rule has no mechanical guard; the `"jax"`
+  backend is not covered by local `make test`; the webgpu `lin_L` JSON key; fp32 `t`
+  accumulation). §7 records what was rejected and why (hoist unification, dropping
+  `simulate`, ETDRK, config rewrite).
 
 - **MEMORY_PERF_PLAN.md** (closed 2026-08-20) — memory and step-time reduction for FD-z
   (F1–F4) and z_spectral (Z1–Z3), with the two-card GPU assessment (Kaggle P100 via lugus,

@@ -32,6 +32,12 @@ bootstrap()` BEFORE `import taranis`, and end with the `script_main(globals())`
 footer; helpers live in `tests/_rmhd_testing.py` (never cache a SimulationState —
 donation; never mutate `ctx()` results — identity-hashed jit cache). Markers: mpi,
 savio, slow, fp32/fp64, multidev (skip logic in conftest + `_script_skip_reason`).
+The 4 fake devices are installed only when mpi4py does NOT import, so on a host that has
+mpi4py `make test` skips every `multidev` test and **the `"jax"` backend is not covered
+locally**; exercise it with `XLA_FLAGS=--xla_force_host_platform_device_count=4`, where
+`tests/test_backend_jax.py::test_same_seed_run_matches_serial_reference` fails at 1.4e-13
+in `forcing_state` on this host under jax 0.10.0 — pre-existing, identical on the
+pre-refactor tree.
 2D (`dims=2`) is single-process only.
 `bench/savio_scaling/` (scaling benchmark, not a test) and `slurms/` are
 Savio-cluster-specific. How-to: docs/RUNNING_TESTS.md. Every notebook in `examples/`
@@ -46,7 +52,8 @@ forcing_scale)`. `fields` shape `(nfields, nz_local, nkx, nky)`: real-space in z
 in (x,y). **The z axis is never dropped** — `dims=2` gives `(nfields, 1, nx, ny//2+1)`.
 `run.py::initialize` applies the 2/3 dealias mask to the IC (evolution masks only the
 nonlinear term, so unmasked beyond-cutoff IC energy would persist and alias). `dims==3`
-requires `nz % size == 0` (validated in `Parameters.__init__`).
+requires `nz % size == 0` (validated in `comms.Runtime.resolve` and in
+`Parameters._validate_compat`).
 
 rfft2 convention: `kx` full two-sided, `ky` half/non-negative — reality is a constraint
 *between* `(kx,ky)` and `(-kx,ky)` at the ky=0 and Nyquist rows. Anything writing k-space
@@ -80,10 +87,31 @@ warns. Both are explicit calls — nothing writes params.json automatically.
 `Parameters` (`config.py`) is **not a pytree**. It is only closed over or passed static,
 so every attribute is a compile-time constant — plain `if params.foo:` is correct and
 preferred over `lax.cond`. Never pass it as a traced jit arg or inside a scanned tree.
-z attributes (`dz`, `Lz`, `z_diss`, `cart_comm`, neighbors) exist only when `dims==3` —
-guard access. `z_diff_order`/`z_diss_hyper` are accepted and stored but not read back by
+z attributes (`dz`, `Lz`, `z_diss`) exist only when `dims==3` — guard access (`cart_comm`
+and the neighbors always exist and are `None` outside a 3D non-serial run).
+`z_diff_order`/`z_diss_hyper` are accepted and stored but not read back by
 `rmhd.FDLinearTerm`; `Parameters` warns when either is set away from its default (so is
 `z_diss` under `z_spectral`, where every finite-difference-z knob is dead).
+
+Transport is not built by the constructor. `comms.Runtime` (a frozen, identity-hashed
+dataclass — `backend, comm, rank, size, cart_comm, left_neighbor, right_neighbor`) comes
+from `comms.Runtime.resolve(comm_backend=None, *, dims, nz, z_spectral=False)`, which
+resolves the backend, takes `MPI.COMM_WORLD`, checks every rank reads the same
+`TARANIS_PRECISION`, creates the z cartesian communicator and brings the backend up
+(`jax.distributed` + the device mesh for `"jax"`). `Parameters(..., runtime=None)` resolves
+one; an explicit `Runtime` is reused as is — one set of communicators for a whole parameter
+scan, re-validated against that `Parameters`' own `dims`/`nz` (REFACTOR_PLAN §9.2: `nz` is
+checked against `runtime.size`, so one runtime serves any `nz` its size divides) — and
+`comm_backend` must then be `None` or that runtime's own backend. `params.runtime` holds it,
+and `comm_backend`, `comm`, `rank`, `size`, `cart_comm`, `left_neighbor`, `right_neighbor`
+are read-only properties forwarding to it: every read is unchanged, but **they are not
+assignable** — spoof a rank with `dataclasses.replace(p.runtime, ...)`
+(`tests/_rmhd_testing.py::fake_ranked_params`). `runtime` is never recorded in
+`params.json`. The compatibility matrix (backend × dims × size, `nz % size`, `z_spectral`,
+particles) is validated in `Parameters._validate_compat`, which is the one thing a
+`Parameters` built on a shared `Runtime` runs; `nz % size`, `"jax"` × dims, the `z_spectral`
+rejections and the jax device-count checks are ALSO in `Runtime.resolve`, guarding the
+communicators and mesh that call creates — both carry them, with identical messages.
 
 Per-equation physics parameters live in `params.eqpars` (a plain-JSON dict, recorded in
 params.json, `{}` by default): RMHD reads `diss`/`hyper` (and the z_spectral-only `z_diss_k`) from it — they were ctor args
@@ -93,29 +121,50 @@ until 2026-08-01, and old records are folded into `eqpars` with a warning by
 Equation sets register in `physics/__init__.py::equation_registry`:
 `EquationRecipe(set_timestep_func, term_funcs, grad_func, nfields,
 forcing_scale_func=None, halo_start_func=None, linear_matrix_func=None)` per `eqtype`.
-`term_funcs` are summed into the RHS (`construct_rhs`); the k-local LINEAR part is not an
-RHS term — `linear_matrix_func(kgrid, params) -> L` (convention `dt f = L f + N(f)`) is
-built once by `setup_kgrids` into `kgrid.lin_L` (+ `lin_m`/`lin_s` for putzer2, where
-`lin_s = sqrt((tr L/2)^2 - det L)` is precomputed at SETUP — never `lin_s2`, which Z2
-retired) or `lin_dperp`/`lin_dz`/`lin_kz` (a `SeparableL` return; populated INSTEAD of the
-dense trio, never alongside), and the steppers apply
-it only through the `taranis.propagators` hook (`apply_exp`, `solve_shifted`, `scaled`;
-backend: a `SeparableL` → separable, a dense L by shape — diagonal 4-d, putzer2 2x2
-5-d; RMHD returns `SeparableL` for `z_spectral` with `diss[0]==diss[1]`). Never reintroduce
-`kgrid.hdiss` or read `lin_*` from a stepper directly; the op order inside `apply_exp` is
-the RMHD bitwise-equivalence gate (docs/numerics.md). **Term funcs take 5
-positional args** `(state, grads, kgrid, params, halo)` — declare `halo=None` and ignore
-if unused. **`grads` is a TUPLE**, one real-space `(2,nz,nx,ny)` array per field in the
-equation set's `grad_func` order (RMHD: `gphi, gpsi, gvort, gjpar`), never a stacked
-`(nfields,2,…)` array — unpack it, never `.shape`/`grads[:2]` it. It comes from
+`term_funcs` entries are `physics.Term(func, active=...)` (a bare callable is accepted and
+wrapped, meaning always active) and `construct_rhs` sums only the terms whose
+`active(params)` is true — plain python at TRACE time, `params` being static, so an
+inactive term never enters the graph; an empty selection is a `ValueError`. The predicates
+are the single source of truth: `rmhd.fd_linear_active` (`dims==3 and not z_spectral`,
+which `rmhd.halo_start` reads too) and `rmhd.forcing_active`. The term funcs keep their
+early `zeros_like` returns, expressed through those predicates, for the direct callers that
+reach them (`tests/test_forcing_smoke.py:125`, `tests/test_z_spectral.py:284`); from the
+RHS they are never reached.
+
+The k-local LINEAR part is not an RHS term — `linear_matrix_func(kgrid, params) -> L`
+(convention `dt f = L f + N(f)`) is validated by `propagators.build` and stored by
+`setup_kgrids` in the SINGLE slot `kgrid.lin`, always populated, as one of four operator
+pytrees (NamedTuples of arrays carrying the methods): `IdentityOperator()` (a recipe with
+no `linear_matrix_func`), `DiagonalOperator(L)` (dense 4-d L — FD-z and 2D),
+`Putzer2Operator(L, m, s)` (dense 2×2 5-d L, with `m` and `s = sqrt((tr L/2)^2 - det L)`
+precomputed at SETUP — never `lin_s2`, which Z2 retired) and `SeparableL(dperp, dz, kz)`
+(what `rmhd.linear_matrix` returns for `z_spectral` with `diss[0]==diss[1]`). The steppers
+apply it only through the `taranis.propagators` hook — `apply_exp`, `solve_shifted`,
+`scaled`, `apply_L`, `exp_op` and the `hoistable` property; `dense()` materialises the 2×2
+L for tests and validation and is never formed inside a step. Never reintroduce
+`kgrid.hdiss`, and never read `kgrid.lin`'s arrays from a stepper — steppers use its
+methods only; the op order inside `apply_exp` is the RMHD bitwise-equivalence gate
+(docs/numerics.md). Two traps: an empty NamedTuple is falsy, so never test `kgrid.lin` for
+truthiness; and never index the operator positionally outside its own methods.
+
+**Term funcs take 5 positional args** `(state, grads, kgrid, params, halo)` — declare
+`halo=None` and ignore if unused. **`grads` is a NAMED TUPLE** —
+`rmhd.RMHDGrads(gphi, gpsi, gvort, gjpar)` / `gdi.GDIGrads(gphi, gN, gvort)`, one
+real-space `(2,nz,nx,ny)` array per field in the equation set's `grad_func` order, never a
+stacked `(nfields,2,…)` array. Read it by name or unpack it — a NamedTuple is a tuple, so
+positional consumers keep working — but never `.shape`/`grads[:2]` it.
+`shared_physics.grad_fields` returns the plain tuple; the recipe names it. It comes from
 `shared_physics.grad_fields(fks, kgrid, params)`, which transforms
 `shared_physics.GRAD_CHUNK` fields per inverse transform (module constant, read at TRACE
 time, not a `Parameters` attribute; the probe's `--grad-chunk` sets it). **`GRAD_CHUNK = 1`
 is the default everywhere** and transforms per COMPONENT with a free per-field restack;
-`>1` batches whole fields per ifft. All values are bitwise identical and `4` reproduces the
-pre-F1 graph byte-exactly, so this is purely a per-device speed/memory knob (measured
-splits: docs/performance.md — CPU wants 1 outright, P100 gains 3–20% from 2, 2080Ti is
-indifferent). `halo_start_func` pre-issues the z-halo exchange at the top of the RHS;
+`>1` batches whole fields per ifft. `grad_fields`' OUTPUT is bitwise identical at every
+chunk size (`tests/test_grad_memory.py`) and `4` reproduces the pre-F1 graph byte-exactly;
+the STEPPED 3D solution is not — chunk 2 and 4 differ from chunk 1 by one ulp (637/2304
+elements, rel 1.1e-16, 16²×8 FD-z, 6 steps, from XLA fusing the restacked gradient
+differently inside the step), 2D exactly bitwise. So it is a per-device speed/memory knob,
+not a no-op on the solution (measured splits: docs/performance.md — CPU wants 1 outright,
+P100 gains 3–20% from 2, 2080Ti is indifferent). `halo_start_func` pre-issues the z-halo exchange at the top of the RHS;
 enabled per backend (`_halo_start_enabled`: off for mpi4jax, on for `"jax"` and `"serial"`
 — serial's exchange is a pure slice, so pre-issuing it cannot change results),
 overridable via `params.halo_start`. When off, `z_derivatives` does its own exchange.
@@ -148,9 +197,10 @@ All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_s
   `ppermute`/`psum`/`pmax`, valid only inside `comms.shard_call` around the jitted
   steppers. State/kgrid become global z-sharded arrays (`comms.to_global`); inside
   shard_map physics sees the same local shapes, so physics code is backend-agnostic.
-  `forcing_state`/`forcing_key` are replicated, never sharded. Constructing
-  `Parameters(comm_backend="jax")` brings up `jax.distributed` — must be the first jax
-  device work in the process; `"jax"`+`dims==2` is rejected. Launch flags/env:
+  `forcing_state`/`forcing_key` are replicated, never sharded. `comms.Runtime.resolve`
+  brings up `jax.distributed`, so the first `Runtime.resolve` (directly, or via the first
+  `Parameters(comm_backend="jax")`) in a process must precede any jax device work in it;
+  `"jax"`+`dims==2` is rejected. Launch flags/env:
   docs/SAVIO_GPU_SETUP.md; measured scaling in docs/performance.md.
 - `"serial"` (single-process, no MPI installed): `comm_backend=None` (the default)
   auto-resolves to `"serial"` when mpi4jax isn't importable and the real/launcher world
@@ -182,7 +232,8 @@ Two scheme families in `_scheme_registry`, one contract
 - **CB-IMEX** — `imexcb2`/`imexcb3e`/`imexcb3c`/`imexcb3f` (Cavaglieri & Bewley, JCP
   286:172 (2015); `imex2r_advance` 3 registers, `imex3r_advance` 4). ALL of L is implicit
   (dissipation included, no exponential in this path): one `solve_shifted(·, aᵢᵢ·dt)` per
-  implicit stage plus `apply_L` — still only the `propagators` hook, never `kgrid.lin_*`.
+  implicit stage plus `apply_L` — still only the `propagators` hook, never `kgrid.lin`'s
+  arrays.
   Recovers the quasi-static limit (L-stable, stiffly accurate) — the GDI/γ∥ path. The flip
   side: an L-stable solve artificially DAMPS oscillatory linear terms at |ω|·dt ≳ 1 —
   **never use an IMEX scheme on a wave-dominated L (e.g. z_spectral RMHD's ±i·kz) at large
@@ -202,7 +253,7 @@ over a block — fixed dt, or one `cfl_every` block — `run.py` forms every IF 
 → a tuple of `propagators.ExpOp` pytrees: `Putzer2Exp`/`SeparableExp`/`DiagonalExp`/
 `IdentityExp`, each with `.apply(arr)`) and passes it to the stepper's `exp_ops=` kwarg
 (every stepper in the registry takes it; IMEX ignores it and `stage_exp_ops` returns None
-for them). Whether a backend is hoisted is `prop.hoistable`, and the three answers are
+for them). Whether a backend is hoisted is `kgrid.lin.hoistable`, and the three answers are
 different in kind:
 
 | backend | selected for | hoisted | per-stage ops | what hoisting buys |
@@ -218,7 +269,7 @@ turning it off saves anything, and turning it off there costs time. Measured: z_
 removed the full-grid temporaries the unhoisted stage used to carry); GDI-IF is
 1.22× slower unhoisted on the P100 and 1.80× on XLA:CPU. **The memory price is a scheduler
 property, not an arithmetic one** — on XLA:CPU the GDI 2D 256² lsrk33 pair is memory-NEUTRAL
-(41.130 u hoisted, 41.091 u unhoisted: unhoisted, XLA keeps a 4 u copy of the dense `lin_L`
+(41.130 u hoisted, 41.091 u unhoisted: unhoisted, XLA keeps a 4 u copy of the dense `lin.L`
 plus seven 1 u `_coeffs` lanes live inside the stage scan, which costs what the hoisted stage
 coefficients cost), where the same pair on the P100 is a real +7.0 u. Size the trade on the
 device you will run on. Nothing to decide on the separable path (hoisting is ~free and on),
@@ -232,10 +283,13 @@ stage scan, where `gamma` is a scanned value — which is what keeps `hoist_prop
 memory-light (XLA's own loop-invariant code motion would otherwise hoist ops formed outside
 the stage scan with static `gamma`; do not "simplify" the unhoisted branch into that form —
 `test_unhoisted_graph_stays_memory_light` is the guard, and it fails at exactly 0.00 u of gap
-under that restructure). Every `run.py` block function computes the ops OUTSIDE its step scan
-(`_hoisted_exp_ops` after `_block_dt`, or from `_fixed_dt(params)`) — keep it there, that
-placement is the whole point. On adaptive `cfl_every=1` nothing is frozen, so nothing is
-hoisted on any backend; that is the path Z2's cheaper putzer2 coefficients and Z1's separable
+under that restructure). Both `run.py` block functions — `_cfl_block` and `_advance_block` —
+compute the ops OUTSIDE their step scan (`_hoisted_exp_ops` after `_block_dt`, or from
+`_fixed_dt(params)`) — keep it there, that placement is the whole point. **The rule is
+review-enforced and nothing else**: forming the ops inside the scans instead leaves the
+memory-light gate green (it measures the `exp_ops=None` branch) and every HLO histogram
+identical, because XLA's LICM hoists the loop-invariant formation itself. On adaptive
+`cfl_every=1` nothing is frozen, so nothing is hoisted on any backend; that is the path Z2's cheaper putzer2 coefficients and Z1's separable
 backend address instead.
 
 `params.cfl_every` (default 1) recomputes the adaptive dt (and its CFL allreduce) once
@@ -307,8 +361,9 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   `run._advance_forcing`), reused across sub-stages; the scale lags one step. Lifecycle:
   in any state from `initialize`/`load_snapshot` it is ALWAYS a concrete `(n_ou,)` array
   (zeros when off — never None), it is serialized, and it is refreshed at
-  `simulate`/`simulate_scan` start; `forcing_scale=None` errors at trace time and is
-  rejected by `save_snapshot`.
+  `simulate`/`simulate_scan` start only when it is all zeros — a stored nonzero scale
+  survives entry unchanged, which is what makes a restart bitwise;
+  `forcing_scale=None` errors at trace time and is rejected by `save_snapshot`.
 - `forcing_shell_noise` (default False): draws OU noise only at shell indices —
   statistically identical but a *different RNG stream*; opt-in.
 - `dims=2` + `"momentum"` from a quiescent start is pure hydro (`psi` stays exactly 0 —
@@ -418,6 +473,17 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   gitignored) was recorded on the pre-A2 tree and is what `tests/test_particles_coupled.py`
   compares against: solver output with `params.particles=None` must stay bitwise identical
   to it. Regenerate only on a tree that has no particle wiring.
+- **Refactor reference** (`tests/_gen_refactor_reference.py`,
+  `tests/data/refactor_reference_fp{64,32}.npz` + `refactor_reference_hlo_fp{64,32}.json`,
+  force-added) is the same kind of standing gate for the SOLVER paths gate 6 does not
+  cover: twelve configs (3D FD-z, z_spectral separable and putzer2, GDI IF and IMEX,
+  fixed/cfl-block/adaptive dt, rk44, imexcb3f, hoist on/off), compared by
+  `tests/test_refactor_reference.py` in `fields` and `t` bitwise AND in the optimized-HLO
+  opcode histogram (plus instruction and fusion totals) of the jitted `block_of_steps` — so
+  a structural change that keeps the numbers but moves the compute is caught too. The
+  generator DEFINES the configs and the test imports them. Host-keyed like gate 6
+  (print-skip off the recording host) and under the same rule: never regenerate to make it
+  pass.
 - `params.particles` (default `None` = off): a plain-JSON dict like `eqpars`, normalized
   by `taranis.particles.state.normalize_config` (imported inside the ctor, not at module
   scope, so `config` itself does not depend on the particle package — there is NO import
@@ -441,15 +507,21 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   guard access like the z attributes.
 - `ParticleState` (`particles/state.py`; `x`/`v` each `(n_ens, n, 3)` fp64, `w`
   `(n_ens, n, NWORK)` fp64 = cumulative work per unit mass per piece since init, zero from
-  `init_particles` and EXACTLY zero forever for a piece the ensemble's mask omits) rides as a
-  CARRY TUPLE `(state, pstate)` next to `SimulationState` — never a `SimulationState`
+  `init_particles` and EXACTLY zero forever for a piece the ensemble's mask omits) rides in
+  the run CARRY next to `SimulationState` — never a `SimulationState`
   field, so the on-disk state layout and every particles-off code path stay untouched
-  (gate 6). `simulate`/`simulate_scan(..., pstate=)` is REQUIRED iff `params.particles` is
+  (gate 6). The carry is ALWAYS `(state, aux)`, `aux` being the `ParticleState` when
+  particles are on and `None` off (a leafless pytree: scan/while_loop/donation see the same
+  leaves either way), and `_step`/`_cfl_block`/`_advance_block` always return `(carry, ys)`
+  with `ys = (t, mom)` on and `None` off. `block_of_steps` is the public wrapper and the
+  only branch on the carry SHAPE, keeping its contract: off, state in → state out; on,
+  `(state, pstate)` in → `((state, pstate), ys)` out. Particles are rejected on
+  `comm_backend="jax"`, so on that backend the jitted `shard_call` boundary carries the
+  bare state — `run.py` wraps `(s, None)` around it inside the jit and unwraps on the way
+  out; `comms.shard_call` never sees the tuple carry.
+  `simulate`/`simulate_scan(..., pstate=)` is REQUIRED iff `params.particles` is
   set (a pstate with particles off is also a ValueError); both return `(state, pstate)`
-  when on, plain `state` when off. `block_of_steps`/`_cfl_block` return `((state,
-  pstate), ys)` with `ys = (t, mom)` when on, the unchanged `final_state` when off; the off
-  branch is a static `if params.particles is not None:` at the top of each function, never
-  restructured "for symmetry".
+  when on, plain `state` when off.
 - `push_ensembles(...) -> (pstate, mom)` and `moments(pstate, bsample) -> (n_ens, NMOM)`:
   `MOMENTS = (vperp2, vz2, vz, vperpB2, vparB2, mu, mu2, w_eperp, w_ez_ideal,
   w_ez_resistive, w_ez_forcing)` (`NMOM = 11`), per-ensemble means. `vparB2 = (v·B)²/|B|²`,
@@ -486,10 +558,13 @@ Derivation and conventions: docs/numerics.md "Test particles". Rules:
   deterministic, so the forcing RNG stream is untouched by construction.
 - `boris.push_tracked/push(..., gather=interp.gather)` is swappable: validation drives the
   identical push through `interp.gather_spectral` on rfft2 arrays.
-- Restart is bitwise ONLY with `forcing_norm_per_step=False` or `forcing=False` — this is
-  pre-existing (`_refresh_forcing_scale` recomputes the forcing scale at dt=0 on
-  `simulate`/`simulate_scan` entry, not particle-specific), but it also bounds when a
-  particle restart reproduces the uninterrupted trajectory bitwise.
+- Restart is bitwise at every `forcing_norm_per_step` setting (2026-08-22):
+  `_refresh_forcing_scale` computes a scale on `simulate`/`simulate_scan` entry only for a
+  state whose `forcing_scale` is all zeros (a fresh `initialize`, a repaired legacy
+  snapshot), so a checkpoint's stored lagged scale is the one the next step uses and a
+  particle restart reproduces the uninterrupted trajectory bitwise. Gates:
+  `tests/test_forcing_norm_per_step.py::test_restart_is_bitwise_at_default_norm` and gate
+  6c at both settings.
 - `ctx()` (`tests/_rmhd_testing.py`) caches on `tuple(sorted(kwargs.items()))`, so it
   CANNOT take `particles=` (a dict is unhashable) — use `fresh_params(particles=...)`.
 - `diagnostics/particles.py` is the read-only observer side (plain imports, dependency runs

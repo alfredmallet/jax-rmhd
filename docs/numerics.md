@@ -31,20 +31,23 @@ forcing power and the dissipation rate.
 
 ### Gradients are a tuple, one transform at a time
 
-Every equation set's `grad_func` returns a **tuple** of real-space `(2, nz, nx, ny)`
-gradients, one per field — not a stacked `(nfields, 2, …)` array. The reason is memory,
-not taste. An inverse FFT is an opaque kernel, so its input must be materialised whole: a
+Every equation set's `grad_func` returns a **NamedTuple** of real-space `(2, nz, nx, ny)`
+gradients — `rmhd.RMHDGrads(gphi, gpsi, gvort, gjpar)`, `gdi.GDIGrads(gphi, gN, gvort)` —
+one per field, not a stacked `(nfields, 2, …)` array. It is a tuple, so positional
+consumers are unaffected; the names label the order. The reason is memory, not taste. An
+inverse FFT is an opaque kernel, so its input must be materialised whole: a
 single batched `ifft` of `stack([i·kx·f, i·ky·f])` over all four RMHD fields forces an
 8 u k-space array to be live *alongside* the ~8 u of real-space output it produces. Going
 one field — in fact one component — at a time makes the k-space peak 2 u instead, and
 returning a tuple is what keeps the output side from paying the cost back: any
 `stack`/`concatenate` of the results would be a second full copy of the real-space set.
 
-`shared_physics.grad_fields` is the shared implementation; `shared_physics.GRAD_CHUNK`
-(a module constant read at trace time, deliberately not a `Parameters` attribute) sets how
-many fields share one inverse transform. Every value is bitwise identical — this is a
-scheduling knob only — and the default is 1. The arithmetic is unchanged either way;
-what changes is which intermediates XLA has to keep alive.
+`shared_physics.grad_fields` is the shared implementation (it returns the plain tuple; the
+recipe names it); `shared_physics.GRAD_CHUNK` (a module constant read at trace time,
+deliberately not a `Parameters` attribute) sets how many fields share one inverse
+transform. Its output is bitwise identical at every chunk size — this is a scheduling
+knob only — and the default is 1. The arithmetic is unchanged either way; what changes is
+which intermediates XLA has to keep alive.
 
 Ordering does **not** buy anything further. At the RHS peak all eight real gradient
 components are live, and the brackets only need six at a time (`gvort` and `gjpar` are each
@@ -91,6 +94,23 @@ Four rules govern any new code that touches both `t` and fields:
    factor multiplying complex64/128 `forcing_state`. A future time-dependent term func
    that reads `t` must do the same at the point it touches fields — it will not be caught
    by rule 2's pins because `t` itself is legitimately fp64.
+
+**`t` is fp64 storage over fp32-rounded increments in the IF steppers** (recorded
+2026-08-22, pre-existing). `lsrk_advance`'s scan path builds its stage coefficients at
+field precision (`timestepping.py` ~114–139: `gammas_arr = jnp.array(scheme.gammas,
+dtype=_precision.ftype)`), so under `TARANIS_PRECISION=32` `t + gammas_arr[i]*dt` adds an
+fp32 product to the fp64 `t`; the unrolled path multiplies by the bare python `gamma`, and
+`rk44`/`imexcb3f` advance by `dt` itself. Six steps at `dt = 0.01` therefore end at
+
+| path | final `t` |
+|---|---|
+| lsrk54, `lsrk_scan=True` | 0.05999999830964953 |
+| lsrk33, `lsrk_scan=True` | 0.05999999865889549 |
+| lsrk54, `lsrk_scan=False` | 0.060000000000000005 |
+| rk44, imexcb3f | 0.06 exactly |
+
+so `lsrk_scan` True and False disagree in `t` at fp32, and `t` is a live comparator in any
+bitwise reference recorded there — not a formality.
 
 ### The fp32 spectral noise shelf
 
@@ -258,9 +278,12 @@ to a relative 1e-13 instead.
 
 The integrating factor above is one instance of a general hook. An equation set may
 declare `linear_matrix_func(kgrid, params) → L` in its `EquationRecipe`; `setup_kgrids`
-builds it once and stores it on the `K_Grids` (`lin_L`, plus `lin_m`/`lin_s` for the 2×2
-backend), and the timesteppers only ever call `apply_exp(arr, τ)` and — from the IMEX
-schemes — `solve_shifted(arr, a) = (I − a·L)⁻¹ arr`. No stepper sees a matrix.
+builds it once (`propagators.build`) and stores it on the `K_Grids` in the single slot
+`lin`, an operator pytree — a NamedTuple of the backend's arrays carrying the methods
+(`DiagonalOperator(L)`, `Putzer2Operator(L, m, s)`, `SeparableL(dperp, dz, kz)`, or
+`IdentityOperator()` when a recipe declares none) — and the timesteppers only ever call
+`apply_exp(arr, τ)` and — from the IMEX schemes —
+`solve_shifted(arr, a) = (I − a·L)⁻¹ arr`. No stepper sees a matrix.
 
 **Sign convention, fixed repo-wide:** `L` is defined by `∂ₜf = L f + N(f)`, so the
 propagator is `exp(L·τ)` and a damped mode has `Re λ(L) < 0`. (RMHD's `L` is exactly the
@@ -275,7 +298,7 @@ is perpendicular-only); a `SeparableL` NamedTuple selects the separable backend.
   `exp(Lτ) = e^{mτ}[cosh(sτ)·I + (sinh(sτ)/s)·(L − m·I)]` with `m = tr L/2` and
   `s = sqrt(m² − det L)` (Putzer/Sylvester). No eigendecomposition and no eigenvector
   storage, and it is smooth through the defective points where an eigenbasis does not
-  exist. `s` is formed once at setup (`kgrid.lin_s`) and the two hyperbolic functions
+  exist. `s` is formed once at setup (`kgrid.lin.s`) and the two hyperbolic functions
   come from a single exponential per stage: with `z = s·τ` and `w = e^z`,
   `cosh z = (w + 1/w)/2` and `sinh(z)/z = (w − 1/w)/(2z)`, so a stage costs 2 complex
   exps and 1 complex reciprocal per mode rather than the complex `sqrt`/`cosh`/`sinh`
@@ -351,8 +374,8 @@ using `σx² = I`. "Elsasser" records where the exactness comes from: σx is dia
 by `z± = φ ± ψ` with eigenvalues `d ± i·kz` — two independent damped waves — and the
 eigenvectors are the constant vectors (1, ±1), independent of k. The implementation
 stays in (φ, ψ) (the Elsasser transform would cost two full-grid adds per apply) and
-stores three small REAL arrays: `lin_dperp` (nkx,nky), `lin_dz` and `lin_kz` (nz,1,1) —
-against putzer2's 6 u of resident complex full-grid `lin_L/lin_m/lin_s`. Per stage the
+stores three small REAL arrays — `SeparableL`'s `dperp` (nkx,nky), `dz` and `kz` (nz,1,1)
+— against `Putzer2Operator`'s 6 u of resident complex full-grid `L`/`m`/`s`. Per stage the
 propagator forms `P = exp(dperp·τ)`, `c = e^{dz·τ}cos(kz·τ)`, `s = e^{dz·τ}sin(kz·τ)`
 and applies `out₀ = P·(c·a₀ + i·(s·a₁))`, `out₁ = P·(i·(s·a₀) + c·a₁)`, the `i·` written
 as the real swap `x + iy → −y + ix`. The backend is hoistable: its whole stage stack is
@@ -389,10 +412,9 @@ Nyquist rule: the mirror maps index 0 and nz/2 to themselves, forcing kz = 0 at 
 `kz[0] = 0` holds anyway and `kz[nz/2]` is zeroed by `_kz_deriv`. These are checked on
 plane-sized arrays at setup; the dense operator (4 u, and transiently doubled by
 `_check_hermitian_compatible`'s host-numpy mirror) is never materialised — the
-`propagators.dense_operator` helper exists for tests and `particles/fields.py` only.
+operators' `dense()` method exists for tests and `particles/fields.py` only.
 The same `_kz_deriv` array feeds the off-diagonal and the kz⁴ term, exactly as the dense
-path does, which is why `dense_operator` of the separable entries reproduces the dense L
-bitwise.
+path does, which is why `SeparableL.dense()` reproduces the dense L bitwise.
 
 ## Stochastic forcing
 

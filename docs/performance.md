@@ -351,7 +351,7 @@ the transforms.
 | GFLOP/step (XLA cost analysis) | 0.065 | 0.255 | 3.91 |
 
 Ablation ladder inside the real (scanned, fused) z_spectral step — each row drops one piece
-of `Putzer2Propagator` and re-times; every variant is numerically wrong on purpose:
+of `Putzer2Operator` and re-times; every variant is numerically wrong on purpose:
 
 | variant | ms/step | that piece costs |
 |---|---|---|
@@ -453,7 +453,7 @@ working set for the program, "total" adds the live arguments — state + kgrid):
 
 Reading it: the z_spectral step's working set is ~32 U before any hoisting (FD-z: ~22 U) —
 the RHS's real-space gradient stack and the rfftn intermediates, not the propagator — and the
-persistent putzer2 operator (`lin_L` 4 U + `lin_m` + `lin_s2`) is 6 U = 196 MB at 256²×64.
+persistent putzer2 operator (`lin.L` 4 U + `lin.m` + `lin_s2`) is 6 U = 196 MB at 256²×64.
 Hoisting adds 4·nstage U of live arrays less the per-stage coefficient temporaries it
 removes: measured +3.5 U for lsrk33 (+9% of the program) and +20 U for lsrk54 (+49%);
 `cfl_every` blocks give the same numbers as fixed dt. So lsrk33 hoisted is cheap; lsrk54
@@ -792,7 +792,7 @@ arena high-water; both numbers are given.
 | | | | remaining lanes < 0.4 u: 0.28 u |
 
 args 2.129 u = `state.fields` 2.000 + `forcing_state` `c64[1,2,128,65]` 0.062 +
-`kgrid.lin_L` `f32[2,1,128,65]` 0.031 (the diagonal backend's real, z-broadcast L) + change.
+`kgrid.lin.L` `f32[2,1,128,65]` 0.031 (the diagonal backend's real, z-broadcast L) + change.
 out 2.063 u = fields + forcing_state.
 
 **What bounds it:** the RHS gradient working set. The arena holds 16 k-space gradient values
@@ -814,10 +814,10 @@ early on the XLA CPU scheduler, so the ~2 u ideal-ordering prize is unreachable 
 | ~0 | 5 | `f32[4,32,1,1]`, `f32[32,1,1]` | the same ops' `c`, `s` (nz,1,1) envelopes |
 
 args 2.235 u = fields 2.000 + `forcing_state` 0.062 + `dealias` `pred[32,128,65]` 0.125 +
-the separable `lin_dperp`/`lin_dz`/`lin_kz` (≈ 0.03 u together).
+the separable `lin.dperp`/`lin.dz`/`lin.kz` (≈ 0.03 u together).
 
 **What bounds it:** the same gradient working set as FD-z, and nothing else — the operator has
-left the accounting. The dense `lin_L`/`lin_m`/`lin_s2` that cost 6 u of arguments in the
+left the accounting. The dense `lin.L`/`lin.m`/`lin_s2` that cost 6 u of arguments in the
 baseline are gone (Z1), and hoisting five stages of `exp(L·τ)` now costs **0.06 u** instead of
 the 22 u the putzer2 backend needed, because `SeparableExp` is `(nkx,nky) + 2×(nz,1,1)` reals
 per stage rather than four full-grid complex arrays.
@@ -835,14 +835,14 @@ per stage rather than four full-grid complex arrays.
 | 0.992 | 3 | `f32[1,256,256]` | real-space gradient components |
 | 1.000 | 3 | `c64[256,129]` | `NonlinearTerm` k-space output/temporaries |
 
-args 11.131 u = `kgrid.lin_L` `c64[2,2,1,256,129]` **4.000** + `lin_m` 1.000 + `lin_s2` 1.000
+args 11.131 u = `kgrid.lin.L` `c64[2,2,1,256,129]` **4.000** + `lin.m` 1.000 + `lin_s2` 1.000
 + fields 2.000 + `forcing_state` `c64[1,2,256,129]` 2.000 + `ksq`/`inv_ksq` 0.500 each +
 `dealias` 0.125. out 4.000 u = fields + forcing_state.
 
 **What bounds it:** the operator, not the RHS. The putzer2 propagator owns 16.5 u of the
 26.0 u temp arena (12 u of hoisted stage coefficients — four complex full-grid entries for
 stage 0 plus four stacked over the two scanned stages — and 4.5 u of `_coeffs` intermediates)
-and 6 u of the 11.1 u of arguments (`lin_L`/`lin_m`/`lin_s2`). The whole RHS working set —
+and 6 u of the 11.1 u of arguments (`lin.L`/`lin.m`/`lin_s2`). The whole RHS working set —
 gradients, brackets, transforms — is under 10 u. `hoist_propagator=False` is NOT the memory
 knob here that the plan expects it to be: the same case with hoisting off measures 41.091 u,
 so hoisting is memory-neutral on this backend and grid (§2 has why, and the GPU contrast).
@@ -1010,7 +1010,7 @@ hoisted against 41.091 u unhoisted. That is not what the plan's §1 note predict
 True on putzer2: 4 complex arrays of L's full shape per stage") and not what the GPU shows —
 the committed `bench/memory_probe_p100_postFZ_fp32.json` has `gdi2d_1024_lsrk33` at 45.244 u
 hoisted against 38.242 u unhoisted, a real +7.0 u. The arena tables explain the CPU result:
-unhoisted, XLA keeps a 4.000 u copy of the dense `lin_L` plus seven 1 u `_coeffs` lanes live
+unhoisted, XLA keeps a 4.000 u copy of the dense `lin.L` plus seven 1 u `_coeffs` lanes live
 inside the stage scan, and those cost as much as the twelve 1 u-equivalents of hoisted stage
 coefficients they replace. The memory price of hoisting is a scheduler property, not an
 arithmetic one; size it on the GPU, per the plan's §0.5.
@@ -1133,7 +1133,7 @@ read-preserving reduction), `noifft_dead`/`nobracket_dead` (crude twins that als
 their producer, i.e. upper bounds), `nogradk` (the `i·k_perp` array multiply → a complex
 scalar), `nobracket` (2 mul + 1 sub → 3 adds, all operands live), `nozarith` (the 4th-order
 stencils → two of their operands, halo and concatenate kept), `nohalo`, `nofdlin`/`nonlin`
-(a term → zeros), `noprop` (`ExpOp.apply` → identity), `noexpform` (`Propagator.exp_op` →
+(a term → zeros), `noprop` (`ExpOp.apply` → identity), `noexpform` (the operator's `exp_op` →
 same-shaped constants), `norhs`/`norhs_noprop`, `nocfl`, `chunk2`/`chunk4`.
 
 ## Known, not done

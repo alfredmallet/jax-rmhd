@@ -607,5 +607,107 @@ ROOT-inclusive histograms identical at both precisions, live on this host; memor
 green; L's probe max |Δ| = 0.0000 u at both precisions over 28 cases. `bench/zspectral_profile.py`
 is the one two-phase file (L's renames + G's `.func`), merged clean and consistent.
 
-(the C and R merges, L's `step_accounting.py` edits on main, integration, the sweep, and what
-moved to `plans/old/`: below as they land)
+C merged as `0736ab8`, L's deferred `bench/step_accounting.py` edits landed on main as
+`c0d6fbc` after the G merge, and R as `a055d64` + `75e1f52` + `f838420` — all fast-forwards,
+no conflicts. `f838420` is the four-phase `main`; the close-out docs sweep follows it.
+Nothing moved to `plans/old/`.
+
+## What landed
+
+**Phase 0.** `tests/_gen_refactor_reference.py` DEFINES the twelve configs, the IC, the
+driver and the HLO parse; `tests/test_refactor_reference.py` imports them. Sidecars
+(force-added, `tests/data` is gitignored): `refactor_reference_fp{64,32}.npz` (`fields`,
+`t` per config) and `refactor_reference_hlo_fp{64,32}.json` (instruction count per opcode
+of the optimized module, plus `total_instructions` and `fusions`), host-keyed print-skip on
+gate 6's convention. `bench/memory_probe_refactor_base{,_fp64}.json` is the laptop-profile
+`total_u` baseline (28 cases each) the C and L gates compare against.
+`run._refresh_forcing_scale` computes at dt = 0 only for an all-zero `forcing_scale`, so a
+stored lagged scale survives driver entry — gates in `tests/test_forcing_norm_per_step.py`
+(three tests) and gate 6c at both `forcing_norm_per_step` settings. The HLO instruction
+regex counts `ROOT` lines (`bench/hlo_audit.py` carried the same bug and got the same fix);
+all recorded histograms are ROOT-inclusive.
+
+**Phase L.** `taranis/propagators.py` holds four operator NamedTuples —
+`IdentityOperator()`, `DiagonalOperator(L)`, `Putzer2Operator(L, m, s)`,
+`SeparableL(dperp, dz, kz)` — each with `scaled`, `exp_op`, `apply_exp`, `solve_shifted`,
+`apply_L`, `dense()` and the `hoistable` property; `build(L, params)` is the validating
+constructor (was `linear_fields`), and `get_propagator`/`dense_operator`/the four
+`*Propagator` classes are gone. `taranis/grids.py` carries the single slot `K_Grids.lin`,
+always populated after `setup_kgrids` (`IdentityOperator()` for a recipe with no
+`linear_matrix_func`), with `kgrid_specs`/`_kgrid_to_global` mapping over its leaves.
+`taranis/timestepping.py`'s five call sites read `kgrid.lin`. The jitted `kgrid`'s leaf
+ORDER is unchanged (`lin` sits where `lin_L` sat), which is why the HLO histograms hold.
+Consumers updated: `tests/test_{linear,separable}_propagator.py`, `test_gdi_linear.py`,
+`test_imex.py`, `test_hoist_propagator.py`, `bench/zspectral_profile.py`,
+`bench/step_accounting.py`, `webgpu/gen_refvectors{,3d}.py`.
+
+**Phase G.** `physics.Term(func, active=lambda params: True)`; `EquationRecipe.term_funcs`
+keeps its name and still accepts bare callables (wrapped by `construct_rhs`), which sums
+only the terms whose `active(params)` is true and raises naming them when none is.
+`rmhd.fd_linear_active` (`dims==3 and not z_spectral`) and `rmhd.forcing_active` are the
+single source of truth — the term funcs' early `zeros_like` returns and `rmhd.halo_start`
+read them, and the direct callers that still reach those returns are
+`tests/test_forcing_smoke.py:125` and `tests/test_z_spectral.py:284`. Gradients are
+`rmhd.RMHDGrads(gphi, gpsi, gvort, gjpar)` and `gdi.GDIGrads(gphi, gN, gvort)`;
+`shared_physics.grad_fields` still returns a plain tuple. Files:
+`taranis/physics/{__init__,rmhd,gdi}.py`, the new `tests/test_equation_interface.py`, plus
+the three `Term` consumers (`tests/test_z_stencils.py`, `bench/step_accounting.py`,
+`bench/zspectral_profile.py`). Zero HLO movement in all twelve configs — XLA's simplifier
+had already folded `add(x, broadcast(0))`; only pre-optimization StableHLO shrinks (6 lines
+per config with an inactive term).
+
+**Phase C.** `taranis/run.py` 371 → 322 lines. The carry is always `(state, aux)` (`aux` =
+`ParticleState` on, `None` off — a leafless pytree) and the per-step output always `ys`
+(`(t, mom)` on, `None` off). Three bodies: `_step`, `_cfl_block`, `_advance_block`;
+`block_of_steps` is the public wrapper and the only branch on the carry SHAPE, contract
+unchanged. `simulate`'s while_loop body is `_step(...)[0]` or `_cfl_block(...)[0]` with
+`cond` on `carry[0].t`; `simulate_scan` appends `ys` on the host. `_hoisted_exp_ops` stays
+outside both step scans. On `comm_backend="jax"` the jitted `shard_call` boundary carries
+the bare state — `run.py` wraps `(s, None)` inside the jit — so `comms.py` is untouched.
+
+**Phase R.** `comms.Runtime` is a frozen, identity-hashed dataclass (`backend, comm, rank,
+size, cart_comm, left_neighbor, right_neighbor`) built by
+`Runtime.resolve(comm_backend=None, *, dims, nz, z_spectral=False)`. `_resolve_backend`
+moved to `comms.py` (re-exported from `config.py`, and reading
+`HAVE_MPI4PY`/`HAVE_MPI4JAX`/`MPI` off `taranis.config`, which is where the tests patch
+them), and `init_backend`/`_local_device_ids` take a `Runtime` instead of a half-built
+`Parameters`. `Parameters(...,
+runtime=None)` resolves one or reuses an explicit one, with `comm_backend`, `comm`, `rank`,
+`size`, `cart_comm`, `left_neighbor`, `right_neighbor` as read-only forwarding properties —
+no consumer changed, and those names are no longer assignable.
+`Parameters._validate_compat` holds the whole compatibility matrix and is the only
+validation a `Parameters` built on a SHARED `Runtime` runs, so `nz % size`, `"jax"` × dims, the
+`z_spectral` rejections and the jax device-count checks live in both it and
+`Runtime.resolve` (which guards the communicators and mesh that call creates), with
+byte-identical messages. `runtime` is popped from `_init_args`, so `params.json` is
+byte-identical to the base. Files: `taranis/config.py`, `taranis/comms.py`,
+`tests/_rmhd_testing.py`, `tests/test_backend_jax.py`, `tests/test_params.py`.
+
+### Follow-ups (not this plan)
+
+- **The separable reference config has `dz ≡ 0`.** `sep_fixed_lsrk54` sets no `z_diss_k`,
+  so `SeparableL.dz` is exactly zero and the `+ dz` / `exp(dz*tau)` arithmetic is not
+  exercised by the bitwise gate (it is covered by `tests/test_separable_propagator.py`).
+  Closing it means adding a `z_diss_k` config, recorded at the Phase-0 base via
+  `git archive`.
+- **The 3D restart gate runs one setting.** `tests/test_particles_3d.py`'s gate 6 uses
+  `forcing_norm_per_step=False`; now that a forced restart is bitwise at the default too,
+  it could be widened to both settings the way 2D gate 6c was.
+- **The exp_ops placement rule has no mechanical guard.** Forming the stage ops inside the
+  step scans leaves both the memory-light gate (it measures the `exp_ops=None` branch) and
+  every HLO histogram unchanged, because XLA's LICM hoists the formation itself. Review is
+  the only check.
+- **The `"jax"` backend is not covered by local `make test`** on a host where mpi4py
+  imports (no fake devices are installed then), and under
+  `--xla_force_host_platform_device_count=4`
+  `tests/test_backend_jax.py::test_same_seed_run_matches_serial_reference` fails at 1.4e-13
+  in `forcing_state` on this laptop under jax 0.10.0 — pre-existing, identical on the
+  pre-refactor tree, and owned by whoever owns that backend.
+- **The webgpu `lin_L` name.** `webgpu/SPEC.md:269`, `webgpu/README.md:1156`, the browser
+  sources and `gen_refvectors.py`'s `out["lin_L"]` use `lin_L` as a reference-vector JSON
+  key and buffer name. It is the port's own name, not a taranis attribute, and was left
+  alone; renaming it is the webgpu side's call.
+- **fp32 `t` accumulation.** The IF steppers' scan path adds fp32-rounded `gamma*dt`
+  increments to the fp64 `t`, so at `TARANIS_PRECISION=32` `lsrk_scan` True and False
+  disagree in `t` and neither reaches the exact value `rk44`/`imexcb3f` do. Pre-existing,
+  recorded in `docs/numerics.md`'s precision model.

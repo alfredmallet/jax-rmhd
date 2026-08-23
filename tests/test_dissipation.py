@@ -1,6 +1,6 @@
 # Perpendicular hyperdissipation decay law.
 # IC phi = psi = cos(x)cos(y)cos(z) lives entirely at k_perp^2 = 2 (kx=+-1, ky=1),
-# so with hyper=1 the integrating factor exp(kgrid.lin_L*dt) = exp(-diss*ksq*dt)
+# so with hyper=1 the integrating factor exp(kgrid.lin.L*dt) = exp(-diss*ksq*dt)
 # damps each field coefficient by exp(-2*diss*t) and the (quadratic) energy by
 # exp(-4*diss*t). The law is exact, not asymptotic: the nonlinear terms vanish
 # identically for this IC (grad_perp^2 phi = -2 phi, so {phi, grad_perp^2 phi} = 0,

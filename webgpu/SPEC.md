@@ -90,7 +90,7 @@ gamma = (1/3, 5/12, 1/4)          # sum = 1
 
 One step of size `dt`, with `E_i = exp(L * dt * gamma_i)` (per-mode real factor;
 exponent is `L*dt*gamma_i` — the propagator is pre-scaled by dt, matching
-`lsrk_advance` + `DiagonalPropagator.apply_exp`):
+`lsrk_advance` + `DiagonalOperator.apply_exp`):
 
 ```
 delta = 0

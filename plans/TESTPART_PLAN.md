@@ -517,7 +517,7 @@ Coupled gates (live solver):
    and x/v bitwise, run with `forcing_norm_per_step=False`: the default per-step
    normalization's driver-entry `_refresh_forcing_scale` recompute at dt=0 makes even a
    particle-free forced restart non-bitwise, a pre-existing solver issue filed
-   separately, not an A2 regression.)
+   separately (fixed 2026-08-22, REFACTOR_PLAN Phase 0c), not an A2 regression.)
 7. **E_z assembly consistency**: all pieces on, assembled E_z vs centered finite
    difference of ψ across a step — agreement at the stepper's order. Catches any sign
    or piece-bookkeeping error in §2 directly. (A0, 2026-08-18: implemented as a centered
@@ -591,7 +591,8 @@ rather than the assembly's:
   state/scale/key, t), the state item's leaf list and `<step>/default/` tree untouched, a
   `particles/` item at every written step, a sidecar with a whole number of (step, ensemble)
   rows, and a restart that continues fields, trajectories and `w` bitwise — both z modes, with
-  `forcing_norm_per_step=False` for the same pre-existing reason as the 2D gate 6c. **No new
+  `forcing_norm_per_step=False` for the same pre-existing reason as the 2D gate 6c (fixed
+  2026-08-22, REFACTOR_PLAN Phase 0c). **No new
   reference npz**: the committed one records pre-A2 2D main and is about the carry wiring,
   which 3D does not touch (`run.py` needed no edit for B1).
 - **z-specific interpolation checks**: the trilinear gather reproduces every collocation value
@@ -1290,7 +1291,8 @@ injects a PERIODIC first-order perturbation at a cadence set by `nblock`, a pure
 knob; on a measurement whose whole content is spurious-versus-real stochasticity, a periodic
 scheme change is the artifact one would least want, and it is worse than a one-off warm-up.
 The property it protected is not there anyway: production restarts are already non-bitwise
-(`forcing_norm_per_step=True` recomputes the forcing scale at dt = 0 on driver entry), and
+(`forcing_norm_per_step=True` recomputes the forcing scale at dt = 0 on driver entry;
+fixed 2026-08-22, REFACTOR_PLAN Phase 0c), and
 gate 6c only achieves bitwise by turning that off. **Gate 6c is therefore re-specified**: a
 restart is deterministic, and reproduces the uninterrupted run bitwise AFTER the two-step
 warm-up, with the warm-up difference measured and reported.
