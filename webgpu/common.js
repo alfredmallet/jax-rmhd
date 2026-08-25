@@ -6060,9 +6060,7 @@ const RAIL_PANES = [
       Kelvin&ndash;Helmholtz shear layers and a tearing mode growing magnetic islands in 2D,
       a counter-propagating Alfv&eacute;n-wave collision in 3D &mdash; sets the controls and
       opens the displays that go with them. everything stays adjustable; presets are
-      configurations, not separate programs (<code>?demo=decay</code> /
-      <code>?demo=kh</code> / <code>?demo=tearing</code> / <code>?demo=collision</code> are
-      deep links to the same thing).</p>` }
+      configurations, not separate programs.</p>` }
 ];
 // the built panes, kept so the no-GPU path can open them without a DOM query
 // ---------------------------------------------------------------------------
