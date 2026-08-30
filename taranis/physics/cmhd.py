@@ -71,6 +71,51 @@
 # -diss_f*(kperp^2 + kz^2)^hyper acting on the PRIMED fields at COMOVING k, which is the
 # recorded truncation choice (docs; the physical-wavenumber alternative would need nu(t) or
 # per-block L rebuilds). linear_matrix therefore has no expansion branch at all.
+#
+# THE ln rho DENSITY VARIABLE (Phase C4; docs/numerics.md "The ln rho density variable").
+# Optional eqpars["density_var"] in {"rho" (default), "lnrho"}. With "lnrho", FIELD 0 IS
+# s = ln rho instead of rho -- an opt-in variable change for POSITIVITY: rho = e^s > 0 is
+# structural, so the rarefaction NaN channel the rho form carries is retired, and at the
+# transonic target s is the smooth near-Gaussian field where rho has decade-deep valleys.
+#
+#     d_t s = -u.grad s - div u                     (the flux form divided by rho)
+#
+#     h = cs^2 * s                     gamma = 1   LINEAR: the pressure force is the
+#                                                  k-local -cs^2 * i k~ s^, no transform
+#     h = cs0^2 e^((gamma-1)s)/(gamma-1)  gamma > 1  (pointwise, joins the scalar transform)
+#
+# with 1/rho = e^-s the only non-polynomial factor left at gamma = 1. WHAT THIS COSTS, and
+# it is a real cost, not a wash: MASS CHANGES DISCRETE CLASS. In rho-variables mass is the
+# single coefficient rho^(k=0) whose RHS projection is an exact fp zero, i.e. bitwise for
+# free; the s-form's conserved functional int e^s is NONLINEAR in the evolved field and has
+# no linear substitute (<s> is not conserved even in the continuum), so RK preserves it only
+# to scheme order. Mass therefore joins the class energy is already in -- gated by drift
+# ORDER plus absolute smallness, NEVER at round-off. mean B and div B are untouched
+# (induction never sees field 0), and on a SPATIALLY UNIFORM state every s-RHS term is an
+# exact fp zero, so s^(k=0) is bitwise there.
+#
+# EBM composes: with expansion on the evolved field is s' = ln rho' = s + 2 ln a, and the
+# -2(adot/a) expansion term cancels identically against d(2 ln a)/dt, so continuity carries
+# NO expansion term at all. The raw 1/rho is a^2 e^-s', and h's uniform -2 cs^2(t) ln a dies
+# under the gradient exactly as in the rho form. Transform tally 24 (16 inverse / 8 forward),
+# one more than the rho form's 23: grad gains grad~s (3) and s (1) = 16, and the term func
+# loses (rho u)(3) and gains u.grad s (1) = 8. div u = i k~ . u^ is k-local.
+#
+# THE "rho" PATH MUST STAY BYTE-IDENTICAL. Like the expansion switch, density_var is a
+# TRACE-TIME python branch on the static params (`_density_var(params) == "lnrho"`), never a
+# lax.cond and never a select between two computed values -- verified once out of tree over
+# three configs (one of them expansion-on) at both precisions, in fields, t and the
+# optimized-HLO opcode histogram (plans/CMHD_PLAN.md §5 C4). linear_matrix has ZERO change:
+# the field-0 row of the same diagonal L simply acts on s instead of rho.
+#
+# INITIALIZATION AND DIAGNOSTICS. run.initialize is equation-generic, so nothing there
+# changes -- but the user IC function MUST RETURN s = ln rho IN FIELD 0 under "lnrho"
+# (fields 1..6 are unchanged u and B). density_var rides eqpars into params.json, so
+# params.save's differing-record check is what blocks a cross-mode restart. taranis/
+# diagnostics/cmhd.py is rho-ONLY and is NOT density_var-aware: it reads state.fields[0] as
+# rho, so on an lnrho state its energies/Mach numbers/spectra/budget are wrong, not merely
+# differently normalized. Unscale by hand (rho = e^s) until a helper lands
+# (plans/CMHD_PLAN.md §11).
 
 from typing import NamedTuple
 
@@ -85,6 +130,11 @@ class CMHDGrads(NamedTuple):
     # What one RHS evaluation needs in real space, computed once by grad() and shared by the
     # term func and by set_timestep. Not (d/dx, d/dy) pairs -- CMHD is not a bracket equation
     # set -- so this deliberately does NOT go through shared_physics.grad_fields.
+    # the PHYSICAL density, real space (nz, nx, ny) -- and None on the density_var="lnrho"
+    # path, where rho is DELIBERATELY never formed: e^s would be one more full-grid array
+    # and nothing needs it (the Lorentz force and v_A^2 want 1/rho, h and c_s want s), and
+    # not forming it is what keeps the positivity guarantee structural rather than a
+    # convention. Read `s`/`inv_rho` instead, under the same trace-time density_var switch.
     rho: jnp.ndarray        # (nz, nx, ny)
     u: jnp.ndarray          # (3, nz, nx, ny)
     B: jnp.ndarray          # (3, nz, nx, ny)
@@ -98,7 +148,19 @@ class CMHDGrads(NamedTuple):
     # above is always the UNPRIMED (physical) one, so set_timestep and the Lorentz force
     # need no unscaling; rho' is what the continuity flux and h(rho') are built from
     # (docs/numerics.md "Expanding box"). None off, so the off graph carries no extra leaf.
+    # Also None on the lnrho path, where there is no density array at all, primed or not.
     rho_p: jnp.ndarray = None
+    # LNRHO ONLY (None on the rho path, the rho_p precedent): the EVOLVED field 0 in real
+    # space -- s = ln rho, or s' = ln rho' with expansion on. h and c_s(gamma>1) are built
+    # from it, and it is what `initialize`'s IC function must return in field 0.
+    s: jnp.ndarray = None
+    # LNRHO ONLY: grad~ s, (3, nz, nx, ny) real space -- the three extra inverse transforms
+    # of the 24-transform tally. Under expansion these are grad~ s' on the comoving k~.
+    gs: jnp.ndarray = None
+    # LNRHO ONLY: the PHYSICAL 1/rho = e^-s (a^2 e^-s' under expansion, since rho = a^-2
+    # rho'). Formed once here and shared by the Lorentz force and by set_timestep's
+    # v_A^2 = |B|^2/rho, exactly as `rho` is shared on the rho path.
+    inv_rho: jnp.ndarray = None
 
 
 # --------------------------------------------------------------------------- validation
@@ -125,7 +187,10 @@ def _check_supported(params):
 
 
 _EQPARS_REQUIRED = ("cs0", "diss", "hyper")
-_EQPARS_OPTIONAL = ("gamma", "expansion")
+_EQPARS_OPTIONAL = ("gamma", "expansion", "density_var")
+
+# eqpars["density_var"] (docs/numerics.md "The ln rho density variable")
+_DENSITY_VARS = ("rho", "lnrho")
 
 # eqpars["expansion"] schema (docs/numerics.md "Expanding box")
 _EXPANSION_KEYS = ("adot", "cs_q")
@@ -181,6 +246,22 @@ def _expansion(params):
     return adot, cs_q
 
 
+def _density_var(params):
+    """"rho" (the default) or "lnrho" -- THE ONE TRACE-TIME SWITCH for the whole ln rho path.
+
+    `params` is static, so every caller writes `if _density_var(params) == "lnrho":` as
+    plain python and the "rho" graph is byte-identical to the pre-C4 one: not a lax.cond,
+    not a select between two computed branches, and never an `s = log(rho)` round trip.
+    """
+    dv = params.eqpars.get("density_var", "rho")
+    if dv not in _DENSITY_VARS:
+        raise ValueError(f"eqpars['density_var'] selects the evolved density variable and "
+                         f"must be one of {_DENSITY_VARS} ('rho' evolves rho in field 0, "
+                         f"'lnrho' evolves s = ln rho there and is positivity-structural; "
+                         f"docs/numerics.md 'The ln rho density variable'), got {dv!r}")
+    return dv
+
+
 def _a_of(t, adot):
     # a(t) = 1 + adot*t, evaluated in float64 (CMHDGrads.t / state.t are float64 by
     # construction) and cast to the FIELD dtype HERE, before a ever multiplies a field: an
@@ -226,8 +307,12 @@ def _eqpars(params):
     # validate the optional expanding-box block here too, so EVERY entry point that reads
     # eqpars (including diagnostics) rejects a malformed one. The 4-tuple return is fixed by
     # taranis/diagnostics/cmhd.py's unpacking -- callers that need the EBM configuration
-    # call _expansion(params) separately.
+    # call _expansion(params) separately. _density_var is validated here for the same
+    # reason -- note that taranis/diagnostics/cmhd.py, which is one of those callers, is
+    # rho-ONLY: it will happily read an lnrho state's field 0 as rho and report nonsense
+    # (module header; plans/CMHD_PLAN.md §11).
     _expansion(params)
+    _density_var(params)
     return cs0, diss, int(hyper), gamma
 
 
@@ -297,6 +382,24 @@ def _enthalpy(rho, cs0, gamma, cs2=None):
     return (c2/(gamma - 1.0)) * rho**(gamma - 1.0)
 
 
+def _enthalpy_s(s, cs0, gamma, cs2=None):
+    # _enthalpy in the ln rho variable: h(e^s). Same h, no log and no negative-rho NaN
+    # channel -- e^s > 0 structurally, which is the whole point of the variable
+    # (docs/numerics.md "The ln rho density variable"):
+    #
+    #     h = cs^2 * s                          gamma = 1
+    #     h = cs0^2 e^((gamma-1)s)/(gamma-1)    gamma > 1
+    #
+    # NonlinearTerm calls this only on the gamma > 1 branch: at gamma = 1 h is LINEAR in the
+    # evolved field, so its gradient is the k-local -cs^2 i k~ s^ and forming h in real space
+    # would cost a transform the 24-tally does not have. The gamma = 1 branch here is exactly
+    # what that k-local force is the transform of, and is what the budget gates use.
+    c2 = cs0*cs0 if cs2 is None else cs2
+    if gamma == 1.0:
+        return c2 * s
+    return (c2/(gamma - 1.0)) * jnp.exp((gamma - 1.0)*s)
+
+
 # ------------------------------------------------------------------- recipe functions
 
 def linear_matrix(kgrid, params):
@@ -309,6 +412,12 @@ def linear_matrix(kgrid, params):
     # COMOVING k, which is exactly this operator (docs/numerics.md "Expanding box", the
     # recorded truncation choice -- physical-wavenumber dissipation would need nu(t) or a
     # per-block L rebuild). L is static in both modes.
+    #
+    # NO density_var BRANCH EITHER, and that is a verified property, not an oversight: L is
+    # built from diss/hyper and the wavenumbers alone and never reads the field it acts on,
+    # so the field-0 row simply damps s instead of rho when density_var = "lnrho". Diffusing
+    # s is undershoot-proof (it cannot drive rho <= 0), affects int e^s only through the
+    # variance, and is still budget-accounted through delta E/delta s (docs/numerics.md).
     _, diss, hyper, _ = _eqpars(params)
     kz = _kz_deriv(kgrid, params)
     ksq_tot = kgrid.ksq + kz*kz
@@ -319,14 +428,23 @@ def linear_matrix(kgrid, params):
 def grad(state, kgrid, params):
     # The 13 inverse transforms of one RHS evaluation: rho, u(3), B(3), omega = curl u (3),
     # j = curl B (3), the two curls formed k-locally first (docs/numerics.md, transform tally).
-    # EXPANSION DOES NOT CHANGE THE TALLY -- every rescaling below is elementwise.
+    # EXPANSION DOES NOT CHANGE THE TALLY -- every rescaling below is elementwise. The ln rho
+    # path makes it 16: field 0's inverse transform gives s rather than rho, and grad~s adds
+    # three more (one component at a time, as everywhere else in this module).
     _check_supported(params)
     exp = _expansion(params)                     # None off: TRACE-TIME python, see _expansion
+    lnrho = _density_var(params) == "lnrho"      # "rho" off: TRACE-TIME python too
     kz = _kz_deriv(kgrid, params)
     fk = state.fields
     if exp is None:
         rho_p = None
-        rho = grids.ifft(fk[0], params)
+        if lnrho:
+            rho = None
+            s = grids.ifft(fk[0], params)        # s = ln rho, the EVOLVED field 0
+            inv_rho = jnp.exp(-s)                # 1/rho, the only density any consumer wants
+        else:
+            s = inv_rho = None
+            rho = grids.ifft(fk[0], params)
         bk = fk[4:7]
         kxt, kyt, kzt = kgrid.kx, kgrid.ky, kz
     else:
@@ -337,8 +455,18 @@ def grad(state, kgrid, params):
         a = _a_of(state.t, adot)
         inv_a = 1.0/a
         inv_a2 = inv_a*inv_a
-        rho_p = grids.ifft(fk[0], params)        # rho' = a^2 rho, the EVOLVED density
-        rho = rho_p*inv_a2                       # the physical rho every consumer wants
+        if lnrho:
+            # the evolved field is s' = ln rho' = s + 2 ln a. The raw 1/rho is then
+            # a^2 e^-s' -- the exact analogue of rho = rho'/a^2, done on the reciprocal so
+            # that no exponential of a growing -2 ln a offset is ever formed. No rho' array
+            # exists on this path: h is built on s' directly (docs).
+            rho = rho_p = None
+            s = grids.ifft(fk[0], params)
+            inv_rho = (a*a)*jnp.exp(-s)
+        else:
+            s = inv_rho = None
+            rho_p = grids.ifft(fk[0], params)    # rho' = a^2 rho, the EVOLVED density
+            rho = rho_p*inv_a2                   # the physical rho every consumer wants
         bk = jnp.stack([fk[4]*inv_a2, fk[5]*inv_a, fk[6]*inv_a])     # B^ = A^-1 B'^
         kxt, kyt, kzt = kgrid.kx, kgrid.ky*inv_a, kz*inv_a
     u = jnp.stack([grids.ifft(fk[1], params), grids.ifft(fk[2], params),
@@ -348,14 +476,25 @@ def grad(state, kgrid, params):
     # omega and j are the PHYSICAL curls: comoving k~ under expansion, kgrid's own off
     omega = _curl_real(fk[1:4], kxt, kyt, kzt, params)
     j = _curl_real(bk, kxt, kyt, kzt, params)
-    return CMHDGrads(rho=rho, u=u, B=B, omega=omega, j=j, t=state.t, rho_p=rho_p)
+    if lnrho:
+        # grad~ s, one component per inverse transform. Under expansion these are the
+        # comoving k~ derivatives of s', which is what -u.grad~s' needs.
+        gs = jnp.stack([grids.ifft(1j*kxt*fk[0], params),
+                        grids.ifft(1j*kyt*fk[0], params),
+                        grids.ifft(1j*kzt*fk[0], params)])
+    else:
+        gs = None
+    return CMHDGrads(rho=rho, u=u, B=B, omega=omega, j=j, t=state.t, rho_p=rho_p,
+                     s=s, gs=gs, inv_rho=inv_rho)
 
 
 def NonlinearTerm(state, grads, kgrid, params, halo=None):
     # The whole ideal RHS as ONE term: the three equations share the real-space products, so
     # splitting them into separate Terms would re-transform them. halo is unused (z_spectral
     # has no halo). 10 forward transforms: rho*u(3), the combined curl force(3), the combined
-    # scalar(1), u x B(3) -- 23 in total with grad()'s 13 inverse, in BOTH modes.
+    # scalar(1), u x B(3) -- 23 in total with grad()'s 13 inverse, in BOTH expansion modes.
+    # On the ln rho path it is 8 forward (u.grad s(1) replaces rho*u(3); grad~.u is k-local
+    # and h at gamma = 1 needs no transform at all) against grad()'s 16 inverse -- 24.
     #
     # The -(adot/a)*diag(0,1,1)*u expansion term is folded into du below rather than
     # registered as its own Term: physics/__init__.py's registry is not a C3b file, and a
@@ -363,6 +502,7 @@ def NonlinearTerm(state, grads, kgrid, params, halo=None):
     # the same trace-time predicate, so the off graph is untouched either way.
     cs0, _, _, gamma = _eqpars(params)
     exp = _expansion(params)                     # None off: TRACE-TIME python
+    lnrho = _density_var(params) == "lnrho"      # "rho" off: TRACE-TIME python too
     kx, ky = kgrid.kx, kgrid.ky
     kz = _kz_deriv(kgrid, params)
     rho, u, B, omega, j = grads.rho, grads.u, grads.B, grads.omega, grads.j
@@ -380,10 +520,29 @@ def NonlinearTerm(state, grads, kgrid, params, halo=None):
         cs2 = cs0*cs0 if cs_q == 0.0 else cs0*cs0 * a**(-cs_q)
         rho_e = grads.rho_p                      # rho' = a^2 rho, what the state evolves
 
-    # continuity, flux form: mass is exact because -i*k.(rho u)^ vanishes identically at k = 0.
-    # Under expansion this is d_t rho' = -grad~.(rho' u): the flux carries the PRIMED density.
-    mk = grids.fft(rho_e*u, params)
-    drho = -1j*(kxt*mk[0] + kyt*mk[1] + kzt*mk[2])
+    # continuity. In rho-variables, FLUX form: mass is exact because -i*k.(rho u)^ vanishes
+    # identically at k = 0. Under expansion this is d_t rho' = -grad~.(rho' u): the flux
+    # carries the PRIMED density.
+    #
+    # In ln rho-variables it is the same equation divided by rho,
+    #
+    #     d_t s = -u.grad~ s - grad~ . u
+    #
+    # with the advection one forward transform and the divergence K-LOCAL (i k~ . u^, read
+    # straight off the state -- u is unscaled in both modes, so state.fields[1:4] ARE u^).
+    # Under expansion this carries NO expansion term: the -2(adot/a) of the raw continuity
+    # cancels identically against d(2 ln a)/dt when s' = s + 2 ln a is the evolved variable
+    # (docs/numerics.md). Neither piece is exactly zero at k = 0 on a turbulent state -- int
+    # e^s is a nonlinear invariant now, gated by drift order, never bitwise -- but on a
+    # UNIFORM state grad~s and grad~.u are exact fp zeros and s^(k=0) is bitwise.
+    if lnrho:
+        gs = grads.gs
+        uk = state.fields[1:4]
+        drho = (-grids.fft(u[0]*gs[0] + u[1]*gs[1] + u[2]*gs[2], params)
+                - 1j*(kxt*uk[0] + kyt*uk[1] + kzt*uk[2]))
+    else:
+        mk = grids.fft(rho_e*u, params)
+        drho = -1j*(kxt*mk[0] + kyt*mk[1] + kzt*mk[2])
 
     # momentum, rotational form. The two curl forces are summed in REAL space and transformed
     # once (3 transforms, not 6), and grad(|u|^2/2) merges with grad(h) into one scalar
@@ -394,9 +553,27 @@ def NonlinearTerm(state, grads, kgrid, params, halo=None):
     # ln rho and ln rho' is killed BY the gradient (it only shifts sk at k = 0, where the
     # k-multiply is exactly zero), so it is not added back; rho' is used because ln rho' stays
     # O(1) while ln rho ~ -2 ln a drifts and costs conditioning in the gradient.
-    fk = grids.fft(_cross(j, B)/rho - _cross(omega, u), params)
-    sk = grids.fft(0.5*(u[0]*u[0] + u[1]*u[1] + u[2]*u[2])
-                   + _enthalpy(rho_e, cs0, gamma, cs2), params)
+    #
+    # In ln rho-variables the Lorentz force divides by rho through the precomputed
+    # e^-s (a^2 e^-s' under expansion) rather than by a rho array that is never formed, and
+    # the pressure force splits by gamma. At gamma = 1, h = cs^2 s is LINEAR in the evolved
+    # field, so h^ IS cs^2 * s^ exactly and the force is k-local: fold it into the scalar
+    # BEFORE the -i k~ multiply (algebraically identical to adding -cs^2 i k~ s^ separately,
+    # one multiply cheaper) and the |u|^2/2 transform is the only one left -- this is the
+    # transform the 24-tally does not spend. At gamma > 1, h is pointwise again and joins the
+    # scalar exactly as it does in the rho form.
+    if lnrho:
+        fk = grids.fft(_cross(j, B)*grads.inv_rho - _cross(omega, u), params)
+        if gamma == 1.0:
+            sk = (grids.fft(0.5*(u[0]*u[0] + u[1]*u[1] + u[2]*u[2]), params)
+                  + (cs0*cs0 if cs2 is None else cs2)*state.fields[0])
+        else:
+            sk = grids.fft(0.5*(u[0]*u[0] + u[1]*u[1] + u[2]*u[2])
+                           + _enthalpy_s(grads.s, cs0, gamma, cs2), params)
+    else:
+        fk = grids.fft(_cross(j, B)/rho - _cross(omega, u), params)
+        sk = grids.fft(0.5*(u[0]*u[0] + u[1]*u[1] + u[2]*u[2])
+                       + _enthalpy(rho_e, cs0, gamma, cs2), params)
     dux = fk[0] - 1j*kxt*sk
     duy = fk[1] - 1j*kyt*sk
     duz = fk[2] - 1j*kzt*sk
@@ -443,16 +620,33 @@ def set_timestep(grads, params):
     # pointwise floor on c_f outright).
     cs0, _, _, gamma = _eqpars(params)
     exp = _expansion(params)                     # None off: TRACE-TIME python
+    lnrho = _density_var(params) == "lnrho"      # "rho" off: TRACE-TIME python too
     rho, u, B = grads.rho, grads.u, grads.B
     if exp is None:
-        cs2 = cs0*cs0 if gamma == 1.0 else cs0*cs0 * rho**(gamma - 1.0)
+        if lnrho:
+            # c_s(s) = cs0 e^((gamma-1)s/2), so c_s^2 = cs0^2 e^((gamma-1)s). THE NaN CHANNEL
+            # IS GONE: rho = e^s > 0 structurally, so there is no negative-rho poisoning of
+            # dt to derive a quiescent floor against -- and at the gamma = 1 DEFAULT c_s is
+            # constant outright, so the CFL denominator's floor c_f >= cs0 is exact and
+            # pointwise. At gamma > 1 the grid-max argument the rho form leans on (max_x rho
+            # >= <rho> = 1, hence max_x c_f >= cs0) survives only to MASS-DRIFT order, since
+            # int e^s is no longer a bitwise invariant -- the bound is as good as the drift
+            # the conservation gate measures, which is the honest statement.
+            cs2 = cs0*cs0 if gamma == 1.0 else cs0*cs0 * jnp.exp((gamma - 1.0)*grads.s)
+        else:
+            cs2 = cs0*cs0 if gamma == 1.0 else cs0*cs0 * rho**(gamma - 1.0)
         dx, dy, dz = params.dx, params.dy, params.dz
     else:
         adot, cs_q = exp
         a = _a_of(grads.t, adot)
         cs2 = cs0*cs0 if cs_q == 0.0 else cs0*cs0 * a**(-cs_q)      # gamma == 1 under EBM
         dx, dy, dz = params.dx, params.dy*a, params.dz*a
-    vA2 = (B[0]*B[0] + B[1]*B[1] + B[2]*B[2])/rho
+    if lnrho:
+        # v_A^2 = |B|^2 e^-s on the PHYSICAL 1/rho grad already unscaled (a^2 e^-s' under
+        # expansion), so this line reads the same physical speed as the rho branch below.
+        vA2 = (B[0]*B[0] + B[1]*B[1] + B[2]*B[2])*grads.inv_rho
+    else:
+        vA2 = (B[0]*B[0] + B[1]*B[1] + B[2]*B[2])/rho
     cf = jnp.sqrt(cs2 + vA2)
     max_all = jnp.max(jnp.maximum(jnp.maximum((jnp.abs(u[0]) + cf)/dx,
                                               (jnp.abs(u[1]) + cf)/dy),
