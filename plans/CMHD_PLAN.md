@@ -287,6 +287,21 @@ every new test must pass or be marked fp64-only via the existing markers.
 Gate to close C1: all of the above green under `make test` on the laptop, plus
 adversarial review (fresh session) of cmhd.py against the C0 docs section, sign by sign.
 
+**Landed 2026-08-30** (main `38d37c1`, opus implementer + fable adversarial review,
+PASS-WITH-FIXES, all fixes applied and re-verified). Highlights: dispersion ≤2.1e-8
+relative (fp64) over 3 angles × 3 branches × both γ × two c_s0/v_A, plus a non-cubic
+ky≠0 case (≤2.1e-8) added after review so 2π/L factors cannot cancel; mass/mean-B
+bitwise; div B ≤8.7e-17 field-scale-normalized over 100 steps; decay ICs along all
+three axes after the review's mutation test exposed a k⊥-blind gate (the mutation now
+fails 12 checks); schemes lsrk54/rk44 order 4.00, vs imexcb3e 2.90; full `make test`
+regression-clean both precisions. Deviations recorded in the test docstrings: the
+plan-regime energy gate asserts dt-INDEPENDENCE + smallness (the drift is the §3.5
+truncation residual, verified ~amp^6.8 and resolution-falling; dt-order 3.64 asserted
+at half amplitude), scheme cross-check and drift gates fp64-only (measured fp32 noise
+floors), negative diss now rejected. The 23-FFT tally is verified by inspection only —
+C2 measures. Repo-wide trap found in passing (pre-existing, untouched): a numpy-float64
+`params.dt` upcasts the fp32 field graph via `lin.scaled(dt)` — applies to RMHD/GDI too.
+
 ### Phase C2 — diagnostics, validation science, performance
 
 Files: `taranis/diagnostics/cmhd.py` + `diagnostics/__init__.py` `__all__` entry (NO

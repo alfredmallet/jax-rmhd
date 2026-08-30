@@ -1040,7 +1040,14 @@ directly. Degenerate limits the gates must assert explicitly:
   transverse `x`-polarized wave at `ω = ±kv_A` (degenerate with the Alfvén branch). Which
   of "fast"/"slow" is which depends on `c` vs `v_A` — at the target `β = 0.3`
   (`c ≈ 0.39·v_A`) the sound wave is the SLOW branch. Label by speed, not by name.
-- `θ = π/2`: slow → `ω = 0`; fast → the magnetosonic `ω = ±k√(c² + v_A²)`.
+- `θ = π/2`: slow → `ω = 0`; fast → the magnetosonic `ω = ±k√(c² + v_A²)`. The `ω = 0`
+  eigenspace is DEGENERATE (it contains the pressure-balanced `δu_z ẑ` member — the
+  actual `k_z → 0⁺` slow-branch limit — and the `δB_y`/`δu_y` shear members too); the C1
+  gate uses the static member `δu = 0`, `δB = δB_z ẑ` with total-pressure balance
+  `c²δρ + B₀δB_z = 0`, chosen because a pressure-force sign error moves it at O(1). The
+  Alfvén `δB_y = −(k_∥B₀/ω)δu_y` is 0/0 at `θ = π/2`; the limit is `δB = −δu` (exact at
+  every `k_z > 0` for the + root, hence in the limit). Both were re-derived in the C1
+  adversarial review.
 
 Gate ICs are built in REAL space from these eigenvectors (`cos/sin(k·x)` with the
 analytic polarization) at amplitude small enough that the `O(ε²)` quadratic self-
