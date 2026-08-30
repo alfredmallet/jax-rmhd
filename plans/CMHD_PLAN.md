@@ -489,8 +489,8 @@ the sidecar convention is decided there and recorded).
 **C3b implemented 2026-08-30** (opus implementer in a worktree off main `8e2d229`;
 **status: pending the fresh-session adversarial review**, which is what closes the phase —
 the numbers below are the implementer's own measurements, not review-confirmed). Files:
-`taranis/physics/cmhd.py` (277 → 467 lines), `tests/test_cmhd_expansion.py` (new, 15 tests
-/ 705 lines), plus the CLAUDE.md, docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else
+`taranis/physics/cmhd.py` (277 → 467 lines), `tests/test_cmhd_expansion.py` (new, 16 tests
+/ 918 lines), plus the CLAUDE.md, docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else
 was touched** — no `physics/__init__.py`, `run.py`, `timestepping.py`, `propagators.py`,
 `grids.py`, `comms.py`, `config.py`, `snapshot_io.py` or `diagnostics/`, and no frozen
 reference was regenerated.
@@ -531,7 +531,9 @@ Measured (Apple M1, jax 0.10.0, CPU; both precisions unless stated):
 - **div B under expansion**: `max_k |K.B'^|/(|K| max|B'^|)` ≤ 6.2e-17 over 100 steps
   (fp64), growth ×3.80 from 10 to 100 steps (√10 = 3.2 is a random walk, 10 would be a
   source); ≤2.9e-8 / ×1.04 at fp32.
-- **WKB**: Alfvén wave along x, `k_x = 1`, `v_A0 = B0 = 1`, `adot = 0.02`, a spanning
+- **WKB** (run at BOTH transverse polarizations since review round 1 — identical physics,
+  but E′ rotates with the polarization, so the y-polarized wave leaves E′_y multiplying an
+  exact zero): Alfvén wave along x, `k_x = 1`, `v_A0 = B0 = 1`, `adot = 0.02`, a spanning
   1 → 4 (a factor 4, not a decade — a decade costs ~4× the steps for no extra
   discrimination; the run is already 3000 steps). Because `omega ~ a^-1` with `k_x`
   static, `eps_WKB = adot/(a*omega) = adot/(k_x v_A0) = 0.02` is CONSTANT over the run, so
@@ -546,11 +548,17 @@ Measured (Apple M1, jax 0.10.0, CPU; both precisions unless stated):
   `adot <= 0`, `cs_q < 0`, a missing `adot`, an unknown sub-key and a non-dict `expansion`
   all raise. `cs_q = 0` vs 4/3 changes the run by 6.9e-3 relative, so the cooling law
   demonstrably reaches the RHS.
+- **Raw-frame RHS cross-check** (added in review round 1, below): one RHS evaluation at
+  a = 1.7000 on a band-limited random state, converted to raw-frame time derivatives and
+  compared against an independent ADVECTIVE transcription of eqs (1)–(3). Per-row relative
+  residuals **3.2e-17 … 1.4e-15** (rho 3.2e-17; u 1.4e-15/2.2e-16/1.4e-15; B
+  4.0e-16/3.6e-16/1.2e-16), gated at 1e-11, fp64-only.
 - **CFL under expansion**: on IDENTICAL fields in a transverse-limited box
-  (ny = nz = 2·nx) the returned dt goes 0.0877 → 0.1684 (×1.92) between t = 0 and t = 2 at
-  adot = 0.4 (a = 1.8) — the transverse spacings stretching plus the cooled c_s — while the
-  expansion-absent control returns a bitwise identical dt at both times. An adaptive-dt
-  expansion run is finite through a = 5.95.
+  (ny = nz = 2·nx) at adot = 0.4 (a = 1.8 at t = 2), dt goes **0.0877 → 0.1579 (×1.8011)
+  at cs_q = 0** — where the physical spacings are almost the whole effect — and
+  0.0877 → 0.1684 (×1.9215) at cs_q = 4/3 with the cooling on top; the expansion-absent
+  control returns a bitwise identical dt at both times. An adaptive-dt expansion run is
+  finite through a = 5.95.
 - **Dispersion unchanged with expansion absent**: the C1 exactly-parallel Alfvén config
   (8³, 2π box, B0 = 1, cs0/v_A = 0.5) measures ω = 0.999999979 against the analytic 1, rel
   2.1e-8, amplitude drift 6.1e-9.
@@ -597,6 +605,61 @@ Deviations from the C3b paragraph above, all recorded in the files themselves:
    only differently normalized. A future unscaling helper should take `a` (or `params` +
    `t`) EXPLICITLY rather than reading `params.eqpars["expansion"]` behind the caller's
    back, so the two conventions cannot be silently mixed in one plot. Carried to §11.
+
+**C3b review round 1, 2026-08-30 — physics PASS, gate coverage FAIL; fixes applied,
+pending re-review.** The fresh-session adversarial review verified the physics
+transcription, the off-path guarantee, the WKB budget arithmetic and all seven deviations
+above as correct, but **mutation-tested the gate set and found three blind spots**. The
+lesson, worth carrying into any future metric-factor work: the *structural* gates that make
+this equation set attractive — bitwise k=0 modes, the div-B random walk, the uniform-state
+ODE — are exactly the gates that CANNOT see a wrong metric factor. A k=0 mode has no
+metric, `K·B̂′` survives ANY diagonal rescaling of E′, and a uniform state has zero curl and
+zero gradient. Structural invariance is not physics coverage.
+
+The blind spots (each mutation applied to cmhd.py alone, the original 15 tests run):
+
+| # | mutation | before | after the fixes |
+|---|---|---|---|
+| M1 | drop the `a` on E′_y in the induction scaling | **15 passed — BLIND** | caught by the raw-frame cross-check (`d_t B_x` rel 3.18e-1, `d_t B_z` 9.71e-2) AND by the new z-polarized WKB twin (exponent −0.248 vs −1/2) |
+| M3 | `ky` instead of `ky/a` in `grad`'s physical curls | **15 passed — BLIND** | caught by the cross-check (`d_t u_y` rel 2.27e-1, `u_x` 2.19e-2, `u_z` 9.55e-2) |
+| M3b | the same on the term func's `k̃` (continuity + pressure gradient) — the reviewer predicted this would be equally blind | (predicted blind) | caught by the cross-check (`d_t rho` rel 5.25e-2, `d_t u_y` 3.42e-1) |
+| M5 | static spacings in `set_timestep` | **15 passed — BLIND** (the 1.05× threshold was met by cooling alone: the mutant measures ×1.0675) | caught by both CFL cells (cs_q = 0: ×1.0006 vs the real ×1.8011; cs_q = 4/3: ×1.0675 vs ×1.9215) |
+| M2 | `T·u` sign flip | caught by 4 tests | unchanged |
+| M4 | cooling law dropped | caught by 1 test | unchanged |
+
+Fixes, all additive test work plus one threshold — `taranis/physics/cmhd.py` was NOT
+touched (restored byte-identical, sha256 verified, after every mutation):
+
+1. **`test_raw_frame_rhs_matches_the_advective_reference` (new, fp64)** — the primary gate,
+   and the one that reads every metric factor at once. One RHS evaluation at a = 1.7 is
+   converted to RAW-frame time derivatives (`d_t ρ = (d_t ρ′)/a² − 2(ȧ/a)ρ`, and
+   `B_i = B′_i/A_i` with `A = diag(a²,a,a)` whose logarithmic derivative is exactly
+   `Λ_i·(ȧ/a)` — the ȧ terms reappear, which is the rescaling working in reverse) and
+   compared against an independent transcription of eqs (1)–(3) in **advective** form, with
+   its own k̃ arrays, its own a-powers and its own Nyquist zeroing. Two discretization
+   points, both recorded in the test docstring: **the reference must carry the same dealias
+   mask** (`1/ρ` and `ln ρ` put power past the 2/3 cut; the mask is part of the
+   discretization under test, and the ȧ terms sit outside it in both — which cannot matter
+   anyway, since `initialize` leaves the state mask-supported, asserted); and **the
+   advective and rotational/flux/curl forms agree only while the products are resolved**
+   (the IC is band-limited to |n| ≤ 2 on 16³, so every quadratic product sits at |n| ≤ 4,
+   inside the Nyquist 8 — widening the IC band would break this gate for a reason that is
+   not a bug).
+2. **The WKB gate now runs BOTH transverse polarizations.** y and z are the two expanding
+   directions and every EBM diagonal treats them identically, so the prediction is the same
+   −1/2 — but `u × B` is along −ẑ for a y-polarized wave and along +ŷ for a z-polarized
+   one, so only the z-polarized twin makes E′_y load-bearing in a measured frequency. Both
+   measure −0.49816 / −0.50181. Cost: +2 s. (The reviewer's suggested oblique-k transverse
+   twin was NOT built: its WKB amplitude law is not derivable from the docs' framework
+   without new work, and asserting an underived exponent is worse than not gating it. The
+   polarization rotation gets the same coverage with zero derivation risk.)
+3. **The CFL gate gained a cs_q = 0 cell**, where the physical spacings are almost the
+   whole relaxation, at a ×1.4 threshold; the cs_q = 4/3 cell's threshold went 1.05 → 1.5,
+   above the cooling-only ×1.0675. Note the cs_q = 0 mutant is ×1.0006, **not** exactly 1:
+   `grad` still unscales the fields, so `v_A² = |B|²/ρ` carries its own a-dependence. That
+   figure is stated in the test rather than the tempting "exactly ×1".
+4. CLAUDE.md now qualifies the three-config bitwise+HLO verification as the implementer's
+   one-time out-of-tree check rather than stating it as a reproducible fact.
 
 ## 6. What is verified NOT to need changes (checked against the tree, 2026-08-29)
 

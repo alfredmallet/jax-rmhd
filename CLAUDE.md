@@ -432,8 +432,9 @@ change the docs first, then the module. Rules:
   `-(adot/a)diag(0,1,1)u`. Everything is gated on `"expansion" in params.eqpars` as
   TRACE-TIME python through the one `cmhd._expansion` switch — never `lax.cond`, never a
   literal-1.0 multiply — because **expansion OFF must stay BITWISE the pre-C3 graph**
-  (verified over three configs at both precisions in fields, `t` and optimized-HLO
-  histogram; the standing gate is that the off RHS is bitwise independent of `state.t`).
+  (the implementer's ONE-TIME out-of-tree check over three configs at both precisions, in
+  fields, `t` and the optimized-HLO histogram — plan §5; it is not reproducible post-hoc,
+  so the STANDING gate is instead that the off RHS is bitwise independent of `state.t`).
   `a(t)` comes from `grads.t` and is cast to `_precision.ftype` before it touches field
   math. Transform tally stays **23** (every rescaling is elementwise), `set_timestep` uses
   physical spacings `(dx, a*dy, a*dz)` with speeds from the UNPRIMED fields, and

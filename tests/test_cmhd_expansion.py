@@ -48,7 +48,7 @@ import jax
 import jax.numpy as jnp
 
 import taranis as jr
-from taranis import _precision, snapshot_io
+from taranis import _precision, grids, snapshot_io
 from taranis.physics import cmhd, construct_rhs, equation_registry
 from taranis.run import block_of_steps
 from taranis.timestepping import get_scheme
@@ -149,15 +149,28 @@ def _random_ic(ms=0.3, db=0.3, drho=0.1, seed=7, nmode=6):
     return ic
 
 
-def _alfven_x_ic(eps, B0=_B0):
+def _alfven_x_ic(eps, pol="y", B0=_B0):
     """A single FORWARD-travelling Alfven wave along x on a B = B0 xhat, rho = 1 background:
-    k = (1,0,0), delta_u = eps cos(x) yhat, and the docs' unambiguous polarization
+    k = (1,0,0), delta_u = eps cos(x) along `pol`, and the docs' unambiguous polarization
     delta_B = -(kpar*B0/omega) delta_u, which at omega = +kpar*v_A and v_A = B0 (rho = 1) is
-    exactly delta_B_y = -delta_u_y. At t = 0, a = 1, so the primed IC IS the raw one."""
+    exactly delta_B = -delta_u. At t = 0, a = 1, so the primed IC IS the raw one.
+
+    `pol` MATTERS FOR COVERAGE, not for physics. y and z are both transverse (expanding)
+    directions and EBM treats them identically -- T = diag(0,1,1), Lambda = diag(2,1,1),
+    A = diag(a^2,a,a) -- so the WKB prediction is the same for both. But the ELECTRIC field
+    rotates with the polarization: u x B is along -zhat for a y-polarized wave (so E'_z
+    carries the whole wave and E'_y is an exact zero) and along +yhat for a z-polarized one.
+    The C3b review's mutation testing found that a y-only WKB gate is BLIND to dropping the
+    `a` on E'_y, because it multiplies nothing. Both are run."""
+    row = 2 if pol == "y" else 3
+
     def ic(x, y, z):
         o = jnp.ones(jnp.broadcast_shapes(x.shape, y.shape, z.shape))
         du = eps*jnp.cos(x)*o
-        return jnp.stack([1.0*o, 0.0*o, du, 0.0*o, B0*o, -du, 0.0*o])
+        f = [1.0*o, 0.0*o, 0.0*o, 0.0*o, B0*o, 0.0*o, 0.0*o]
+        f[row] = du
+        f[row + 3] = -du
+        return jnp.stack(f)
     return ic
 
 
@@ -417,21 +430,24 @@ def test_div_b_stays_a_round_off_random_walk_under_expansion():
 _WKB = dict(nx=16, ny=4, nz=4, cs0=0.5, eps=1e-5, dt=0.05, nchunk=40)
 
 
-def _wkb_run(adot, nstep_chunk):
-    """Return (a samples, |u_y^(kx=1)| samples, |B'_y^(kx=1)| samples). For a single
-    TRAVELLING wave the complex Fourier coefficient at k_x = +1 has constant modulus and
-    rotating phase, so the modulus IS the WKB envelope -- no fitting of an oscillation."""
+def _wkb_run(adot, nstep_chunk, pol="y"):
+    """Return (a samples, |du^(kx=1)| samples, |dB'^(kx=1)| samples) for the `pol`-polarized
+    wave. For a single TRAVELLING wave the complex Fourier coefficient at k_x = +1 has
+    constant modulus and rotating phase, so the modulus IS the WKB envelope -- no fitting of
+    an oscillation."""
     p = _params(None, _WKB["dt"], adot=adot, nx=_WKB["nx"], ny=_WKB["ny"], nz=_WKB["nz"],
                 eqpars=dict(cs0=_WKB["cs0"], diss=0.0, hyper=1))
     kgrid = jr.setup_kgrids(p)
-    s = jr.initialize(_alfven_x_ic(_WKB["eps"]), p)
+    s = jr.initialize(_alfven_x_ic(_WKB["eps"], pol), p)
+    row = 2 if pol == "y" else 3
     f = np.asarray(s.fields)
     idx = (0, 1, 0)                                          # (kz, kx, ky) = (0, +1, 0)
-    ts, au, ab = [float(s.t)], [abs(f[2][idx])], [abs(f[5][idx])]
+    ts, au, ab = [float(s.t)], [abs(f[row][idx])], [abs(f[row + 3][idx])]
     for _ in range(_WKB["nchunk"]):
         s = _advance(s, kgrid, p, nstep_chunk)
         f = np.asarray(s.fields)
-        ts.append(float(s.t)); au.append(abs(f[2][idx])); ab.append(abs(f[5][idx]))
+        ts.append(float(s.t))
+        au.append(abs(f[row][idx])); ab.append(abs(f[row + 3][idx]))
     return 1.0 + adot*np.array(ts), np.array(au), np.array(ab)
 
 
@@ -461,31 +477,44 @@ def test_wkb_alfven_amplitude_follows_a_minus_half():
     only asserts that it FALLS by at least 1.5x, since the sub-leading terms are not gated.
 
     a spans 1 -> 4 (a factor 4, not the docs' full decade: a decade at this eps_WKB costs
-    ~4x the steps for no extra discrimination -- the run is 3000 steps as it stands)."""
+    ~4x the steps for no extra discrimination -- the run is 3000 steps as it stands).
+
+    BOTH transverse polarizations are run. The physics and the prediction are identical
+    (y and z are the two expanding directions and every EBM diagonal treats them the same),
+    but the electric field rotates with the polarization -- see `_alfven_x_ic`. A y-only
+    gate leaves E'_y multiplying an exact zero, which is how the C3b review's E'_y mutation
+    slipped through the first version of this file."""
     adot_ref = 0.02
     eps_wkb = adot_ref/(1.0*_B0)                             # adot/(k_x v_A0), k_x = 1
     budget = eps_wkb/np.log(4.0)
-    a, au, ab = _wkb_run(adot_ref, 75)                       # 40*75 steps * 0.05 = t 150
-    pu = float(np.polyfit(np.log(a), np.log(au), 1)[0])
-    pb = float(np.polyfit(np.log(a), np.log(ab), 1)[0])
-    # the discriminator: same a range, half the WKB parameter, twice the steps
-    a2, au2, _ = _wkb_run(adot_ref/2, 150)
-    pu2 = float(np.polyfit(np.log(a2), np.log(au2), 1)[0])
     with checks() as c:
-        c.check(f"a spans {a[0]:.2f} -> {a[-1]:.2f} and eps_WKB = adot/(k_x v_A0) = "
-                f"{eps_wkb:.3f}, so the exponent budget is eps_WKB/ln(a_end) = "
-                f"{budget:.4f}", abs(a[-1] - 4.0) < 1e-6, f"a_end {a[-1]}")
-        c.check(f"|u_y| exponent {pu:+.5f} vs the WKB -1/2 (|delta| {abs(pu+0.5):.2e} < "
-                f"{budget:.4f})", abs(pu + 0.5) < budget, f"{pu:.6f}")
-        c.check(f"|B'_y| exponent {pb:+.5f} vs the WKB -1/2 (|delta| {abs(pb+0.5):.2e})",
-                abs(pb + 0.5) < budget, f"{pb:.6f}")
-        c.check(f"the amplitude actually falls by ~a^-1/2 over the run "
-                f"({au[-1]/au[0]:.4f} vs {a[-1]**-0.5:.4f}) -- not a flat fit",
-                abs(au[-1]/au[0]/a[-1]**-0.5 - 1.0) < 0.02, f"{au[-1]/au[0]:.5f}")
-        c.check(f"halving eps_WKB shrinks the deviation ({abs(pu+0.5):.2e} -> "
+        for pol in ("y", "z"):
+            # 40*75 steps * 0.05 = t 150; E' is along z for pol y and along y for pol z
+            a, au, ab = _wkb_run(adot_ref, 75, pol)
+            pu = float(np.polyfit(np.log(a), np.log(au), 1)[0])
+            pb = float(np.polyfit(np.log(a), np.log(ab), 1)[0])
+            e = "z" if pol == "y" else "y"
+            c.check(f"pol {pol} (E' along {e}): a spans {a[0]:.2f} -> {a[-1]:.2f} and "
+                    f"eps_WKB = adot/(k_x v_A0) = {eps_wkb:.3f}, so the exponent budget is "
+                    f"eps_WKB/ln(a_end) = {budget:.4f}", abs(a[-1] - 4.0) < 1e-6,
+                    f"a_end {a[-1]}")
+            c.check(f"pol {pol}: |u_{pol}| exponent {pu:+.5f} vs the WKB -1/2 (|delta| "
+                    f"{abs(pu+0.5):.2e} < {budget:.4f})", abs(pu + 0.5) < budget,
+                    f"{pu:.6f}")
+            c.check(f"pol {pol}: |B'_{pol}| exponent {pb:+.5f} vs the WKB -1/2 (|delta| "
+                    f"{abs(pb+0.5):.2e})", abs(pb + 0.5) < budget, f"{pb:.6f}")
+            c.check(f"pol {pol}: the amplitude actually falls by ~a^-1/2 over the run "
+                    f"({au[-1]/au[0]:.4f} vs {a[-1]**-0.5:.4f}) -- not a flat fit",
+                    abs(au[-1]/au[0]/a[-1]**-0.5 - 1.0) < 0.02, f"{au[-1]/au[0]:.5f}")
+            if pol == "y":
+                pu_ref = pu
+        # the discriminator: same a range, half the WKB parameter, twice the steps
+        a2, au2, _ = _wkb_run(adot_ref/2, 150)
+        pu2 = float(np.polyfit(np.log(a2), np.log(au2), 1)[0])
+        c.check(f"halving eps_WKB shrinks the deviation ({abs(pu_ref+0.5):.2e} -> "
                 f"{abs(pu2+0.5):.2e}), i.e. the residual is first order in adot/(a*omega)",
-                abs(pu2 + 0.5) < abs(pu + 0.5)/1.5,
-                f"{abs(pu+0.5):.3e} -> {abs(pu2+0.5):.3e}")
+                abs(pu2 + 0.5) < abs(pu_ref + 0.5)/1.5,
+                f"{abs(pu_ref+0.5):.3e} -> {abs(pu2+0.5):.3e}")
 
 
 # ------------------------------------------------------------------- (f) plumbing
@@ -612,38 +641,222 @@ def test_restart_mid_expansion_is_bitwise():
                 f"{np.abs(np.asarray(resumed.fields) - ref_fields).max():.3e}")
 
 
+# ------------------------------- the raw-frame RHS cross-check (the metric-factor gate)
+#
+# WHY THIS GATE EXISTS. The structural gates above (bitwise k=0, div B, the uniform-state
+# ODE) all hold for a WIDE class of wrong a-factors: a k=0 mode sees no metric at all, div
+# B' survives ANY diagonal rescaling of E', and a uniform state has zero curl and zero
+# gradient. The C3b adversarial review's mutation testing made that concrete -- dropping the
+# `a` on E'_y, and using ky instead of ky/a in the physical curls, both passed the whole
+# original gate set. This test is the one that reads every metric factor at once: it
+# reconstructs the RAW-frame time derivatives from the production primed RHS and compares
+# them against an independent transcription of Squire et al.'s raw equations.
+
+_LAMBDA = (2.0, 1.0, 1.0)               # B expansion diag; A = diag(a^2, a, a) = a^_LAMBDA
+_T_DIAG = (0.0, 1.0, 1.0)               # u expansion diag
+
+
+def _reference_raw_rhs(state, kgrid, params, cs0, adot, cs_q):
+    """An INDEPENDENT transcription of docs/numerics.md "Expanding box" eqs (1)-(3), in
+    RAW variables and ADVECTIVE form -- deliberately none of the three forms the production
+    code uses:
+
+        d_t rho = -u.grad~ rho - rho div~ u          - 2(adot/a) rho     [not flux form]
+        d_t u   = -(u.grad~)u - grad~ h + j x B/rho  - (adot/a) T u      [not rotational]
+        d_t B   = B.grad~ u - B div~ u - u.grad~ B   - (adot/a) Lambda B [not curl form]
+
+    with its own k~ arrays, its own a-powers, and its own Nyquist zeroing. It shares only
+    grids.fft/ifft (the transform primitive is not what any metric mutation touches) and
+    the dealias mask, for the reason in the test docstring. `div~ B` is dropped from the
+    induction identity: it is 1e-17 here, i.e. below the tolerance by four orders.
+
+    Both this and `_production_raw_rhs` run EAGERLY, not jitted: `a` is read off the state
+    as a host float, which is part of what makes this an independent construction rather
+    than a second copy of `cmhd._a_of`. One RHS evaluation on a 16^3 grid is cheap."""
+    a = 1.0 + adot*float(state.t)
+    ah = adot/a
+    cs2 = cs0*cs0 * a**(-cs_q)
+    # k~ = (kx, ky/a, kz/a), built here from scratch -- numpy so a shared jnp expression
+    # cannot be the thing that agrees
+    kzn = np.asarray(kgrid.kz, dtype=np.float64).copy()
+    if params.nz % 2 == 0:
+        kzn[params.nz//2] = 0.0
+    kt = (jnp.asarray(np.asarray(kgrid.kx, dtype=np.float64)),
+          jnp.asarray(np.asarray(kgrid.ky, dtype=np.float64)/a),
+          jnp.asarray(kzn/a))
+    mask = kgrid.dealias
+
+    def dd(fkc, i):
+        """the real-space d~_i of a k-space field"""
+        return grids.ifft(1j*kt[i]*fkc, params)
+
+    # unscale to raw variables IN K-SPACE (the production path unscales rho in real space
+    # and B in k-space; doing both here in k-space is one more place the two differ)
+    fk = state.fields
+    rhok = fk[0]/a**2
+    uk = fk[1:4]
+    bk = jnp.stack([fk[4]/a**2, fk[5]/a, fk[6]/a])
+    rho = grids.ifft(rhok, params)
+    u = jnp.stack([grids.ifft(uk[i], params) for i in range(3)])
+    B = jnp.stack([grids.ifft(bk[i], params) for i in range(3)])
+
+    du_dx = [[dd(uk[i], j) for j in range(3)] for i in range(3)]     # du_dx[i][j] = d~_j u_i
+    dB_dx = [[dd(bk[i], j) for j in range(3)] for i in range(3)]
+    divu = du_dx[0][0] + du_dx[1][1] + du_dx[2][2]
+
+    # continuity, advective
+    drho = -(u[0]*dd(rhok, 0) + u[1]*dd(rhok, 1) + u[2]*dd(rhok, 2)) - rho*divu
+
+    # momentum: advective inertia + the Lorentz force with an independently formed j
+    jj = jnp.stack([dd(bk[2], 1) - dd(bk[1], 2),
+                    dd(bk[0], 2) - dd(bk[2], 0),
+                    dd(bk[1], 0) - dd(bk[0], 1)])
+    lor = _cross_np(jj, B)/rho
+    duu = [lor[i] - (u[0]*du_dx[i][0] + u[1]*du_dx[i][1] + u[2]*du_dx[i][2])
+           for i in range(3)]
+    hk = grids.fft(cs2*jnp.log(rho), params)
+
+    # induction, advective (the curl identity expanded)
+    dBB = [B[0]*du_dx[i][0] + B[1]*du_dx[i][1] + B[2]*du_dx[i][2] - B[i]*divu
+           - (u[0]*dB_dx[i][0] + u[1]*dB_dx[i][1] + u[2]*dB_dx[i][2]) for i in range(3)]
+
+    rows = [grids.fft(drho, params)*mask - 2.0*ah*rhok]
+    for i in range(3):
+        rows.append((grids.fft(duu[i], params) - 1j*kt[i]*hk)*mask - ah*_T_DIAG[i]*uk[i])
+    for i in range(3):
+        rows.append(grids.fft(dBB[i], params)*mask - ah*_LAMBDA[i]*bk[i])
+    return jnp.stack(rows)
+
+
+def _cross_np(a, b):
+    return jnp.stack([a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2],
+                      a[0]*b[1] - a[1]*b[0]])
+
+
+def _production_raw_rhs(state, kgrid, params, adot):
+    """The production PRIMED RHS, converted to raw-frame time derivatives. The a-dot terms
+    reappear here, which is the whole point of the rescaling: with rho = rho'/a^2,
+
+        d_t rho = (d_t rho')/a^2 - 2(adot/a) rho,
+
+    and likewise B_i = B'_i/A_i with A = diag(a^2, a, a), whose logarithmic derivative
+    Adot_i/A_i is exactly Lambda_i*(adot/a). u is unscaled, so its rows pass through."""
+    a = 1.0 + adot*float(state.t)
+    ah = adot/a
+    prod, _ = construct_rhs(equation_registry["CMHD"])(state, kgrid, params)
+    fk = state.fields
+    rows = [prod[0]/a**2 - 2.0*ah*(fk[0]/a**2)]
+    rows += [prod[1+i] for i in range(3)]
+    for i in range(3):
+        apow = a**_LAMBDA[i]
+        rows.append(prod[4+i]/apow - ah*_LAMBDA[i]*(fk[4+i]/apow))
+    return jnp.stack(rows)
+
+
+@pytest.mark.fp64
+def test_raw_frame_rhs_matches_the_advective_reference():
+    """THE METRIC-FACTOR GATE. One RHS evaluation on a smooth random state at a != 1,
+    converted to the raw frame, against the independent advective transcription above.
+    Every a and every k~ in the production path is load-bearing here: get one wrong and
+    the two forms disagree at O(1) of the row, not at round-off.
+
+    Two discretization points, both settled by the band limit:
+
+    1. THE REFERENCE MUST CARRY THE SAME DEALIAS MASK. `1/rho` and `ln rho` are not
+       polynomial, so both forms put power past the 2/3 cut; the mask is part of the
+       discretization under test, not part of the physics, and comparing a masked RHS with
+       an unmasked one would differ by that residual (~1e-8 here) rather than by round-off.
+       The a-dot terms are OUTSIDE the mask in both -- they are exact algebra of the
+       variable change, not a nonlinear term -- and it makes no difference anyway because
+       `initialize` leaves the state mask-supported, which the test asserts.
+    2. THE ADVECTIVE AND ROTATIONAL/FLUX/CURL FORMS AGREE ONLY IF THE PRODUCTS ARE
+       RESOLVED. `u.grad u = (curl u) x u + grad(|u|^2/2)` is a pointwise identity, but the
+       production form takes grad(|u|^2/2) SPECTRALLY, i.e. of the interpolant of the
+       sampled product -- which differs from the pointwise derivative as soon as |u|^2
+       aliases. The IC here is band-limited to |n| <= 2 on a 16^3 grid, so every quadratic
+       product sits at |n| <= 4, well inside the Nyquist 8 and the 2/3 cut at 5.33, and the
+       two forms are then the same function. Widening the IC band would break this gate for
+       a reason that is not a bug.
+
+    fp64 only: the comparison is a round-off-scale one and there is nothing to say at fp32.
+    """
+    cs0, adot, cs_q = 1.0, 0.35, 4.0/3.0
+    p = _params(16, 0.02, adot=adot, cs_q=cs_q, eqpars=dict(cs0=cs0, diss=0.0, hyper=1))
+    kgrid = jr.setup_kgrids(p)
+    state = _advance(jr.initialize(_random_ic(), p), kgrid, p, 100)
+    a = _a_of(state.t, adot)
+    ref = np.asarray(_reference_raw_rhs(state, kgrid, p, cs0, adot, cs_q))
+    got = np.asarray(_production_raw_rhs(state, kgrid, p, adot))
+    names = ("rho", "u_x", "u_y", "u_z", "B_x", "B_y", "B_z")
+    tol = 1e-11
+    with checks() as c:
+        c.check(f"the state is dealias-mask-supported, so the a-dot terms' placement "
+                f"relative to the mask cannot matter",
+                np.array_equal(np.asarray(state.fields*kgrid.dealias),
+                               np.asarray(state.fields)))
+        c.check(f"a = {a:.4f} is meaningfully away from 1", a > 1.5, f"{a}")
+        for i, nm in enumerate(names):
+            scale = np.abs(ref[i]).max()
+            rel = np.abs(got[i] - ref[i]).max()/scale
+            c.check(f"d_t {nm} matches the advective raw-form reference "
+                    f"(rel {rel:.2e} < {tol:.0e}, row scale {scale:.3e})", rel < tol,
+                    f"{rel:.3e}")
+
+
 # --------------------------------------------------------- the CFL under expansion
 
 def test_cfl_uses_physical_spacings_under_expansion():
     """set_timestep's EBM branch: physical spacings (dx, a*dy, a*dz) and the cooled cs(t),
     with the speeds taken from the UNPRIMED fields (which is exactly what grads carries, so
     nothing is unscaled twice). Both effects RELAX the timestep as the box expands, so on
-    IDENTICAL fields at a later t the returned dt must be strictly larger -- and with the
-    expansion key absent it must be bitwise the same at both times, which is the
-    discriminator.
+    IDENTICAL fields at a later t the returned dt must be larger -- and with the expansion
+    key absent it must be bitwise the same at both times, which is the discriminator.
 
-    The box is deliberately transverse-limited (ny = nz = 2*nx, so dy = dz = dx/2 at a = 1):
-    the CFL is a max over the three directions, and on a cubic box the fixed radial
-    direction would mask the transverse stretching entirely."""
+    The box is deliberately transverse-limited (ny = nz = 2*nx, so dy = dz = dx/2 at a = 1
+    and a*dy stays under dx for the whole a range used): the CFL is a max over the three
+    directions, and on a cubic box the fixed radial direction would mask the transverse
+    stretching entirely.
+
+    THE cs_q = 0 CELL IS THE LOAD-BEARING ONE. With cs_q = 4/3 the two effects are summed,
+    and a mutant using STATIC spacings still reaches x1.0675 on cooling alone (measured, on
+    the mutant, by the C3b review and again here) -- so a threshold anywhere near 1 gates
+    nothing. At cs_q = 0 the sound speed is constant and the physical spacings are almost
+    the whole relaxation: the static-spacing mutant is then measured at x1.0006 -- not
+    exactly 1, because `grad` still unscales the fields and v_A^2 = |B|^2/rho carries its
+    own a-dependence -- against x1.8011 for the real code. The x1.4 threshold separates
+    them by a mile. The cs_q = 4/3 cell is kept as a second cell with a threshold above
+    the cooling-only figure."""
     box = dict(nx=8, ny=16, nz=16)
     st = jax.jit(lambda s, kg, p: cmhd.set_timestep(cmhd.grad(s, kg, p), p),
                  static_argnums=(2,))
+
+    def dt_pair(adot, cs_q):
+        p = _params(None, 0.5, adot=adot, cs_q=cs_q, adaptive_timestep=True, **box)
+        kgrid = jr.setup_kgrids(p)
+        s = jr.initialize(_random_ic(), p)
+        return (float(st(s._replace(t=jnp.float64(0.0)), kgrid, p)),
+                float(st(s._replace(t=jnp.float64(2.0)), kgrid, p)))
+
     with checks() as c:
-        for label, adot in (("expansion on", 0.4), ("expansion off", None)):
-            p = _params(None, 0.5, adot=adot, adaptive_timestep=True, **box)
-            kgrid = jr.setup_kgrids(p)
-            s = jr.initialize(_random_ic(), p)
-            d0 = float(st(s._replace(t=jnp.float64(0.0)), kgrid, p))
-            d1 = float(st(s._replace(t=jnp.float64(2.0)), kgrid, p))
-            if adot is None:
-                c.check(f"{label}: dt is bitwise the same at t = 0 and t = 2 (the "
-                        f"discriminator for the check below)", d0 == d1, f"{d0!r} {d1!r}")
-            else:
-                a = 1.0 + adot*2.0
-                c.check(f"{label}: a = {a:.1f} relaxes the CFL on identical fields "
-                        f"({d0:.6g} -> {d1:.6g}, x{d1/d0:.4f})", d1 > d0*1.05,
-                        f"{d0!r} -> {d1!r}")
-        # and an actual adaptive run stays finite through a factor-2 expansion
+        # (1) the discriminating cell: no cooling, so only a*dy and a*dz can move dt
+        d0, d1 = dt_pair(0.4, 0.0)
+        c.check(f"cs_q = 0, a = 1.8: the PHYSICAL SPACINGS alone relax the CFL on identical "
+                f"fields ({d0:.6g} -> {d1:.6g}, x{d1/d0:.4f} > 1.4 -- a static-spacing "
+                f"mutant measures x1.0006 here)", d1 > d0*1.4, f"{d0!r} -> {d1!r}")
+        # (2) the default cooling law on top; the threshold clears the cooling-only x1.0675
+        d0, d1 = dt_pair(0.4, 4.0/3.0)
+        c.check(f"cs_q = 4/3, a = 1.8: spacings and cooling together give x{d1/d0:.4f} "
+                f"(> 1.5; cooling alone reaches only x1.07)", d1 > d0*1.5,
+                f"{d0!r} -> {d1!r}")
+        # (3) the control: with no expansion key, dt cannot move with t at all
+        p = _params(None, 0.5, adaptive_timestep=True, **box)
+        kgrid = jr.setup_kgrids(p)
+        s = jr.initialize(_random_ic(), p)
+        e0 = float(st(s._replace(t=jnp.float64(0.0)), kgrid, p))
+        e1 = float(st(s._replace(t=jnp.float64(2.0)), kgrid, p))
+        c.check("expansion off: dt is bitwise the same at t = 0 and t = 2 (the control for "
+                "the two checks above)", e0 == e1, f"{e0!r} {e1!r}")
+        # (4) and an actual adaptive run stays finite through a factor-6 expansion
         p = _params(None, 0.5, adot=0.4, adaptive_timestep=True, **box)
         kgrid = jr.setup_kgrids(p)
         end = _advance(jr.initialize(_random_ic(), p), kgrid, p, 60)
