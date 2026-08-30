@@ -261,7 +261,7 @@ different in kind:
 
 | backend | selected for | hoisted | per-stage ops | what hoisting buys |
 |---|---|---|---|---|
-| diagonal | FD-z, 2D | **no** | one real exp per mode, z-broadcast | nothing — and staying unhoisted keeps the FD-z/2D fixed-dt graph byte-identical to the pre-hoist solver (gate 6's reference: with a literal `gamma` XLA folds `(L·dt)·gamma` differently, 15 elements at 1e-23 in the 64² gate-6 config) |
+| diagonal | FD-z, 2D, **CMHD** | **no** | one real exp per mode, z-broadcast | nothing — and staying unhoisted keeps the FD-z/2D fixed-dt graph byte-identical to the pre-hoist solver (gate 6's reference: with a literal `gamma` XLA folds `(L·dt)·gamma` differently, 15 elements at 1e-23 in the 64² gate-6 config) |
 | separable | z_spectral RMHD, ν = η | yes | `(nkx,nky)` + 2×`(nz,1,1)` reals per stage, ~free (≤0.1 u for the whole stack) | amortises the per-stage exp/cos/sin EVALUATION: 1.02–1.13× unhoisted vs 0.94–0.98× hoisted against the old putzer2 fixed-dt step |
 | putzer2 | GDI-IF, ν ≠ η z_spectral RMHD | yes | 4 complex arrays of L's full shape per stage | the real time/memory trade — see below |
 
@@ -276,7 +276,7 @@ property, not an arithmetic one** — on XLA:CPU the GDI 2D 256² lsrk33 pair is
 plus seven 1 u `_coeffs` lanes live inside the stage scan, which costs what the hoisted stage
 coefficients cost), where the same pair on the P100 is a real +7.0 u. Size the trade on the
 device you will run on. Nothing to decide on the separable path (hoisting is ~free and on),
-and nothing to decide on FD-z/2D (the knob does not reach them).
+and nothing to decide on FD-z/2D/CMHD (the knob does not reach the diagonal backend).
 
 The ExpOps are exactly the arrays `apply_exp` forms, in the same op order — `apply_exp(arr,
 tau)` IS `exp_op(tau).apply(arr)` — so hoisted and unhoisted agree bitwise at fp64 on the test
