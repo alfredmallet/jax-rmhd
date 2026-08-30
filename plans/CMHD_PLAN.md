@@ -4,9 +4,10 @@ Status: C0–C3 **COMPLETE, 2026-08-30** — landed on main (C0 `fd814c6`, C1 `3
 C2 `210ad69`, C3a `8e2d229`, C3b `f7271ae`, each with its close-out commit), every phase
 opus-implemented (C0/C3a by the session directly, Alfred's call) and fable-adversarially
 reviewed before landing; the dated landing notes in §5 carry the review verdicts and
-measured numbers. **Phase C4 (the ln ρ density variable, Alfred's request 2026-08-30) is
-IMPLEMENTED, PENDING ITS ADVERSARIAL REVIEW** — spec and dated implementation note at the
-end of §5, derivation in docs/numerics.md "The ln ρ density variable". Remaining follow-ups
+measured numbers. **Phase C4 (the ln ρ density variable, Alfred's request 2026-08-30)
+landed the same day** (main `5e310c6` + close-out; derivation PASS, implementation
+PASS-WITH-FIXES applied) — spec and landing note at the end of §5, derivation in
+docs/numerics.md "The ln ρ density variable". The plan is COMPLETE; remaining follow-ups
 live in §11, none blocking.
 (History: rev 1 folds in Alfred's §10 answers: isothermal
 default, EBM equations from Squire et al. 2020, radial axis x; rev 2: OT reference =
@@ -708,10 +709,22 @@ Spec:
 - Docs sweep: CLAUDE.md CMHD paragraph gains the density_var lines; RUNNING_TESTS row;
   this § gets the dated landing note.
 
-**C4 IMPLEMENTED 2026-08-30, PENDING ADVERSARIAL REVIEW** (opus implementer in a worktree
+**C4 LANDED 2026-08-30** (main `5e310c6` + close-out; fresh-fable adversarial review of
+BOTH the derivation and the implementation: **derivation PASS** — every claim re-derived
+including the δE/δs inversion and the EBM s′ cancellation, the 24-tally independently
+re-counted by jaxpr walk — and **implementation PASS-WITH-FIXES**, the fixes being doc
+one-liners applied in the close-out (the t = 1 measurement-horizon annotation below, the
+non-expanding budget caveat in docs, the k-local-fold parenthetical). The review re-ran
+M4/M6/M9 plus a NOVEL mutation of its own (the γ=1 fold ignoring the EBM-cooled c_s²(t))
+— all caught, none blind. Recorded coverage note (review finding 2): every
+EBM-metric/coefficient error on the lnrho path funnels through the single fp64-only
+cross-variable RHS gate — robust today, invisible in an fp32-only session; a non-uniform
+lnrho×EBM cell is the eventual hardening, §11. Diagnostics deferral (silent lnrho
+misread) adjudicated acceptable given the four recorded warnings and restart protection;
+§11 item 6 is the fix path.) Original implementation note follows (opus implementer in a worktree
 off main `22c13e7`; the worktree was cut from an older commit and was reset onto `22c13e7`
 before any work, per §9). Files: `taranis/physics/cmhd.py` (467 → 661 lines),
-`tests/test_cmhd_lnrho.py` (new, 15 tests / 1134 lines), plus the CLAUDE.md,
+`tests/test_cmhd_lnrho.py` (new, 15 tests / 1138 lines), plus the CLAUDE.md,
 docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else was touched** — no
 `physics/__init__.py` (the recipe is unchanged: same `nfields`, same `grad`, same single
 `Term`), no `run.py`, `timestepping.py`, `propagators.py`, `grids.py`, `comms.py`,
@@ -824,12 +837,16 @@ Deviations from the C4 spec above, all recorded in the files themselves:
 
 1. **The mass gate asserts an order at a DIFFERENT regime from the plan's default, because
    at the C1 regime there is no order to measure.** At 16³, the C1 conservation amplitude
-   and dt 0.02/0.01/0.005 the `∫e^s` drift is 3.648e-06 FLAT — dt-independent to three
-   digits — i.e. it is the §3.5 non-polynomial truncation residual, not the integrator;
-   exactly the finding C1's energy gate recorded. It falls as ~amp^7.9 (1.53e-8 at half
-   amplitude, 6.14e-11 at a quarter). So the order cell is placed where the time error
-   dominates instead: half amplitude, dt 0.16/0.08/0.04, t = 4. The plan's "dt and dt/2" is
-   satisfied as a three-point fit.
+   and dt 0.02/0.01/0.005 **at t = 1** (review annotation: the horizon was unstated; at
+   the gate's t = 4 the same measurement reads 3.748e-05, equally flat) the `∫e^s` drift
+   is 3.648e-06 FLAT — dt-independent to three digits — i.e. it is the §3.5
+   non-polynomial truncation residual, not the integrator; exactly the finding C1's
+   energy gate recorded. It falls as ~amp^7.9 at t = 1 (1.53e-8 at half amplitude,
+   6.14e-11 at a quarter). So the order cell is placed where the time error dominates
+   instead: half amplitude, dt 0.16/0.08/0.04, t = 4 (review nit: the finest-dt point is
+   ~70% truncation floor, so the fitted 3.780 blends the coarse-pair 4.5 with floor
+   contamination; the 3.0–5.0 window still discriminates — M1/M3/M7 fail it). The plan's
+   "dt and dt/2" is satisfied as a three-point fit.
 2. **`diagnostics/cmhd.py` is left rho-only and the budget is built TEST-LOCALLY** — the
    spec's own instruction, and the right call: `diagnostics.cmhd` is not a C4 file, it reads
    `state.fields[0]` as ρ, and there is no hook that would let physics reject it. So on an

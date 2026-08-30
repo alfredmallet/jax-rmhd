@@ -1220,7 +1220,11 @@ uniform-state gates survive; turbulent `⟨s⟩` drifts, as the physics requires
 
 ```
 h = c_s²·s                              γ = 1  (LINEAR: the pressure force is the
-                                               k-local −c_s²·ik̃·ŝ, no transform)
+                                               k-local −c_s²·ik̃ ŝ (a vector), no
+                                               transform; the implementation folds
+                                               c_s²ŝ into the gradient scalar before
+                                               the −ik̃ multiply — algebraically
+                                               identical by distributivity)
 h = c_s0²·e^((γ−1)s)/(γ−1)              γ > 1  (pointwise, as before)
 ```
 
@@ -1243,7 +1247,10 @@ Note the INVERSION of the ρ-form's constant rule: there the γ = 1 constant mul
 `⟨D_ρρ⟩` whose k = 0 mode is exactly zero and dropped out; here it multiplies
 `⟨e^s·D_s s⟩`, whose mean is NOT zero — **the +c_s² term must be kept in the γ = 1
 budget sink**, and omitting it (by analogy with the ρ-form note) is the likely first
-bug of this phase. γ > 1 is the clean branch this time.
+bug of this phase. γ > 1 is the clean branch this time. These budget expressions are
+NON-EXPANDING: under EBM, `dE/dt` also carries `∂_t c_s²(t)` and the expansion work, so
+the `dE/dt + ε ≈ 0` closure applies only with expansion off (true of the ρ-form budget
+too — the C2 diagnostics predate EBM).
 
 **Dissipation** acts on s (field-0 row of the same diagonal L): mass-affecting through
 the variance (⟨s⟩ untouched at k = 0, `∫e^s` not), undershoot-proof (diffusion of s
