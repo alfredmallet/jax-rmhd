@@ -361,6 +361,10 @@ it hoistable would touch the FD-z/2D bitwise gates for no win).
 Repeated in a second session on the same machine minutes later: 54.99 / 103.97 (1.89×) and
 236.61 / 481.29 (2.03×) — the 128² ratio moves by 2%, the 256² one not at all. Spread is
 max−min over the 9 repetitions as a percentage of the median; nothing here is above 4.2%.
+Machine state, stated rather than asserted: no process above 15% CPU during either run,
+but the 1-minute load average read ~3.1–3.4, decaying from an unrelated job that had just
+finished. The tight spreads and the cross-session reproducibility are the evidence that it
+did not matter; the interleaving is what makes the RATIO robust to it either way.
 
 **Context: the transform count.** CMHD does **23** 3-D FFTs per RHS evaluation (13 inverse:
 ρ, u(3), B(3), ω(3), j(3); 10 forward: the combined curl force(3), the combined scalar(1),
