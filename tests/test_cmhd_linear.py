@@ -36,7 +36,8 @@ import jax
 import jax.numpy as jnp
 
 import taranis as jr
-from taranis import _precision
+from taranis import _precision, grids
+from taranis.physics import cmhd
 from taranis.run import block_of_steps
 from taranis.timestepping import get_scheme, stage_exp_ops
 
@@ -319,6 +320,71 @@ def test_dissipation_only_decay_is_exact():
     with checks() as c:
         for hyper in (1, 2):
             _decay_case(c, hyper)
+
+
+# --------------------------------------------------------------------------- set_timestep
+
+def _cfl_ic(x, y, z):
+    # every factor carries a phase offset, so rho is NOT 1 at the grid point where the CFL
+    # speed peaks -- otherwise c_s(rho) = cs0 there and the gamma branch would be vacuous
+    shp = jnp.broadcast_shapes(x.shape, y.shape, z.shape)
+    a = jnp.broadcast_to(jnp.cos(x + 0.37)*jnp.cos(y + 0.11)*jnp.cos(z + 0.53), shp)
+    b = jnp.broadcast_to(jnp.sin(2*x)*jnp.cos(y + 1.1)*jnp.sin(z), shp)
+    d = jnp.broadcast_to(jnp.cos(x)*jnp.sin(y)*jnp.cos(2*z + 0.7), shp)
+    return jnp.stack([1.0 + 0.3*a, 0.3*b, 0.3*d, 0.2*a, 0.3*d, 0.3*a, 1.0 + 0.3*b])
+
+
+def _cfl_reference(state, params, cs0, gamma):
+    # the same bound, rebuilt from the real-space fields in host numpy
+    f = np.asarray(grids.ifft(state.fields, params), dtype=np.float64)
+    rho, u, B = f[0], f[1:4], f[4:7]
+    cs2 = cs0**2 if gamma == 1.0 else cs0**2*rho**(gamma - 1.0)
+    cf = np.sqrt(cs2 + (B**2).sum(0)/rho)
+    d = (params.dx, params.dy, params.dz)
+    return params.cfl_safety/max((np.abs(u[i]) + cf).max()/d[i] for i in range(3))
+
+
+def test_set_timestep_matches_the_cfl_bound():
+    """set_timestep is the only recipe function the fixed-dt gates above never reach. It
+    bounds |u_i| + sqrt(c_s^2(rho) + |B|^2/rho) over the three directions; both enthalpy
+    branches are checked, plus the fixed-dt ceiling, plus that an adaptive run actually
+    takes the step it reports."""
+    tol = 1e-12 if _fp64() else 1e-5
+    seen = {}
+    with checks() as c:
+        for gamma in (1.0, 5.0/3.0):
+            for cs0 in (0.5, 2.0):
+                params = fresh_params(eqpars=dict(cs0=cs0, diss=0.0, hyper=1, gamma=gamma),
+                                      adaptive_timestep=True,
+                                      **{k: v for k, v in _BOX.items()
+                                         if k != "adaptive_timestep"})
+                kgrid = jr.setup_kgrids(params)
+                state = jr.initialize(_cfl_ic, params)
+                got = float(cmhd.set_timestep(cmhd.grad(state, kgrid, params), params))
+                want = _cfl_reference(state, params, cs0, gamma)
+                err = abs(got/want - 1.0)
+                c.check(f"gamma={gamma:.3f} cs0={cs0}: dt = {got:.6e} matches the CFL bound "
+                        f"({err:.2e})", err < tol, f"{got} vs {want}")
+                stepper, scheme = get_scheme("lsrk54")
+                advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
+                end = advance(state, kgrid, params, 1, scheme, stepper)
+                c.check(f"gamma={gamma:.3f} cs0={cs0}: an adaptive step advances t by that "
+                        f"dt", abs(float(end.t)/got - 1.0) < tol,
+                        f"{float(end.t)} vs {got}")
+                seen[(gamma, cs0)] = got
+        for cs0 in (0.5, 2.0):
+            a, b = seen[(1.0, cs0)], seen[(5.0/3.0, cs0)]
+            c.check(f"cs0={cs0}: the gamma branch is not vacuous -- gamma=1 and gamma=5/3 "
+                    f"give different dt ({a:.6e} vs {b:.6e})", a != b)
+        # fixed-dt path: the returned dt never exceeds params.dt (rmhd's _quiescent_dt rule)
+        params = fresh_params(eqpars=dict(cs0=1.0, diss=0.0, hyper=1), dt=1e-6, **_BOX)
+        kgrid = jr.setup_kgrids(params)
+        state = jr.initialize(_cfl_ic, params)
+        got = float(cmhd.set_timestep(cmhd.grad(state, kgrid, params), params))
+        # not bitwise: the returned dt carries the field dtype, so at fp32 params.dt comes
+        # back as its float32 neighbour
+        c.check(f"with adaptive_timestep=False the ceiling is params.dt ({got:.2e})",
+                abs(got/params.dt - 1.0) < tol, f"{got} vs {params.dt}")
 
 
 # ------------------------------------------------------------- gate 4: scheme cross-checks
