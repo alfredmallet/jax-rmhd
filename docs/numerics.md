@@ -1156,13 +1156,15 @@ non-expanding section says — but ON A SPATIALLY UNIFORM STATE (which stays uni
 exactly) it obeys the pure ODE `du(0)/dt = −(ȧ/a)T·u(0)`: `u_x(0)` bitwise (T_x = 0)
 and `u_⊥(0) ∝ a⁻¹` to scheme order. That uniform-IC pair is the exact-ODE gate, and the
 stage-time gate: its measured convergence order collapses if a stepper ever stops
-setting stage-correct t. Validation should reject configurations reaching `a(t) ≤ 0`
-(a doctored restart at `t < −1/ȧ`).
+setting stage-correct t. Validation enforces `ȧ > 0`; `a(t) ≤ 0` itself is not
+validatable (t is traced at every use site), so the doctored-restart hole
+(`t < −1/ȧ`) is recorded as a comment at the guard, nothing more.
 
 **Where a(t) enters the graph** (everything trace-time-gated on `"expansion" in
 params.eqpars` — off, every factor is the literal identity and the graph must be BITWISE
 the non-EBM graph, which is a C3 gate): `k̃ = (k_x, k_y/a, k_z/a)` wherever grad and the
-term funcs form derivatives; the elementwise `B̂ = A⁻¹B̂′`, `ρ̂ = ρ̂′/a²` unscalings in
+term funcs form derivatives — EXCEPT the induction curl, which stays on static K per the
+identity above; the elementwise `B̂ = A⁻¹B̂′`, `ρ̂ = ρ̂′/a²` unscalings in
 grad; the E′ scaling; `c_s²(t)`; the `−(ȧ/a)T·u` term (the ONLY new additive term); and
 the CFL, which uses physical spacings `(d_x, a·d_y, a·d_z)` with speeds from the
 UNPRIMED fields and c_s(t). a(t) comes from `grads.t` — cast to `_precision.ftype`
@@ -1179,8 +1181,9 @@ comoving mode indices — the mask never needs to know about a(t).
 `ȧ/a ≪ ω` conserves wave action: velocity amplitude `δu ∝ a^(−1/2)` (equivalently
 `δb = δB/√ρ ∝ a^(−1/2)`), hence raw `δB_⊥ ∝ a^(−3/2)` and the normalized
 `δB_⊥/B_x ∝ a^(+1/2)` — the amplitude growth that drives switchback formation, and the
-C3 gate measures the −1/2 exponent over a decade of a with a tolerance budgeted from the
-O(ȧ/(aω)) WKB corrections.
+C3 gate measures the −1/2 exponent over a factor 4 in a (a decade buys no extra
+discrimination for ~4× the steps) with a tolerance budgeted from the O(ȧ/(aω)) WKB
+corrections.
 
 ## Reading 2D MHD results
 
