@@ -1,6 +1,7 @@
 from typing import NamedTuple,Tuple,Callable,Optional,Union
 from . import rmhd
 from . import gdi
+from . import cmhd
 from .. import _precision
 
 class Term(NamedTuple):
@@ -89,4 +90,12 @@ equation_registry = {
                           nfields = 2,
                           linear_matrix_func = gdi.linear_matrix
                           ),
+    # compressible MHD (plans/CMHD_PLAN.md): one ideal term, no forcing hook, no halo hook
+    # (z_spectral only), L is the isotropic (hyper)dissipation diagonal and nothing else.
+    "CMHD": EquationRecipe(set_timestep_func = cmhd.set_timestep,
+                           term_funcs = (Term(cmhd.NonlinearTerm),),
+                           grad_func = cmhd.grad,
+                           nfields = 7,
+                           linear_matrix_func = cmhd.linear_matrix
+                           ),
 }
