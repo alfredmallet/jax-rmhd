@@ -1085,6 +1085,103 @@ space and transformed ONCE), the combined scalar `|u|²/2 + h`(1), `u×B`(3), `�
 = **10**; total **23** 3-D FFTs, vs 10 for z_spectral RMHD — expect ~2–2.5× the RMHD
 step, to be measured, not quoted.
 
+### Expanding box (Phase C3, plans/CMHD_PLAN.md §5)
+
+Source of truth: Squire, Chandran & Meyrand 2020 (ApJL 891, L2; arXiv:2001.08422),
+eqs (1)–(3). Their comoving frame: `a(t) = 1 + ȧt` with constant `ȧ`, radial axis x,
+transverse (y, z) expanding, comoving gradient `∇̃ = (∂_x, a⁻¹∂_y, a⁻¹∂_z)`. In taranis
+code units (4π absorbed, Alfvén units) their system is exactly our §"Variables" set with
+`∇ → ∇̃` plus three expansion terms:
+
+```
+∂ρ/∂t = −∇̃·(ρu) − 2(ȧ/a)ρ
+∂u/∂t = −(∇̃×u)×u − ∇̃(|u|²/2 + h) + (∇̃×B)×B/ρ − (ȧ/a)·T·u      T = diag(0,1,1)
+∂B/∂t = ∇̃×(u×B) − (ȧ/a)·Λ·B                                     Λ = diag(2,1,1)
+```
+
+The rotational-form identity survives the anisotropic metric — for any DIAGONAL scaled
+derivative `∂̃ᵢ = cᵢ∂ᵢ`, `[(∇̃×u)×u]ᵢ = (u·∇̃)uᵢ − ∂̃ᵢ(u²/2)` by the same ε-tensor
+algebra, so the combined-gradient trick is unchanged. Λ = diag(2,1,1) is flux
+conservation: B_x threads the transverse area (∝ a²) so B_x ∝ a⁻²; B_⊥ threads one
+transverse and one radial direction (∝ a) so B_⊥ ∝ a⁻¹; with ρ ∝ a⁻² the normalized
+amplitudes obey `B_x/√ρ ∝ a⁻¹`, `B_⊥/√ρ ∝ a⁰` — Squire et al.'s stated scalings.
+
+**Closure: EBM is isothermal-only** (`γ = 1` enforced when expansion is on). Squire et
+al.'s closure is isothermal with a prescribed cooling law, and pinning to their closure
+is the whole justification — the restriction is scope, not mathematics: EBM preserves
+`D_t(p/ρ^γ) = 0` exactly (the expansion sources cancel — combine Dong et al. 2014 eqs
+8 and 11), so a barotropic γ > 1 would drop in with `h = c_s0²·a^(−2(γ−1))·ρ′^(γ−1)/(γ−1)`,
+still gradient-form, γ = 5/3 reproducing the a^(−4/3) cooling automatically; deferred,
+not blocked. The cooling law is
+`c_s²(t) = c_s0²·a^(−q)`, `q ≥ 0`, default `q = 4/3` (their Athena++ "adiabatic"
+mimic, i.e. c_s² ∝ ρ^(2/3) on the background ρ ∝ a⁻²; `q = 0` is constant temperature).
+Their Snoopy-run `c_s² = 0.35 t⁻¹` fit is not supported — it is dimensional and
+box-specific. So `h(ρ, t) = c_s²(t)·ln ρ`. Background β on a radial field runs as
+`β_x = 2c_s²ρ/B_x² ∝ a^(2−q)` (grows at q = 4/3); combine the scalings per configuration
+rather than quoting a universal β(t).
+
+**Rescaled variables are the implementation form** (the Grappin-family trick, worked out
+for the curl discretization): evolve
+
+```
+ρ′ = a²ρ        B′ = (a²B_x, a·B_y, a·B_z)        u unscaled
+```
+
+Substituting kills the −2(ȧ/a)ρ and −(ȧ/a)Λ·B terms identically, and the three
+equations become
+
+```
+∂ρ′/∂t = −∇̃·(ρ′u)                                    (flux form in k̃, unchanged shape)
+∂u/∂t  = (ideal RHS with ∇̃, h = c_s²(t)·ln ρ′) − (ȧ/a)·T·u
+∂B′/∂t = ∇×E′        E′ = ((u×B)_x, a(u×B)_y, a(u×B)_z),  ∇ the STATIC comoving curl
+```
+
+(the uniform `−2 c_s²(t) ln a` from `ln ρ = ln ρ′ − 2 ln a` dies under the gradient).
+The induction identity is the load-bearing step: with `A = diag(a², a, a)`,
+`A·(∇̃×E) = ∇×E′` component by component —
+
+```
+x: a²·a⁻¹(∂_yE_z − ∂_zE_y) = ∂_y(aE_z) − ∂_z(aE_y)   ✓
+y: a·(a⁻¹∂_zE_x − ∂_xE_z)  = ∂_zE_x − ∂_x(aE_z)      ✓
+z: a·(∂_xE_y − a⁻¹∂_yE_x)  = ∂_x(aE_y) − ∂_yE_x      ✓
+```
+
+so `∂_tB̂′ = iK×Ê′` with STATIC integer-grid wavenumbers K. Consequences, all inherited
+verbatim from the non-expanding argument: `K·B̂′` is a round-off random walk with no
+systematic source (the physical divergence is `k̃·B̂ = a⁻²·K·B̂′`), and the k = 0 modes
+of ρ′ and B′ are BITWISE invariants of the discrete step — equivalently the raw
+backgrounds track ρ ∝ a⁻², B_x ∝ a⁻², B_⊥ ∝ a⁻¹ exactly. The k = 0 velocity is NOT an
+invariant in general — the mean Reynolds/Maxwell stresses source it, exactly as the
+non-expanding section says — but ON A SPATIALLY UNIFORM STATE (which stays uniform
+exactly) it obeys the pure ODE `du(0)/dt = −(ȧ/a)T·u(0)`: `u_x(0)` bitwise (T_x = 0)
+and `u_⊥(0) ∝ a⁻¹` to scheme order. That uniform-IC pair is the exact-ODE gate, and the
+stage-time gate: its measured convergence order collapses if a stepper ever stops
+setting stage-correct t. Validation should reject configurations reaching `a(t) ≤ 0`
+(a doctored restart at `t < −1/ȧ`).
+
+**Where a(t) enters the graph** (everything trace-time-gated on `"expansion" in
+params.eqpars` — off, every factor is the literal identity and the graph must be BITWISE
+the non-EBM graph, which is a C3 gate): `k̃ = (k_x, k_y/a, k_z/a)` wherever grad and the
+term funcs form derivatives; the elementwise `B̂ = A⁻¹B̂′`, `ρ̂ = ρ̂′/a²` unscalings in
+grad; the E′ scaling; `c_s²(t)`; the `−(ȧ/a)T·u` term (the ONLY new additive term); and
+the CFL, which uses physical spacings `(d_x, a·d_y, a·d_z)` with speeds from the
+UNPRIMED fields and c_s(t). a(t) comes from `grads.t` — cast to `_precision.ftype`
+before it touches field math (`CMHDGrads.t` is deliberately float64). The transform
+tally is unchanged at 23: every rescaling is elementwise, no new transforms.
+
+Two recorded truncation choices: dissipation acts on the PRIMED fields at COMOVING k
+(static diagonal L, exactly the §"Variables" operator — the physical-wavenumber
+alternative needs ν(t) or per-block L rebuilds and is rejected); and the 2/3 mask is
+exactly correct as is, because products are formed on the comoving grid and alias in
+comoving mode indices — the mask never needs to know about a(t).
+
+**WKB gate**: a small-amplitude Alfvén wave propagating along x on a `B_x` background at
+`ȧ/a ≪ ω` conserves wave action: velocity amplitude `δu ∝ a^(−1/2)` (equivalently
+`δb = δB/√ρ ∝ a^(−1/2)`), hence raw `δB_⊥ ∝ a^(−3/2)` and the normalized
+`δB_⊥/B_x ∝ a^(+1/2)` — the amplitude growth that drives switchback formation, and the
+C3 gate measures the −1/2 exponent over a decade of a with a tolerance budgeted from the
+O(ȧ/(aω)) WKB corrections.
+
 ## Reading 2D MHD results
 
 Energy cascades **forward** in 2D MHD — the opposite of 2D hydrodynamics' inverse cascade

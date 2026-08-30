@@ -423,7 +423,7 @@ coordinates. **Source of truth: Squire et al. 2020's expanding-box formulation**
 answer; their compressible EBM runs are isothermal, matching the γ default — C3a pins
 the exact paper/equation numbers and cross-checks against Grappin & Velli 1996 /
 Dong, Verdini & Grappin 2014 as secondary derivation checks, flagging any convention
-difference rather than silently mixing them). a(t) = 1 + t/t_e, **radial axis = x**
+difference rather than silently mixing them). a(t) = 1 + ȧt, **radial axis = x**
 (confirmed), transverse (y,z) expanding. Deliverables: docs/numerics.md § "Expanding box" with every
 term's power of a and ȧ/a tabulated per field, the anisotropic-metric factors on each
 derivative, the WKB/analytic gate predictions (uniform-state decay laws: ρ ∝ a⁻²,
@@ -432,21 +432,59 @@ comoving-vs-physical dissipation decision (default: comoving-k dissipation, keep
 static — the physical-ν(t) alternative would force per-block L rebuilds or an explicit
 dissipation term; documented, not built). Same adversarial-review gate as C0.
 
-**C3b (implementation)**: EBM terms as additional `Term` entries with
-`active=lambda p: "expansion" in p.eqpars` — trace-time gated, zero graph cost when off
-(the `Term.active` machinery is exactly this). eqpars gains optional
-`expansion = {"t_e": float}`. The metric factors multiply the k-space gradients inside
-the term funcs — kgrid stays static (comoving k). Time enters through `grads.t` (§3.6):
-verified 2026-08-29 that every stepper sets stage-correct times
-(`state._replace(t=state.t + c_k·dt)`, timestepping.py throughout), so a(t) is evaluated
-at the right stage abscissae with no order loss — cite the check, and add one gate that
-would catch a stepper regressing this (a pure-decay EBM term whose dt-convergence order
-collapses if stage times are wrong). CFL: the transverse physical wavenumbers shrink
-∝ 1/a — `set_timestep` reads `grads.t` and relaxes the transverse terms accordingly.
-Gates: the C3a analytic scalings (uniform state: near-exact; WKB: to stated tolerance);
-an `expansion`-off run stays BITWISE identical to the pre-C3 tree (the active-predicate
-guarantee, and the standing bitwise-gates-are-evidence rule applies: if it drifts, find
-out why, never widen).
+**C3a drafted 2026-08-30** (by the session directly, like C0; pending its adversarial
+review): docs/numerics.md § "Expanding box" now carries the derivation from Squire et
+al. 2020 eqs (1)–(3) — a(t) = 1 + ȧt, ∇̃ = (∂_x, a⁻¹∂_y, a⁻¹∂_z), T = diag(0,1,1),
+Λ = diag(2,1,1) — with two design results that SUPERSEDE the C3b sketch below where
+they conflict: (i) **EBM is isothermal-only** (γ = 1 enforced with expansion on; Squire's
+closure, and a γ > 1 polytrope would need its own expansion terms), with cooling
+`c_s²(t) = c_s0²·a^(−q)`, default q = 4/3; (ii) **rescaled evolution variables**
+ρ′ = a²ρ, B′ = (a²B_x, aB_y, aB_z) kill the ρ and B expansion terms identically and —
+via the verified identity A·(∇̃×E) = ∇×E′ with E′ = (E_x, aE_y, aE_z) — keep induction
+a pure STATIC-k curl, so the C1 round-off div-B property and the bitwise ρ′/B′ k=0
+gates survive expansion unchanged (physical div = a⁻²·K·B̂′; raw backgrounds track
+ρ ∝ a⁻², B_x ∝ a⁻², B_⊥ ∝ a⁻¹ exactly). Only −(ȧ/a)T·u survives as an additive term.
+Transform tally stays 23 (rescalings are elementwise).
+
+**C3a reviewed 2026-08-30, PASS after two one-line fixes** (fable adversarial review:
+Squire eqs (1)–(3) transcription and Dong/Verdini/Grappin 2014 cross-check verified —
+identical conventions, DVG14's physical-ν and adiabatic-pressure divergences being
+exactly the two recorded taranis choices; the rescaling identity confirmed in all five
+sub-items; every exponent confirmed, WKB δu ∝ a^(−1/2) re-derived from wave action with
+k_x static and ω ∝ a⁻¹). The two blocking fixes, applied: a sign flip in the
+anisotropic rotational-identity transcription, and the u_x(0)-bitwise claim qualified
+to the uniform-state gate IC (in general the mean stresses source u(0)). Also folded
+in: the isothermal-only rationale corrected (barotropic γ > 1 is exactly
+self-consistent in EBM — D_t(p/ρ^γ) = 0, expansion sources cancel — so the restriction
+is a scope pin to Squire's closure, deferred not blocked), the Γ_sim quote completed,
+a(t) ≤ 0 rejection added.
+
+**C3b (implementation)**: per the docs section, gated on `"expansion" in params.eqpars`
+as trace-time static python: the metric/rescaling factors enter grad and the term funcs
+(k̃ = (k_x, k_y/a, k_z/a), the elementwise unscalings ρ̂ = ρ̂′/a², B̂ = A⁻¹B̂′, the E′
+scaling, c_s²(t)), plus ONE new additive `Term` for −(ȧ/a)T·u with
+`active=lambda p: "expansion" in p.eqpars`; expansion OFF must leave the graph BITWISE
+identical to the pre-C3 tree (every factor a literal 1 that never enters the trace —
+gate, and the standing bitwise-gates-are-evidence rule applies: if it drifts, find out
+why, never widen). eqpars gains optional `expansion = {"adot": float > 0, "cs_q":
+float ≥ 0, default 4/3}`, rejected unless γ = 1; note Γ_sim = ȧ·L_x/v_A is the
+run-design dial — Γ_sim = (ȧ/a)(L_x/v_A) at t = 0, decaying during a run; Squire et
+al.'s Athena++ runs use 0.2–0.5 and their Snoopy runs 2. Time enters through `grads.t` (§3.6, cast
+to ftype before touching fields — CMHDGrads.t is float64): verified 2026-08-29 that
+every stepper sets stage-correct times (`state._replace(t=state.t + c_k·dt)`,
+timestepping.py throughout), so a(t) is evaluated at the right stage abscissae with no
+order loss. CFL: physical spacings (d_x, a·d_y, a·d_z) with speeds from the UNPRIMED
+fields and c_s(t). Snapshots store the PRIMED state and t — restarts reconstruct a(t)
+from t; params.save records `expansion`, and the differing-record check stops a
+cross-mode restart exactly as for z_spectral; validation rejects a(t) ≤ 0. Gates:
+bitwise ρ′/B′(k=0) and, ON A UNIFORM STATE (u(0) is stress-sourced in general — docs),
+the u_x(0) bitwise / u_⊥(0) ∝ a⁻¹ exact-ODE pair (the latter doubles as the stage-time
+regression gate — its convergence order collapses if a stepper stops setting stage
+times); K·B̂′ round-off; the WKB δu ∝ a^(−1/2) exponent over a decade of a (tolerance
+budgeted from O(ȧ/(aω)) corrections); expansion-off bitwise; dispersion gates unchanged
+at ȧ = 0. Diagnostics: energies/spectra are documented as COMOVING-primed quantities in
+C3b (physical conversions are a-scalings; a `diagnostics.cmhd` helper may unscale, but
+the sidecar convention is decided there and recorded).
 
 ## 6. What is verified NOT to need changes (checked against the tree, 2026-08-29)
 
