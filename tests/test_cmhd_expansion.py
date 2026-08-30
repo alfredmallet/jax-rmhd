@@ -769,14 +769,16 @@ def test_raw_frame_rhs_matches_the_advective_reference():
        The a-dot terms are OUTSIDE the mask in both -- they are exact algebra of the
        variable change, not a nonlinear term -- and it makes no difference anyway because
        `initialize` leaves the state mask-supported, which the test asserts.
-    2. THE ADVECTIVE AND ROTATIONAL/FLUX/CURL FORMS AGREE ONLY IF THE PRODUCTS ARE
-       RESOLVED. `u.grad u = (curl u) x u + grad(|u|^2/2)` is a pointwise identity, but the
-       production form takes grad(|u|^2/2) SPECTRALLY, i.e. of the interpolant of the
-       sampled product -- which differs from the pointwise derivative as soon as |u|^2
-       aliases. The IC here is band-limited to |n| <= 2 on a 16^3 grid, so every quadratic
-       product sits at |n| <= 4, well inside the Nyquist 8 and the 2/3 cut at 5.33, and the
-       two forms are then the same function. Widening the IC band would break this gate for
-       a reason that is not a bug.
+    2. WHY THE TWO FORMS AGREE AT ROUND-OFF (round-2 review correction): NOT because the
+       state is band-limited below the products' aliasing threshold -- the compared state
+       is 100 nonlinear steps past the IC and fills the whole mask band (measured 3.8e-3
+       relative power at per-axis |n| = 5), so quadratic products reach |n| = 10 > Nyquist.
+       The real mechanism is the 2/3 rule itself: for any MASK-SUPPORTED state the RETAINED
+       modes of a quadratic product are exact (aliases from |n| <= 2N/3 inputs land only on
+       modes the mask kills), so the advective and rotational/flux/curl forms agree on the
+       retained band identically; the non-polynomial pieces (ln rho, 1/rho) are common-mode
+       between the two constructions. Measured here: max rel 1.4e-15 on that filled-band
+       state. The |n| <= 2 IC is a convenience, not a load-bearing assumption.
 
     fp64 only: the comparison is a round-off-scale one and there is nothing to say at fp32.
     """

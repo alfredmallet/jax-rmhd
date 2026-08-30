@@ -20,9 +20,6 @@ were corrected on the way out (see below).
 
 ## Live
 
-- **CMHD_PLAN.md** — compressible MHD (polytropic, z_spectral + serial, isotropic
-  hyperdissipation in a diagonal L, waves explicit under IF-LSRK), phases C0–C2 = MVP,
-  C3 = expanding-box terms. Written 2026-08-29, not started.
 - **GDI_PLAN.md** — roadmap from the current IF-dissipation-only solver to the 3D GDI
   equations (exact linear propagators, spectral-z, low-storage IMEX). Execution order
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
@@ -31,6 +28,14 @@ were corrected on the way out (see below).
 
 ## Finished
 
+- **CMHD_PLAN.md** (landed 2026-08-30, C0 `fd814c6` → C3b `f7271ae`) — compressible MHD
+  (isothermal-default polytropic, z_spectral + serial, isotropic hyperdissipation in a
+  diagonal L, waves explicit under IF-LSRK/CB-IMEX) plus the Squire-et-al.-2020
+  expanding box in rescaled variables. One opus implementer + one fable adversarial
+  review per phase (C0/C3a derivations by the session); gates from dispersion at 2e-8
+  through mutation-tested EBM metric factors; measured 1.85–2.03× the z_spectral RMHD
+  step, 48.7 u memory. Derivations in docs/numerics.md "Compressible MHD"; follow-ups
+  in the plan's §11.
 - **REFACTOR_PLAN.md** (landed 2026-08-22 on `main`, `f838420` plus the close-out docs
   sweep) — four behaviour-preserving structural moves, one opus implementer per phase in
   parallel worktrees with a fresh-Fable review each: the linear operator as one typed

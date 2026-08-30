@@ -1,6 +1,11 @@
 # CMHD_PLAN — compressible MHD (z_spectral, serial) in taranis
 
-Status: PLAN, 2026-08-29, rev 2 (rev 1 folds in Alfred's §10 answers: isothermal
+Status: **COMPLETE, 2026-08-30** — all phases landed on main (C0 `fd814c6`, C1 `38d37c1`,
+C2 `210ad69`, C3a `8e2d229`, C3b `f7271ae`, each with its close-out commit), every phase
+opus-implemented (C0/C3a by the session directly, Alfred's call) and fable-adversarially
+reviewed before landing; the dated landing notes in §5 carry the review verdicts and
+measured numbers. Remaining follow-ups live in §11, none blocking.
+(History: rev 1 folds in Alfred's §10 answers: isothermal
 default, EBM equations from Squire et al. 2020, radial axis x; rev 2: OT reference =
 Athena, first-target regime β = 0.3, δB/B₀ = 1, C0 executed by the session directly
 rather than a subagent (Alfred's call), §3.3 div-B claim corrected from "exactly zero"
@@ -486,9 +491,13 @@ at ȧ = 0. Diagnostics: energies/spectra are documented as COMOVING-primed quant
 C3b (physical conversions are a-scalings; a `diagnostics.cmhd` helper may unscale, but
 the sidecar convention is decided there and recorded).
 
-**C3b implemented 2026-08-30** (opus implementer in a worktree off main `8e2d229`;
-**status: pending the fresh-session adversarial review**, which is what closes the phase —
-the numbers below are the implementer's own measurements, not review-confirmed). Files:
+**C3b LANDED 2026-08-30** (main `f7271ae` + close-out; opus implementer in a worktree off
+main `8e2d229`; adversarial review round 1 FAIL on gate coverage — three blind mutations —
+round 2 **PASS** after the fixes: every mutation M1–M5 + M3b independently re-run and
+caught, the raw-frame differential gate's independence audited with no cancellation
+channel, the oblique-WKB substitution adjudicated acceptable, and the review's own
+correction to the gate's agreement mechanism — the 2/3 rule, not band-limiting — folded
+into the docstring and this note. The numbers below were review-confirmed in round 2.) Files:
 `taranis/physics/cmhd.py` (277 → 467 lines), `tests/test_cmhd_expansion.py` (new, 16 tests
 / 918 lines), plus the CLAUDE.md, docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else
 was touched** — no `physics/__init__.py`, `run.py`, `timestepping.py`, `propagators.py`,
@@ -640,11 +649,12 @@ touched (restored byte-identical, sha256 verified, after every mutation):
    points, both recorded in the test docstring: **the reference must carry the same dealias
    mask** (`1/ρ` and `ln ρ` put power past the 2/3 cut; the mask is part of the
    discretization under test, and the ȧ terms sit outside it in both — which cannot matter
-   anyway, since `initialize` leaves the state mask-supported, asserted); and **the
-   advective and rotational/flux/curl forms agree only while the products are resolved**
-   (the IC is band-limited to |n| ≤ 2 on 16³, so every quadratic product sits at |n| ≤ 4,
-   inside the Nyquist 8 — widening the IC band would break this gate for a reason that is
-   not a bug).
+   anyway, since `initialize` leaves the state mask-supported, asserted); and **the two
+   forms agree at round-off because of the 2/3 rule, not band-limiting** (round-2 review
+   correction: the compared state fills the mask band after 100 steps and the gate still
+   reads 1.4e-15 — the retained modes of quadratic products are exact for any
+   mask-supported state, and the non-polynomial pieces are common-mode; the |n| ≤ 2 IC is
+   a convenience, not load-bearing).
 2. **The WKB gate now runs BOTH transverse polarizations.** y and z are the two expanding
    directions and every EBM diagonal treats them identically, so the prediction is the same
    −1/2 — but `u × B` is along −ẑ for a y-polarized wave and along +ŷ for a z-polarized
