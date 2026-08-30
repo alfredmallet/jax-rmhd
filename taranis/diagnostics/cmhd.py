@@ -17,9 +17,15 @@
 #
 # TRANSFORM COST. kinetic and internal energy are cubic/non-polynomial in the fields, so
 # unlike RMHD's energy they cannot be read off k-space: rho and u must be inverse
-# transformed. energies() costs 4 iffts (rho, u), mach_numbers() 7 (+B), spectra() 7 + 4
-# forward (sqrt(rho)*u, rho), energy_budget() 7 + 7 (the three D_f f). None of this is on a
+# transformed. energies() and mach_numbers() cost 7 iffts each (the whole stacked field
+# array), spectra() 4 + 3 forward (sqrt(rho)*u), rho_min() 1, divB_max() none (pure
+# k-space), energy_budget() 7 + 7 (the three D_f f). None of this is on a
 # solver path -- these are snapshot-cadence observers.
+#
+# NOT jit-friendly by design: rho_min and divB_max return host floats, and spectra's bin
+# edges are built from a concrete max|k|. Call them between simulate() calls, on live
+# states -- tests/test_cmhd_diagnostics.py pins that every one of them leaves the state and
+# every kgrid leaf bitwise unchanged.
 
 import jax.numpy as jnp
 import numpy as np
@@ -74,8 +80,11 @@ def energies(state, kgrid, params):
     rho e = cs0^2 rho ln rho can be negative -- that is the correct functional, and the
     +cs0^2 constant separating it from h drops out of the budget (docs/numerics.md).
 
-    Costs 4 inverse transforms (rho, u): E_kin is cubic in the fields, so it cannot be
-    evaluated in k-space the way diagnostics.rmhd.energy is."""
+    Costs 7 inverse transforms: E_kin is cubic in the fields and E_int non-polynomial, so
+    neither can be evaluated in k-space the way diagnostics.rmhd.energy is. E_mag alone
+    could be (it is quadratic), and is deliberately not -- computing it on the same
+    real-space path keeps the spectra sum rule an independent Parseval check rather than a
+    near-tautology."""
     cs0, _, _, gamma = _eqpars(params)
     rho, u, B = _real_fields(state, params)
     kinetic = 0.5*jnp.mean(rho*(u*u).sum(0))
@@ -171,12 +180,14 @@ def spectra(state, kgrid, params, bin_factor=2.0, isotropic=False):
     isotropic=False (default) bins in k_perp and sums over kz, the diagnostics.rmhd.perpspec
     convention. isotropic=True bins in |k| = sqrt(k_perp^2 + kz^2) over the full 3-d grid,
     which is the natural one for CMHD -- the equations have no preferred axis, only the mean
-    field does. Both obey the same sum rules."""
-    rho, u, B = _real_fields(state, params)
-    rhok = state.fields[0]
-    w = jnp.sqrt(rho)*u
-    wk = grids.fft(w, params)
-    Bk = state.fields[4:7]
+    field does. Both obey the same sum rules.
+
+    Costs 4 inverse transforms (rho, u) and 3 forward (w); B and rho are read straight out
+    of state.fields."""
+    rho = grids.ifft(state.fields[0], params)
+    u = grids.ifft(state.fields[1:4], params)
+    rhok, Bk = state.fields[0], state.fields[4:7]
+    wk = grids.fft(jnp.sqrt(rho)*u, params)
     yfac = kgrid.yfac
 
     def q(fk):
@@ -185,21 +196,23 @@ def spectra(state, kgrid, params, bin_factor=2.0, isotropic=False):
     drhok = rhok.at[0, 0, 0].set(0.0)
     integ = (q(wk), q(Bk), q(drhok[None]))
 
-    kz = _kz_deriv(kgrid, params)
     kunit_perp = min(2*jnp.pi/params.Lx, 2*jnp.pi/params.Ly)
-    kperp = jnp.sqrt(kgrid.ksq)
     if isotropic:
         kunit = min(float(kunit_perp), 2*np.pi/params.Lz)
-        kmag = jnp.sqrt(kgrid.ksq + kz*kz)
+        # the RAW kgrid.kz, not physics.cmhd._kz_deriv's Nyquist-zeroed one: this is a bin
+        # COORDINATE, not a d/dz. The module rule about _kz_deriv is about derivatives, and
+        # a mode at the kz-Nyquist plane genuinely sits at |kz| = (nz/2)*2pi/Lz -- binning
+        # it at k_perp instead would misplace exactly the non-polynomial residual of
+        # sqrt(rho)*u that the corner bins exist to hold.
+        kmag = jnp.sqrt(kgrid.ksq + kgrid.kz*kgrid.kz)
         # axis=() sums over NO axis: perp_reduce then applies the shared normalization
         # elementwise, leaving a per-mode (nz,nkx,nky) array to histogram.
         specs = tuple(shared_physics.perp_reduce(e, params, axis=()) for e in integ)
     else:
         kunit = float(kunit_perp)
-        kmag = kperp
+        kmag = jnp.sqrt(kgrid.ksq)
         specs = tuple(shared_physics.perp_reduce(e, params, axis=0) for e in integ)
-    kmax = float(jnp.max(kmag))
-    return _binned(kmag, specs, kunit, kmax, bin_factor)
+    return _binned(kmag, specs, kunit, float(jnp.max(kmag)), bin_factor)
 
 
 # ----------------------------------------------------------------------- energy budget
