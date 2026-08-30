@@ -5,8 +5,9 @@ C2 `210ad69`, C3a `8e2d229`, C3b `f7271ae`, each with its close-out commit), eve
 opus-implemented (C0/C3a by the session directly, Alfred's call) and fable-adversarially
 reviewed before landing; the dated landing notes in §5 carry the review verdicts and
 measured numbers. **Phase C4 (the ln ρ density variable, Alfred's request 2026-08-30) is
-in progress** — spec at the end of §5, derivation in docs/numerics.md "The ln ρ density
-variable". Remaining follow-ups live in §11, none blocking.
+IMPLEMENTED, PENDING ITS ADVERSARIAL REVIEW** — spec and dated implementation note at the
+end of §5, derivation in docs/numerics.md "The ln ρ density variable". Remaining follow-ups
+live in §11, none blocking.
 (History: rev 1 folds in Alfred's §10 answers: isothermal
 default, EBM equations from Squire et al. 2020, radial axis x; rev 2: OT reference =
 Athena, first-target regime β = 0.3, δB/B₀ = 1, C0 executed by the session directly
@@ -707,6 +708,157 @@ Spec:
 - Docs sweep: CLAUDE.md CMHD paragraph gains the density_var lines; RUNNING_TESTS row;
   this § gets the dated landing note.
 
+**C4 IMPLEMENTED 2026-08-30, PENDING ADVERSARIAL REVIEW** (opus implementer in a worktree
+off main `22c13e7`; the worktree was cut from an older commit and was reset onto `22c13e7`
+before any work, per §9). Files: `taranis/physics/cmhd.py` (467 → 661 lines),
+`tests/test_cmhd_lnrho.py` (new, 15 tests / 1134 lines), plus the CLAUDE.md,
+docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else was touched** — no
+`physics/__init__.py` (the recipe is unchanged: same `nfields`, same `grad`, same single
+`Term`), no `run.py`, `timestepping.py`, `propagators.py`, `grids.py`, `comms.py`,
+`config.py`, `snapshot_io.py` or `diagnostics/`, and no frozen reference was regenerated.
+
+Implementation, per the C4 docs section: optional `eqpars["density_var"] ∈ {"rho"
+(default), "lnrho"}` behind the single trace-time switch `cmhd._density_var(params)`
+(validated from `_eqpars`, so every entry point rejects a bad value). On `"lnrho"`, `grad`
+inverse-transforms field 0 to `s` and forms `inv_rho = e^-s` and `gs = ∇̃s` (3 more
+transforms) while **`grads.rho` is None** — the density array is deliberately never formed;
+`NonlinearTerm` runs continuity as `−fft(u·∇̃s) − i k̃·û` (the divergence k-local), the
+Lorentz force on `grads.inv_rho`, and at γ = 1 folds `h^ = c_s²·ŝ` into the scalar BEFORE
+the `−i k̃` multiply (k-local, no transform), at γ > 1 adding `_enthalpy_s(s)` to the
+`|u|²/2` scalar in the SAME transform; `set_timestep` uses `c_s² = c_s0²e^((γ−1)s)` and
+`v_A² = |B|²·inv_rho`. **`linear_matrix` has ZERO code change** — confirmed by inspection
+and by the byte-identical check below.
+
+Measured (Apple M1, jax 0.10.0, CPU; both precisions unless stated):
+
+- **The "rho" path is BYTE-IDENTICAL.** One-time out-of-tree check (a scratchpad script,
+  deliberately NOT `tests/data`): three configs — isothermal ideal (lsrk54), polytropic
+  γ=5/3 + length-3 diss (rk44), and isothermal + **expansion on** (adot 0.25, cs_q 4/3,
+  lsrk54) — recorded on the pristine worktree and re-run after the edits. All three matched
+  in `fields` AND `t` bitwise (max |Δ| exactly 0.0) AND in the optimized-HLO opcode
+  histogram of the jitted `block_of_steps`, at BOTH precisions (988/2024/1174 instructions
+  and 58/84/60 fusions at fp64; 989/2024/1185 and 58/84/60 at fp32). The STANDING gate is
+  `test_the_rho_path_is_unchanged_by_the_density_var_switch`: density_var ABSENT and
+  density_var="rho" give a bitwise identical RHS and a bitwise identical 20-step run, grads'
+  `s`/`gs`/`inv_rho` are all None there, and two compilations agree bitwise — with the lnrho
+  twin as the discriminator for each.
+- **Transform tally, verified programmatically** (a recursive walk of the RHS jaxpr counting
+  `fft` primitives with their batch multiplicity, not by inspection as in C1): **23** (13
+  inverse / 10 forward) on the rho path at both γ, and **24** (16 / 8) on the lnrho path at
+  both γ and with expansion on — exactly the docs' figures.
+- **Dispersion** through the lnrho RHS (δs = δρ about ρ₀=1, s₀=0), five cells — parallel
+  Alfvén, oblique fast and slow at γ=1, oblique fast and slow at γ=5/3: relative ω error
+  ≤2.1e-8 (fp64) and ≤6.2e-6 (fp32), amplitude drift ≤4.3e-9 / ≤4.0e-6 at ν=0. The fp32
+  figures are an order better than C1's rho-form twin, for a structural reason: the lnrho
+  background is s₀ = ln 1 = 0, so an ε-sized field-0 perturbation costs no quantization
+  against a background of 1.
+- **Exact decay** of single s modes along ALL THREE axes at hyper ∈ {1,2} with a length-3
+  diss: ≤2.1e-15 (fp64) / ≤3.4e-6 (fp32); u/B leak ≤1.3e-16 in BOTH precisions (it is the
+  O(c_s0²) pressure response, not rounding).
+- **Mass `∫e^s`**: 16³, half the C1 conservation amplitude, fixed t = 4 at dt 0.16/0.08/0.04
+  → drifts 4.986e-6 / 2.201e-7 / 2.641e-8, **order 3.780** (lsrk54 nominal 4), with mean B
+  BITWISE and div B 7.10e-18 → 8.85e-18 on the same run. The finest-dt drift is 1.2e8 ε, so
+  an order was measured and not a floor. fp64-only; the mean-B/div-B halves are re-run at
+  both precisions against their rho-form twin (fp32 div B 1.09e-8 (rho) / 2.45e-8 (lnrho)).
+- **Uniform state**: `ŝ(k=0)` bitwise over 100 steps, every k ≠ 0 mode identically zero, and
+  every B(k=0) bitwise. Turbulent discriminator: ⟨s⟩ moves −5.083e-3 → −2.115e-2 over 50
+  steps (downward, as Jensen requires at fixed mass).
+- **Energy budget**, built test-locally from the docs' δE/δs (see deviation 2): closure
+  7.4e-9 (γ=1) and 9.7e-9 (γ=5/3) at diss=1e-3, 7.2e-9 / 9.9e-9 at diss=1e-2 — a fixed
+  absolute floor, as the aliasing story predicts — gated at 1e-5, fp64-only. **The +c_s²
+  inversion trap**: at drho = 0.05/0.1/0.15/0.25 the term carries 4.1%/13.3%/22.7%/36.3% of
+  ε and dropping it moves the closure to 4.3e-2/1.5e-1/2.9e-1/5.7e-1 against an intact
+  7.4e-9/1.2e-7/3.0e-6/2.0e-4. The discriminator runs at drho = 0.1.
+- **The positivity discriminator** (the motivating gate), 32×4×4, c_s0 = 0.1 against
+  u = 2 sin x (M_s = 20), ρ = 1 + 0.6 cos x, ν = 0, dt = 0.005, 150 steps: the **rho form
+  min ρ goes 0.802 → 0.574 → NaN** (it crosses zero and ln ρ poisons the run — the intended
+  loud failure), while the **lnrho form stays finite with min e^s = 3.50e-2**, and keeps
+  falling like the exponential the physics asks for (1.0e-7 at 200 steps, 3.0e-30 at 300).
+  Identical at both precisions. Tuned to be robust, not marginal: the ρ form is already NaN
+  a third of the way before the gate looks.
+- **lnrho × expansion**: `s'(k=0)`, every `B'(k=0)` and `u_x(0)` bitwise over 100
+  uniform-state steps — the `s'` one is simultaneously the discriminator for a spurious
+  −2(ȧ/a) term, which would decay it; `u_⊥(0) ~ a^-1` at 1.29e-11 (fp64) / 1.59e-7 (fp32);
+  and the raw backgrounds through `grad`'s OWN unscaling — ρ ∝ a^-2 read off
+  `1/grads.inv_rho` (3.33e-16 / 6.47e-8), B_x ∝ a^-2 and B_⊥ ∝ a^-1 (≤4.4e-16 / ≤1.8e-7).
+- **The cross-variable RHS gate** (the mutation net, added beyond the plan's list): the ρ
+  and lnrho forms must compute the same PHYSICAL ∂_tρ / ∂_tu / ∂_tB on the same state.
+  Worst-row relative difference at amplitudes 1 / 0.5 / 0.25 of the C1 regime: 1.41e-4 /
+  1.50e-5 / 1.69e-6 with expansion off (×9.4, ×8.9) and 1.54e-4 / 1.66e-5 / 1.90e-6 at
+  a = 1.5 with expansion on (×9.3, ×8.8). The assertion is smallness PLUS that ≥4× fall per
+  halving — the residual is the non-polynomial truncation (ln(1+r) is not band-limited, so
+  the two dealiased states are not exp/log of each other), which vanishes with amplitude,
+  where a wrong term would not. fp64-only.
+- **CFL**: `set_timestep` matches a numpy bound rebuilt on ρ = e^s EXACTLY (0.00e+00
+  relative) at γ ∈ {1, 5/3} × c_s0 ∈ {0.5, 2}, and to 2.2e-16 in the two expansion cells
+  (physical spacings, unprimed B, ρ = a^-2 e^s').
+- **Plumbing**: `density_var` round-trips through `params.json`; switching it — and dropping
+  it entirely — over an existing record is a hard save error, which is what blocks a
+  cross-mode restart; a misspelling, `"log_rho"`, `""`, `1` and `None` all raise naming
+  `density_var`; an lnrho restart is bitwise in fields and `t`.
+- Regression: `test_cmhd_linear.py` + `test_cmhd_conservation.py` +
+  `test_cmhd_diagnostics.py` + `test_cmhd_expansion.py` green at both precisions, and full
+  `make test` clean at both. Verbatim lines in the implementer's report.
+
+**Mutation matrix, run by the implementer before reporting** (each mutation applied to a
+single file, the whole new gate file run at BOTH precisions, then restored and the file's
+sha256 verified byte-identical; M1–M4 are the four the spec names). The FIRST version of the
+gate set left one blind spot, found and closed the same way C3b's were:
+
+| # | mutation | caught by |
+|---|---|---|
+| M1 | drop the `−∇·u` term from lnrho continuity | dispersion (both prec), budget, mass drift, +c_s² discriminator, cross-variable, positivity |
+| M2 | drop the `e^-s` on the Lorentz force | budget, +c_s² discriminator, cross-variable (fp64) |
+| M3 | wrong-sign `u·∇s` | budget, mass drift, cross-variable, positivity (both prec) |
+| M4 | budget sink missing the `+c_s²` term | budget closure, +c_s² discriminator |
+| M5 | drop the `a²` in the EBM lnrho `1/ρ` unscaling | expansion gate (both prec), CFL gate (both prec), cross-variable |
+| M6 | `k_y` instead of `k_y/a` in the lnrho `∇̃·u` | cross-variable ONLY — the metric-factor lesson again |
+| M7 | sign flip on the k-local γ=1 pressure force | dispersion (both prec), budget, mass drift, cross-variable |
+| M8 | γ>1 enthalpy without the exponential | dispersion (both prec), budget |
+| M9 | `set_timestep` ignores the γ>1 sound speed on the lnrho path | **BLIND in the first version — every gate ran at fixed dt.** Now caught (both prec) by `test_set_timestep_on_the_lnrho_path_matches_the_cfl_bound`, added for it |
+| M10 | drop the z component of `∇s` | budget, mass drift, +c_s² discriminator, cross-variable |
+| M11 | `v_A²` without the `e^-s` factor | the new CFL gate (both prec) |
+| M12 | drop the γ=1 k-local pressure force entirely | dispersion (both prec), budget, mass drift, cross-variable |
+
+Deviations from the C4 spec above, all recorded in the files themselves:
+
+1. **The mass gate asserts an order at a DIFFERENT regime from the plan's default, because
+   at the C1 regime there is no order to measure.** At 16³, the C1 conservation amplitude
+   and dt 0.02/0.01/0.005 the `∫e^s` drift is 3.648e-06 FLAT — dt-independent to three
+   digits — i.e. it is the §3.5 non-polynomial truncation residual, not the integrator;
+   exactly the finding C1's energy gate recorded. It falls as ~amp^7.9 (1.53e-8 at half
+   amplitude, 6.14e-11 at a quarter). So the order cell is placed where the time error
+   dominates instead: half amplitude, dt 0.16/0.08/0.04, t = 4. The plan's "dt and dt/2" is
+   satisfied as a three-point fit.
+2. **`diagnostics/cmhd.py` is left rho-only and the budget is built TEST-LOCALLY** — the
+   spec's own instruction, and the right call: `diagnostics.cmhd` is not a C4 file, it reads
+   `state.fields[0]` as ρ, and there is no hook that would let physics reject it. So on an
+   lnrho state its energies/Mach numbers/spectra/budget are WRONG rather than differently
+   normalized. Flagged in the cmhd.py module docstring, in CLAUDE.md and as §11 item 6.
+3. **`CMHDGrads.rho` is `None` on the lnrho path**, which is a stronger statement than the
+   `rho_p` precedent: the density array is never formed at all (nothing needs it — the
+   Lorentz force and v_A² want 1/ρ, h and c_s want s), and not forming it is what keeps the
+   positivity guarantee structural. Three new trailing optional members carry the path's own
+   quantities: `s`, `gs` (∇̃s), `inv_rho` (the PHYSICAL 1/ρ, a²e^-s' under expansion).
+   Positional consumers are unaffected — the new members are all trailing with `None`
+   defaults.
+4. **`_enthalpy_s` is a sibling of `_enthalpy`, and its γ = 1 branch is not reached from
+   `NonlinearTerm`** (there the force is k-local, which is the transform the 24-tally does
+   not spend). It is the h that k-local form is the exact transform of; the gate file asserts
+   it against an inline numpy expression at both γ so the branch is not untested.
+5. **A `set_timestep` gate was added that the spec's list does not name** (item (c)-adjacent),
+   because mutation M9 was blind without it: every other cell in the file runs at fixed dt.
+6. **The cross-variable RHS gate was added** beyond the spec's list. It is the one gate that
+   reads every new term at once, and it is the only thing that caught M6 — the same
+   structural lesson C3b's review recorded, arriving on schedule.
+7. **Gate (h) uses the background-tracking cell, not a WKB one** (the spec allows either).
+   The lnrho path changes nothing about the Alfvén-wave physics the WKB gate measures —
+   `test_cmhd_expansion.py` already runs it on the shared code — while the background cell
+   reads the one factor that IS new under EBM, the a² inside `inv_rho`, which M5 confirms.
+8. **The `"rho"` reference check is out of tree, not in `tests/data`**, exactly as C3b's was
+   and for the same reason: it compares against a tree that no longer exists after the edits
+   and is not reproducible post-hoc.
+
 ## 6. What is verified NOT to need changes (checked against the tree, 2026-08-29)
 
 - `run.py`: fully registry-driven (`recipe.*` at :85, :105, :142, :279); `initialize`
@@ -815,7 +967,16 @@ Spec:
    `h = cs0^2 a^(-2(gamma-1)) rho'^(gamma-1)/(gamma-1)`, with γ = 5/3 reproducing the
    a^(−4/3) cooling automatically. C3b enforces `gamma == 1` as a scope pin to Squire et
    al.'s closure — deferred, not blocked.
-6. **`spectra`'s corner binning is honest but wasteful**: the bins past the dealias cut carry
+6. **density_var-aware diagnostics** (carried out of C4, deviation 2 in §5). `diagnostics.cmhd`
+   reads `state.fields[0]` as `rho`, so on a `density_var="lnrho"` state its `energies`,
+   `mach_numbers`, `rho_min`, `spectra` and `energy_budget` are WRONG — not differently
+   normalized, wrong — and nothing in the physics module can reject it (the shared `_eqpars`
+   is what diagnostics imports, and physics needs it to accept lnrho). Two things a fix
+   needs: read the variable through `cmhd._density_var(params)` and branch there, and carry
+   the `+cs^2` term in `delta E/delta s` at `gamma == 1`, which does NOT drop out the way
+   the rho form's constant provably does (docs/numerics.md). Until then, unscale by hand
+   (`rho = e^s`) — `tests/test_cmhd_lnrho.py` shows the whole budget built that way.
+7. **`spectra`'s corner binning is honest but wasteful**: the bins past the dealias cut carry
    only the non-polynomial residual of `√ρ·u`. If a production campaign wants a clean inertial
    range it should slice the returned arrays, not narrow `kmax` — narrowing it silently breaks
    the sum rule the C2 gate rests on.

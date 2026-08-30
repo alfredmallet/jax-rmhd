@@ -373,12 +373,13 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
   docs/numerics.md.
 
-### Compressible MHD (`physics/cmhd.py`, plans/CMHD_PLAN.md — C0/C1 landed 2026-08-30, C2 2026-08-30, C3 EBM 2026-08-30)
+### Compressible MHD (`physics/cmhd.py`, plans/CMHD_PLAN.md — C0/C1 landed 2026-08-30, C2 2026-08-30, C3 EBM 2026-08-30, C4 ln ρ 2026-08-30)
 
 Fully spectral polytropic compressible MHD, `nfields=7` in state order
-`(rho, u_x, u_y, u_z, B_x, B_y, B_z)`. Alfvén units, `<rho> = rho0 = 1`, `p = K rho^gamma`
-with `K = cs0^2/gamma`. Derivations of record: docs/numerics.md § "Compressible MHD" —
-change the docs first, then the module. Rules:
+`(rho, u_x, u_y, u_z, B_x, B_y, B_z)` — **field 0 is `s = ln rho` under
+`eqpars["density_var"] = "lnrho"`**, see below. Alfvén units, `<rho> = rho0 = 1`,
+`p = K rho^gamma` with `K = cs0^2/gamma`. Derivations of record: docs/numerics.md
+§ "Compressible MHD" — change the docs first, then the module. Rules:
 
 - **Scope, enforced in `cmhd._check_supported`**: `dims==3` **and** `z_spectral=True`
   **and** `size==1`, no forcing, no particles (particles already assert `eqtype=="RMHD"`).
@@ -387,7 +388,9 @@ change the docs first, then the module. Rules:
   asserts it).
 - **eqpars schema**: required `cs0` (>0), `diss` (scalar, or length-3 `(D_rho, nu, eta)`
   expanded over the 7 fields; `>= 0`), `hyper` (int ≥1); optional `gamma` (≥1,
-  **default 1.0 = isothermal**). Unknown keys rejected. `h(rho) = cs0^2 rho^(gamma-1)/(gamma-1)`
+  **default 1.0 = isothermal**), `expansion` (EBM, below) and `density_var`
+  (`"rho"` default / `"lnrho"`, below). Unknown keys — and any other `density_var`
+  value — rejected. `h(rho) = cs0^2 rho^(gamma-1)/(gamma-1)`
   for `gamma>1` and `cs0^2 ln rho` at `gamma==1`, branched at TRACE time.
 - **L IS DISSIPATION ONLY; the waves stay explicit.** `linear_matrix` returns
   `-diss_f*(kperp^2+kz^2)^hyper` and nothing else — a `DiagonalOperator`, deliberately
@@ -405,9 +408,12 @@ change the docs first, then the module. Rules:
   combined scalar gradient, one combined curl-force fft).
 - Every `d/dz` in the module goes through the one Nyquist-zeroed `_kz_deriv` helper; a bare
   `kgrid.kz` is the most likely silent-wrongness bug there.
-- `grad_func` returns `CMHDGrads(rho, u, B, omega, j, t)` — VALUES, not (d/dx,d/dy) pairs —
-  because `set_timestep` sees only what `grad_func` returned. Do not route it through
-  `shared_physics.grad_fields`, which is a bracket-equation machine.
+- `grad_func` returns `CMHDGrads(rho, u, B, omega, j, t, rho_p, s, gs, inv_rho)` — VALUES,
+  not (d/dx,d/dy) pairs — because `set_timestep` sees only what `grad_func` returned. Do not
+  route it through `shared_physics.grad_fields`, which is a bracket-equation machine. The
+  trailing four are mode-gated and `None` otherwise: `rho_p` is the primed density (EBM,
+  rho path), and `s`/`gs`/`inv_rho` are the lnrho path's `s`, `grad~ s` and physical
+  `1/rho` — on which path **`rho` itself is `None`**, deliberately never formed.
 - **The non-polynomial residual is accepted, not hidden.** The quadratic products are
   exactly dealiased; `h(rho)`, `ln rho` and `1/rho` are not, and no finite padding fixes
   that. So the conservation gates assert dt-order/dt-independence plus absolute smallness
@@ -443,8 +449,38 @@ change the docs first, then the module. Rules:
   reconstructs `a(t)` and is bitwise. `diagnostics/cmhd.py` is NOT EBM-aware: with
   expansion on its energies/spectra/Mach numbers are COMOVING-PRIMED quantities (plan §5
   C3b decision) — unscale by hand until a helper lands.
+- **The ln ρ density variable**, optional `eqpars["density_var"] ∈ {"rho" (default),
+  "lnrho"}` — anything else is a ValueError. With `"lnrho"` **field 0 IS `s = ln rho`**
+  (`s' = ln rho'` under expansion), for positivity: `rho = e^s > 0` is structural, so the
+  rarefaction NaN channel is retired and `s` is the smooth field where transonic `rho` has
+  decade-deep valleys. `d_t s = -u.grad~ s - grad~.u` (`grad~.u` is k-local); at `gamma==1`
+  `h = cs^2 s` is LINEAR so the pressure force is the k-local `-cs^2 i k~ s^` with NO
+  transform, at `gamma>1` `h = cs0^2 e^((gamma-1)s)/(gamma-1)` joins the scalar; the Lorentz
+  force and `v_A^2` use `e^-s`, and `c_s = cs0 e^((gamma-1)s/2)`. Transform tally **24**
+  (16 inverse / 8 forward). **`linear_matrix` is UNCHANGED** — the same field-0 diagonal row
+  now damps `s`, which is undershoot-proof and still budget-accounted through `δE/δs`.
+  **What it costs: mass changes discrete class.** `int e^s` is nonlinear in the evolved
+  field and has no linear substitute (`<s>` is not conserved even in the continuum), so it
+  is preserved only to scheme order — gated by drift ORDER plus smallness, **never
+  bitwise**; `s^(k=0)` IS bitwise on a spatially uniform state, and mean B / div B are
+  untouched (induction never sees field 0). **The budget trap INVERTS**: at `gamma==1`,
+  `δE/δs = e^s(|u|^2/2 + h + cs^2)` and **the `+cs^2` term must be kept** — unlike the rho
+  form's constant, it multiplies `<e^s D_s s>`, whose mean is not zero. Composes with EBM
+  (`s' = ln rho'`, and continuity carries **no** expansion term — it cancels identically);
+  works at both γ. `initialize`'s user IC function must return **s** in field 0, and
+  `density_var` rides eqpars into params.json so the differing-record check blocks a
+  cross-mode restart — the only protection, since field 0 keeps its shape and dtype.
+  Gated on `cmhd._density_var(params) == "lnrho"` as TRACE-TIME python, because the
+  **`"rho"` path must stay BYTE-IDENTICAL** (the implementer's one-time out-of-tree check
+  over three configs — one expansion-on — at both precisions, in fields, `t` and the
+  optimized-HLO histogram; plan §5 C4. The standing gate is that `density_var` absent and
+  `"rho"` agree bitwise). **`diagnostics/cmhd.py` is rho-ONLY and NOT density_var-aware**:
+  it reads `state.fields[0]` as `rho`, so on an lnrho state its energies/Mach
+  numbers/spectra/budget are WRONG, not merely differently normalized. Unscale by hand
+  (`rho = e^s`) until a helper lands (plan §11).
 - Gates: `tests/test_cmhd_linear.py`, `test_cmhd_conservation.py`,
-  `test_cmhd_diagnostics.py`, `test_cmhd_expansion.py` (the EBM gates), and
+  `test_cmhd_diagnostics.py`, `test_cmhd_expansion.py` (the EBM gates),
+  `test_cmhd_lnrho.py` (the ln ρ gates), and
   `test_cmhd_orszag_tang.py` (**`slow`+`fp64`**, ~2.5 min,
   Athena-normalized OT vortex as 2.5D at 256²). No published E(t) trace exists for that
   problem — the OT file's `test_energy_traces_against_a_reference` documents the search and
@@ -455,8 +491,8 @@ change the docs first, then the module. Rules:
   23-vs-10 3-D FFT count; 48.7 u against 18.7 u of compiled memory. docs/performance.md
   "CMHD".
 - Not built: forcing, particles in CMHD fields, MPI/z-decomposition, FD-z, `dims==2`,
-  ln rho, shock capturing, EBM-aware diagnostics, and a barotropic `gamma > 1` under
-  expansion (exactly self-consistent, deferred — plan §5).
+  shock capturing, density_var-aware and EBM-aware diagnostics, and a barotropic
+  `gamma > 1` under expansion (exactly self-consistent, deferred — plan §5).
 
 ### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A landed 2026-08-18, Phase B (3D, single-process) 2026-08-19)
 

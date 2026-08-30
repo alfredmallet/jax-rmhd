@@ -70,7 +70,7 @@ skip, while `-m slow` overrides pyproject's default `addopts` deselection. `make
 passes both. In script mode the equivalent is `RMHD_RUNSLOW=1`.
 
 **Per-equation-set gates.** RMHD's are spread across most of `tests/`; GDI's are in
-`test_gdi_linear.py`; compressible MHD (`eqtype="CMHD"`, plans/CMHD_PLAN.md) has four
+`test_gdi_linear.py`; compressible MHD (`eqtype="CMHD"`, plans/CMHD_PLAN.md) has five
 files:
 
 | file | tier | what it covers |
@@ -79,6 +79,7 @@ files:
 | `test_cmhd_conservation.py` | fast | bitwise mass and mean B, the div-B random walk, energy/cross-helicity drift, bitwise snapshot restart, eqpars round-trip and every configuration error |
 | `test_cmhd_diagnostics.py` | fast | `diagnostics.cmhd` — normalization against numpy, spectra summing to the energies, energy-budget closure, the monitors, read-only safety |
 | `test_cmhd_expansion.py` | fast | the expanding box (EBM): expansion-off is bitwise the non-EBM path (the RHS is independent of `state.t`) plus an analytic Beltrami decay, the bitwise ρ′/B′ k=0 pair and the uniform-state u_⊥ ∝ a⁻¹ ODE (its dt-order is the **stage-time** gate, `fp64`), raw backgrounds tracking a⁻²/a⁻²/a⁻¹, div B under expansion, the WKB δu ∝ a^(−1/2) exponent at both transverse polarizations with its ε_WKB discriminator, the CFL's physical spacings, eqpars round-trip, every configuration error, and a bitwise mid-expansion restart. The metric-factor gate is `test_raw_frame_rhs_matches_the_advective_reference` (`fp64`) — one RHS evaluation converted to the raw frame against an independent advective transcription of Squire's equations; it is what the structural gates cannot see |
+| `test_cmhd_lnrho.py` | fast | the ln ρ density variable (`eqpars["density_var"] = "lnrho"`, field 0 = `s = ln ρ`): the `"rho"` path unchanged by the switch (absent vs explicit `"rho"` bitwise in RHS and run, no lnrho members on grads, two compilations bitwise), dispersion through the lnrho RHS at both γ, exact `exp(L dt)` decay of s modes along all three axes, `set_timestep` against a numpy CFL rebuilt on `ρ = e^s` (added after mutation testing — every other cell runs at fixed dt), the mass `∫e^s` drift ORDER plus smallness with mean B bitwise and div B round-off on the same run (`fp64`), the uniform-state `ŝ(k=0)` bitwise pair with its turbulent `⟨s⟩`-drifts discriminator, the energy budget at both γ with the **`+c_s²` inversion-trap discriminator** (`fp64`; `diagnostics.cmhd` is rho-only, so the budget is built test-locally from the docs), the **positivity discriminator** — a deep rarefaction where the ρ form provably NaNs and the lnrho run stays finite with min `e^s > 0` — lnrho × expansion, and the plumbing. The mutation net is `test_the_two_variable_forms_compute_the_same_physical_rhs` (`fp64`): the ρ and lnrho forms must compute the same physical `∂_t ρ/u/B`, to a residual that falls with amplitude |
 | `test_cmhd_orszag_tang.py` | **`slow`** + `fp64` | the Orszag–Tang validation run (three runs, ~2.5 min: 256²×4 to t=0.5 plus two fixed-dt smooth-window runs). Not in `make test`; `make test-slow` picks it up |
 
 **Cluster (scripts under mpirun).** Every test file is also a standalone script, and
