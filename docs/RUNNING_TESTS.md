@@ -69,9 +69,9 @@ Note the `slow` marker needs BOTH `-m slow` and `--runslow`: `--runslow` lifts c
 skip, while `-m slow` overrides pyproject's default `addopts` deselection. `make test-slow`
 passes both. In script mode the equivalent is `RMHD_RUNSLOW=1`.
 
-**Per-equation-set gates.** RMHD's are spread across most of `tests/`; GDI's are
-`test_gdi_linear.py` and `test_gdi_nonlinear.py`; compressible MHD (`eqtype="CMHD"`,
-plans/CMHD_PLAN.md) has four files:
+**Per-equation-set gates.** RMHD's are spread across most of `tests/`; GDI's are in
+`test_gdi_linear.py`; compressible MHD (`eqtype="CMHD"`, plans/CMHD_PLAN.md) has four
+files:
 
 | file | tier | what it covers |
 |---|---|---|
