@@ -195,7 +195,6 @@ def _measure(branch, kx, kz, cs0, gamma, block=20, target_phase=6.0, wdt=0.05):
 # --------------------------------------------------------------------- gate 1: dispersion
 
 def _dispersion_cell(c, branch, cs0, gamma):
-    vA = _B0
     for kx, kz in _ANGLES:
         w, err, ampvar = _measure(branch, kx, kz, cs0, gamma)
         label = f"gamma={gamma:.3f} cs0={cs0} {branch} k=({kx:.0f},{kz:.0f})"
