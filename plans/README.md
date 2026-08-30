@@ -20,6 +20,8 @@ were corrected on the way out (see below).
 
 ## Live
 
+- **CMHD_PLAN.md — Phase C4** (ln ρ density variable, opt-in positivity switch; added
+  2026-08-30). Phases C0–C3 of the same plan are finished and listed below.
 - **GDI_PLAN.md** — roadmap from the current IF-dissipation-only solver to the 3D GDI
   equations (exact linear propagators, spectral-z, low-storage IMEX). Execution order
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.

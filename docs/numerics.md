@@ -1185,6 +1185,86 @@ C3 gate measures the −1/2 exponent over a factor 4 in a (a decade buys no extr
 discrimination for ~4× the steps) with a tolerance budgeted from the O(ȧ/(aω)) WKB
 corrections.
 
+### The ln ρ density variable (Phase C4, plans/CMHD_PLAN.md §5)
+
+An opt-in variable change for positivity: `eqpars["density_var"] = "lnrho"` evolves
+`s = ln ρ` in field 0 instead of ρ (default `"rho"`, byte-identical to the C1–C3 solver).
+Motivation and the conservation trade: transonic turbulence has near-lognormal density,
+so `s` is the smooth near-Gaussian field where ρ has decade-spanning valleys — the
+spectral representation improves exactly where the ρ-form rings and crashes — and
+`ρ = e^s > 0` is structural, retiring the NaN channel entirely.
+
+**Continuity in s** (divide the flux form by ρ = e^s):
+
+```
+∂s/∂t = −u·∇s − ∇·u
+```
+
+exactly equivalent in the continuum. **Mass conservation changes discrete class, by
+necessity, not by accident**: in ρ-variables mass is the single coefficient `ρ̂(k=0)`
+with an exactly-zero RHS projection (bitwise for free); in s-variables the conserved
+functional `∫e^s` is nonlinear in the evolved field and there is NO linear substitute —
+`⟨s⟩` is not conserved even in the continuum (`d⟨s⟩/dt = ⟨s∇·u⟩`; Jensen forces
+`⟨s⟩ ≈ −σ_s²/2` downward as fluctuations grow at fixed mass). RK schemes preserve linear
+invariants exactly and nonlinear ones to scheme order — for forward Euler the one-step
+mass residual is the SIGN-DEFINITE `(dt²/2)∫ρ(∂_t s)²` (a systematic source, not a
+random walk); lsrk54 leaves an O(dt⁵)-per-step, non-sign-definite residual — and the
+spatial product rule `e^s∇s = ∇(e^s)` fails for interpolants (non-polynomial, the 2/3
+rule cannot make it exact). So mass joins the class energy is already in: gated by drift
+order + smallness, never round-off, with the mean-B bitwise and div-B round-off gates
+UNCHANGED (induction is untouched). On a spatially uniform state every RHS term is an
+exact fp zero (`ik̃ŝ`, `ik̃û` vanish identically), so `ŝ(k=0)` is bitwise there — the
+uniform-state gates survive; turbulent `⟨s⟩` drifts, as the physics requires.
+
+**Enthalpy and forces.** `h(s)`:
+
+```
+h = c_s²·s                              γ = 1  (LINEAR: the pressure force is the
+                                               k-local −c_s²·ik̃·ŝ, no transform)
+h = c_s0²·e^((γ−1)s)/(γ−1)              γ > 1  (pointwise, as before)
+```
+
+The Lorentz `1/ρ = e^(−s)` is now the ONLY non-polynomial term at γ = 1 (the ρ-form
+carries both ln ρ and 1/ρ). `c_s(s)`: constant at γ = 1; `c_s0·e^((γ−1)s/2)` at γ > 1
+(`set_timestep` uses it and `v_A² = |B|²e^(−s)`; the γ > 1 grid-max no-floor argument
+weakens — max ρ ≥ 1 now holds only to the mass-drift order — but at the isothermal
+default `c_s` is constant and the floor is exact).
+
+**Energy functional and the budget trap.** `E = ∫ e^s|u|²/2 + |B|²/2 + ρe(s)` with
+`ρe = c_s²·e^s·s` (γ = 1) or `c_s0²·e^(γs)/(γ(γ−1))` (γ > 1). Functional derivatives:
+
+```
+δE/δu = e^s·u        δE/δB = B
+δE/δs = e^s·(|u|²/2 + h + c_s²)     γ = 1
+δE/δs = e^s·(|u|²/2 + h)            γ > 1
+```
+
+Note the INVERSION of the ρ-form's constant rule: there the γ = 1 constant multiplied
+`⟨D_ρρ⟩` whose k = 0 mode is exactly zero and dropped out; here it multiplies
+`⟨e^s·D_s s⟩`, whose mean is NOT zero — **the +c_s² term must be kept in the γ = 1
+budget sink**, and omitting it (by analogy with the ρ-form note) is the likely first
+bug of this phase. γ > 1 is the clean branch this time.
+
+**Dissipation** acts on s (field-0 row of the same diagonal L): mass-affecting through
+the variance (⟨s⟩ untouched at k = 0, `∫e^s` not), undershoot-proof (diffusion of s
+cannot drive ρ ≤ 0), equally non-physical, still budget-accounted via `δE/δs`.
+
+**EBM composes cleanly**: `ln ρ′ = s + 2 ln a ≡ s′`, and `∂_t s′ = −u·∇̃s′ − ∇̃·u` —
+the −2(ȧ/a) expansion term (spatially uniform in s-variables) cancels identically
+against `d(2 ln a)/dt`, the exact analogue of the ρ′ rescaling. Raw
+`e^(−s) = a²·e^(−s′)`; `h`'s uniform `−2c_s²(t)ln a` dies under the gradient as before.
+γ = 1 only, per the EBM scope pin.
+
+**Transform tally: 24** (one more than the ρ-form): inverse — s(1, for `e^(−s)` and the
+γ > 1 h), ∇s(3), u(3), B(3), ω(3), j(3) = 16; forward — combined curl force(3),
+`|u|²/2` scalar(1; h joins it only at γ > 1), u×B(3), `u·∇s`(1) = 8; `∇·u = ik̃·û` is
+k-local. `ρu`'s three forward transforms are gone.
+
+**Snapshots/IC**: field 0 changes meaning; `density_var` rides `eqpars` into
+params.json, so the differing-record check blocks cross-mode restarts; `initialize`'s
+user function must return s in field 0 in this mode (document at the helper). No
+migration of old snapshots — a log-converter is trivial if ever wanted.
+
 ## Reading 2D MHD results
 
 Energy cascades **forward** in 2D MHD — the opposite of 2D hydrodynamics' inverse cascade

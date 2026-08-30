@@ -1,10 +1,12 @@
 # CMHD_PLAN — compressible MHD (z_spectral, serial) in taranis
 
-Status: **COMPLETE, 2026-08-30** — all phases landed on main (C0 `fd814c6`, C1 `38d37c1`,
+Status: C0–C3 **COMPLETE, 2026-08-30** — landed on main (C0 `fd814c6`, C1 `38d37c1`,
 C2 `210ad69`, C3a `8e2d229`, C3b `f7271ae`, each with its close-out commit), every phase
 opus-implemented (C0/C3a by the session directly, Alfred's call) and fable-adversarially
 reviewed before landing; the dated landing notes in §5 carry the review verdicts and
-measured numbers. Remaining follow-ups live in §11, none blocking.
+measured numbers. **Phase C4 (the ln ρ density variable, Alfred's request 2026-08-30) is
+in progress** — spec at the end of §5, derivation in docs/numerics.md "The ln ρ density
+variable". Remaining follow-ups live in §11, none blocking.
 (History: rev 1 folds in Alfred's §10 answers: isothermal
 default, EBM equations from Squire et al. 2020, radial axis x; rev 2: OT reference =
 Athena, first-target regime β = 0.3, δB/B₀ = 1, C0 executed by the session directly
@@ -670,6 +672,40 @@ touched (restored byte-identical, sha256 verified, after every mutation):
    figure is stated in the test rather than the tempting "exactly ×1".
 4. CLAUDE.md now qualifies the three-config bitwise+HLO verification as the implementer's
    one-time out-of-tree check rather than stating it as a reproducible fact.
+
+### Phase C4 — the ln ρ density variable (added 2026-08-30; Alfred's request)
+
+Motivation: ρ-positivity at the transonic production target — near-lognormal density
+means s = ln ρ is the smooth field where ρ has decade-deep valleys, and ρ = e^s > 0 is
+structural. Derivation (equations, the discrete-mass-class argument, the budget
+INVERSION trap — the γ = 1 constant that dropped from the ρ-form budget does NOT drop
+here — the EBM s′ composition, the 24-transform tally): docs/numerics.md § "The ln ρ
+density variable". Executed C4a-style by the session (derivation, this note) + one opus
+implementer + ONE fresh fable adversarial review covering BOTH the derivation and the
+implementation (Alfred: "final adversarial review by fresh fable").
+
+Spec:
+- Opt-in `eqpars["density_var"] ∈ {"rho" (default), "lnrho"}`, trace-time static branch.
+  The `"rho"` path must stay byte-identical — same standard as C3b's expansion-off gate
+  (one-time pre/post bitwise + HLO-histogram check, plus a standing discriminator).
+- `"lnrho"`: field 0 is s; continuity −u·∇s − ∇·u (u·∇s is 1 fft; ∇·u is k-local);
+  h per the docs branches (γ = 1 pressure force is k-local-linear, no transform);
+  Lorentz e^(−s); set_timestep speeds from e^s; dissipation row acts on s. Composes with
+  expansion (s′ = ln ρ′, no expansion term — docs). Both γ; EBM stays γ = 1.
+- Gates (tests/test_cmhd_lnrho.py): rho-path unchanged discriminator; dispersion reuse
+  (δs = δρ eigenvectors, one config per branch); exact decay of s modes; mass ∫e^s
+  drift at order-plus-smallness (dt vs dt/2) NEVER round-off, with mean-B bitwise and
+  div-B round-off asserted unchanged; uniform-state ŝ(k=0) bitwise (exact fp zeros —
+  docs); budget closure at BOTH γ (the γ = 1 sink must carry the +c_s² term — the
+  documented trap); the POSITIVITY DISCRIMINATOR (a deep-rarefaction config where the
+  rho-form provably NaNs and the lnrho-form runs finite, min e^s > 0 — the motivating
+  gate); lnrho × expansion (uniform-state scalings and the s′ bitwise pair); plumbing
+  (density_var round-trip, cross-mode restart blocked, invalid values raise). Per the
+  standing rule, the review MUST mutation-test the new gates (e.g. drop the ∇·u term,
+  drop the e^(−s) on Lorentz, wrong-sign u·∇s, budget missing +c_s²) — at least one
+  test fails per mutation.
+- Docs sweep: CLAUDE.md CMHD paragraph gains the density_var lines; RUNNING_TESTS row;
+  this § gets the dated landing note.
 
 ## 6. What is verified NOT to need changes (checked against the tree, 2026-08-29)
 
