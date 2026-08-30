@@ -885,6 +885,199 @@ periodic BCs — so the full linear operator's contraction against `(N, φ)` acc
 `tests/test_gdi_linear.py::test_energy_budget_closure_nonlinear`: relative error ~4e-8 at
 fp64 over a short random-IC run (centered-difference `dE/dt` vs the budget's `total`).
 
+## Compressible MHD (`physics/cmhd.py`, plans/CMHD_PLAN.md)
+
+Status: this section is the Phase-C0 derivation record — C1 implements against it, and
+the C1 gates are built FROM the expressions here. Scope per the plan: `dims==3` +
+`z_spectral=True`, single process, polytropic closure, isotropic hyperdissipation as the
+whole of `L`, all wave physics explicit under IF-LSRK (or CB-IMEX; both families are
+valid on a pure-dissipation diagonal `L`).
+
+### Variables, units, equations
+
+Seven fields, state order `(ρ, u_x, u_y, u_z, B_x, B_y, B_z)`. Density is in units of
+the mean density (`⟨ρ⟩ = ρ₀ = 1` by convention); `u` and `B` share one velocity unit —
+Alfvén units, `B_code = B/√(μ₀ρ₀)` — so the local Alfvén speed is `|B|/√ρ` and a uniform
+field of magnitude `B₀` has `v_A = B₀`. Lengths are box units, `p = K·ρ^γ` with
+`K = c_s0²/γ` so that `c_s(ρ=1) = c_s0` (isothermal `γ = 1`: `p = c_s0²·ρ`,
+`c_s = c_s0` everywhere). Plasma beta about the background: `β = 2p(1)/B₀² = 2c_s0²/(γ·v_A²)`
+(isothermal: `β = 2c_s0²/v_A²`).
+
+The ideal equations, in exactly the form the RHS computes them:
+
+```
+∂ρ/∂t = −∇·(ρu)                                        (flux form)
+∂u/∂t = −(∇×u)×u − ∇(|u|²/2 + h(ρ)) + (∇×B)×B/ρ        (rotational form)
+∂B/∂t = ∇×(u×B)                                        (curl form)
+```
+
+using the vector identity `u·∇u = (∇×u)×u + ∇(|u|²/2)` and the barotropic pressure
+force `(1/ρ)∇p = ∇h`, with the specific enthalpy `h′(ρ) = c_s²(ρ)/ρ`,
+`c_s²(ρ) = γKρ^(γ−1)`:
+
+```
+h(ρ) = c_s0²·ρ^(γ−1)/(γ−1)      γ > 1
+h(ρ) = c_s0²·ln ρ               γ = 1   (the default)
+```
+
+The branch on `γ == 1` is trace-time python (`params` is static). Note the fp trap the
+plan records: `ρ**(γ−1)` at non-integer exponent is NaN for `ρ < 0` — that loud failure
+is intended, never abs()/clip it.
+
+Dissipation is NOT in the RHS: `L = −diss_f·(k⊥² + k_z²)^hyper` per field (uniform
+`diss` → the broadcast leading-axis-1 diagonal), applied exactly by the propagator.
+Two honesty notes. First, damping `u` rather than `ρu` is not a conservative viscous
+stress — total momentum is not conserved by the sink (nor gated; it is a small-scale
+absorber, same philosophy as RMHD's hyperdissipation). Second, `k_z` enters `L` through
+the same Nyquist-zeroed helper as every z-derivative in the module (one rule, no
+exceptions); for the even power this is optional — `k_z²` is reality-safe at the Nyquist
+plane — but the 2/3 `k_z` cut removes that plane from every IC and nonlinear path
+anyway, so the uniform rule is inconsequential and simpler to audit.
+
+### The background lives at k = 0, and is preserved bitwise
+
+There is no background/fluctuation split and no linear wave term: `B₀` and `ρ₀` are the
+`k = 0` modes of the evolved fields, and the waves emerge from the quadratic terms
+(`u×B` contains `u×B₀`, `ρu` contains `ρ₀u`, …). Both `k = 0` modes are preserved
+**bitwise**, not just to round-off, by construction: at `k = 0` the flux form is
+`−i·0·(ρu)^ = 0` exactly, the curl is a difference of exact zeros (fp `0.0·x = ±0.0`
+for finite `x` — signed zero, but `y + (±0.0) = y` bitwise for every nonzero `y`, and
+scaling by `dt` and the RK coefficients keeps zeros zeros), the dealias mask is 1 there,
+and the propagator factor is `exp(−0.0) = 1.0` exactly. So mass (`ρ̂(0)`) and each
+mean-B component are bitwise invariants of the full discrete step, and the C1 gate
+asserts them bitwise. (The one signed-zero edge — a k=0 component stored as `−0.0`
+flipping to `+0.0`, value-equal but not bitwise — is unreachable through fft-built ICs,
+and the gates build ICs in real space regardless.) The mean of `u` is NOT preserved —
+`⟨(∇×u)×u⟩` and `⟨(∇×B)×B/ρ⟩` do not vanish — and should not be: the continuum
+invariant is `∫ρu`, which the discrete advective-form step only conserves to scheme
+accuracy (not gated).
+
+### Ideal invariants and their discrete status
+
+`E = ∫ [ ρ|u|²/2 + |B|²/2 + ρe(ρ) ]` with the specific internal energy from
+`e′(ρ) = p/ρ²`:
+
+```
+ρe(ρ) = p/(γ−1) = c_s0²·ρ^γ/(γ(γ−1))     γ > 1
+ρe(ρ) = c_s0²·ρ·ln ρ                     γ = 1   (can be negative; only drift matters)
+```
+
+(Consistency check: `h = e + p/ρ` — for `γ = 1` the two differ by the constant `c_s0²`
+per unit mass, i.e. a multiple of the conserved mass, which shifts `E` by a constant.)
+
+| invariant | discrete status | gate |
+|---|---|---|
+| mass `ρ̂(k=0)` | bitwise (above) | C1, bitwise |
+| mean B | bitwise (above) | C1, bitwise |
+| `k·B̂` | round-off random walk, no systematic source | C1, tolerance `~ε·√N_steps` scale, no secular trend |
+| `E` (ν = 0) | O(dt^p) + non-polynomial aliasing residual | C1, dt-convergence order + smallness — NEVER round-off |
+| cross helicity `∫u·B` (ν = 0) | same class as `E` (ideal invariant of barotropic MHD) | C1, same form |
+| magnetic helicity | conserved in continuum; needs `A` to measure | not gated |
+
+The div-B argument, precisely: `∂B̂ = ik×Ê` gives `k·∂B̂` as a pairwise-cancelling sum
+(`k_x k_y Ê_z` appears twice with opposite signs, etc.) — zero analytically, but the two
+copies are grouped differently in fp (`k_x·(k_y·Ê_z)` vs `k_y·(k_x·Ê_z)`) and round
+differently, so each evaluation deposits `O(ε_mach·|k|²|Ê|)` into `k·∂B̂` (the products
+are `k_i k_j Ê`; the dimensionless gate quantity `|k·B̂|/(|k||B̂|)` carries one power of
+`|k|`). Nothing amplifies or reads
+it: the exponential propagator and the dealias mask scale all three components of `B̂`
+identically (they commute with `k·`), so div B random-walks at machine epsilon and
+nothing more. Any future induction-equation term must also be a curl or k-locally
+divergence-free — this is a standing rule.
+
+For the C2 energy budget: the functional derivatives are `δE/δρ = |u|²/2 + h(ρ)`,
+`δE/δu = ρu`, `δE/δB = B`, so the hyperdissipation sink is
+
+```
+ε = −⟨ ρu·(D_u u) + B·(D_B B) + (|u|²/2 + h)·(D_ρ ρ) ⟩,   D_f = the field's diagonal of L
+```
+
+and `energy_budget`'s closure is `dE/dt + ε ≈ 0` to the same order-plus-aliasing class
+as the `E` gate — never round-off. Note the `D_ρ` term: mass diffusion does `pdV`-like
+work through `h`; omitting it is the likely first bug in a budget implementation. (At
+γ = 1 the strict derivative is `d(ρe)/dρ = c_s0²(ln ρ + 1)` = `h + c_s0²`; the constant
+multiplies `⟨D_ρ ρ⟩`, whose k = 0 mode is exactly zero since `L(0) = 0`, so it drops out
+of `ε` — use `h` and don't chase the discrepancy.)
+
+### Linear waves: dispersion relations and eigenvectors
+
+Linearize about `ρ = 1`, `B = B₀ẑ` (the gates use ẑ WLOG — the code has no preferred
+axis; EBM later distinguishes x), modes `∝ exp(i(k·x − ωt))` with `k = k(sinθ, 0, cosθ)`,
+`k_∥ = k·ẑ = k·cosθ`, `v_A = B₀`, `c = c_s0`:
+
+```
+ω δρ = k·δu
+ω δu = c² k δρ − (k×δB)×B₀
+ω δB = −k_∥B₀ δu + (k·δu) B₀ẑ
+```
+
+**Alfvén branch**: `δu ∝ ŷ` (perpendicular to the (k, B₀) plane), `δρ = 0`,
+`ω² = k_∥²v_A²`, and `δB_y = −(k_∥B₀/ω)·δu_y` — transcribe THIS form into the gates
+(with signed `k_∥` and `ω = +k_∥v_A` it reads `δB = −δu`); the `∓` shorthands are
+convention-ambiguous.
+
+**Magnetosonic branches**: `δu = (δu_x, 0, δu_z)` in the (k, B₀) plane;
+
+```
+ω⁴ − ω²k²(c² + v_A²) + c²v_A²k²k_∥² = 0
+ω² = ½k²(c² + v_A²)·[ 1 ± √(1 − 4c²v_A²cos²θ/(c² + v_A²)²) ]     (+ fast, − slow)
+```
+
+with eigenvector (derived from the z-momentum equation, which has NO linear Lorentz
+force — `[(k×δB)×B₀]·ẑ ≡ 0`):
+
+```
+δu_z/δu_x = c²k_x k_z / (ω² − c²k_z²)
+δρ   = (k_x δu_x + k_z δu_z)/ω
+δB_x = −k_z B₀ δu_x/ω        δB_y = 0        δB_z = +k_x B₀ δu_x/ω
+```
+
+(`k·δB = 0` identically — check it when transcribing.) The `δu_z/δu_x` expression is
+singular exactly where `δu_x → 0`: at `θ = 0` do not use the ratio, use the polarizations
+directly. Degenerate limits the gates must assert explicitly:
+
+- `θ = 0`: the branches decouple into a sound wave (`δu ∥ ẑ`, `ω = ±kc`, `δB = 0`) and a
+  transverse `x`-polarized wave at `ω = ±kv_A` (degenerate with the Alfvén branch). Which
+  of "fast"/"slow" is which depends on `c` vs `v_A` — at the target `β = 0.3`
+  (`c ≈ 0.39·v_A`) the sound wave is the SLOW branch. Label by speed, not by name.
+- `θ = π/2`: slow → `ω = 0`; fast → the magnetosonic `ω = ±k√(c² + v_A²)`.
+
+Gate ICs are built in REAL space from these eigenvectors (`cos/sin(k·x)` with the
+analytic polarization) at amplitude small enough that the `O(ε²)` quadratic self-
+interaction sits below the measurement tolerance — never written directly into k-space
+(the rfftn reality constraint is then satisfied by construction).
+
+### Timestep
+
+`set_timestep` bounds the angle-maximised fast phase speed by
+`c_f(x) = √(c_s²(ρ) + |B|²/ρ)` pointwise (from the dispersion relation,
+`ω²/k² ≤ c² + v_A²`), and returns `cfl_safety / max_i max_x [ (|u_i| + c_f)/d_i ]` over
+the three directions (`d_z = params.dz = Lz/nz`, set unconditionally for every
+`dims==3` run in config.py — z_spectral does not remove it), clamped by the
+fixed-dt ceiling as in RMHD. No
+quiescent floor is needed, but the reason is a GRID-MAX argument, not pointwise: at
+γ = 1, `c_f ≥ c_s0` pointwise; at γ > 1, `c_s(ρ) = c_s0·ρ^((γ−1)/2)` falls below `c_s0`
+wherever ρ < 1 — but mass conservation pins `max_x ρ ≥ ⟨ρ⟩ = 1` (a bitwise invariant,
+above), so `max_x c_f ≥ c_s0` and the CFL denominator is bounded away from zero for any
+reachable state. At the first
+production target (`β = 0.3`, `δB/B₀ = 1`) the CFL is Alfvénic — `c_s < v_A`, so
+explicit acoustics cost nothing over z_spectral RMHD at the same `B₀`.
+
+### Aliasing and the transform budget
+
+The quadratic nonlinearities are exactly dealiased by the existing 3D 2/3 mask. `h(ρ)`,
+`ln ρ` and `1/ρ` are not polynomial: no finite padding dealiases them, every spectral
+compressible code accepts the residual, and at smooth `ρ` it sits inside the
+time-discretization error the conservation gates already budget for — which is why those
+gates assert convergence ORDER plus absolute smallness and never round-off.
+
+Transform tally per RHS evaluation (the C1 review checklist; C2 measures the real cost):
+inverse — `ρ`, `u`(3), `B`(3), `ω = ∇×u`(3), `j = ∇×B`(3), both curls formed k-locally
+first = **13**; forward — the combined curl force `(j×B)/ρ − ω×u`(3, summed in real
+space and transformed ONCE), the combined scalar `|u|²/2 + h`(1), `u×B`(3), `ρu`(3)
+= **10**; total **23** 3-D FFTs, vs 10 for z_spectral RMHD — expect ~2–2.5× the RMHD
+step, to be measured, not quoted.
+
 ## Reading 2D MHD results
 
 Energy cascades **forward** in 2D MHD — the opposite of 2D hydrodynamics' inverse cascade

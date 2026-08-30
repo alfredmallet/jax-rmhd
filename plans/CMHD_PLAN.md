@@ -1,0 +1,433 @@
+# CMHD_PLAN — compressible MHD (z_spectral, serial) in taranis
+
+Status: PLAN, 2026-08-29, rev 2 (rev 1 folds in Alfred's §10 answers: isothermal
+default, EBM equations from Squire et al. 2020, radial axis x; rev 2: OT reference =
+Athena, first-target regime β = 0.3, δB/B₀ = 1, C0 executed by the session directly
+rather than a subagent (Alfred's call), §3.3 div-B claim corrected from "exactly zero"
+to "round-off with no systematic source" — the pairwise products differ in fp grouping). Phases C0–C2 are the MVP (polytropic compressible MHD,
+`dims==3` + `z_spectral=True`, single process, isotropic hyperdissipation, IF-LSRK);
+Phase C3 adds expanding-box (EBM) terms. Execution follows the house flow: Opus
+implementer subagents per phase, session oversight, fresh adversarial review before a
+phase is recorded as landed. §9 is the digest of repo rules every implementer must obey;
+read it before writing code.
+
+## 1. Motivation and scope
+
+A fully-spectral compressible MHD solver sharing taranis's core (steppers, propagators,
+run loop, checkpointing) via the equation registry, for compressible-turbulence and
+expanding-box studies. Scope decisions, fixed:
+
+- `dims==3` + `z_spectral=True` + `size==1` ONLY (which `Parameters` already forces
+  together). No FD-z path, no MPI, no `comm_backend="jax"`. 2D physics runs as 2.5D
+  (z-independent fields at small nz — an unforced z-independent state stays exactly
+  z-independent, the same trick `tests/test_particles_3d.py` uses).
+- Polytropic closure `p = K ρ^γ` (γ ≥ 1; the enthalpy branch is trace-time python).
+  **Default γ = 1, isothermal** (§10 answer) — consistent with the Squire et al. 2020
+  EBM target; γ > 1 stays supported and gated. No energy equation, no shocks: this is a
+  pseudospectral code, target regime is smooth compressible turbulence at sonic Mach
+  M_s ≲ 1 with hyperdissipation absorbing the small scales.
+- Isotropic (hyper-)dissipation `−ν (k_x²+k_y²+k_z²)^h` per field, the ONLY content of
+  the linear operator L (§3.1).
+- No forcing, no particles in the MVP (both rejected at validation; forcing is a natural
+  later phase, particles already assert `eqtype=="RMHD"`).
+- Time integration: the existing IF-LSRK schemes (lsrk54 default). CB-IMEX also works
+  unchanged on a pure-dissipation diagonal L (`solve_shifted` is elementwise) — no scheme
+  restriction needs enforcing, unlike GDI's IF caveat.
+
+## 2. Equations, variables, conventions (code units)
+
+Fields, in state order (nfields = 7):
+
+    fields[0] = ρ̂          density (k=0 mode carries ρ₀; convention ρ₀ = 1)
+    fields[1:4] = û_x,y,z   velocity
+    fields[4:7] = B̂_x,y,z   magnetic field (Alfvén units; k=0 mode carries B₀)
+
+Equations (ideal part; D = isotropic hyperdissipation added to each):
+
+    ∂ρ/∂t = −∇·(ρu)                                  (flux form: mass exact, §3.2)
+    ∂u/∂t = −(∇×u)×u − ∇(u²/2 + h(ρ)) + (∇×B)×B/ρ    (rotational form, §3.4)
+    ∂B/∂t = ∇×(u×B)                                  (curl form: div B exact, §3.3)
+
+with the polytropic enthalpy (the pressure force is exactly ∇h since (1/ρ)∇p = ∇h):
+
+    h(ρ) = (γK/(γ−1)) ρ^(γ−1)     γ > 1,   K = c_s0²/γ  (so c_s(ρ₀=1) = c_s0)
+    h(ρ) = c_s0² ln ρ             γ = 1    (isothermal)
+
+There is NO separate linear wave term: the background B₀ and ρ₀ live in the k = 0 modes
+of the evolved fields, so Alfvén/fast/slow propagation emerges from the quadratic terms
+(u×B contains u×B₀, etc.). Both k = 0 modes are exactly conserved: the curl and flux
+forms have no k = 0 source and hyperdissipation vanishes at k = 0. This is the single
+most load-bearing design fact — it removes any B₀/ρ₀ `eqpars` entry, any linear term
+func, and any background/fluctuation split, and it means the dispersion gates test the
+production RHS, not a separate linear code path.
+
+Conserved ideal invariants and their discrete status (C0 writes the derivations into
+docs/numerics.md, C1 gates them):
+
+| invariant | continuous | discrete status |
+|---|---|---|
+| mass ∫ρ | exact | BITWISE: the k=0 RHS is exact fp zero, exp(0)=1, mask=1 (numerics.md) |
+| mean B | exact | BITWISE (same argument, curl form) |
+| div B = 0 | exact | round-off random walk, no systematic source (§3.3) |
+| E = ∫ ρu²/2 + B²/2 + ρe(ρ) | exact (ν=0) | O(dt^p) + aliasing residual (§3.5); gate asserts dt-order + smallness, never round-off |
+| cross helicity ∫u·B | exact (ν=0) | same class as E |
+
+with ρe(ρ) = Kρ^γ/(γ−1) for γ > 1 and c_s0² ρ ln ρ for γ = 1.
+
+Linear waves about (ρ₀=1, B₀): ω² branches — Alfvén ω² = (k·v_A)², fast/slow
+ω² = ½(c_s²+v_A²)k² [1 ± √(1 − 4 c_s² (k·v_A)² / (c_s²+v_A²)²/k²)] — C0 records the
+exact expressions and the eigenvectors the gates project onto.
+
+## 3. Design decisions (with rationale)
+
+### 3.1 L = dissipation only; waves explicit. IF-LSRK is correct under exactly this split.
+
+The compressible wave operator couples all 7 fields per k-mode; the propagator framework
+tops out at dense 2×2 (`Putzer2Operator`), and both alternatives are bad: a 7×7
+matrix-exponential backend is ~50 grid-sized precomputed complex arrays and a new
+propagator family, and IMEX-ing the waves violates the standing rule (never an L-stable
+solve on a wave-dominated L at |ω|dt ≳ 1). With waves explicit the only stiffness left is
+hyperdissipation, which IF treats exactly — the same division of labor as RMHD's perp
+dissipation. Cost: dt ≲ cfl_safety·min(dx,dy,dz_eff)/max(|u|+c_f), c_f² = c_s²+v_A²
+(the angle-maximised fast speed, a safe upper bound) — at low M_s the step shrinks ∝ 1/c_s.
+That is inherent to explicit compressible spectral codes and accepted; M_s ≪ 1
+semi-implicit acoustics is out of scope (§8).
+
+Verified against the tree (2026-08-29): `propagators.build` (propagators.py:340) accepts
+a 4-d diagonal `(1 or nfields, nz-or-1, nkx, nky)` L; kz-dependent entries are allowed
+off the `"jax"` backend (the :368 guard); `DiagonalOperator` is elementwise and supports
+both `exp_op` (IF) and `solve_shifted` (IMEX). So the MVP needs ZERO new propagator code.
+A uniform ν is the broadcast leading-axis-1 diagonal (one exp per stage, broadcast over
+fields); per-group ν uses leading axis nfields. `DiagonalOperator.hoistable` is False —
+deliberate elsewhere, and irrelevant here: a broadcast diagonal exp is cheap. Do NOT make
+it hoistable for CMHD; that touches the FD-z/2D bitwise gates for no measurable win.
+
+### 3.2 Evolve ρ (not ln ρ), flux form.
+
+Flux form `−ik·FFT(ρu)` conserves mass to round-off (k=0 component is exactly zero) and
+gives a clean gate. ln ρ would guarantee positivity but surrenders exact mass
+conservation. At M_s ≲ 1 with adequate hyperdissipation, ρ stays comfortably positive;
+`set_timestep` gates on it anyway (§4, the NaN path: c_s(ρ<0) is NaN at non-integer γ−1
+and poisons dt loudly rather than silently). If a later high-Mach campaign hits
+positivity, ln ρ is a contained change to three term funcs — noted in §8, not built.
+
+### 3.3 Induction in curl form: div B = 0 to round-off, free.
+
+`∂B̂ = ik×FFT(u×B)` (then dealias). `k·(ik×Ê)` cancels pairwise ANALYTICALLY; in fp the
+paired products differ in grouping (`k_x·(k_y·E_z)` vs `k_y·(k_x·E_z)` round
+differently), so each RHS evaluation deposits O(ε_mach·|k|²|Ê|) into k·∂B̂, a random
+walk with NO systematic source: the IF exponential and the dealias mask multiply all
+three B components by the same factor and cannot create divergence, and nothing feeds
+div B back into the dynamics. No cleaning step, no vector potential, no projection. The
+C1 gate asserts max_k |k·B̂|/(|k| |B̂|) stays at a stated round-off-scale tolerance
+(~ε·√N_steps class) with no secular trend after O(100) steps — round-off, not bitwise
+zero. Corollary: any future term added to the induction equation
+must also be a curl (or k-local and divergence-free) — record this as a rule in the
+module docstring.
+
+### 3.4 Momentum in rotational form; one combined gradient; one combined curl-force fft.
+
+`u·∇u = (∇×u)×u + ∇(u²/2)` lets `∇(u²/2)` merge with `∇h` into a single scalar gradient
+`ik·FFT(u²/2 + h)`, and `(∇×B)×B/ρ − (∇×u)×u` is summed in real space and fft'd ONCE
+(3 component transforms, not 6). Transform tally per RHS evaluation, the C1 reference
+(assert it in review, measure it in C2): ifft ρ, u(3), B(3), ω(3), j(3) = 13; fft
+combined-curl-force(3), scalar(1), u×B(3), ρu(3) = 10; total 23 3-D FFTs. RMHD
+z_spectral is 10 (8 grad iffts + 2 NonlinearTerm ffts), so expect ~2–2.5× the RMHD step
+at the same grid; state memory is 7/2 of RMHD. C2 measures the real number
+(docs/performance.md); estimates are never quoted as measurements.
+
+### 3.5 Dealiasing stance: 2/3 rule, non-polynomial residual accepted and documented.
+
+The quadratic terms are exactly dealiased by the existing 2/3 mask (already
+(nz,nkx,nky) under z_spectral, grids.py:38 `dealias_mask`). h(ρ), 1/ρ (and ln ρ at γ=1)
+are non-polynomial: no finite padding dealiases them, every spectral compressible code
+lives with this, and at M_s ≲ 1 with smooth ρ the residual sits below the
+time-discretization error the conservation gates already budget for. C0 writes one
+paragraph in docs/numerics.md so it is a recorded decision, and the conservation gates
+assert convergence ORDER in dt plus absolute smallness — never round-off — so the
+aliasing residual is inside the gate's stated tolerance, not hidden by it.
+
+### 3.6 `CMHDGrads` carries VALUES, not just gradients.
+
+`set_timestep(grads, params)` receives only what `grad_func` returned (run.py:105), and
+the term funcs need real-space values anyway. So `grad_func` returns
+
+    CMHDGrads(rho, u, B, omega, j, t)
+    # rho (nz,nx,ny); u, B, omega=∇×u, j=∇×B each (3,nz,nx,ny), real space; t = state.t
+
+— the 13 iffts of §3.4, computed once, consumed by both the terms and the CFL. `t` rides
+along because `set_timestep` has no other access to it; the MVP ignores it, the EBM CFL
+(§7) reads it. This is per-equation freedom the recipe contract explicitly grants (GDI
+and RMHD each define their own NamedTuple); do NOT try to route this through
+`shared_physics.grad_fields`, which is a (d/dx,d/dy)-pair machine for bracket equations.
+
+## 4. Module design: `physics/cmhd.py`
+
+Follow gdi.py as the structural template (module docstring with the physics source and
+normalization; `_check_supported`; `_eqpars` with required/optional key validation
+rejecting unknowns; recipe functions; nothing user-facing/read-only — that goes in
+`diagnostics/cmhd.py`).
+
+- `_check_supported(params)`: require `spatial_dimensions == 3`, `z_spectral`,
+  `not params.forcing`, and (belt-and-braces; `Parameters` already forces it) `size == 1`.
+  Error messages name this plan.
+- eqpars schema: required `cs0` (> 0), `diss` (scalar, or length-3
+  `(D_rho, nu, eta)` expanded to the 7-field diagonal), `hyper` (int ≥ 1). Optional:
+  `gamma` (float ≥ 1, **default 1.0** = isothermal); C3 adds `expansion`. Unknown keys rejected (GDI precedent, rmhd's
+  `_diss_hyper` precedent).
+- `linear_matrix(kgrid, params)`: `−diss_f · (ksq + kz_deriv²)^hyper` with `kz_deriv`
+  the Nyquist-zeroed kz (copy `rmhd._kz_deriv`'s rule exactly — even-nz Nyquist plane set
+  to 0; k² is even in kz so hermitian-compat holds, `propagators._check_hermitian_compatible`
+  will verify). Shape `(1, nz, nkx, nky)` for uniform diss, `(7, nz, nkx, nky)` otherwise.
+- `grad(state, kgrid, params)` → `CMHDGrads` (§3.6). ω and j are formed in k-space
+  (ik× is k-local, using the SAME Nyquist-zeroed kz for every ∂_z anywhere in the module
+  — one module-level helper, used by grad, the terms, and nothing else) and ifft'd.
+- Term funcs (5 positional args `(state, grads, kgrid, params, halo)`, `halo=None`
+  ignored — no halo under z_spectral):
+  - `NonlinearTerm`: the whole ideal RHS of §2 as ONE term (the three equations share
+    the real-space products; splitting them into separate Terms would recompute or
+    re-transform). Multiply by `kgrid.dealias` exactly once, on the assembled
+    `(7, nz, nkx, nky)` RHS.
+  - That is the ONLY MVP term. `construct_rhs` requires a non-empty active set — fine.
+- `set_timestep(grads, params)`: `c_s² = γK·rho^(γ−1)` (γ=1: `c_s0²`), `v_A² = |B|²/rho`,
+  `c_f = sqrt(c_s² + v_A²)`; `max_all = max_i max_grid (|u_i| + c_f)/d_i` over the three
+  directions (`params.dz` exists for every dims==3 run — config.py sets it
+  unconditionally; z_spectral does not remove it); `allreduce_max` (identity under
+  serial, keep it for uniformity); return `cfl_safety/max_all` clamped by the fixed-dt
+  ceiling as rmhd does. No quiescent floor is needed, but the argument is the GRID max,
+  not pointwise (C0 review finding): at γ > 1, c_s(ρ) < c_s0 wherever ρ < 1; mass
+  conservation pins max_x ρ ≥ 1, so max_x c_f ≥ c_s0 — say that in the comment rather
+  than importing `QUIESCENT_EPS`.
+- Registry entry in `physics/__init__.py`: `EquationRecipe(set_timestep, (Term(NonlinearTerm),),
+  grad, nfields=7, linear_matrix_func=linear_matrix)` — no forcing_scale_func, no
+  halo_start_func.
+- `config.py`: nothing structural — `eqtype` validation is registry-driven (config.py:67),
+  `nfields` flows from the recipe (config.py:70). Add the CMHD row to `_validate_compat`'s
+  comment block only if a check actually lands there; prefer keeping every CMHD rule in
+  `_check_supported` (GDI precedent) so config stays equation-agnostic.
+
+Initialization: `run.initialize` is already equation-generic (func → real space → fft →
+dealias). Provide `cmhd.uniform_plus_perturbation`-style IC HELPERS in the diagnostics
+or examples layer, not in physics/: eigenmode ICs for the gates are built in REAL space
+(cos/sin of k·x with the analytic eigenvector) — never written directly into k-space, so
+the rfftn reality constraint (both mirrors, CLAUDE.md) is satisfied by construction.
+
+## 5. Phases
+
+### Phase C0 — derivation and conventions (docs only; small; blocks C1 review, not C1 start)
+
+Executed by the session directly (Alfred, 2026-08-29: "for derivation do it yourself"),
+with the fresh-session adversarial review kept as the gate.
+
+**Landed 2026-08-29.** The docs/numerics.md § "Compressible MHD" section is written; the
+adversarial review (fresh session, independent re-derivation of items A–H) returned
+PASS — every gate-bearing formula confirmed — with six non-blocking findings, all folded
+in: the γ>1 quiescent-floor argument corrected to the grid-max form (§4 here), the
+params.dz claim corrected (§7 here), the div-B deposit scale corrected to ε|k|²|Ê|
+(§3.3 here), a signed-zero footnote on the bitwise-k=0 claim, the γ=1 δE/δρ constant
+noted as provably dropping out of the budget, and the Alfvén δB/δu relation pinned to
+the unambiguous −(k_∥B₀/ω) form for gate transcription.
+
+Write docs/numerics.md § "Compressible MHD": §2's equations with the code-unit
+conventions, the rotational-form identity and the combined-gradient trick, h(ρ) both
+branches, the k=0-carries-background argument and its exactness, the invariant table with
+discrete status, the dispersion relations WITH eigenvectors (the gates project onto
+them), the div-B exactness argument (§3.3), the dealiasing stance (§3.5), and the
+23-transform tally. Deliverable: the docs section + any correction back into this plan.
+Gate: adversarial review by a fresh session against a plasma-physics textbook derivation
+— every sign checked, since the gates in C1 are built FROM this section (TESTPART_PLAN
+§2's E_z sign lesson: derive once, in writing, before coding).
+
+### Phase C1 — core physics + gates (the big one)
+
+Files: `taranis/physics/cmhd.py` (new), `taranis/physics/__init__.py` (registry entry +
+import), `tests/test_cmhd_linear.py`, `tests/test_cmhd_conservation.py` (new).
+
+Implementation per §4. Tests (house form: `from _rmhd_testing import bootstrap;
+bootstrap()` first, `script_main(globals())` footer, `fresh_params(...)` not `ctx()` when
+passing dict-valued kwargs — eqpars dicts hash fine through ctx's sorted-items key ONLY
+if hashable; dicts are not, so use `fresh_params`):
+
+1. **Dispersion gates** (test_cmhd_linear.py, fp64; fp32 versions with loosened
+   tolerances only where they pass without weakening the assertion): single-eigenmode
+   real-space IC at amplitude ε = 1e-6 on (ρ₀=1, B₀ẑ via the k=0 mode of the IC), ν = 0,
+   fixed small dt; measure the oscillation frequency of the projected eigenamplitude over
+   a few periods. Assert relative error vs analytic ω(k) ≤ tol(dt, ε) for: Alfvén, fast,
+   slow, each at ≥ 3 propagation angles including exactly-parallel and
+   exactly-perpendicular (where slow → degenerate and fast → magnetosonic — assert the
+   degenerate limits explicitly), at both γ = 5/3 and γ = 1, and at c_s0/v_A ∈ {0.5, 2}.
+   Also assert no spurious growth: |amplitude| constant to O(ε²·t) with ν = 0.
+2. **Dissipation-only exact decay**: u = B = 0 perturbation... rather: tiny-amplitude
+   single mode with ν > 0, h ∈ {1, 2}; the IF step applies exp(L dt) exactly, so each
+   field's mode decays by exp(−ν k^{2h} dt) per step to round-off when the nonlinear
+   contribution is negligible — assert at the ε where the quadratic terms sit below
+   round-off of the linear decay.
+3. **Invariant gates** (test_cmhd_conservation.py): random smooth IC (band-limited,
+   M_s ≈ 0.3, δB/B₀ ≈ 0.3), ν = 0, ~50 steps. Mass and each mean-B component: BITWISE
+   (the k=0 modes are exact invariants of the discrete step — numerics.md derivation).
+   max_k |k·B̂|/(|k||B̂|): round-off-scale tolerance, no secular trend. Energy and cross helicity: run at dt and dt/2, assert the
+   drift ratio matches the scheme order p (lsrk54: measured order ≥ 4 within a stated
+   band) AND absolute drift below a stated small bound. Never assert these at round-off
+   (§3.5).
+4. **Scheme cross-checks**: lsrk54 vs rk44 vs imexcb3e on the same IC agree to
+   O(dt^min-order); `lsrk_scan` True/False agree to round-off (the fusion caveat from
+   CLAUDE.md applies — tolerance, not bitwise).
+5. **Plumbing gates**: `params.save`/`from_snapshot` round-trips the CMHD eqpars;
+   snapshot save/load restart continues bitwise (fixed dt, ν > 0, the standard
+   `forcing_scale` zeros path); unknown/missing eqpars raise; `forcing=True` raises;
+   FD-z (`z_spectral=False`) raises; `hoist_propagator` on/off agree (diagonal is
+   unhoistable — assert `stage_exp_ops` returns the working ops or None per its contract
+   rather than assuming).
+
+Explicitly NOT touched: `tests/data/refactor_reference_*` and gate-6 references (frozen,
+RMHD/GDI-only — a new eqtype must not require regenerating them; if any existing gate
+goes red, that is a C1 BUG by definition). `make test` runs both precision sessions —
+every new test must pass or be marked fp64-only via the existing markers.
+
+Gate to close C1: all of the above green under `make test` on the laptop, plus
+adversarial review (fresh session) of cmhd.py against the C0 docs section, sign by sign.
+
+### Phase C2 — diagnostics, validation science, performance
+
+Files: `taranis/diagnostics/cmhd.py` + `diagnostics/__init__.py` `__all__` entry (NO
+top-level name re-exports — GDI precedent; the top-level surface stays RMHD-historical),
+`tests/test_cmhd_diagnostics.py`, `examples/cmhd_orszag_tang.py` (+ notebook),
+docs/performance.md § addition, CLAUDE.md + docs/RUNNING_TESTS.md + examples/README.md
+sweep.
+
+- Diagnostics: `energies(state, kgrid, params)` → (kinetic, magnetic, internal) on the
+  SHARED perp_reduce normalization (CLAUDE.md: new energy-like diagnostics keep the
+  rfft2 ky-doubling `/ nz²(nx·ny)²` z_spectral convention or their numbers are not
+  comparable); `mach_numbers` (M_s rms, M_A rms); `divB_max`; `spectra` (kinetic,
+  magnetic, density) via `diagnostics.core._binned`; `energy_budget` (−dE/dt vs the
+  hyperdissipation sink, closure gate in the test).
+- **Orszag–Tang gate** (marked `slow`): the standard compressible OT vortex (γ = 5/3,
+  the usual IC) as 2.5D (nz = 4, z-independent IC), 256², to t = π; compare E_kin(t),
+  E_mag(t) traces and the density field against published spectral-code references
+  (pick the reference in-phase and cite it in the test docstring). Also assert exact
+  z-independence is preserved (max over kz≠0 modes at round-off) — this doubles as the
+  2.5D-embedding gate.
+- **Performance**: measure ms/step vs z_spectral RMHD at 128²×16 and 256²×16, fp64,
+  laptop CPU, quiet machine, same-session interleaved A/B (the standing measurement
+  rules); record in docs/performance.md with the transform-count context from §3.4.
+  Expected ballpark 2–2.5×; whatever is measured is what gets written.
+- Docs sweep: CLAUDE.md gains a short CMHD paragraph (what it is, the L split rule, the
+  curl-form rule from §3.3, eqpars schema, "no forcing/particles"); examples/README.md
+  ordering updated.
+
+Gate to close C2: OT within stated tolerance of the cited reference, budget closure
+green, performance section written from measurements, review pass.
+
+### Phase C3 — expanding box (EBM)
+
+Two sub-phases, strictly ordered:
+
+**C3a (derivation, docs only)**: EBM equations for THIS variable set in comoving
+coordinates. **Source of truth: Squire et al. 2020's expanding-box formulation** (§10
+answer; their compressible EBM runs are isothermal, matching the γ default — C3a pins
+the exact paper/equation numbers and cross-checks against Grappin & Velli 1996 /
+Dong, Verdini & Grappin 2014 as secondary derivation checks, flagging any convention
+difference rather than silently mixing them). a(t) = 1 + t/t_e, **radial axis = x**
+(confirmed), transverse (y,z) expanding. Deliverables: docs/numerics.md § "Expanding box" with every
+term's power of a and ȧ/a tabulated per field, the anisotropic-metric factors on each
+derivative, the WKB/analytic gate predictions (uniform-state decay laws: ρ ∝ a⁻²,
+B_x ∝ a⁻², B_⊥ ∝ a⁻¹, polytropic T scaling; WKB Alfvén amplitude ∝ a^(−1/2)), and the
+comoving-vs-physical dissipation decision (default: comoving-k dissipation, keeping L
+static — the physical-ν(t) alternative would force per-block L rebuilds or an explicit
+dissipation term; documented, not built). Same adversarial-review gate as C0.
+
+**C3b (implementation)**: EBM terms as additional `Term` entries with
+`active=lambda p: "expansion" in p.eqpars` — trace-time gated, zero graph cost when off
+(the `Term.active` machinery is exactly this). eqpars gains optional
+`expansion = {"t_e": float}`. The metric factors multiply the k-space gradients inside
+the term funcs — kgrid stays static (comoving k). Time enters through `grads.t` (§3.6):
+verified 2026-08-29 that every stepper sets stage-correct times
+(`state._replace(t=state.t + c_k·dt)`, timestepping.py throughout), so a(t) is evaluated
+at the right stage abscissae with no order loss — cite the check, and add one gate that
+would catch a stepper regressing this (a pure-decay EBM term whose dt-convergence order
+collapses if stage times are wrong). CFL: the transverse physical wavenumbers shrink
+∝ 1/a — `set_timestep` reads `grads.t` and relaxes the transverse terms accordingly.
+Gates: the C3a analytic scalings (uniform state: near-exact; WKB: to stated tolerance);
+an `expansion`-off run stays BITWISE identical to the pre-C3 tree (the active-predicate
+guarantee, and the standing bitwise-gates-are-evidence rule applies: if it drifts, find
+out why, never widen).
+
+## 6. What is verified NOT to need changes (checked against the tree, 2026-08-29)
+
+- `run.py`: fully registry-driven (`recipe.*` at :85, :105, :142, :279); `initialize`
+  equation-generic; forcing advance keyed off `forcing_scale_func`/`params.forcing`.
+- `timestepping.py`, `propagators.py`: no new backends, no new schemes (§3.1).
+- `grids.py`: `dealias_mask` already 3-D under z_spectral; `kz` already built;
+  `_attach_linear_operator` generic.
+- `snapshot_io.py`, `comms.py` (serial), `config.py` structurally (§4 last bullet).
+- Frozen references (gate 6, refactor reference): untouched by construction.
+
+## 7. Risks / traps for implementers
+
+- **kz Nyquist**: every i·kz anywhere in cmhd.py goes through the one Nyquist-zeroed
+  helper (§4). A raw `kgrid.kz` derivative breaks reality and the div-B gate will catch
+  it confusingly late — this is the most likely silent-wrongness bug in the phase.
+- **`set_timestep` sees grads only** — no state, no t except what CMHDGrads carries.
+  Don't reach for `state` in it; the signature is fixed by the registry contract.
+- **`params.dz` DOES exist** under z_spectral (config.py sets dz = Lz/nz for every
+  dims==3 run; rev 2 of this plan claimed otherwise — the C0 review corrected it). The
+  guarded-attribute rule covers dims==2, which CMHD rejects anyway.
+- **Dict-valued kwargs and `ctx()`**: eqpars dicts make `ctx()` unusable for CMHD test
+  configs — `fresh_params` everywhere.
+- **Never assert energy/cross-helicity at round-off** (§3.5) — order + smallness.
+- **`state._replace` only**, never positional `SimulationState` (forcing fields must
+  thread through even though CMHD never uses them).
+- **Non-integer γ−1 needs ρ > 0**: `rho**(gamma-1)` on a negative ρ is NaN at fp — this
+  is the intended loud failure, don't "fix" it with abs() or clipping.
+
+## 8. Deferred, explicitly out of scope
+
+- Forcing (compressible O-U momentum/Elsasser forcing — needs its own normalization
+  derivation; the hooks exist).
+- Particles in CMHD fields; MPI/z-decomposition; FD-z CMHD; `dims==2` CMHD.
+- ln ρ variable (positivity at high Mach, §3.2); semi-implicit acoustics for M_s ≪ 1;
+  a dense-nfields exponential backend (wave-IF).
+- Shock capturing of any kind.
+
+## 9. Execution rules digest (per-phase, for the implementer agents)
+
+- Worktree agents: verify the worktree base is current main; subprocess/script-mode
+  tests import the EDITABLE install — set `PYTHONPATH=<worktree>` or the test runs
+  main's taranis. No `git stash` in the shared tree, ever.
+- New test modules: bootstrap-before-import-taranis header, `script_main` footer,
+  markers per conftest (`fp32`/`fp64`/`slow`); must pass BOTH `make test` precision
+  sessions or carry the precision marker.
+- Never cache a SimulationState across `simulate` calls (donation); never mutate `ctx()`
+  results; rebuild kgrid for any new/changed Parameters.
+- Frozen bitwise references are evidence — a red frozen gate means stop and report, never
+  regenerate, never restructure fp op order to satisfy a comparator.
+- Performance numbers: same-session interleaved A/B on a quiet machine, or they don't go
+  in docs. Quote measured, not chained; ratios name their reference.
+- Every phase ends with: docs updated in the same commit series, this plan's § updated
+  with a dated landing note, adversarial review by a fresh session before the phase is
+  called done.
+
+## 10. Open questions — answered 2026-08-29 unless noted
+
+1. ~~γ default~~ **Answered: isothermal, γ = 1 default** (folded into §1/§4; γ > 1 kept
+   and gated).
+2. ~~OT reference~~ **Answered: an Athena one if available** — target the Athena method
+   paper's Orszag–Tang test (Stone et al. 2008, ApJS 178, 137; the C2 implementer
+   verifies the exact figure/section and cites it, falling back to the Athena++ method
+   paper, Stone et al. 2020, if the data there is easier to digitize). The reference is
+   ADIABATIC γ = 5/3; our polytropic γ = 5/3 run is isentropic, identical to adiabatic
+   only while the flow is smooth — so the quantitative gate window is the pre-shock
+   smooth phase (implementer determines the shock-formation time from the reference and
+   states the window in the test), with post-shock agreement checked qualitatively only.
+   A grid-code reference is fine for this purpose; tolerance set accordingly.
+3. ~~EBM formulation~~ **Answered: Squire et al. 2020, radial axis = x** (folded into
+   §5 C3a).
+4. ~~First-target regime~~ **Answered: β = 0.3, δB/B₀ = 1.** Implications, recorded:
+   isothermal β = 2c_s0²/v_A² so c_s0 = √(β/2)·v_A ≈ 0.39 B₀ (code units, ρ₀ = 1).
+   The explicit-acoustics dt penalty is a NON-issue here — the fast speed is
+   v_A-dominated, so the CFL is Alfvénic and CMHD's dt is comparable to z_spectral
+   RMHD's at the same B₀. The real flag is the other direction: trans-Alfvénic δu with
+   c_s ≈ 0.4 v_A means M_s up to ~2.6·(δu/v_A) — sonic-transonic, so steepening is
+   expected and the hyperdissipation must be sized to absorb it (the OT gate is directly
+   relevant experience); if production ICs turn out strongly supersonic, revisit §3.2's
+   ρ-positivity note. C2 measures perf at 128²×16 and 256²×16 as written.

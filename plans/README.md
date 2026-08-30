@@ -20,6 +20,9 @@ were corrected on the way out (see below).
 
 ## Live
 
+- **CMHD_PLAN.md** — compressible MHD (polytropic, z_spectral + serial, isotropic
+  hyperdissipation in a diagonal L, waves explicit under IF-LSRK), phases C0–C2 = MVP,
+  C3 = expanding-box terms. Written 2026-08-29, not started.
 - **GDI_PLAN.md** — roadmap from the current IF-dissipation-only solver to the 3D GDI
   equations (exact linear propagators, spectral-z, low-storage IMEX). Execution order
   P1 → P4a → P2 → P3 → P4b. Physics source: `docs/GDI_nonlinear_equations (10).pdf`.
