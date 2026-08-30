@@ -333,6 +333,80 @@ sweep.
 Gate to close C2: OT within stated tolerance of the cited reference, budget closure
 green, performance section written from measurements, review pass.
 
+**Implemented 2026-08-30** (opus implementer subagent; **status lines below are for the
+adversarial review to confirm, not a self-declared landing**). Files: `taranis/diagnostics/cmhd.py`
+(new), `taranis/diagnostics/__init__.py` (`__all__` entry, no name re-exports),
+`tests/test_cmhd_diagnostics.py` (new), `tests/test_cmhd_orszag_tang.py` (new, `slow`+`fp64`),
+`examples/cmhd_orszag_tang.py` (new), `bench/cmhd_perf.py` (new), plus the CLAUDE.md /
+docs/performance.md / docs/RUNNING_TESTS.md / examples/README.md sweep. Nothing under
+`taranis/physics/`, `run.py`, `timestepping.py`, `propagators.py`, `grids.py`, `comms.py`,
+`config.py` or `snapshot_io.py` was touched, and no frozen reference was regenerated.
+
+Measured numbers (Apple M1, macOS 14.6, jax 0.10.0, CPU, fp64 unless stated):
+
+- **Performance**, `bench/cmhd_perf.py`, same-session interleaved A/B, 9 reps, lsrk54, fixed
+  `dt=1e-3`, jitted `block_of_steps`, against **z_spectral RMHD at ν=η (separable backend)**:
+  128²×16 → 55.79 vs 103.16 ms/step = **1.85×**; 256²×16 → 237.08 vs 481.25 ms/step =
+  **2.03×**. Spreads 1.0–2.4%; a repeat session gave 1.89× / 2.03×. The plan's 2–2.5×
+  estimate is NOT the result — the measurement is, and it sits slightly below the 23-vs-10
+  transform ratio because RMHD's separable propagator is not free and CMHD's diagonal exp is
+  cheap. `memory_analysis()` in the `bench/memory_probe.py` u convention: 48.71 u (128²×16)
+  and 48.76 u (256²×16) against RMHD's 18.69/18.70 u — 2.61×, against 3.5× the state.
+- **Diagnostics gates**: spectra sum to the energies at 1.9e-15/5.4e-15 relative (fp64,
+  both binnings, three bin_factors, both γ); energy-budget closure 3.5e-8 (γ=1) and 2.8e-8
+  (γ=5/3) relative, gated at 1e-5 and fp64-only; dropping the `D_rho` work term breaks it by
+  61% (the term is 38% of the sink).
+- **Orszag–Tang**: exact initial energies to 1e-13; z-independence identically 0.0 through
+  all three runs; div B ≤1.3e-15 and ρ_min ≥0.176 through the shocks; E conserved to
+  **5.6e-9** at 256² over t ≤ 0.12 and falling with resolution (2.5e-7 at 128², same dt);
+  128²/256² traces converged to 3.7e-7 (E_kin) and 5.9e-7 (E_mag); E declines 5.9% by t=0.51.
+
+Deviations from this §, all recorded in the files themselves:
+
+1. **"to t = π" does not apply.** That is the 2π-box normalization; the Athena reference is
+   the [0,1] box, where the equivalent is t = 1/2 (Stone's own mapping, §VIII.4). The run
+   goes to t = 0.5.
+2. **No published reference data exists.** Stone et al. 2008 §VIII.4 gives three OT figures,
+   all snapshots/slices at t_f = 1/2, and not one time trace anywhere in the paper;
+   Stone et al. 2020 (Athena++) does not contain the OT test at all; the Athena test-suite
+   pages are HTTP 404 and their archived copies hold GIFs with no data files; the only
+   published OT energy-vs-time curves (Orszag & Tang 1979 fig 5 — incompressible, 2π box,
+   unstated factor-of-2 normalization; Dahlburg & Picone 1989 fig 5; Picone & Dahlburg 1991
+   fig 8 — different M and β, marginal DTIC scans) are a different problem. So the fallback
+   applies: the quantitative content is self-contained physics (exact initial energies, ideal
+   invariant conservation, resolution convergence) plus a **labelled self-generated
+   regression table**, and the test docstring names the concrete route to a real reference
+   (build Athena++, run its shipped `athinput.orszag-tang`, whose `hst` output already emits
+   E_kin(t)/E_mag(t) at dt=0.01; rescale by 1/ρ₀ = 36π/25). **Open item, carried to §11.**
+3. **The gate window is stronger than "polytropic ≈ adiabatic while smooth".** The Athena IC
+   has uniform ρ and uniform p, hence uniform entropy, and smooth isentropic ideal-gas flow
+   obeys p = Kρ^γ with one global K — so the polytropic closure is EXACTLY the adiabatic one
+   in the window, not an approximation. Window t ≤ 0.12, below every literature shock-onset
+   estimate (Snow et al. 2021 §3, already in these units: "After t = 0.15, large-scale
+   fast-mode shocks are generated"; Tóth 2000 §6.4 in the 2π box → t ≈ 0.159) and below where
+   this code's own smoothness monitors move.
+4. **The smooth-window runs use fixed dt, not the adaptive one.** With adaptive dt the two
+   resolutions record at different times and comparing INTERPOLATED traces reported 3.5e-3 of
+   "disagreement" that was entirely linear interpolation of a curved E_kin(t) over a 0.026
+   sample interval. Fixed dt at both resolutions gives bitwise-identical sample times and the
+   real answer, 4e-7.
+5. **`spectra` bins to the grid corner**, not to `diagnostics.rmhd.perpspec`'s
+   `min(nx,ny)//2·kunit`, and the kinetic spectrum is built from `w = √ρ·u` rather than `u`.
+   Both are forced by the sum rule: `|û|²` integrates to `⟨|u|²⟩/2`, not to the kinetic
+   energy, and `w` is a non-polynomial product that carries power past the dealias cut.
+6. **`energy_budget` returns both signs** (`total` = the docs' sink ε, `dEdt` = −ε), because
+   `diagnostics.gdi.energy_budget`'s `total` is dE/dt and silently inheriting either
+   convention would be a trap.
+7. **The energy-budget and OT gates are fp64-only.** dE over two steps is ~4e-8 on an E of
+   order 1, below the fp32 noise floor of the difference — the same reason the GDI closure
+   gates are fp64-gated. `test_cmhd_diagnostics.py`'s other six gates run at both precisions.
+
+One pre-existing C1 observation, reported and NOT fixed: `divB_max`'s C1 formulation
+(`tests/test_cmhd_conservation.py::_div_b`) broadcasts `kmag` with `+ 0.0*d`, which turns a
+NaN field into an empty mask and a confusing "zero-size reduction" error instead of a NaN.
+The diagnostics copy drops the trick (the k arrays broadcast on their own); the C1 test was
+left alone.
+
 ### Phase C3 — expanding box (EBM)
 
 Two sub-phases, strictly ordered:
@@ -446,3 +520,27 @@ out why, never widen).
    expected and the hyperdissipation must be sized to absorb it (the OT gate is directly
    relevant experience); if production ICs turn out strongly supersonic, revisit §3.2's
    ρ-positivity note. C2 measures perf at 128²×16 and 256²×16 as written.
+
+## 11. Open items (carried out of C2, 2026-08-30)
+
+1. **A real external Orszag–Tang reference.** The C2 search established that no published,
+   digitizable E_kin(t)/E_mag(t) exists for this problem in any normalization close to ours
+   (details and citations in §5's C2 note and in `tests/test_cmhd_orszag_tang.py`). The route
+   that works, and is not in this repository: build Athena++, run its shipped
+   `inputs/mhd/athinput.orszag-tang` (which already requests `file_type = hst` at dt = 0.01;
+   `src/outputs/history.cpp` writes volume-integrated `1-KE, 2-KE, 3-KE, 1-ME, 2-ME, 3-ME`
+   per row), and compare to our t ≤ 0.12 window after multiplying its energies by
+   1/ρ₀ = 36π/25 = 4.5238934. Its pgen uses the box [−0.5,0.5]² and
+   `Az = B0/(4π)(cos 4πx − 2cos 2πy)`, i.e. the Stone-2008 field translated by (½,½) — same
+   physics and same energies, opposite signs; do not chase that as a discrepancy. Until then
+   the stored table in that test is a regression gate and is labelled as one.
+2. **A density image comparison against Stone et al. 2008 figure 22** (contours at
+   t_f = 1/2) and its figure 23 pressure slices. Post-shock, so qualitative only, and it needs
+   a human eye rather than an assertion — the example script already produces the ρ image.
+3. **CMHD forcing** (§8) is the natural next phase after C3; it needs its own power
+   normalization derivation, and until it exists `diagnostics.cmhd`'s shared-convention
+   energies are the thing a forcing power will have to be comparable to.
+4. **`spectra`'s corner binning is honest but wasteful**: the bins past the dealias cut carry
+   only the non-polynomial residual of `√ρ·u`. If a production campaign wants a clean inertial
+   range it should slice the returned arrays, not narrow `kmax` — narrowing it silently breaks
+   the sum rule the C2 gate rests on.

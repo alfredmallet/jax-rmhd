@@ -65,6 +65,21 @@ and `savio` — you get the fast tier. Markers:
 Precision is fixed once per process (read at `import taranis`), which is why
 `make test` runs two separate pytest sessions rather than mixing precisions.
 
+Note the `slow` marker needs BOTH `-m slow` and `--runslow`: `--runslow` lifts conftest's
+skip, while `-m slow` overrides pyproject's default `addopts` deselection. `make test-slow`
+passes both. In script mode the equivalent is `RMHD_RUNSLOW=1`.
+
+**Per-equation-set gates.** RMHD's are spread across most of `tests/`; GDI's are
+`test_gdi_linear.py` and `test_gdi_nonlinear.py`; compressible MHD (`eqtype="CMHD"`,
+plans/CMHD_PLAN.md) has four files:
+
+| file | tier | what it covers |
+|---|---|---|
+| `test_cmhd_linear.py` | fast | dispersion relations (Alfvén/fast/slow, three angles, both γ), exact dissipation-only decay, the CFL bound, scheme cross-checks |
+| `test_cmhd_conservation.py` | fast | bitwise mass and mean B, the div-B random walk, energy/cross-helicity drift, eqpars round-trip and every configuration error |
+| `test_cmhd_diagnostics.py` | fast | `diagnostics.cmhd` — normalization against numpy, spectra summing to the energies, energy-budget closure, the monitors, read-only safety |
+| `test_cmhd_orszag_tang.py` | **`slow`** + `fp64` | the Orszag–Tang validation run (three runs, ~2.5 min: 256²×4 to t=0.5 plus two fixed-dt smooth-window runs). Not in `make test`; `make test-slow` picks it up |
+
 **Cluster (scripts under mpirun).** Every test file is also a standalone script, and
 that is how multi-rank testing works — pytest is never run under mpirun:
 

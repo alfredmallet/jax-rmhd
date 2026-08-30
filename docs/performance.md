@@ -338,6 +338,54 @@ Two more observations:
 (+79.0%) ms/step; `particle_fields` 1.80 ms = 14.2% and 2.10 ms = 16.6% — the A3 numbers within
 run-to-run scatter.)
 
+## CMHD: the compressible step against z_spectral RMHD (C2, 2026-08-30)
+
+`bench/cmhd_perf.py`, Apple M1, macOS 14.6 (Darwin 23.6.0), jax 0.10.0, CPU backend,
+fp64, `comm_backend="serial"`, quiet machine (bench lock held). Same-session **interleaved
+A/B**: one timed `nblock=10` call of each equation set per repetition, alternating, 9
+repetitions, median ms/step. Both sides are the jitted `run.block_of_steps` at fixed
+`dt=1e-3` with **lsrk54**, `Lx=Ly=Lz=2π`, `z_spectral=True`, `hyper=2`, default
+`hoist_propagator=True`.
+
+The reference is **z_spectral RMHD at ν = η** (`diss=(1e-4,1e-4)`, `z_diss_k=1e-6`), which
+resolves to the **separable** backend (`SeparableL`) — the z_spectral production path, and
+hoisted. CMHD (`cs0=1`, `diss=1e-4`, `gamma=1`) resolves to **`DiagonalOperator`**, which
+is deliberately unhoistable (CMHD_PLAN §3.1: a broadcast diagonal exp is cheap and making
+it hoistable would touch the FD-z/2D bitwise gates for no win).
+
+| grid | RMHD z_spectral, separable | CMHD, diagonal | ratio |
+|---|---|---|---|
+| 128²×16 | 55.79 ms/step (spread 1.5%) | 103.16 ms/step (spread 1.0%) | **1.85×** |
+| 256²×16 | 237.08 ms/step (spread 1.2%) | 481.25 ms/step (spread 2.4%) | **2.03×** |
+
+Repeated in a second session on the same machine minutes later: 54.99 / 103.97 (1.89×) and
+236.61 / 481.29 (2.03×) — the 128² ratio moves by 2%, the 256² one not at all. Spread is
+max−min over the 9 repetitions as a percentage of the median; nothing here is above 4.2%.
+
+**Context: the transform count.** CMHD does **23** 3-D FFTs per RHS evaluation (13 inverse:
+ρ, u(3), B(3), ω(3), j(3); 10 forward: the combined curl force(3), the combined scalar(1),
+u×B(3), ρu(3) — docs/numerics.md, CMHD_PLAN §3.4) against z_spectral RMHD's **10** (8
+gradient iffts + 2 `NonlinearTerm` ffts), i.e. a 2.3× transform ratio. The measured step
+ratio is 1.85–2.03×, slightly BELOW that, because RMHD's separable propagator and its
+per-stage work are not free either and CMHD's diagonal exp is cheaper per stage. State is
+7/2 = 3.5× RMHD's; the step is not.
+
+`memory_analysis()` at the same configurations, in the `bench/memory_probe.py` u convention
+(u = one field-sized complex array, `nz*nkx*nky*itemsize`; at 256²×16 fp64 that is 8.45 MB):
+
+| grid | RMHD total | CMHD total |
+|---|---|---|
+| 128²×16 | 18.69 u | 48.71 u |
+| 256²×16 | 18.70 u | 48.76 u |
+
+2.61× the RMHD total against 3.5× the state — the fixed per-stage and propagator costs do
+not scale with `nfields`. CMHD's 48.7 u is flat in grid size, as RMHD's is. (For scale, the
+committed probes put GDI 2D 256² lsrk33 putzer2 at 41.1 u and RMHD z_spectral lsrk54 ν=η at
+18.4 u; the 18.69/18.70 here reproduce that.)
+
+Reproduce: `python bench/cmhd_perf.py --grids 128 256 --nz 16 --nrep 9`. It refuses to start
+if `/private/tmp/taranis_bench.lock` exists and writes/removes its own.
+
 ## Where the z_spectral step's extra time goes (2026-08-19)
 
 `bench/zspectral_profile.py`, same machine as the particle benchmarks (Apple M1, macOS 14,

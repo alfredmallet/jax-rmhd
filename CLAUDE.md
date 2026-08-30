@@ -8,8 +8,9 @@ docs/performance.md (measurements and tuning) and docs/checkpointing.md.
 
 A pseudospectral solver for reduced MHD (RMHD) and related plasma fluid models, in JAX.
 Spectral (rfft2) in the perpendicular (x,y) plane, 4th-order finite-difference in z,
-MPI-decomposed along z only. Implemented equation sets: RMHD and 2D GDI; the
-architecture supports adding others without touching the core solver.
+MPI-decomposed along z only. Implemented equation sets: RMHD, 2D GDI, and compressible
+MHD (CMHD, `z_spectral` + single-process only); the architecture supports adding others
+without touching the core solver.
 
 ## Setup / running
 
@@ -178,9 +179,11 @@ bench/test entry point); `physics/rmhd.py` maps them onto (phi,psi).
 `physics/<eq>.py` holds ONLY what the solver consumes: the recipe functions and their
 helpers (including `_max_re_lambda`/`_lin_dt_safety`, which `set_timestep` calls).
 Everything read-only and user-facing lives in `diagnostics/<eq>.py` — `diagnostics.rmhd`
-(`energy`, `perpspec`, `parspec`) and `diagnostics.gdi` (`energy_enstrophy`,
+(`energy`, `perpspec`, `parspec`), `diagnostics.gdi` (`energy_enstrophy`,
 `energy_budget`, `perp_spectrum`, `cross_phase_spectrum`, `kperp_break`, `measure_alpha`,
-`theory_cross_phase`), with `diagnostics/core.py` for the shared machinery (`_binned`).
+`theory_cross_phase`) and `diagnostics.cmhd` (`energies`, `mach_numbers`, `rho_min`,
+`divB_max`, `spectra`, `energy_budget`), with `diagnostics/core.py` for the shared
+machinery (`_binned`).
 `diagnostics.<eqtype>` is the naming convention; the registry stays a solver contract, so
 there is no diagnostics hook on `EquationRecipe` — diagnostics are plain imports, and the
 dependency runs diagnostics -> physics, never back. The RMHD names plus `_binned` are
@@ -369,6 +372,67 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
 - `dims=2` + `"momentum"` from a quiescent start is pure hydro (`psi` stays exactly 0 —
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
   docs/numerics.md.
+
+### Compressible MHD (`physics/cmhd.py`, plans/CMHD_PLAN.md — C0/C1 landed 2026-08-30, C2 2026-08-30)
+
+Fully spectral polytropic compressible MHD, `nfields=7` in state order
+`(rho, u_x, u_y, u_z, B_x, B_y, B_z)`. Alfvén units, `<rho> = rho0 = 1`, `p = K rho^gamma`
+with `K = cs0^2/gamma`. Derivations of record: docs/numerics.md § "Compressible MHD" —
+change the docs first, then the module. Rules:
+
+- **Scope, enforced in `cmhd._check_supported`**: `dims==3` **and** `z_spectral=True`
+  **and** `size==1`, no forcing, no particles (particles already assert `eqtype=="RMHD"`).
+  There is no FD-z or `dims==2` path — run 2D physics as **2.5D**: `dims=3`, small `nz`, a
+  z-independent IC, which stays z-independent exactly (at `nz=4` bitwise; the OT gate
+  asserts it).
+- **eqpars schema**: required `cs0` (>0), `diss` (scalar, or length-3 `(D_rho, nu, eta)`
+  expanded over the 7 fields; `>= 0`), `hyper` (int ≥1); optional `gamma` (≥1,
+  **default 1.0 = isothermal**). Unknown keys rejected. `h(rho) = cs0^2 rho^(gamma-1)/(gamma-1)`
+  for `gamma>1` and `cs0^2 ln rho` at `gamma==1`, branched at TRACE time.
+- **L IS DISSIPATION ONLY; the waves stay explicit.** `linear_matrix` returns
+  `-diss_f*(kperp^2+kz^2)^hyper` and nothing else — a `DiagonalOperator`, deliberately
+  unhoistable. The 7-field wave operator has no propagator backend, and IMEX-ing it would
+  put an L-stable solve on a wave-dominated L, which the standing rule forbids. Never move
+  a wave term into L. IF-LSRK (`lsrk54`) is the production path; CB-IMEX also works on this
+  pure-dissipation diagonal.
+- **The background lives at k=0**: `B0` and `rho0` are the k=0 modes of the evolved fields,
+  not eqpars, and both are preserved BITWISE by the discrete step. So the dispersion gates
+  test the production RHS, and there is no background/fluctuation split.
+- **Induction is curl form and must stay that way**: `i*k x fft(u x B)` makes `k.dB` a
+  pairwise-cancelling sum, so div B only random-walks at machine epsilon and nothing
+  cleans, projects or evolves it. **Any future induction term must be a curl** (or k-locally
+  divergence-free). Continuity is flux form (mass exact); momentum is rotational form (one
+  combined scalar gradient, one combined curl-force fft).
+- Every `d/dz` in the module goes through the one Nyquist-zeroed `_kz_deriv` helper; a bare
+  `kgrid.kz` is the most likely silent-wrongness bug there.
+- `grad_func` returns `CMHDGrads(rho, u, B, omega, j, t)` — VALUES, not (d/dx,d/dy) pairs —
+  because `set_timestep` sees only what `grad_func` returned. Do not route it through
+  `shared_physics.grad_fields`, which is a bracket-equation machine.
+- **The non-polynomial residual is accepted, not hidden.** The quadratic products are
+  exactly dealiased; `h(rho)`, `ln rho` and `1/rho` are not, and no finite padding fixes
+  that. So the conservation gates assert dt-order/dt-independence plus absolute smallness
+  and **never round-off**. `rho**(gamma-1)` on a negative rho is NaN — that loud failure is
+  intended; never abs() or clip it, and watch `diagnostics.cmhd.rho_min`.
+- Diagnostics: `diagnostics/cmhd.py` (`energies`, `mach_numbers`, `rho_min`, `divB_max`,
+  `spectra`, `energy_budget`), listed in `diagnostics/__init__.py`'s `__all__` with NO
+  top-level name re-exports. All on the shared volume-average convention. The kinetic
+  spectrum uses `w = sqrt(rho) u` so it sums to `<rho|u|^2>/2`, and the bins run to the grid
+  CORNER because `w` is non-polynomial and carries power past the dealias cut — do not
+  truncate them to `perpspec`'s `kmax`. `energy_budget` returns the docs' sink `eps` as
+  `total` AND `dEdt = -total` (gdi's `total` is dE/dt; the conventions are one sign apart),
+  and the `D_rho` work term is real — it carries ~38% of the sink at the test config.
+- Gates: `tests/test_cmhd_linear.py`, `test_cmhd_conservation.py`,
+  `test_cmhd_diagnostics.py`, and `test_cmhd_orszag_tang.py` (**`slow`+`fp64`**, ~2.5 min,
+  Athena-normalized OT vortex as 2.5D at 256²). No published E(t) trace exists for that
+  problem — the OT file's `test_energy_traces_against_a_reference` documents the search and
+  names the route to a real reference; its stored table is a labelled self-generated
+  regression gate, not validation.
+- Cost, measured (`bench/cmhd_perf.py`, M1 laptop, fp64, interleaved A/B): **1.85× at
+  128²×16 and 2.03× at 256²×16** the z_spectral **separable-backend** RMHD step, against a
+  23-vs-10 3-D FFT count; 48.7 u against 18.7 u of compiled memory. docs/performance.md
+  "CMHD".
+- Not built: forcing, particles in CMHD fields, MPI/z-decomposition, FD-z, `dims==2`,
+  ln rho, shock capturing, and the expanding-box (EBM) terms of plan Phase C3.
 
 ### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A landed 2026-08-18, Phase B (3D, single-process) 2026-08-19)
 

@@ -161,6 +161,20 @@ Suggested order:
     column to 7.5e-4, a finite heating-law fit with the limit rule firing, and the 3D p_z
     drift already 38× the 2D twin's discretization floor.
 
+18. **cmhd_orszag_tang.py** — the compressible-MHD equation set (`eqtype="CMHD"`,
+    plans/CMHD_PLAN.md) on the standard Orszag–Tang vortex, run as **2.5D** (`dims=3`,
+    `z_spectral=True`, `nz=4`, a z-independent IC — CMHD has no 2D path, and the z-independence
+    is preserved exactly). Athena's normalization (Stone et al. 2008, ApJS 178, 137 §VIII.4)
+    mapped into taranis code units — γ=5/3, c_s=1, v_A=0.6, β=10/3, exact initial energies
+    E_kin=0.5, E_mag=0.18, E_int=0.9 — to t=0.5 at 256², with energy traces, Mach numbers, the
+    ρ_min rarefaction monitor, a density image and the kinetic/magnetic/density spectra
+    (`diagnostics.cmhd`). `--n 128 --no-plot` for a quick pass. The header carries the one
+    caveat that matters: the polytropic closure is *exactly* Athena's adiabatic one while the
+    flow is smooth (the IC has uniform entropy), and diverges from it for good once shocks form
+    around t ≈ 0.13–0.15 — after which the total energy legitimately declines, because this
+    model has no heat reservoir. Quantitative comparison belongs in the pre-shock window;
+    `tests/test_cmhd_orszag_tang.py` gates it there. No companion notebook.
+
 To run a 3D example under MPI instead: `pip install -e ".[mpi]"`, convert the notebook to a
 script and `mpirun -n <N> python script.py` with `nz % N == 0` (`comm_backend` then
 auto-resolves to `"mpi4jax"`). Launching under `mpirun` *without* the extra installed is a
