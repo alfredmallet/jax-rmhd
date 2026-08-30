@@ -333,8 +333,15 @@ sweep.
 Gate to close C2: OT within stated tolerance of the cited reference, budget closure
 green, performance section written from measurements, review pass.
 
-**Implemented 2026-08-30** (opus implementer subagent; **status lines below are for the
-adversarial review to confirm, not a self-declared landing**). Files: `taranis/diagnostics/cmhd.py`
+**Landed 2026-08-30** (main `210ad69` + close-out fixes; opus implementer + fable
+adversarial review, verdict PASS — normalization verified by independent hand
+computation including the budget's D_ρ term at 3e-15, the Athena unit mapping re-derived
+exactly, the t ≤ 0.12 window's Snow et al. 2021 citation verified verbatim, the
+uniform-entropy polytropic≡adiabatic argument confirmed EXACT, perf reporting compliant.
+Review fixes applied in the close-out commit: the C1 `_div_b` NaN-masking broadcast, two
+performance.md wording nits per the quote-measured rule, the OT docstring's unsourced
+1e-12 figure replaced, a RUNNING_TESTS coverage omission. Status lines below were
+confirmed by the review.) Files: `taranis/diagnostics/cmhd.py`
 (new), `taranis/diagnostics/__init__.py` (`__all__` entry, no name re-exports),
 `tests/test_cmhd_diagnostics.py` (new), `tests/test_cmhd_orszag_tang.py` (new, `slow`+`fp64`),
 `examples/cmhd_orszag_tang.py` (new), `bench/cmhd_perf.py` (new), plus the CLAUDE.md /

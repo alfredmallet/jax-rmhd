@@ -391,7 +391,8 @@ def test_energy_traces_against_a_reference():
     The 1e-9 tolerance is deliberately far tighter than any physical scale here (the
     resolution difference is 4e-7): a real change in the equations, the diagnostics or the
     stepper moves these numbers by orders more, while cross-host FFT re-association is
-    ~1e-12 over 240 steps. If this alone goes red with everything above green, suspect the
+    expected to sit orders below it (unmeasured here; the gate-6 lore for cross-host
+    drift is ulp-scale per step). If this alone goes red with everything above green, suspect the
     host or the jax version and report it -- do not regenerate the table to make it pass."""
     if not _fp64():
         print("[SKIP] test_energy_traces_against_a_reference -- fp64 only")

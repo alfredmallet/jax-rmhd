@@ -130,7 +130,9 @@ def _div_b(fields, params, kgrid):
     kz = np.asarray(kgrid.kz).copy()
     kz[params.nz//2] = 0.0                       # cmhd._kz_deriv's rule
     d = np.abs(kx*f[4] + ky*f[5] + kz*f[6])
-    kmag = np.sqrt(kx**2 + ky**2 + kz**2) + 0.0*d
+    # broadcast_to, not "+ 0.0*d": a NaN field would poison kmag through 0.0*NaN, empty
+    # the kmag > 0 mask and raise "zero-size array" instead of surfacing the NaN
+    kmag = np.broadcast_to(np.sqrt(kx**2 + ky**2 + kz**2), d.shape)
     bmag = np.sqrt(np.abs(f[4])**2 + np.abs(f[5])**2 + np.abs(f[6])**2)
     m = kmag > 0
     return float(np.max(d[m]/kmag[m])/bmag.max())

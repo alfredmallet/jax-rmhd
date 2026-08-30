@@ -341,7 +341,7 @@ run-to-run scatter.)
 ## CMHD: the compressible step against z_spectral RMHD (C2, 2026-08-30)
 
 `bench/cmhd_perf.py`, Apple M1, macOS 14.6 (Darwin 23.6.0), jax 0.10.0, CPU backend,
-fp64, `comm_backend="serial"`, quiet machine (bench lock held). Same-session **interleaved
+fp64, `comm_backend="serial"`, bench lock held (machine state below). Same-session **interleaved
 A/B**: one timed `nblock=10` call of each equation set per repetition, alternating, 9
 repetitions, median ms/step. Both sides are the jitted `run.block_of_steps` at fixed
 `dt=1e-3` with **lsrk54**, `Lx=Ly=Lz=2π`, `z_spectral=True`, `hyper=2`, default
@@ -385,7 +385,7 @@ per-stage work are not free either and CMHD's diagonal exp is cheaper per stage.
 2.61× the RMHD total against 3.5× the state — the fixed per-stage and propagator costs do
 not scale with `nfields`. CMHD's 48.7 u is flat in grid size, as RMHD's is. (For scale, the
 committed probes put GDI 2D 256² lsrk33 putzer2 at 41.1 u and RMHD z_spectral lsrk54 ν=η at
-18.4 u; the 18.69/18.70 here reproduce that.)
+18.4 u; the 18.69/18.70 here are consistent with that — 1.6% apart, different grids.)
 
 Reproduce: `python bench/cmhd_perf.py --grids 128 256 --nz 16 --nrep 9`. It refuses to start
 if `/private/tmp/taranis_bench.lock` exists and writes/removes its own.
