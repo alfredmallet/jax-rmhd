@@ -612,6 +612,48 @@ def test_restart_mid_expansion_is_bitwise():
                 f"{np.abs(np.asarray(resumed.fields) - ref_fields).max():.3e}")
 
 
+# --------------------------------------------------------- the CFL under expansion
+
+def test_cfl_uses_physical_spacings_under_expansion():
+    """set_timestep's EBM branch: physical spacings (dx, a*dy, a*dz) and the cooled cs(t),
+    with the speeds taken from the UNPRIMED fields (which is exactly what grads carries, so
+    nothing is unscaled twice). Both effects RELAX the timestep as the box expands, so on
+    IDENTICAL fields at a later t the returned dt must be strictly larger -- and with the
+    expansion key absent it must be bitwise the same at both times, which is the
+    discriminator.
+
+    The box is deliberately transverse-limited (ny = nz = 2*nx, so dy = dz = dx/2 at a = 1):
+    the CFL is a max over the three directions, and on a cubic box the fixed radial
+    direction would mask the transverse stretching entirely."""
+    box = dict(nx=8, ny=16, nz=16)
+    st = jax.jit(lambda s, kg, p: cmhd.set_timestep(cmhd.grad(s, kg, p), p),
+                 static_argnums=(2,))
+    with checks() as c:
+        for label, adot in (("expansion on", 0.4), ("expansion off", None)):
+            p = _params(None, 0.5, adot=adot, adaptive_timestep=True, **box)
+            kgrid = jr.setup_kgrids(p)
+            s = jr.initialize(_random_ic(), p)
+            d0 = float(st(s._replace(t=jnp.float64(0.0)), kgrid, p))
+            d1 = float(st(s._replace(t=jnp.float64(2.0)), kgrid, p))
+            if adot is None:
+                c.check(f"{label}: dt is bitwise the same at t = 0 and t = 2 (the "
+                        f"discriminator for the check below)", d0 == d1, f"{d0!r} {d1!r}")
+            else:
+                a = 1.0 + adot*2.0
+                c.check(f"{label}: a = {a:.1f} relaxes the CFL on identical fields "
+                        f"({d0:.6g} -> {d1:.6g}, x{d1/d0:.4f})", d1 > d0*1.05,
+                        f"{d0!r} -> {d1!r}")
+        # and an actual adaptive run stays finite through a factor-2 expansion
+        p = _params(None, 0.5, adot=0.4, adaptive_timestep=True, **box)
+        kgrid = jr.setup_kgrids(p)
+        end = _advance(jr.initialize(_random_ic(), p), kgrid, p, 60)
+        f = np.asarray(end.fields)
+        c.check(f"an adaptive-dt expansion run is finite through a = "
+                f"{_a_of(end.t, 0.4):.2f} (max |field| {np.abs(f).max():.3e})",
+                bool(np.all(np.isfinite(f))) and _a_of(end.t, 0.4) > 2.0,
+                f"t {float(end.t)}")
+
+
 # --------------------------------------------- (g) C1 dispersion, expansion absent
 
 def test_parallel_alfven_dispersion_is_unchanged_with_expansion_absent():

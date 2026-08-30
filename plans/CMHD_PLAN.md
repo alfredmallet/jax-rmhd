@@ -489,8 +489,8 @@ the sidecar convention is decided there and recorded).
 **C3b implemented 2026-08-30** (opus implementer in a worktree off main `8e2d229`;
 **status: pending the fresh-session adversarial review**, which is what closes the phase —
 the numbers below are the implementer's own measurements, not review-confirmed). Files:
-`taranis/physics/cmhd.py` (277 → 467 lines), `tests/test_cmhd_expansion.py` (new, 14 tests
-/ 663 lines), plus the CLAUDE.md, docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else
+`taranis/physics/cmhd.py` (277 → 467 lines), `tests/test_cmhd_expansion.py` (new, 15 tests
+/ 705 lines), plus the CLAUDE.md, docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else
 was touched** — no `physics/__init__.py`, `run.py`, `timestepping.py`, `propagators.py`,
 `grids.py`, `comms.py`, `config.py`, `snapshot_io.py` or `diagnostics/`, and no frozen
 reference was regenerated.
@@ -546,6 +546,11 @@ Measured (Apple M1, jax 0.10.0, CPU; both precisions unless stated):
   `adot <= 0`, `cs_q < 0`, a missing `adot`, an unknown sub-key and a non-dict `expansion`
   all raise. `cs_q = 0` vs 4/3 changes the run by 6.9e-3 relative, so the cooling law
   demonstrably reaches the RHS.
+- **CFL under expansion**: on IDENTICAL fields in a transverse-limited box
+  (ny = nz = 2·nx) the returned dt goes 0.0877 → 0.1684 (×1.92) between t = 0 and t = 2 at
+  adot = 0.4 (a = 1.8) — the transverse spacings stretching plus the cooled c_s — while the
+  expansion-absent control returns a bitwise identical dt at both times. An adaptive-dt
+  expansion run is finite through a = 5.95.
 - **Dispersion unchanged with expansion absent**: the C1 exactly-parallel Alfvén config
   (8³, 2π box, B0 = 1, cs0/v_A = 0.5) measures ω = 0.999999979 against the analytic 1, rel
   2.1e-8, amplitude drift 6.1e-9.
