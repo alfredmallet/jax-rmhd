@@ -120,6 +120,12 @@ def _eqpars(params):
         raise ValueError(f"eqpars['diss'] must be a scalar (one coefficient for every field) "
                          f"or a length-3 (D_rho, nu, eta) sequence expanded over "
                          f"(rho, u, B), got {diss!r}")
+    if np.any(np.asarray(diss, dtype=float) < 0.0):
+        # a negative coefficient makes L = -diss*k^(2h) POSITIVE: exp(L*tau) then amplifies
+        # the smallest scales exponentially, which is anti-dissipation, not a knob
+        raise ValueError(f"eqpars['diss'] must be >= 0 (it is the coefficient of "
+                         f"L = -diss*k^(2*hyper); a negative entry makes the propagator "
+                         f"amplify the grid scale instead of damping it), got {diss!r}")
     return cs0, diss, int(hyper), gamma
 
 

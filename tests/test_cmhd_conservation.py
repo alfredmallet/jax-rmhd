@@ -6,9 +6,9 @@
 #          step (docs/numerics.md: the k = 0 RHS is exact fp zero, exp(0) = 1, mask = 1).
 #          The mean of u is NOT -- that is the discriminator that the bitwise check is not
 #          vacuous.
-#        - max_k |k.B^|/(|k||B^|) is a machine-epsilon random walk with no systematic source
-#          (curl-form induction), asserted in the ~eps*sqrt(N) class AND against linear
-#          growth.
+#        - max_k |k.B^|/(|k| max|B^|) is a machine-epsilon random walk with no systematic
+#          source (curl-form induction), asserted in the ~eps*sqrt(N) class AND against
+#          linear growth.
 #        - energy and cross helicity: NEVER at round-off. See
 #          test_energy_and_cross_helicity_drift for what is asserted and why it is not
 #          exactly what CMHD_PLAN §5 gate 3 wrote.
@@ -118,13 +118,13 @@ def _invariants(fields, params, gamma):
     return float(E), float(np.sum((u*B).sum(0))), float(ke + me_fluc), float(rho.min())
 
 
-def _div_b(fields, params, kgrid, relcut=1e-2):
-    # max_k |k.B^|/(|k||B^|), restricted to the modes carrying at least relcut of the largest
-    # |B^|. The restriction is a property of the NORMALIZATION, not of div B: on a mode whose
-    # |B^| is a factor a below the peak, the same absolute round-off deposit (which the docs
-    # give as O(eps*|k|^2|E^|), set by the FIELD scale, not by that mode's own amplitude)
-    # reads a factor 1/a larger in this ratio. Measured at relcut=1e-6 it is ~1e-12 rather
-    # than ~1e-15, exactly as that 1/a says.
+def _div_b(fields, params, kgrid):
+    # max_k |k.B^| / (|k| * max|B^|): the worst divergence-carrying component of B^ anywhere
+    # on the grid, measured against the FIELD scale. The field scale is the right
+    # normalization because the round-off deposit the docs describe (O(eps*|k|^2|E^|)) is set
+    # by the field, not by the individual mode's own amplitude -- dividing each mode by its
+    # OWN |B^| instead inflates a mode a factor a below the peak by 1/a and reports the
+    # amplitude ratio rather than div B. No mode cut is needed in this form.
     f = np.asarray(fields)
     kx, ky = np.asarray(kgrid.kx), np.asarray(kgrid.ky)
     kz = np.asarray(kgrid.kz).copy()
@@ -132,8 +132,8 @@ def _div_b(fields, params, kgrid, relcut=1e-2):
     d = np.abs(kx*f[4] + ky*f[5] + kz*f[6])
     kmag = np.sqrt(kx**2 + ky**2 + kz**2) + 0.0*d
     bmag = np.sqrt(np.abs(f[4])**2 + np.abs(f[5])**2 + np.abs(f[6])**2)
-    m = (kmag > 0) & (bmag > relcut*bmag.max())
-    return float(np.max(d[m]/(kmag*bmag)[m]))
+    m = kmag > 0
+    return float(np.max(d[m]/kmag[m])/bmag.max())
 
 
 # ------------------------------------------------------------ gate 3: bitwise invariants
@@ -176,7 +176,7 @@ def test_div_b_stays_a_round_off_random_walk():
         trace.append(_div_b(state.fields, params, kgrid))
     eps = np.finfo(np.float64 if _fp64() else np.float32).eps
     # 5 stages/step * 100 steps = 500 RHS evaluations; the walk bound is a stated 20x margin
-    # on eps*sqrt(500). Measured: 8.7e-16 (fp64), 2.6e-7 (fp32).
+    # on eps*sqrt(500). Measured: 8.7e-17 (fp64), 1.1e-8 (fp32).
     bound = 20.0*eps*np.sqrt(500)
     with checks() as c:
         c.check(f"the IC is divergence-free to round-off ({trace[0]:.2e})",
@@ -334,6 +334,14 @@ def test_configuration_errors_raise():
                 eqpars=dict(cs0=1.0, diss=0.0, hyper=1.5))
         _raises(c, "a length-2 diss", "diss",
                 eqpars=dict(cs0=1.0, diss=(0.1, 0.2), hyper=1))
+        # a negative coefficient flips L's sign: exp(L*tau) would amplify the grid scale
+        _raises(c, "a negative scalar diss", "diss",
+                eqpars=dict(cs0=1.0, diss=-0.01, hyper=1))
+        _raises(c, "one negative entry in a length-3 diss", "diss",
+                eqpars=dict(cs0=1.0, diss=(0.01, -0.01, 0.01), hyper=1))
+        c.check("diss = 0 is still accepted (the ideal runs above need it)",
+                jr.setup_kgrids(fresh_params(eqpars=dict(cs0=1.0, diss=0.0, hyper=1),
+                                             dt=0.01, **_box(8))) is not None)
         # the eqtype guard: these recipe functions are CMHD's, not a generic hook
         rmhd_params = fresh_params(nz=8, eqpars={"diss": (0.0, 0.0), "hyper": 1},
                                    dims=3, z_spectral=True, nx=8, ny=8,

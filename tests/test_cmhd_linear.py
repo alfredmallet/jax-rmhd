@@ -48,9 +48,19 @@ _BOX = dict(nx=_N, ny=_N, nz=_N, Lx=2*np.pi, Ly=2*np.pi, Lz=2*np.pi, dims=3,
             z_spectral=True, eqtype="CMHD", adaptive_timestep=False, cfl_safety=0.5)
 _B0 = 1.0
 
-# (kx, kz) of the tested modes: exactly parallel, oblique, exactly perpendicular. ky = 0
-# throughout (the (k, B0) plane is (x, z), matching the docs' linearization).
-_ANGLES = ((0.0, 1.0), (1.0, 2.0), (1.0, 0.0))
+# A deliberately NON-CUBIC, anisotropically resolved box with ky != 0. Every other gate in
+# this file lives on a cubic 2*pi box, where 2*pi/L = 1 on all three axes and nx = ny = nz:
+# there, a swapped axis or a missing 2*pi/L factor can cancel out of the answer. Here it
+# cannot -- the physical wavenumber of mode index (1,1,1) is (1, 0.5, 2), all three
+# components different and all three nonzero.
+_BOX_NC = dict(nx=16, ny=32, nz=8, Lx=2*np.pi, Ly=4*np.pi, Lz=np.pi, dims=3,
+               z_spectral=True, eqtype="CMHD", adaptive_timestep=False, cfl_safety=0.5)
+_MODE_NC = (1, 1, 1)
+
+# integer mode index triples (n_x, n_y, n_z) of the cubic-box modes: exactly parallel,
+# oblique, exactly perpendicular. n_y = 0 there (the (k, B0) plane is (x, z), matching the
+# docs' linearization); _BOX_NC covers the n_y != 0 direction.
+_ANGLES = ((0, 0, 1), (1, 0, 2), (1, 0, 0))
 
 
 def _fp64():
@@ -78,16 +88,24 @@ _STATIC_TOL = 1e-6 if _fp64() else 5e-4
 _CTX = {}
 
 
-def _ctx(cs0, gamma, dt):
+def _ctx(cs0, gamma, dt, box=None):
     # one Parameters (hence one jit trace) per physics config; dt is a plain python float,
     # never a numpy scalar -- a numpy float64 dt would make DiagonalOperator.scaled(dt)
     # strong-typed float64 and poison the fp32 field math
-    key = (cs0, gamma, float(dt))
+    box = _BOX if box is None else box
+    key = (cs0, gamma, float(dt), tuple(sorted(box.items())))
     if key not in _CTX:
         p = fresh_params(eqpars=dict(cs0=cs0, diss=0.0, hyper=1, gamma=gamma),
-                         dt=float(dt), **_BOX)
+                         dt=float(dt), **box)
         _CTX[key] = (p, jr.setup_kgrids(p))
     return _CTX[key]
+
+
+def _kvec(idx, box):
+    # physical wavenumber of an integer mode index triple on this box
+    return np.array([2*np.pi*idx[0]/box["Lx"],
+                     2*np.pi*idx[1]/box["Ly"],
+                     2*np.pi*idx[2]/box["Lz"]])
 
 
 # ------------------------------------------------------------- analytic linear theory
@@ -111,7 +129,10 @@ def _omega_ms(kx, kz, cs, vA, fast):
 
 
 def _eigenmode(branch, kx, kz, cs, vA):
-    """(omega, v) with v = (drho, du_x, du_y, du_z, dB_x, dB_y, dB_z), all real."""
+    """(omega, v) with v = (drho, du_x, du_y, du_z, dB_x, dB_y, dB_z), all real.
+
+    kx here is the wavenumber IN THE (k, B0) PLANE, i.e. |k_perp|; _eigenmode3d rotates the
+    result onto a general k. On the cubic-box gates, where k_y = 0, the two coincide."""
     if branch == "alfven":
         # du along yhat (out of the (k, B0) plane), drho = 0, omega^2 = kpar^2 vA^2, and
         # dB_y = -(kpar*B0/omega)*du_y -- for the omega = +kpar*vA root that is exactly
@@ -130,9 +151,13 @@ def _eigenmode(branch, kx, kz, cs, vA):
         return w, np.array([0.0, 1.0, 0, 0, -kz*_B0/w, 0, 0])
     if w == 0.0:
         # theta = pi/2, slow: omega -> 0. The eigenvector table degenerates (it divides by
-        # omega), so take the omega = 0 solution of the linearized system directly: du = 0,
-        # k.dB = 0 forces dB = dB_z zhat, and x-momentum gives total-pressure balance
-        # c^2 drho + B0 dB_z = 0.
+        # omega), so take an omega = 0 solution of the linearized system directly. NB the
+        # omega = 0 eigenspace here is DEGENERATE -- it also contains a pressure-balanced
+        # du_z zhat member (the actual kz -> 0+ limit of the slow branch) and dB_y/du_y
+        # shear members. What follows is A valid static member, not THE eigenvector: it is
+        # the one chosen here because it is pure total-pressure balance
+        # (c^2 drho + B0 dB_z = 0, du = 0), so a sign error in either the pressure force or
+        # the Lorentz force breaks its stationarity immediately.
         return 0.0, np.array([-_B0/(cs*cs), 0, 0, 0, 0, 0, 1.0])
     # magnetosonic eigenvector, docs/numerics.md verbatim:
     #   du_z/du_x = c^2 kx kz/(omega^2 - c^2 kz^2)
@@ -144,45 +169,76 @@ def _eigenmode(branch, kx, kz, cs, vA):
     return w, np.array([drho, dux, 0.0, duz, -kz*_B0*dux/w, 0.0, kx*_B0*dux/w])
 
 
-def _eigen_ic(v, kx, kz, eps):
+def _eigenmode3d(branch, k, cs, vA):
+    """_eigenmode rotated onto a general k = (kx, ky, kz), so k_y != 0 works.
+
+    The linearization has one preferred axis, B0 = B0 zhat; the docs put k in the (x, z)
+    plane WLOG. For a general k the (k, B0) plane is spanned by zhat and
+    e_p = k_perp/|k_perp|, and the Alfven polarization is e_a = zhat x e_p. So the 2-D
+    eigenvector's 'x' slot is really the e_p component and its 'y' slot the e_a component;
+    rotate them out. At k_y = 0 with k_x > 0 this is the identity (e_p = xhat, e_a = yhat),
+    which is why the cubic-box gates are unaffected."""
+    kx, ky, kz = float(k[0]), float(k[1]), float(k[2])
+    kp = float(np.hypot(kx, ky))
+    if kp == 0.0:
+        e_p, e_a = np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+    else:
+        e_p, e_a = np.array([kx/kp, ky/kp, 0.0]), np.array([-ky/kp, kx/kp, 0.0])
+    zh = np.array([0.0, 0.0, 1.0])
+    w, v = _eigenmode(branch, kp, kz, cs, vA)
+    du = v[1]*e_p + v[2]*e_a + v[3]*zh
+    dB = v[4]*e_p + v[5]*e_a + v[6]*zh
+    return w, np.concatenate([[v[0]], du, dB])
+
+
+def _eigen_ic(v, k, eps):
     # real-space IC: the uniform background plus eps*v*cos(k.x). Built in real space, so the
     # rfftn reality constraint holds by construction (never write k-space directly).
     base = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, _B0)
+    kx, ky, kz = float(k[0]), float(k[1]), float(k[2])
 
     def ic(x, y, z):
         shp = jnp.broadcast_shapes(x.shape, y.shape, z.shape)
-        ph = jnp.broadcast_to(jnp.cos(kx*x + kz*z), shp)
+        ph = jnp.broadcast_to(jnp.cos(kx*x + ky*y + kz*z), shp)
         return jnp.stack([base[i] + eps*float(v[i])*ph for i in range(7)])
     return ic
 
 
-def _project(fields, v, kx, kz, params):
-    # complex amplitude of the eigenmode: the single k-space coefficient at (kz, kx, ky=0),
-    # contracted with the (real) eigenvector. numpy's fftn stores the e^{+ik.x} amplitude at
-    # index +n, so a mode ~cos(k.x - omega t) reads as A*exp(-i*omega*t) here.
-    c = np.asarray(fields[:, int(kz) % params.nz, int(kx) % params.nx, 0])
+def _project(fields, v, idx, params):
+    # complex amplitude of the eigenmode: the single k-space coefficient at mode index
+    # (n_z, n_x, n_y), contracted with the (real) eigenvector. numpy's fftn stores the
+    # e^{+ik.x} amplitude at index +n, so a mode ~cos(k.x - omega t) reads as
+    # A*exp(-i*omega*t) here.
+    c = np.asarray(fields[:, idx[2] % params.nz, idx[0] % params.nx, idx[1]])
     return complex(np.dot(v, c)/np.dot(v, v))
 
 
-def _measure(branch, kx, kz, cs0, gamma, block=20, target_phase=6.0, wdt=0.05):
+def _measure(branch, idx, cs0, gamma, box=None, dt_modes=None, block=20,
+             target_phase=6.0, wdt=0.05):
     """(omega_analytic, relative frequency error, relative amplitude variation)."""
+    box = _BOX if box is None else box
+    dt_modes = _ANGLES if dt_modes is None else dt_modes
     vA = _B0
-    w, v = _eigenmode(branch, kx, kz, cs0, vA)
-    # dt is fixed by the fastest wave of the angle set, so one Parameters serves every branch
-    dt = wdt/max(_omega_ms(a, b, cs0, vA, True) for a, b in _ANGLES)
-    params, kgrid = _ctx(cs0, gamma, dt)
-    state = jr.initialize(_eigen_ic(v, kx, kz, _EPS), params)
+    k = _kvec(idx, box)
+    w, v = _eigenmode3d(branch, k, cs0, vA)
+    # dt is fixed by the fastest wave of the mode set, so one Parameters serves every branch
+    def _wfast(i):
+        kk = _kvec(i, box)
+        return _omega_ms(float(np.hypot(kk[0], kk[1])), float(kk[2]), cs0, vA, True)
+    dt = wdt/max(_wfast(i) for i in dt_modes)
+    params, kgrid = _ctx(cs0, gamma, dt, box)
+    state = jr.initialize(_eigen_ic(v, k, _EPS), params)
     stepper, scheme = get_scheme("lsrk54")
     advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
     ts = [float(state.t)]
-    ps = [_project(state.fields, v, kx, kz, params)]
+    ps = [_project(state.fields, v, idx, params)]
     # enough blocks for ~1 radian per sample (so np.unwrap is unambiguous) and
     # target_phase radians overall; the omega = 0 branches just run a fixed 200 steps
     nsamp = int(np.ceil(target_phase/(w*float(dt)*block))) if w > 0 else 10
     for _ in range(nsamp):
         state = advance(state, kgrid, params, block, scheme, stepper)
         ts.append(float(state.t))
-        ps.append(_project(state.fields, v, kx, kz, params))
+        ps.append(_project(state.fields, v, idx, params))
     ts, ps = np.array(ts), np.array(ps)
     amp = np.abs(ps)
     ampvar = float(np.max(np.abs(amp/amp[0] - 1.0)))
@@ -195,9 +251,9 @@ def _measure(branch, kx, kz, cs0, gamma, block=20, target_phase=6.0, wdt=0.05):
 # --------------------------------------------------------------------- gate 1: dispersion
 
 def _dispersion_cell(c, branch, cs0, gamma):
-    for kx, kz in _ANGLES:
-        w, err, ampvar = _measure(branch, kx, kz, cs0, gamma)
-        label = f"gamma={gamma:.3f} cs0={cs0} {branch} k=({kx:.0f},{kz:.0f})"
+    for idx in _ANGLES:
+        w, err, ampvar = _measure(branch, idx, cs0, gamma)
+        label = f"gamma={gamma:.3f} cs0={cs0} {branch} n={idx}"
         if w == 0.0:
             c.check(f"{label}: degenerate omega = 0, the mode is static "
                     f"(drift {err:.2e})", err < _STATIC_TOL, f"drift {err:.3e}")
@@ -229,6 +285,26 @@ def test_dispersion_slow():
                 _dispersion_cell(c, "slow", cs0, gamma)
 
 
+def test_dispersion_on_a_non_cubic_box_with_ky_nonzero():
+    """Every other dispersion cell lives on a cubic 2*pi box with k_y = 0, where 2*pi/L = 1
+    on all three axes and nx = ny = nz -- so a dropped 2*pi/L factor, a swapped kx/ky, or an
+    x/y axis mixup in the curls can cancel out of the measured frequency. This cell exists so
+    it cannot: Lx, Ly, Lz = 2*pi, 4*pi, pi with nx, ny, nz = 16, 32, 8, and mode index
+    (1,1,1), whose physical k is (1, 0.5, 2) -- three different, all-nonzero components. The
+    eigenvector is the same analytic one, rotated onto that k by _eigenmode3d."""
+    k = _kvec(_MODE_NC, _BOX_NC)
+    with checks() as c:
+        c.check(f"the test mode's physical k is (1, 0.5, 2), not the index triple {_MODE_NC}",
+                np.allclose(k, [1.0, 0.5, 2.0]), f"{k}")
+        for branch in ("alfven", "fast", "slow"):
+            w, err, ampvar = _measure(branch, _MODE_NC, 1.0, 5.0/3.0, box=_BOX_NC,
+                                      dt_modes=(_MODE_NC,))
+            c.check(f"non-cubic box, {branch}: omega = {w:.6f} measured to {err:.2e}",
+                    err < _W_TOL, f"relative error {err:.3e} > {_W_TOL}")
+            c.check(f"non-cubic box, {branch}: no spurious growth ({ampvar:.2e})",
+                    ampvar < _AMP_TOL, f"amplitude varies by {ampvar:.3e}")
+
+
 def test_degenerate_limits_of_the_dispersion_relation():
     """The analytic limits the gates above rely on, asserted on the formulas themselves:
     perpendicular slow and perpendicular Alfven both go to zero frequency, perpendicular fast
@@ -257,65 +333,94 @@ def test_degenerate_limits_of_the_dispersion_relation():
 
 
 # ------------------------------------------------------- gate 2: dissipation-only decay
-# Three ideal-RHS-free states. Each is an exact steady state of the ideal equations, so the
-# IF step is exactly exp(L*dt) and the decay is the propagator's alone:
-#   B   : rho = 1, u = 0, B = (cos kz, sin kz, 0) -- curl B = -k B, so j x B cancels
-#         pointwise (a x a = 0 bitwise in fp), and u x B = 0 exactly.
-#   u   : rho = 1, B = 0, u = (cos kz, sin kz, 0) -- omega x u cancels the same way,
-#         |u|^2 is uniform, and u_z = 0 makes div(rho u) vanish.
-#   rho : u = B = 0 and a density perturbation, at cs0 = 1e-8 so the pressure force it
-#         drives is O(cs0^2) = 1e-16 and the sound response stays under the tolerance.
+# Ideal-RHS-free states, each an exact steady state of the ideal equations, so the IF step is
+# exactly exp(L*dt) and the decay is the propagator's alone. Three kinds, each built along
+# THREE axes (see the axis note below):
+#   B   : rho = 1, u = 0, B circularly polarized perpendicular to the varying axis -- then
+#         curl B = -+k B, so j x B cancels pointwise (a x a = 0 bitwise in fp), and
+#         u x B = 0 exactly.
+#   u   : rho = 1, B = 0, u circularly polarized the same way -- omega x u cancels the same
+#         way, |u|^2 is uniform, and the flux rho*u has no component along its varying axis,
+#         so div(rho u) vanishes.
+#   rho : u = B = 0 and a density perturbation, at cs0 = 1e-8 so the pressure force it drives
+#         is O(cs0^2) = 1e-16 and the sound response stays under the tolerance.
+#
+# THE AXIS SWEEP IS NOT DECORATION -- it is what pins the PERPENDICULAR half of L. A z-only
+# state has k_perp = 0, so L = -diss*(ksq + kz^2)^hyper reduces to the kz term alone and
+# `kgrid.ksq` is multiplied by nothing: deleting it from cmhd.linear_matrix leaves a z-only
+# decay gate green (verified by mutation, 2026-08-30). The x- and y-varying twins have
+# kz = 0 and pin the two halves of ksq = kx^2 + ky^2 separately; with all three, every term
+# of L is load-bearing in at least one case.
 _DECAY_DISS = (0.05, 0.1, 0.2)      # (D_rho, nu, eta): three distinct coefficients
-_DECAY_KZ = 2.0
+_DECAY_K = 2.0                      # mode index = wavenumber on the 2*pi cubic box
 # fp64: measured <= 2.6e-15 relative over 40 steps (the exp(L*gamma_i*dt) stage composition).
 # fp32: measured <= 3.4e-6, i.e. ~50 ulps of the same composition.
 _DECAY_TOL = 1e-13 if _fp64() else 2e-5
 # leak into the fields the configuration did not excite, relative to the excited amplitude
 _LEAK_TOL = 1e-13 if _fp64() else 1e-6
 
+# per varying axis: the coordinate it varies along, the mode index triple to read, and the
+# two vector components that carry the circular polarization (both perpendicular to the axis)
+_DECAY_AXES = {"z": (2, (0, 0, int(_DECAY_K)), (0, 1)),
+               "x": (0, (int(_DECAY_K), 0, 0), (1, 2)),
+               "y": (1, (0, int(_DECAY_K), 0), (2, 0))}
 
-def _decay_ic(kind):
+
+def _decay_ic(kind, axis):
+    icoord, _, (ia, ib) = _DECAY_AXES[axis]
+
     def ic(x, y, z):
         shp = jnp.broadcast_shapes(x.shape, y.shape, z.shape)
         one = jnp.ones(shp)
-        zero = jnp.zeros(shp)
-        cs = jnp.broadcast_to(jnp.cos(_DECAY_KZ*z), shp)
-        sn = jnp.broadcast_to(jnp.sin(_DECAY_KZ*z), shp)
+        arg = _DECAY_K*(x, y, z)[icoord]
+        cs = jnp.broadcast_to(jnp.cos(arg), shp)
+        sn = jnp.broadcast_to(jnp.sin(arg), shp)
+        vec = [jnp.zeros(shp) for _ in range(3)]
+        vec[ia], vec[ib] = cs, sn
         if kind == "B":
-            return jnp.stack([one, zero, zero, zero, cs, sn, zero])
+            return jnp.stack([one] + [jnp.zeros(shp) for _ in range(3)] + vec)
         if kind == "u":
-            return jnp.stack([one, cs, sn, zero, zero, zero, zero])
-        return jnp.stack([one + 0.1*cs, zero, zero, zero, zero, zero, zero])
+            return jnp.stack([one] + vec + [jnp.zeros(shp) for _ in range(3)])
+        return jnp.stack([one + 0.1*cs] + [jnp.zeros(shp) for _ in range(6)])
     return ic
 
 
 def _decay_case(c, hyper, nsteps=40, dt=0.02):
-    for kind, comps, diss, cs0 in (("B", (4, 5), _DECAY_DISS[2], 1.0),
-                                   ("u", (1, 2), _DECAY_DISS[1], 1.0),
-                                   ("rho", (0,), _DECAY_DISS[0], 1e-8)):
-        params = fresh_params(eqpars=dict(cs0=cs0, diss=_DECAY_DISS, hyper=hyper,
-                                          gamma=1.0), dt=dt, **_BOX)
-        kgrid = jr.setup_kgrids(params)
-        state = jr.initialize(_decay_ic(kind), params)
-        stepper, scheme = get_scheme("lsrk54")
-        advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
-        iz = int(_DECAY_KZ)
-        c0 = np.asarray(state.fields[:, iz, 0, 0])
-        end = advance(state, kgrid, params, nsteps, scheme, stepper)
-        c1 = np.asarray(end.fields[:, iz, 0, 0])
-        want = np.exp(-diss*(_DECAY_KZ**2)**hyper*nsteps*dt)
-        err = max(abs(c1[i]/c0[i] - want)/want for i in comps)
-        leak = (max(abs(c1[i]) for i in range(7) if i not in comps)
-                / max(abs(c0[i]) for i in comps))
-        c.check(f"hyper={hyper} {kind}: decays by exp(-diss*k^{2*hyper}*t) = {want:.4e} "
-                f"(relative error {err:.2e})", err < _DECAY_TOL, f"{err:.3e}")
-        c.check(f"hyper={hyper} {kind}: the other fields stay at zero ({leak:.2e})",
-                leak < _LEAK_TOL, f"{leak:.3e}")
+    ctx = {}
+    for axis in ("z", "x", "y"):
+        _, idx, (ia, ib) = _DECAY_AXES[axis]
+        for kind, offset, diss, cs0 in (("B", 4, _DECAY_DISS[2], 1.0),
+                                        ("u", 1, _DECAY_DISS[1], 1.0),
+                                        ("rho", 0, _DECAY_DISS[0], 1e-8)):
+            comps = (0,) if kind == "rho" else (offset + ia, offset + ib)
+            if (cs0, hyper) not in ctx:
+                p = fresh_params(eqpars=dict(cs0=cs0, diss=_DECAY_DISS, hyper=hyper,
+                                             gamma=1.0), dt=dt, **_BOX)
+                ctx[(cs0, hyper)] = (p, jr.setup_kgrids(p))
+            params, kgrid = ctx[(cs0, hyper)]
+            state = jr.initialize(_decay_ic(kind, axis), params)
+            stepper, scheme = get_scheme("lsrk54")
+            advance = jax.jit(block_of_steps, static_argnums=(2, 3, 4, 5))
+            sl = (slice(None), idx[2], idx[0], idx[1])
+            c0 = np.asarray(state.fields[sl])
+            end = advance(state, kgrid, params, nsteps, scheme, stepper)
+            c1 = np.asarray(end.fields[sl])
+            want = np.exp(-diss*(_DECAY_K**2)**hyper*nsteps*dt)
+            err = max(abs(c1[i]/c0[i] - want)/want for i in comps)
+            leak = (max(abs(c1[i]) for i in range(7) if i not in comps)
+                    / max(abs(c0[i]) for i in comps))
+            c.check(f"hyper={hyper} {kind} along {axis}: decays by "
+                    f"exp(-diss*k^{2*hyper}*t) = {want:.4e} (relative error {err:.2e})",
+                    err < _DECAY_TOL, f"{err:.3e}")
+            c.check(f"hyper={hyper} {kind} along {axis}: the other fields stay at zero "
+                    f"({leak:.2e})", leak < _LEAK_TOL, f"{leak:.3e}")
 
 
 def test_dissipation_only_decay_is_exact():
     """Each field group decays at its OWN coefficient: the length-3 (D_rho, nu, eta) diss is
-    expanded over the 7 fields, so a wrong expansion shows up as the wrong decay rate."""
+    expanded over the 7 fields, so a wrong expansion shows up as the wrong decay rate. Run
+    along all three axes so that both halves of L -- the perpendicular ksq and the kz^2 --
+    are pinned; see the axis note above."""
     with checks() as c:
         for hyper in (1, 2):
             _decay_case(c, hyper)
