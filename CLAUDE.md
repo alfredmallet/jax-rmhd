@@ -373,7 +373,7 @@ momentum mode and `eps_plus + eps_minus` in elsasser mode, so `(p/2, p/2)` match
   its only 2D source vanishes); use `"elsasser"` for actual 2D MHD. Physics context in
   docs/numerics.md.
 
-### Compressible MHD (`physics/cmhd.py`, plans/CMHD_PLAN.md — C0/C1 landed 2026-08-30, C2 2026-08-30)
+### Compressible MHD (`physics/cmhd.py`, plans/CMHD_PLAN.md — C0/C1 landed 2026-08-30, C2 2026-08-30, C3 EBM 2026-08-30)
 
 Fully spectral polytropic compressible MHD, `nfields=7` in state order
 `(rho, u_x, u_y, u_z, B_x, B_y, B_z)`. Alfvén units, `<rho> = rho0 = 1`, `p = K rho^gamma`
@@ -421,8 +421,30 @@ change the docs first, then the module. Rules:
   truncate them to `perpspec`'s `kmax`. `energy_budget` returns the docs' sink `eps` as
   `total` AND `dEdt = -total` (gdi's `total` is dE/dt; the conventions are one sign apart),
   and the `D_rho` work term is real — it carries ~38% of the sink at the test config.
+- **Expanding box (EBM)**, optional `eqpars["expansion"] = {"adot": >0, "cs_q": >=0,
+  default 4/3}`, **isothermal-only** (`gamma == 1`, rejected otherwise; `adot <= 0`,
+  `cs_q < 0` and unknown sub-keys rejected). Squire et al. 2020's comoving frame,
+  `a(t) = 1 + adot*t`, **radial axis x**, `cs^2(t) = cs0^2 a^-cs_q`. The evolved state IS
+  the RESCALED (primed) one — `rho' = a^2 rho`, `B' = (a^2 B_x, a B_y, a B_z)`, `u`
+  unscaled — which kills the ρ and B expansion terms outright and keeps induction a
+  **static-k** curl of `E' = (E_x, a E_y, a E_z)`, so C1's round-off div B and the
+  BITWISE `rho'/B'` k=0 invariants survive verbatim; the only new additive piece is
+  `-(adot/a)diag(0,1,1)u`. Everything is gated on `"expansion" in params.eqpars` as
+  TRACE-TIME python through the one `cmhd._expansion` switch — never `lax.cond`, never a
+  literal-1.0 multiply — because **expansion OFF must stay BITWISE the pre-C3 graph**
+  (verified over three configs at both precisions in fields, `t` and optimized-HLO
+  histogram; the standing gate is that the off RHS is bitwise independent of `state.t`).
+  `a(t)` comes from `grads.t` and is cast to `_precision.ftype` before it touches field
+  math. Transform tally stays **23** (every rescaling is elementwise), `set_timestep` uses
+  physical spacings `(dx, a*dy, a*dz)` with speeds from the UNPRIMED fields, and
+  `linear_matrix` is UNCHANGED — dissipation acts on the primed fields at comoving k, a
+  recorded truncation choice. Snapshots store the primed state and `t` only, so a restart
+  reconstructs `a(t)` and is bitwise. `diagnostics/cmhd.py` is NOT EBM-aware: with
+  expansion on its energies/spectra/Mach numbers are COMOVING-PRIMED quantities (plan §5
+  C3b decision) — unscale by hand until a helper lands.
 - Gates: `tests/test_cmhd_linear.py`, `test_cmhd_conservation.py`,
-  `test_cmhd_diagnostics.py`, and `test_cmhd_orszag_tang.py` (**`slow`+`fp64`**, ~2.5 min,
+  `test_cmhd_diagnostics.py`, `test_cmhd_expansion.py` (the EBM gates), and
+  `test_cmhd_orszag_tang.py` (**`slow`+`fp64`**, ~2.5 min,
   Athena-normalized OT vortex as 2.5D at 256²). No published E(t) trace exists for that
   problem — the OT file's `test_energy_traces_against_a_reference` documents the search and
   names the route to a real reference; its stored table is a labelled self-generated
@@ -432,7 +454,8 @@ change the docs first, then the module. Rules:
   23-vs-10 3-D FFT count; 48.7 u against 18.7 u of compiled memory. docs/performance.md
   "CMHD".
 - Not built: forcing, particles in CMHD fields, MPI/z-decomposition, FD-z, `dims==2`,
-  ln rho, shock capturing, and the expanding-box (EBM) terms of plan Phase C3.
+  ln rho, shock capturing, EBM-aware diagnostics, and a barotropic `gamma > 1` under
+  expansion (exactly self-consistent, deferred — plan §5).
 
 ### Test particles (`taranis/particles/`, plans/TESTPART_PLAN.md — Phase A landed 2026-08-18, Phase B (3D, single-process) 2026-08-19)
 

@@ -486,6 +486,113 @@ at ȧ = 0. Diagnostics: energies/spectra are documented as COMOVING-primed quant
 C3b (physical conversions are a-scalings; a `diagnostics.cmhd` helper may unscale, but
 the sidecar convention is decided there and recorded).
 
+**C3b implemented 2026-08-30** (opus implementer in a worktree off main `8e2d229`;
+**status: pending the fresh-session adversarial review**, which is what closes the phase —
+the numbers below are the implementer's own measurements, not review-confirmed). Files:
+`taranis/physics/cmhd.py` (277 → 467 lines), `tests/test_cmhd_expansion.py` (new, 14 tests
+/ 663 lines), plus the CLAUDE.md, docs/RUNNING_TESTS.md and this-§ sweep. **Nothing else
+was touched** — no `physics/__init__.py`, `run.py`, `timestepping.py`, `propagators.py`,
+`grids.py`, `comms.py`, `config.py`, `snapshot_io.py` or `diagnostics/`, and no frozen
+reference was regenerated.
+
+Implementation, per the C3a docs section: `eqpars["expansion"] = {"adot": > 0, "cs_q":
+>= 0, default 4/3}` behind the single trace-time switch `cmhd._expansion(params)` (None
+off); `grad` unscales `B^ = A^-1 B'^` in k-space and forms `omega`/`j` with
+`k~ = (kx, ky/a, kz/a)` through the same Nyquist-zeroed `_kz_deriv`; `NonlinearTerm` runs
+continuity on the primed flux `rho' u`, `h = cs^2(t) ln rho'` (the uniform `-2 cs^2 ln a`
+dropped BY the gradient, not added back), the Lorentz force on the UNPRIMED `rho`, the
+rotational form with the C3a-fixed sign, and induction as the STATIC-k curl of
+`E' = (E_x, aE_y, aE_z)`; `set_timestep` uses `(dx, a*dy, a*dz)` with UNPRIMED speeds and
+`cs(t)`; `a(t)` is built from `grads.t` and cast to `_precision.ftype` before it touches a
+field. **`linear_matrix` has ZERO code change** — the dissipation already IS the static
+comoving-k diagonal acting on the primed state, the recorded truncation choice; confirmed
+by inspection and by the expansion-off bitwise check below. Transform tally stays 23.
+
+Measured (Apple M1, jax 0.10.0, CPU; both precisions unless stated):
+
+- **Expansion-off is bitwise the pre-C3b tree.** One-time out-of-tree check (a scratchpad
+  script, deliberately NOT `tests/data`): three configs — isothermal ideal, isothermal +
+  scalar diss, polytropic γ=5/3 + length-3 diss under rk44 — recorded on the pristine
+  worktree and re-run after the edits. All three matched in `fields` AND `t` bitwise (max
+  |Δ| exactly 0.0) AND in the optimized-HLO opcode histogram of the jitted
+  `block_of_steps`, at BOTH fp64 and fp32. The STANDING gate in the test file is the
+  durable half: the expansion-off RHS is bitwise independent of `state.t` (nothing else in
+  CMHD reads `t`, so no a-factor can be in that graph), with the expansion-on twin
+  differing by 4.8e-1 of the RHS scale as the discriminator; plus an analytic Beltrami
+  `exp(-nu k^2 t)` decay at 2.3e-15 (fp64) / 2.8e-6 (fp32) and a two-compilation bitwise
+  check.
+- **k=0**: `rho'` and every `B'` component bitwise over 100 uniform-state steps AND over 50
+  turbulent steps (with `u(k=0)` moving, as the discriminator); `u_x(k=0)` bitwise on the
+  uniform state; `u_perp(k=0)` tracks `a^-1` at 1.3e-11 (fp64) / 7.2e-7 (fp32), converging
+  at **order 4.007** in dt (lsrk54, nominal 4) — the stage-time gate, fp64-only because the
+  fp32 errors sit on a ~5e-7 storage floor.
+- **Raw backgrounds** through `grad`'s own unscaling: `rho ~ a^-2`, `B_x ~ a^-2`,
+  `B_perp ~ a^-1` at 1.1e-16…4.4e-16 (fp64), ≤3.6e-7 (fp32).
+- **div B under expansion**: `max_k |K.B'^|/(|K| max|B'^|)` ≤ 6.2e-17 over 100 steps
+  (fp64), growth ×3.80 from 10 to 100 steps (√10 = 3.2 is a random walk, 10 would be a
+  source); ≤2.9e-8 / ×1.04 at fp32.
+- **WKB**: Alfvén wave along x, `k_x = 1`, `v_A0 = B0 = 1`, `adot = 0.02`, a spanning
+  1 → 4 (a factor 4, not a decade — a decade costs ~4× the steps for no extra
+  discrimination; the run is already 3000 steps). Because `omega ~ a^-1` with `k_x`
+  static, `eps_WKB = adot/(a*omega) = adot/(k_x v_A0) = 0.02` is CONSTANT over the run, so
+  the exponent budget is `eps_WKB/Δln a = 0.02/ln 4 = 0.0144`. Measured `|u_y|` exponent
+  **−0.49816** and `|B'_y|` **−0.50181** against the WKB −1/2, i.e. |Δ| = 1.8e-3, 8×
+  inside budget and IDENTICAL at fp32. Discriminator: halving `adot` moves |Δ| to 5.4e-4
+  (×3.4), confirming the residual is first order in `adot/(a*omega)`.
+- **Plumbing**: the nested `expansion` dict round-trips through `params.json` unchanged
+  (`config._lists_to_tuples` recurses into dicts); a differing `adot` — and dropping
+  `expansion` entirely — is a hard save error, which is what stops a cross-mode restart;
+  a mid-expansion restart at a = 1.05 is bitwise in fields and `t`; `gamma != 1`,
+  `adot <= 0`, `cs_q < 0`, a missing `adot`, an unknown sub-key and a non-dict `expansion`
+  all raise. `cs_q = 0` vs 4/3 changes the run by 6.9e-3 relative, so the cooling law
+  demonstrably reaches the RHS.
+- **Dispersion unchanged with expansion absent**: the C1 exactly-parallel Alfvén config
+  (8³, 2π box, B0 = 1, cs0/v_A = 0.5) measures ω = 0.999999979 against the analytic 1, rel
+  2.1e-8, amplitude drift 6.1e-9.
+- Regression: `test_cmhd_linear.py` + `test_cmhd_conservation.py` +
+  `test_cmhd_diagnostics.py` 24 passed at fp64; full `make test` clean at both precisions.
+
+Deviations from the C3b paragraph above, all recorded in the files themselves:
+
+1. **The `-(adot/a)T·u` term is folded into `NonlinearTerm`'s assembled RHS, not
+   registered as its own `Term`.** `physics/__init__.py` is not a C3b file (the phase's
+   file list forbids touching the registry), and a second registry entry is the only way to
+   add a `Term`. The predicate that would have been its `active=` is the same trace-time
+   `_expansion(params) is None` switch, so the off-graph guarantee is identical; the module
+   comment says so.
+2. **`CMHDGrads` gains a trailing `rho_p` field** (the primed density, `None` when
+   expansion is off). `grads.rho` stays the UNPRIMED density, as the phase spec requires,
+   so `set_timestep` and the Lorentz force need no unscaling — but `h` is built on `rho'`
+   as the docs prescribe, and that needs `rho'` carried. `rho'` is therefore the
+   transformed quantity and `rho = rho' * a^-2` is done elementwise in REAL space rather
+   than in k-space (the docs say k-space); the two differ only by rounding on an
+   elementwise scaling and the tally is unchanged at 13 inverse either way. Using
+   `ln rho'` rather than `ln rho` is not cosmetic: they differ by the uniform `-2 ln a`,
+   which the gradient kills, but `ln rho ~ -2 ln a` grows with the run and costs
+   conditioning in the gradient while `ln rho'` stays O(1).
+3. **`_enthalpy` gains an optional 4th argument `cs2`** and `_eqpars` keeps its 4-tuple
+   return, because `taranis/diagnostics/cmhd.py` (not a C3b file) imports both and unpacks
+   the 4-tuple. The EBM configuration is read through the separate `cmhd._expansion`
+   instead. `_eqpars` calls `_expansion` purely for validation, so every entry point that
+   reads eqpars — diagnostics included — rejects a malformed expansion block.
+4. **`_curl_real`'s signature changed** from `(vk, kgrid, kz, params)` to
+   `(vk, kx, ky, kz, params)`: the physical curls need `k~` while the induction curl needs
+   the static `K`. Module-private, no external callers.
+5. **`a(t) <= 0` is guarded only where it is reachable.** `adot > 0` is validated, which
+   makes `a >= 1` for every `t >= 0` a run can reach. A DOCTORED restart at `t < -1/adot`
+   cannot be validated anywhere — `t` is a traced value at every use site — so it carries a
+   comment in `_expansion` and nothing more, as the phase spec allows.
+6. **The WKB gate uses a factor 4 in a, not a decade** (per the measurement note above),
+   and is NOT marked `slow`: its two runs together take ~5 s.
+7. **Diagnostics are left EBM-unaware — this is the C3b DECISION, with the code change
+   deferred.** With expansion on, `diagnostics.cmhd`'s `energies` / `spectra` /
+   `mach_numbers` / `divB_max` are COMOVING-PRIMED quantities: they read `state.fields`,
+   which under EBM holds `rho'`, `B'`, `u`. The physical conversions are pure a-scalings
+   (`rho = a^-2 rho'`, `B = A^-1 B'`, `div_phys = a^-2 K.B'^`), so nothing there is wrong,
+   only differently normalized. A future unscaling helper should take `a` (or `params` +
+   `t`) EXPLICITLY rather than reading `params.eqpars["expansion"]` behind the caller's
+   back, so the two conventions cannot be silently mixed in one plot. Carried to §11.
+
 ## 6. What is verified NOT to need changes (checked against the tree, 2026-08-29)
 
 - `run.py`: fully registry-driven (`recipe.*` at :85, :105, :142, :279); `initialize`
@@ -585,7 +692,16 @@ the sidecar convention is decided there and recorded).
 3. **CMHD forcing** (§8) is the natural next phase after C3; it needs its own power
    normalization derivation, and until it exists `diagnostics.cmhd`'s shared-convention
    energies are the thing a forcing power will have to be comparable to.
-4. **`spectra`'s corner binning is honest but wasteful**: the bins past the dealias cut carry
+4. **EBM-aware diagnostics** (carried out of C3b, decision item 7 in §5). `diagnostics.cmhd`
+   reports COMOVING-PRIMED quantities when expansion is on. If a production campaign wants
+   physical energies/spectra, add an unscaling helper that takes `a` explicitly; do not make
+   the existing functions branch on `params.eqpars["expansion"]` silently.
+5. **A barotropic `gamma > 1` under expansion** is exactly self-consistent (EBM preserves
+   `D_t(p/rho^gamma) = 0`) and would drop in as
+   `h = cs0^2 a^(-2(gamma-1)) rho'^(gamma-1)/(gamma-1)`, with γ = 5/3 reproducing the
+   a^(−4/3) cooling automatically. C3b enforces `gamma == 1` as a scope pin to Squire et
+   al.'s closure — deferred, not blocked.
+6. **`spectra`'s corner binning is honest but wasteful**: the bins past the dealias cut carry
    only the non-polynomial residual of `√ρ·u`. If a production campaign wants a clean inertial
    range it should slice the returned arrays, not narrow `kmax` — narrowing it silently breaks
    the sum rule the C2 gate rests on.
