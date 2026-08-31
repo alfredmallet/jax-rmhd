@@ -691,6 +691,67 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   `pages.yml` — solver2d.js in the MISSING list and in the cache-bust sed, and the
   `game.html` prune pre-wired. Last, both pages booted through `bootstub.js` to the end of
   the self-test path. CI reports, never gates.
+- `checkblob.js [dir]` — the SPACEBAR GAUSSIAN BLOB FORCING gate (c81527d / 0fd7406): the
+  numbers, not the names. The byte-identity gates pin the emitted WGSL against a BASE COMMIT,
+  and `blobBuild` is a kernel the base never emitted — nothing to diff it against, so
+  `ADDED["rmhd2d.html"]` can only pin its NAME. Measured 2026-08-30: flipping the sign inside
+  the kernel (`vec2<f32>(cos(th), -sin(th))` → `… sin(th)`, i.e. the blob placed at −x0) leaves
+  `checksolver2d`, `checkiso`, `checkeigf` AND `check2dspec` all green. `checksolver2d`'s
+  BLOB_SOLVER / BLOB_SHADERS blocks pin the JavaScript that DRIVES the kernel line for line —
+  a real statement about the OU path being unmoved — but until this file the only numerical
+  check the feature ever had was a one-time out-of-tree DFT comparison by the implementing
+  agent, i.e. evidence about a tree that no longer exists. Four legs, and the shape is a
+  DIFFERENTIAL cross-check: the production path against an INDEPENDENT transcription of the
+  same mathematics, sharing nothing with the app but the grid definition and the physical
+  specification of what a blob is. Production side — `Solver.setBlobs`, the real method,
+  called on a bare `{ p, _blobs }` receiver (it touches nothing else, so no device is
+  needed), and `blobBuild` BYTE FOR BYTE as `buildShaders` emits it, EXECUTED on
+  wgsl_reflect's interpreter (checkiso leg 9 / check2dspec leg 3's idiom). Reference side —
+  the analytic gaussian laid down in REAL SPACE on the grid, periodised over the box and
+  forward-transformed by a naive O(N²) DFT written fresh in the file; the potential peak `P`
+  is not taken from `icBlobPeak` either but found by numerically maximising |grad f| over r,
+  since "peak |grad f| = amp" is the blob's actual specification. So a wrong `2π`, a wrong
+  `sigma²`, a wrong `nx*ny/(Lx*Ly)`, a wrong `icBlobPeak`, a wrong phase sign or a wrong
+  gaussian width all come out as a number that does not match. Leg 1 is the emission and the
+  interpreter: `blobBuild` parses, `NBLOB` == `BLOB_FORCE_MAX` == the live solver's `_blobs`
+  stride (one number in two files — if they drift, the z− half is read at the wrong offset and
+  nothing else in the tree notices), the kernel BODY byte-identical over all seven grids the
+  page can emit, and — the leg's own self-check — the output buffer seeded with a sentinel and
+  not one cell left holding it, because wgsl_reflect 1.5.0 reads `@workgroup_size(N)` as
+  `parseInt(value[0])`, the FIRST CHARACTER, so `(64)` runs six lanes and `(16)` runs one. The
+  lanes it runs are contiguous, so the house over-dispatch (2·NM workgroups, the kernel's own
+  bounds test) covers the buffer at any lane count and the kernel text is never edited.
+  Leg 2 is `setBlobs`' placement: the channel half (`pol < 0` is z−, `pol == 0` and a missing
+  `pol` are z+), the PER-CHANNEL cap in order with the overflow dropped rather than wrapped
+  into the other half, and the zero-fill — including that a SHORTER list on the same buffer
+  erases the slots it no longer fills. Leg 3 is the cross-check itself over five blob sets
+  (offset, one per channel with DIFFERENT blobs, two in one channel, both amplitude
+  polarities, and a RECTANGULAR box, which is the only case that separates the two factors of
+  `(nx*ny)/(Lx*Ly)`), reported as peak-relative worst absolute miss and worst per-mode
+  relative miss; plus the statement that makes it a phase test at all — a blob AT THE ORIGIN
+  transforms purely real (kernel `Im` exactly 0), the offset cases carry `Im` at 0.93 of the
+  peak, and translating a blob leaves `|f_k|` unmoved mode for mode. Leg 4 is what a tolerance
+  is structurally unable to see: every mode outside the 2/3 cut written EXACTLY zero (a
+  deliberately narrow σ = 0.25 blob, so the mask cuts a real cliff — the rim just inside it is
+  3% of the peak — rather than trimming numbers that were negligible anyway; `forcingAdd`,
+  unlike `nlAssemble`, does not dealias), the mask rebuilt here from the 2/3 rule and demanded
+  equal to `gridB`'s column 0; the ky = 0 row EXACTLY hermitian bit for bit, which is the
+  kernel's licence to write k space with none of the OU path's `_symmetrize_real_line`
+  machinery, paired with the reason the Nyquist rows — where the analytic form would be exact
+  only up to the sampled gaussian's alias sum — need not satisfy it (the 2/3 mask zeroes them);
+  and `frc[idx] = acc` being a WRITE — the answer bitwise
+  independent of what was in the buffer, so an accumulate would integrate the forcing instead
+  of setting it. Round-off-limited by construction: with `Lx = 2π` every k is an exact
+  integer in f32, σ and the offsets are f32-exact, and σ ≥ 0.375 keeps the periodic gaussian's
+  alias sum below 1e-10 of the peak, so the clean run sits at 7e-8 peak-relative and 2e-7
+  per-mode against tolerances of 5e-7 / 2e-6. Nine one-line physics mutations were verified to
+  fail it (the six kernel ones — phase sign, dropped dealias, the −0.5 in the gaussian, the
+  `half*NBLOB` channel split, the `k·x0` sign, write-vs-accumulate — and three in `setBlobs`:
+  the `sigma²`, `icBlobPeak`, and inverted polarity). NOT covered here, deliberately: the STEP
+  wiring (blob mode dispatching `blobBuild` over 2·nm modes in place of `ou` + `scale`, and
+  `sc[4]`/`sc[5]` put back to 1) is `checksolver2d`'s BLOB_SOLVER text pin, and the
+  buffer/bind-group plumbing its leg 5 — both TEXT pins, not physics. No RNG: every field is
+  analytic or a fixed walk. ~5 s. CI reports, never gates.
 - `checkidle.js [dir]` — the RENDER GATE (audit of 2026-08-12), on both booted pages. It
   drives `renderCards(paused)`, the app's own per-frame display step (split out of `loop()`
   so it can be called at all — the stub's `requestAnimationFrame` is a no-op), and counts
