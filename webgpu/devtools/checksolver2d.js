@@ -9,8 +9,9 @@
 //      showing no clone inside a file, none reaching into common.js / physics.js, and
 //      none between solver2d.js and the inline script it came out of.
 //   2  WGSL byte-identity against the base commit -- every kernel that existed there is
-//      unmoved and the additions are EXACTLY nothing, on BOTH pages; plus the whole 2D
-//      dump's sha256 against the base dump's, belt and braces.
+//      unmoved and the additions are EXACTLY the recorded list (nothing on the 3D page,
+//      the blob forcing's `blobBuild` on the 2D one); plus the whole dump's sha256 against
+//      the base dump's over every section neither allowance names, belt and braces.
 //   3  the RNG reference unmoved (64 Gauss(7) draws, hashed), the standing rule.
 //   4  extraction shape: the three definitions are gone from the inline script and are
 //      solver2d.js's only top-level ones, the page loads it after physics.js and before
@@ -18,7 +19,8 @@
 //      any of it (Chrome blocks module scripts from file://).
 //   5  the verbatim move: each definition's text equals the BASE commit's, byte for byte
 //      -- `class Solver` and `buildShaders` after their RECORDED allowances are stripped
-//      (IO_PLAN item 4's field export, FFTPERF_PLAN 2C's gradient chunking).
+//      (IO_PLAN item 4's field export, FFTPERF_PLAN 2C's gradient chunking, c81527d's
+//      spacebar blob forcing).
 //   6  reusability: solver2d.js's free identifiers resolve against common.js + physics.js
 //      + builtins ALONE -- never against rmhd2d.html's inline script, which is the whole
 //      reason a second page can load it.
@@ -40,7 +42,12 @@ const BASE = process.env.SOLVER2D_BASE || "268100f";
 const RNG_SHA = "340f43548a5ed68fcefda6f8e08080075bbd011c247813d93803c8f63519d137";
 // a pure refactor adds no kernel to either page. A stale expectation must fail too, so
 // the additions are compared against this list rather than merely counted.
-const ADDED = { "rmhd2d.html": [], "rmhd3d.html": [] };
+// `blobBuild` (c81527d) is the one entry that is not the refactor's: the spacebar blob
+// forcing's k-space transform of the placed gaussians, emitted on the 2D page beside `ou`
+// and `scale`. It is an ADDITION and nothing else -- the leg above still demands that every
+// kernel BASE had is byte-identical, so `ou`, `scale` and the whole step chain are unmoved.
+// The JavaScript that drives it is leg 5's business (BLOB_SHADERS / BLOB_SOLVER below).
+const ADDED = { "rmhd2d.html": ["blobBuild"], "rmhd3d.html": [] };
 // the three definitions that moved, by their header line
 const DEFS = ["function makeGrid(p) {", "function buildShaders(g) {", "class Solver {"];
 
@@ -177,11 +184,119 @@ const FFT2C_SOLVER = [
           "    pass.dispatchWorkgroups(8 * nx);"],
     lines: ["    this.encodeGrads(pass);"] }
 ];
+// THE THIRD SANCTIONED EDIT, in the same idiom: c81527d's spacebar gaussian blob forcing,
+// the 2D page's interactive alternative to the OU shell. It adds ONE kernel (`blobBuild`, the
+// `ADDED` list above) plus the JavaScript that drives it: the mode flag and its packed
+// upload, the blobs buffer, the kernel's pipeline and bind group, the two `setBlob*`
+// methods, and the branches in `_uploadIC` and `step` that dispatch `blobBuild` in place of
+// `ou` + `scale`. Blob mode is OFF by default and every branch keeps BASE's own lines as its
+// `else`, so the OU path is untouched -- which the `was` lines below say line for line.
+// Recorded, like the two allowances above, as the exact lines and WHERE they go.
+const BLOB_SHADERS = [
+  { tag: "the blobBuild emission", at: 180,
+    lines: [
+   "  // ---- forcing, blob mode: the k-space transform of the placed gaussians --",
+   "  // emitted at every preset whether or not the page ever turns blob mode on, so the",
+   "  // kernel text is a fixed function of the grid; BLOB_FORCE_MAX is a compile-time",
+   "  // constant and never a UI number (physics.js)",
+   "  S.blobBuild = blobBuildWGSL(Object.assign({}, C, { nblob: BLOB_FORCE_MAX }));"] },
+];
+const BLOB_SOLVER = [
+  { tag: "blobMode / _blobs, the mode flag and its packed upload (constructor)", at: 29,
+    lines: [
+   "    // blob forcing (BLOBFORCE): off unless the page asks, so the default solver -- the",
+   "    // self-test's included -- steps the OU path exactly as before. `_blobs` is the packed",
+   "    // upload, 4 floats (x0, y0, sigma, w) per slot, z+ slots then z-.",
+   "    this.blobMode = false;",
+   "    this._blobs = new Float32Array(2 * BLOB_FORCE_MAX * 4);"] },
+  { tag: "the blobs buffer (_buildBuffers)", at: 56,
+    lines: [
+   "      // blob forcing: 2 * BLOB_FORCE_MAX vec4 (x0, y0, sigma, w), z+ half then z-",
+   "      blobs: d.createBuffer({ size: Math.max(16, 2 * BLOB_FORCE_MAX * 16), usage: SQ }),"] },
+  { tag: "the blobBuild pipeline (_buildPipelines)", at: 214,
+    was: ["      ou: cp(S.ou, \"ou\"), scale: cp(S.scale, \"scale\"), icFinish: cp(S.icFinish, \"icFinish\"),"],
+    lines: [
+   "      ou: cp(S.ou, \"ou\"), scale: cp(S.scale, \"scale\"), blobBuild: cp(S.blobBuild, \"blobBuild\"),",
+   "      icFinish: cp(S.icFinish, \"icFinish\"),"] },
+  { tag: "the blobBuild bind group (_buildPipelines)", at: 266,
+    lines: [
+   "      blobBuild: bg(this.pl.blobBuild, [B.forcing, B.gridA, B.gridB, B.blobs]),"] },
+  { tag: "the sc[4]/sc[5] restore after an IC upload (_uploadIC)", at: 388,
+    lines: [
+   "    // the scalars were zeroed above and `scale` has just written the OU normalization",
+   "    // into sc[4]/sc[5]; blob mode carries its amplitude in the modes themselves, so put",
+   "    // the two scales back at 1 or the first frames would force with nothing",
+   "    if (this.blobMode) d.queue.writeBuffer(this.buf.scalars, 16, new Float32Array([1, 1]));"] },
+  { tag: "setBlobMode + setBlobs", at: 432,
+    lines: [
+   "  // ---- blob forcing (BLOBFORCE) -------------------------------------------",
+   "  // Blob mode REPLACES the OU shell: `blobBuild` writes the whole forcing buffer from the",
+   "  // placed gaussians, and the step dispatches neither `ou` nor `scale`, so sc[4]/sc[5]",
+   "  // stay at the 1 written here and each blob's amplitude is its own w. The forcing buffer",
+   "  // is cleared on either transition -- the modes it holds mean nothing in the other mode,",
+   "  // and with sc[4]/sc[5] at 1 a leftover OU envelope would land on the fields whole.",
+   "  setBlobMode(on) {",
+   "    const was = this.blobMode, d = this.device;",
+   "    this.blobMode = !!on;",
+   "    if (was !== this.blobMode) {              // only a real transition throws the modes away",
+   "      const enc = d.createCommandEncoder();",
+   "      enc.clearBuffer(this.buf.forcing);",
+   "      d.queue.submit([enc.finish()]);",
+   "    }",
+   "    if (this.blobMode) d.queue.writeBuffer(this.buf.scalars, 16, new Float32Array([1, 1]));",
+   "  }",
+   "",
+   "  // list: [{ x, y, sigma, amp, pol }], x/y in box coordinates, sigma in the same length",
+   "  // units, `amp` the PEAK |grad f| the blob is to force at and `pol` +1 for the z+ channel",
+   "  // / -1 for z-. At most BLOB_FORCE_MAX per channel -- the rest are dropped. `amp` is a",
+   "  // velocity forcing rate, so the potential peak is icBlobPeak(amp, sigma) (common.js):",
+   "  // growing sigma then inflates the blob without changing what it forces the flow at.",
+   "  // An empty list zeroes every slot, i.e. zero forcing.",
+   "  setBlobs(list) {",
+   "    const q = this.p, a = this._blobs, n = BLOB_FORCE_MAX;",
+   "    // w = P * 2*pi*sigma^2 * (nx*ny)/(Lx*Ly): the continuous transform at k = 0, times",
+   "    // the unnormalized DFT's nx*ny and divided by the cell area (see blobBuildWGSL)",
+   "    const w0 = 2 * Math.PI * (q.nx * q.ny) / (q.Lx * q.Ly);",
+   "    a.fill(0);",
+   "    const used = [0, 0];",
+   "    for (const b of (list || [])) {",
+   "      const h = b.pol < 0 ? 1 : 0;",
+   "      if (used[h] >= n) continue;",
+   "      const o = 4 * (h * n + used[h]++), sg = +b.sigma;",
+   "      a[o] = +b.x; a[o + 1] = +b.y; a[o + 2] = sg;",
+   "      a[o + 3] = icBlobPeak(+b.amp, sg) * sg * sg * w0;",
+   "    }",
+   "  }",
+   ""] },
+  { tag: "the step() header comment", at: 457,
+    was: ["  // one full step: LSRK33 (lagged scales), then the OU advance and the new scale"],
+    lines: [
+   "  // one full step: LSRK33 (lagged scales), then the OU advance and the new scale --",
+   "  // or, in blob mode, the blob rebuild in place of all three"] },
+  { tag: "the blobs upload in place of drawNoise (step)", at: 461,
+    was: ["    this.drawNoise();"],
+    lines: [
+   "    if (this.blobMode) d.queue.writeBuffer(this.buf.blobs, 0, this._blobs);",
+   "    else this.drawNoise();"] },
+  { tag: "the blob dispatch in place of ou + scale (step)", at: 471,
+    was: ["    p.setPipeline(this.pl.ou); p.setBindGroup(0, this.bg.ou);",
+           "    p.dispatchWorkgroups(Math.ceil(2 * this.ns / 64));",
+           "    p.setPipeline(this.pl.scale); p.setBindGroup(0, this.bg.scale); p.dispatchWorkgroups(1);"],
+    lines: [
+   "    if (this.blobMode) {",
+   "      p.setPipeline(this.pl.blobBuild); p.setBindGroup(0, this.bg.blobBuild);",
+   "      p.dispatchWorkgroups(Math.ceil(2 * this.g.nm / 64));",
+   "    } else {",
+   "      p.setPipeline(this.pl.ou); p.setBindGroup(0, this.bg.ou);",
+   "      p.dispatchWorkgroups(Math.ceil(2 * this.ns / 64));",
+   "      p.setPipeline(this.pl.scale); p.setBindGroup(0, this.bg.scale); p.dispatchWorkgroups(1);",
+   "    }"] },
+];
 // every recorded block per pinned definition, in BASE-line order (which is what lets each
 // block's found index BE its base line -- see stripBlocks)
 const ALLOWED = {
-  "function buildShaders(g) {": FFT2C_SHADERS,
-  "class Solver {": FFT2C_SOLVER.concat(IO4_INSERTS).sort((a, b) => a.at - b.at)
+  "function buildShaders(g) {": FFT2C_SHADERS.concat(BLOB_SHADERS).sort((a, b) => a.at - b.at),
+  "class Solver {": FFT2C_SOLVER.concat(IO4_INSERTS, BLOB_SOLVER).sort((a, b) => a.at - b.at)
 };
 // the text with every recorded block taken back out (a replacement putting its `was` lines
 // back), plus whichever blocks were not found WHERE THEY ARE RECORDED. Blocks are listed
@@ -218,12 +333,18 @@ const read = f => fs.readFileSync(f, "utf8");
 const sha = b => require("crypto").createHash("sha256").update(b).digest("hex");
 const OFF = require("./dispoffsets");
 // a dump's sha with the sections the chunk allowance names on THIS page taken out of it,
-// on both sides -- on a page that chunks nothing, nothing comes out
+// on both sides -- on a page that chunks nothing, nothing comes out. The RECORDED
+// additions come out too, for the same reason: a kernel BASE never emitted has no section
+// on the other side to hash against, so leaving one in would make this leg fail on any
+// addition at all, whatever the leg above already said about it. Only the kernels NAMED in
+// this page's `ADDED` are skipped -- an unrecorded new kernel still moves the hash, which
+// is the whole of what this leg is for.
 function shaNoChunk(file, page) {
   const parts = read(file).split(/^########## (.*) ##########$/m);
   let out = parts[0];
   for (let i = 1; i < parts.length; i += 2)
-    if (!OFF.isChunked(page, parts[i]))
+    if (!OFF.isChunked(page, parts[i]) &&
+        ADDED[page].indexOf(parts[i].split(" :: ")[1]) < 0)
       out += "########## " + parts[i] + " ##########" + parts[i + 1];
   return sha(out);
 }

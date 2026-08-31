@@ -68,7 +68,13 @@ const TOUCHED = { "rmhd2d.html": ["colorize", "prepDisp"],
 // -- the list is EXACT, so an addition that is not named here fails the leg. It adds and
 // moves nothing: every 2D kernel above it stays byte-identical, which the "physics WGSL
 // byte-identical" row one line up is what asserts. (Its own gate is checkeigf.js.)
-const ADDED = { "rmhd2d.html": ["eigfGather"],
+// `blobBuild` is not this plan's either (c81527d, the 2D page's spacebar gaussian blob
+// forcing): the k-space transform of the placed gaussians, emitted at every preset whether
+// or not the page ever turns blob mode on. Listed for the same reason -- the list is EXACT.
+// It is an ADDITION and not a move: it is a kernel of its own beside `ou` / `scale`, which
+// stay byte-identical above, and blob mode is off by default so nothing else steps
+// differently. (Its own gate is checksolver2d.js.)
+const ADDED = { "rmhd2d.html": ["blobBuild", "eigfGather"],
                 "rmhd3d.html": ["maxFinalVol", "maxPartialVol", "prepGradsBand", "renderVol",
                                 "specParBand", "vecMagVol"] };
 // the three added NON-shader kernels, as (instance, template source, substitution): the

@@ -124,6 +124,33 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     box wavenumber &mdash; the default 1&ndash;3 forces the largest few scales and lets
     everything smaller be produced by the cascade. They cannot cross. Moving them
     restarts the solver when you let go.</p>
+  <p><b>spacebar blobs</b> (2D only) replaces all of that with forcing you drive by hand.
+    With it ticked, holding the spacebar grows a gaussian vortex at a random place in the
+    box, in one of the two Elsasser fields picked at random &mdash; the longer you hold
+    the key, the bigger it gets, up to its full size after about a second; let go and it
+    fades out over a moment. Up to eight can be alive at once in each field, and the
+    readout under the displays counts them and prints the widest one. The random forcing
+    above is switched off while this is ticked: the checkbox,
+    &epsilon;<sup>&plusmn;</sup>, <b>tau</b> and <b>band n</b> no longer drive
+    anything.</p>
+  <p><b>blob amp</b> is how hard a blob pushes: the peak forcing rate itself, not an
+    injection rate. Nothing normalizes it &mdash; unlike the &epsilon; sliders, which are
+    targets the solver rescales the forcing to hit, this is the physical amplitude, so a
+    loud blob really is a big one and the total energy is not held to anything. (A blob
+    that lands against the flow already there can even take energy out.) It wants tuning
+    by eye: turn it up until the box responds and back off when it goes ragged.</p>
+  <p><b>max &sigma;</b> is how big a blob grows while you hold the key, as a fraction of
+    the width of the box. Blobs always start small however low this is set &mdash; a few
+    grid cells, and never thinner than a 64th of the box, since anything narrower is
+    structure the grid cannot carry.</p>
+  <p>Worth doing once: tick <b>spacebar blobs</b>, choose the <b>quiescent</b> initial
+    condition, press <b>Reset</b> and <b>Run</b>, and you have an empty box to stir by
+    hand. A single &zeta;<sup>+</sup> blob on its own does almost nothing &mdash; in 2D
+    one Elsasser field with the other one absent is an exact steady solution, so the blob
+    simply sits where you put it and slowly fades. Keep pressing until the readout shows
+    one of each sign and the picture changes completely: two blobs of <i>opposite</i>
+    polarity wrap around each other and shred. Nothing in this model happens until the
+    two fields overlap.</p>
 </details>
 
 <details>

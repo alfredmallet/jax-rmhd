@@ -655,7 +655,11 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   scripts showing no clone inside a file, none reaching into common.js/physics.js, and none
   between `solver2d.js` and the page it came out of (a copy left behind). Then WGSL
   byte-identity against the base commit: every kernel that existed there is unmoved, the
-  additions are EXACTLY nothing on BOTH pages, and each whole dump hashes the same. Then the
+  additions are EXACTLY the recorded `ADDED` list (nothing on the 3D page, `blobBuild` on
+  the 2D one since c81527d), and each whole dump hashes the same — that hash being taken
+  over every section neither the chunk allowance nor `ADDED` names, since a kernel the base
+  never emitted has nothing on the other side to hash against. Only the names IN the list
+  are skipped, so an unrecorded new kernel still moves the hash. Then the
   RNG reference (64 `Gauss(7)` draws, hashed — checkeigf's value, one reference, two gates).
   Then the extraction's SHAPE: the three definitions gone from the inline script and the
   only top-level ones in `solver2d.js`, exactly one `<script src="solver2d.js">` tag sitting
@@ -672,7 +676,12 @@ leave untracked or commit — they are dev-only, nothing in the apps loads them.
   for them — the chunk-sized `gradsK`/`specTmp`, the per-chunk `prepGrads` pipelines and
   their bind groups, the row kernel's per-chunk `realGrads` window, `encodeGrads`, and the
   per-chunk emission in `buildShaders`. The 2D page ships ONE chunk, so its emitted WGSL is
-  unmoved and this is an allowance on the JavaScript alone). The allowances are the `dispoffsets.js` idiom: they are put
+  unmoved and this is an allowance on the JavaScript alone; `BLOB_SOLVER` / `BLOB_SHADERS`:
+  c81527d's spacebar gaussian blob forcing — the `blobMode` flag and its packed `_blobs`
+  upload, the `blobs` buffer, `blobBuild`'s emission, pipeline and bind group, the two
+  `setBlob*` methods, and the branches in `_uploadIC` and `step` that dispatch `blobBuild`
+  in place of `ou` + `scale`, the last three recorded as REPLACEMENTS whose `was` lines ARE
+  base's own, i.e. the `else` each branch keeps). The allowances are the `dispoffsets.js` idiom: they are put
   back and the base text is then still demanded byte for byte, so any OTHER change to
   either definition fails, and a companion leg fails it as STALE if a recorded block has
   stopped being there or moved off its recorded base line, or as VACUOUS if there was

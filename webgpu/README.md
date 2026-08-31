@@ -31,7 +31,8 @@ layout), LSRK33 integrating-factor stepper, optional elsasser Ornstein–Uhlenbe
 with per-step power normalization, adaptive CFL dt with `cfl_every`-style blocks. fp32
 (WebGPU has no f64). All physics runs in WGSL compute shaders, including a
 workgroup-shared-memory Stockham FFT; the only CPU work per step is drawing the
-shell-restricted OU noise (~12 modes).
+shell-restricted OU noise (~12 modes), or, under the spacebar-blob forcing below,
+uploading the blob list.
 
 ## Run
 
@@ -231,7 +232,8 @@ else running, plugged in.
   envFn}`), plus the shared `struct Mode` and `CMAP_WGSL` (four colormaps, one
   implementation, expanded from common.js's coefficient table at emit time):
   `prepGrads`, `bracket`, `nlAssemble`, `energyPartial`, `ou`,
-  `scale`, `icFinish`, `prepDisp`, `vecMag`/`vecMagSq`, `maxSumPartial`,
+  `scale`, `blobBuild` (templated here beside the forcing it replaces, though only the 2D
+  solver instantiates it), `icFinish`, `prepDisp`, `vecMag`/`vecMagSq`, `maxSumPartial`,
   `sigmaCombine`, the arrow gather, the cut card's `cutPrep`, the colorize (whose shading
   — value→colour plus the contour overlay — is one fragment the 3D cube faces share),
   the contour level table and the blit (the 3D-only
@@ -1358,6 +1360,95 @@ wavenumber; they cannot cross. The band is baked into the grid (`fmask`) *and* i
 OU kernel's `NS`, so changing it triggers the ordinary rebuild path on handle release —
 which is why it is an `onchange`, not an `oninput`. Nothing about the generated WGSL
 changes except the `NS` constant, exactly as a resolution change does.
+
+### Spacebar blob forcing (2D, prototype)
+
+`cbBlobForce` replaces the OU shell with forcing the visitor drives: keydown spawns one
+gaussian blob at a random position in a randomly chosen Elsasser channel, the hold grows
+its σ, keyup tapers it off and drops it (a 60 ms cosine attack so there is no step in the
+RHS, a 1200 ms σ ramp, a 120 ms cos² release — all wall clock, because what those three
+shape is the interaction and not the physics). At most `BLOB_FORCE_MAX` = 8 live blobs per
+channel; an overflowing channel loses its **oldest**, never the one being held. `step`
+dispatches `blobBuild` *instead of* `ou` + `scale`, so while blob mode is on the ε
+sliders, `tau` and the band drive nothing at all (the band handles still trigger the
+ordinary rebuild on release — they just no longer force anything).
+
+**It is built analytically in k space, which is why there is no FFT, no RNG and no
+hermitian symmetrization.** A real-space gaussian on the potential,
+f = P·exp(−|x−x₀|²/2σ²), transforms to P·2πσ²·exp(−σ²k²/2)·exp(−i k·x₀).
+`physics.js: blobBuildWGSL` evaluates the two k-dependent factors per mode and sums the
+slots; `solver2d.js: setBlobs` folds everything else into each slot's weight
+w = P·2πσ²·(nx·ny)/(Lx·Ly) — the continuous transform at k = 0, times the unnormalized
+DFT's nx·ny, divided by the cell area. exp(−i k·x₀) *is* by construction the transform of
+a real field, so the rfft2 reality constraint on the ky = 0 / ky = Nyquist columns holds
+exactly and none of `drawNoise`'s mirror machinery (the one that divides by √2, not 2) is
+needed: that machinery exists because the OU path *draws* its noise, and a drawn field has
+to be made real by hand. **The dealias mask is applied inside the kernel** because a
+gaussian is not compactly supported in k and `forcingAdd` — unlike `nlAssemble` — does not
+dealias, so nothing downstream would trim the tail.
+
+**The power normalization is deliberately bypassed** (`sc[4] = sc[5] = 1`, written by
+`setBlobMode` and again at the end of `_uploadIC`, which runs `scale` on the way past).
+`scaleWGSL` solves for the scale that makes the step inject a *target* rate, so
+normalizing a blob would divide the user's amplitude straight back out — the slider would
+stop meaning anything and every blob, loud or quiet, would inject the same ε. The
+consequence is real and is the honest price of the knob: what the step injects is that
+same left-hand side evaluated at s = 1, `P + ½·F₂·dt` with P = ⟨∇z·∇f⟩, so a blob landing
+against the flow already there has P < 0 and **takes energy out**, and the total energy is
+pinned to nothing. Blob mode is an instrument for looking at 2D RMHD by hand, not a
+controlled-ε turbulence driver; the OU path remains the one with a quotable injection
+rate. The forcing buffer is cleared on
+either mode transition, because the modes it holds mean nothing in the other mode and a
+leftover OU envelope would land on the fields whole once the scales are at 1.
+
+**The amplitude convention** follows the blob editor's: the slider is the peak forcing
+rate max |∇f|, and the potential peak that realizes it comes from `common.js: icBlobPeak`
+(P = amp·σ·√e, since |∇f| of a gaussian peaks at P/(σ√e)). So growing σ inflates the blob
+— more area, more energy per unit time — without changing what it forces the flow at,
+which is what makes the hold-to-grow gesture read as "bigger" rather than "louder".
+
+**Polarity selects a buffer half, not a sign.** The blob array is z⁺ slots then z⁻ slots
+and the kernel reads `blobs[half*NBLOB + b]`, so the two channels are independent lists
+and a z⁻ blob is not a negated z⁺ one. What z⁺ forcing *is* follows `forcingAdd`:
+`rhs_φ += ½(f₊+f₋)`, `rhs_ψ += ½(f₊−f₋)`, so a z⁺ blob alone forces φ = ψ, i.e. an
+Alfvénic perturbation with u aligned with b, and equal z⁺ and z⁻ blobs cancel in ψ and
+leave a pure velocity vortex. The random polarity per press is what gives a visitor both
+channels without a control for it.
+
+**`blobMode` is per instance and defaults FALSE**, and that default is load-bearing rather
+than tidy: the self-test builds its own `Solver` and steps it 2600 times through
+`ouInjectionRow`, which measures dE/dt + ⟨D⟩ against ε and would measure nothing if the
+scales sat at 1; and `devtools/checkbench.js`'s wiring leg asserts that a step dispatches
+**nothing** outside the byte table plus its `UNCOUNTED` list, where `ou` and `scale` are
+excused exactly once each. A solver that came up in blob mode would show a stray
+`blobBuild` and two missing kernels there.
+
+**The σ floor is `max(3·dx, Lx/64)`.** Three cells is the physical bound — a narrower
+gaussian puts its spectral tail past the 2/3 dealias cut, where the forcing would be
+aliased rather than resolved (at σ = 3dx the factor at the cut is exp(−σ²k²/2) ≈ 3e−9, so
+three is comfortable). The Lx/64 term takes over at 256² and above, where three cells is a
+needle and the blob would be invisible. `max σ` is clamped up to the floor, so a slider below it
+simply gives a blob that does not grow.
+
+**The page pushes the list through the existing `frameHook`**, so `common.js` needed no
+edits at all for this: `rmhd2d.html` owns the envelope, the key handling and the readout
+line, and the solver's only new surface is `setBlobMode` / `setBlobs`. The list the step
+sees is therefore **one frame stale** — accepted, 16 ms against a 1200 ms growth ramp, and
+the alternative is a per-step CPU hook on a path that has none. (The listeners go on
+`window`, never `document`: `devtools/stubenv.js` gives only `window` an
+`addEventListener`, so a `document` listener would throw at boot and take every
+page-booting gate with it.)
+
+**Verifying it.** The coefficient was checked against an exact forward DFT of the analytic
+gaussian, evaluated over every dealiased mode: 3.2e-7 relative, which is the fp32 floor —
+that is the check to redo if the weight, the DFT normalization or the σ convention moves.
+The standing *physical* check needs no tooling and is the one to run after any change to
+`blobBuild` or `forcingAdd`: with a quiescent IC, one blob and one blob only is an exact
+stationary solution of 2D RMHD (ζ⁻ = 0 leaves nothing to advect ζ⁺), so it must sit still
+and decay; add one of the opposite polarity and the pair must tangle immediately. A lone
+blob that stirs means polarity is leaking across the (φ, ψ) map — with the one exception
+that at Pm ≠ 1 the two potentials damp at different rates, so a lone ζ⁺ blob grows a
+little ζ⁻ of its own and eventually moves. Run that check at the default Pm = 1.
 
 ## Alfvén-wave collision: directions, placement, χ
 

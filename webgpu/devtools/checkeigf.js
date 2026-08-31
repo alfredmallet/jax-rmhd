@@ -49,7 +49,12 @@ const RNG_SHA = "340f43548a5ed68fcefda6f8e08080075bbd011c247813d93803c8f63519d13
 // what this plan is allowed to ADD to each page's emission, and it may move nothing:
 // one gather kernel, on the 2D page only (the card is 2D-only, `avail: cfg => !cfg.zslice`,
 // because the equilibria are).
-const ADDED = { "rmhd2d.html": ["eigfGather"], "rmhd3d.html": [] };
+// `blobBuild` is NOT this plan's: it is the 2D page's spacebar gaussian blob forcing
+// (c81527d), the k-space transform of the placed gaussians, emitted beside `ou` / `scale`
+// at every preset. It is named here because the list is EXACT -- an addition nobody
+// recorded must fail -- and it is an ADDITION and not a move: every kernel that existed at
+// BASE is still byte-identical one leg up. (Its own gate is checksolver2d.js.)
+const ADDED = { "rmhd2d.html": ["blobBuild", "eigfGather"], "rmhd3d.html": [] };
 
 let bad = 0;
 const ok = (name, pass, note) => {

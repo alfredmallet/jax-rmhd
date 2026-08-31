@@ -51,9 +51,13 @@ const root = path.resolve(dir, "..");
 const BASE = "ad080a2";
 // what the emission is allowed to have GAINED since BASE, and nothing else: this feature's
 // two kernels, both on the 3D page, both compiled only if the generate button is ever
-// pressed -- plus, on the 2D page, EIGF_PLAN's `eigfGather` (1b57875), which is not this
-// plan's and is named here only because the list is exact (its own gate is checkeigf.js).
-const ADDED = { "rmhd2d.html": ["eigfGather"], "rmhd3d.html": ["prepGradsBand", "specParBand"] };
+// pressed -- plus, on the 2D page, EIGF_PLAN's `eigfGather` (1b57875) and the spacebar
+// blob forcing's `blobBuild` (c81527d, the k-space transform of the placed gaussians,
+// emitted beside `ou` / `scale`), neither of which is this plan's and both of which are
+// named here only because the list is exact (their own gates are checkeigf.js and
+// checksolver2d.js).
+const ADDED = { "rmhd2d.html": ["blobBuild", "eigfGather"],
+                "rmhd3d.html": ["prepGradsBand", "specParBand"] };
 // the selftest grid's instances (16 x 16 x 8: NM = 1152, NMP = 144, NZB = 4) -- the size
 // the WGSL interpreter runs in milliseconds
 // ... one label per CHUNK since FFTPERF_PLAN 2C -- on this page's 3D app, four emissions of
