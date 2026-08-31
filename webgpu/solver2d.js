@@ -256,6 +256,11 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>, @builtin(local_invocation_id) li
   // ---- forcing: OU update on the shell modes, then the power normalization -
   S.ou = ouWGSL(C);
   S.scale = scaleWGSL(C);
+  // ---- forcing, blob mode: the k-space transform of the placed gaussians --
+  // emitted at every preset whether or not the page ever turns blob mode on, so the
+  // kernel text is a fixed function of the grid; BLOB_FORCE_MAX is a compile-time
+  // constant and never a UI number (physics.js)
+  S.blobBuild = blobBuildWGSL(Object.assign({}, C, { nblob: BLOB_FORCE_MAX }));
 
   // ---- initial condition: dealias the transformed IC ----------------------
   S.icFinish = icFinishWGSL(C);
@@ -320,6 +325,11 @@ class Solver {
     this.rng = new Gauss(q.seed);
     this._noise = new Float32Array(2 * this.ns * 2);
     this._raw = new Float32Array(2 * this.ns * 2);
+    // blob forcing (BLOBFORCE): off unless the page asks, so the default solver -- the
+    // self-test's included -- steps the OU path exactly as before. `_blobs` is the packed
+    // upload, 4 floats (x0, y0, sigma, w) per slot, z+ slots then z-.
+    this.blobMode = false;
+    this._blobs = new Float32Array(2 * BLOB_FORCE_MAX * 4);
     this._buildBuffers();
     this._buildPipelines();
     this.chain(0);
@@ -350,6 +360,8 @@ class Solver {
       scalars: d.createBuffer({ size: 48, usage: SQ }),
       shell: d.createBuffer({ size: Math.max(4, this.ns * 4), usage: SQ }),
       noise: d.createBuffer({ size: Math.max(16, 2 * this.ns * 8), usage: SQ }),
+      // blob forcing: 2 * BLOB_FORCE_MAX vec4 (x0, y0, sigma, w), z+ half then z-
+      blobs: d.createBuffer({ size: Math.max(16, 2 * BLOB_FORCE_MAX * 16), usage: SQ }),
       cflPart: d.createBuffer({ size: this.nPartR * 8, usage: SQ }),
       enPart: d.createBuffer({ size: this.nPartM * 16, usage: SQ }),
       specBins: d.createBuffer({ size: 3 * this.nb * 4, usage: SQ }),
@@ -525,7 +537,8 @@ class Solver {
       stage: cp(S.stage, "stage"), cflPartial: cp(S.cflPartial, "cflPartial"),
       cflFinal: cp(S.cflFinal, "cflFinal"), energyPartial: cp(S.energyPartial, "energyPartial"),
       energyFinal: cp(S.energyFinal, "energyFinal"), tick: cp(S.tick, "tick"),
-      ou: cp(S.ou, "ou"), scale: cp(S.scale, "scale"), icFinish: cp(S.icFinish, "icFinish"),
+      ou: cp(S.ou, "ou"), scale: cp(S.scale, "scale"), blobBuild: cp(S.blobBuild, "blobBuild"),
+      icFinish: cp(S.icFinish, "icFinish"),
       spectrum: cp(S.spectrum, "spectrum"),
       prepDisp: cp(S.prepDisp, "prepDisp"), maxPartial: cp(S.maxPartial, "maxPartial"),
       maxFinal: cp(S.maxFinal, "maxFinal"), colorize: cp(S.colorize, "colorize"),
@@ -580,6 +593,7 @@ class Solver {
       tick: bg(this.pl.tick, [B.scalars]),
       ou: bg(this.pl.ou, [B.forcing, B.shell, B.noise, B.scalars, B.cfg]),
       scale: bg(this.pl.scale, [B.fields, B.forcing, B.gridA, B.gridB, B.shell, B.scalars, B.cfg]),
+      blobBuild: bg(this.pl.blobBuild, [B.forcing, B.gridA, B.gridB, B.blobs]),
       icFinish: bg(this.pl.icFinish, [B.nlk, B.gridB, B.fields])
     };
     if (this.pl.srcInit) this.bg.srcInit = bg(this.pl.srcInit, [B.fields, B.eqk]);
@@ -702,6 +716,10 @@ class Solver {
     p.setPipeline(this.pl.energyFinal); p.setBindGroup(0, this.bg.energyFinal); p.dispatchWorkgroups(1);
     p.end();
     d.queue.submit([enc.finish()]);
+    // the scalars were zeroed above and `scale` has just written the OU normalization
+    // into sc[4]/sc[5]; blob mode carries its amplitude in the modes themselves, so put
+    // the two scales back at 1 or the first frames would force with nothing
+    if (this.blobMode) d.queue.writeBuffer(this.buf.scalars, 16, new Float32Array([1, 1]));
     this.nsteps = 0;
     this.rng = new Gauss(q.seed);
   }
@@ -758,6 +776,45 @@ class Solver {
     }
   }
 
+  // ---- blob forcing (BLOBFORCE) -------------------------------------------
+  // Blob mode REPLACES the OU shell: `blobBuild` writes the whole forcing buffer from the
+  // placed gaussians, and the step dispatches neither `ou` nor `scale`, so sc[4]/sc[5]
+  // stay at the 1 written here and each blob's amplitude is its own w. The forcing buffer
+  // is cleared on either transition -- the modes it holds mean nothing in the other mode,
+  // and with sc[4]/sc[5] at 1 a leftover OU envelope would land on the fields whole.
+  setBlobMode(on) {
+    const was = this.blobMode, d = this.device;
+    this.blobMode = !!on;
+    if (was !== this.blobMode) {              // only a real transition throws the modes away
+      const enc = d.createCommandEncoder();
+      enc.clearBuffer(this.buf.forcing);
+      d.queue.submit([enc.finish()]);
+    }
+    if (this.blobMode) d.queue.writeBuffer(this.buf.scalars, 16, new Float32Array([1, 1]));
+  }
+
+  // list: [{ x, y, sigma, amp, pol }], x/y in box coordinates, sigma in the same length
+  // units, `amp` the PEAK |grad f| the blob is to force at and `pol` +1 for the z+ channel
+  // / -1 for z-. At most BLOB_FORCE_MAX per channel -- the rest are dropped. `amp` is a
+  // velocity forcing rate, so the potential peak is icBlobPeak(amp, sigma) (common.js):
+  // growing sigma then inflates the blob without changing what it forces the flow at.
+  // An empty list zeroes every slot, i.e. zero forcing.
+  setBlobs(list) {
+    const q = this.p, a = this._blobs, n = BLOB_FORCE_MAX;
+    // w = P * 2*pi*sigma^2 * (nx*ny)/(Lx*Ly): the continuous transform at k = 0, times
+    // the unnormalized DFT's nx*ny and divided by the cell area (see blobBuildWGSL)
+    const w0 = 2 * Math.PI * (q.nx * q.ny) / (q.Lx * q.Ly);
+    a.fill(0);
+    const used = [0, 0];
+    for (const b of (list || [])) {
+      const h = b.pol < 0 ? 1 : 0;
+      if (used[h] >= n) continue;
+      const o = 4 * (h * n + used[h]++), sg = +b.sigma;
+      a[o] = +b.x; a[o + 1] = +b.y; a[o + 2] = sg;
+      a[o + 3] = icBlobPeak(+b.amp, sg) * sg * sg * w0;
+    }
+  }
+
   drawNoise() {
     // unit noise for one OU step: (N(0,1) + i N(0,1))/sqrt(2) * (nx*ny), hermitian-
     // symmetrized on the ky=0 / ky=Nyquist columns (divide by sqrt(2), not 2).
@@ -783,11 +840,13 @@ class Solver {
     this.device.queue.writeBuffer(this.buf.noise, 0, out);
   }
 
-  // one full step: LSRK33 (lagged scales), then the OU advance and the new scale
+  // one full step: LSRK33 (lagged scales), then the OU advance and the new scale --
+  // or, in blob mode, the blob rebuild in place of all three
   step(cflEvery) {
     const d = this.device;
     const doCFL = (this.nsteps % Math.max(1, cflEvery | 0)) === 0;
-    this.drawNoise();
+    if (this.blobMode) d.queue.writeBuffer(this.buf.blobs, 0, this._blobs);
+    else this.drawNoise();
     const enc = d.createCommandEncoder();
     enc.clearBuffer(this.buf.delta);
     this.encodeStep(enc, doCFL);
@@ -797,9 +856,14 @@ class Solver {
     p.setPipeline(this.pl.energyFinal); p.setBindGroup(0, this.bg.energyFinal);
     p.dispatchWorkgroups(1);
     p.setPipeline(this.pl.tick); p.setBindGroup(0, this.bg.tick); p.dispatchWorkgroups(1);
-    p.setPipeline(this.pl.ou); p.setBindGroup(0, this.bg.ou);
-    p.dispatchWorkgroups(Math.ceil(2 * this.ns / 64));
-    p.setPipeline(this.pl.scale); p.setBindGroup(0, this.bg.scale); p.dispatchWorkgroups(1);
+    if (this.blobMode) {
+      p.setPipeline(this.pl.blobBuild); p.setBindGroup(0, this.bg.blobBuild);
+      p.dispatchWorkgroups(Math.ceil(2 * this.g.nm / 64));
+    } else {
+      p.setPipeline(this.pl.ou); p.setBindGroup(0, this.bg.ou);
+      p.dispatchWorkgroups(Math.ceil(2 * this.ns / 64));
+      p.setPipeline(this.pl.scale); p.setBindGroup(0, this.bg.scale); p.dispatchWorkgroups(1);
+    }
     p.end();
     d.queue.submit([enc.finish()]);
     this.nsteps++;

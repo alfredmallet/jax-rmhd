@@ -354,6 +354,46 @@ ${idx}  let decay: f32 = exp(-sc[0] / cfg.tau);
 }
 
 // ---------------------------------------------------------------------------
+// gaussian blob forcing: the interactive alternative to the OU shell
+// ---------------------------------------------------------------------------
+// A blob is a real-space gaussian on the stream function, f(x) = P exp(-|x-x0|^2/2s^2),
+// whose transform is P*2*pi*s^2 * exp(-s^2 k^2/2) * exp(-i k.x0). The solver's DFT is
+// unnormalized and approximates the integral divided by the cell area, so the caller
+// hands each blob its k-space weight w = P*2*pi*s^2*(NX*NY)/(Lx*Ly) already folded in
+// and this kernel evaluates the two k-dependent factors. Up to BLOB_FORCE_MAX blobs per
+// Elsasser channel; a slot with w = 0 contributes nothing, so an unused one is zeros.
+//
+// exp(-i k.x0) is by construction the transform of a real field, so the rfft2 reality
+// constraint holds exactly and none of the OU path's hermitian mirror machinery is
+// needed. The DEALIAS mask is applied here because a gaussian is not compactly supported
+// in k and forcingAdd -- unlike nlAssemble -- does not dealias.
+const BLOB_FORCE_MAX = 8;
+function blobBuildWGSL(C) {
+  return C.pre + `
+@group(0) @binding(0) var<storage, read_write> frc: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read> gridA: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> gridB: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> blobs: array<vec4<f32>>;
+const NBLOB: u32 = ${C.nblob}u;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx: u32 = gid.x;
+  if (idx >= 2u * NM) { return; }
+  let half: u32 = select(0u, 1u, idx >= NM);   // 0 = z+, 1 = z-
+  let m: u32 = idx - half * NM;
+  let A: vec4<f32> = gridA[m];                 // (kx, ky, ksq, 1/ksq)
+  let de: f32 = gridB[m].x;                    // dealias mask
+  var acc: vec2<f32> = vec2<f32>(0.0, 0.0);
+  for (var b: u32 = 0u; b < NBLOB; b = b + 1u) {
+    let B: vec4<f32> = blobs[half * NBLOB + b];   // (x0, y0, sigma, w)
+    let th: f32 = A.x * B.x + A.y * B.y;
+    acc = acc + (B.w * de * exp(-0.5 * B.z * B.z * A.z)) * vec2<f32>(cos(th), -sin(th));
+  }
+  frc[idx] = acc;
+}`;
+}
+
+// ---------------------------------------------------------------------------
 // once-per-step power normalization (lagged by design)
 // ---------------------------------------------------------------------------
 // Two reductions over the forcing shell, sharing one vec4 accumulator:

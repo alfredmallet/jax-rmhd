@@ -139,6 +139,14 @@ const BOXES = {
 };
 const boxOf = () => BOXES[el("selBox").value] || BOXES.sq;
 
+// the spacebar-blob hint (the row it belongs to is hidden until the box is ticked)
+const BLOB_HINT =
+  "<b>blob amp</b> is the peak forcing rate max |&nabla;f| itself, not an injection rate: "
+  + "there is nothing normalizing it, so it wants tuning by eye. Untick <b>forcing</b> and "
+  + "pick the <b>quiescent</b> initial condition to get an empty box to stir by hand &mdash; "
+  + "in 2D a lone &zeta;<sup>+</sup> blob is a stationary solution and simply sits there "
+  + "and decays, while two of opposite polarity shred each other.";
+
 controlsBuild({
   groups: [
     { id: "grpSim", summary: "simulation", rows: [
@@ -155,7 +163,27 @@ controlsBuild({
       CTRL_CFL
     ] },
     { id: "grpDiss", summary: "dissipation", rows: [ctrlDissRow(-13, { pm: true })] },
-    CTRL_GRP_FORCE,
+    // the forcing group is byte-shared with rmhd3d.html (common.js), so the spacebar
+    // blobs -- which exist on this page only -- are CONCATENATED onto its rows here
+    // rather than added to it there. Same id, same summary, so it is still one group.
+    { id: CTRL_GRP_FORCE.id, summary: CTRL_GRP_FORCE.summary,
+      rows: CTRL_GRP_FORCE.rows.concat([
+        [{ k: "cbl", id: "cbBlobForce", t: "spacebar blobs", v: false,
+           ti: "hold the spacebar to grow a gaussian blob of z+ or z- (polarity picked "
+             + "at random) somewhere random in the box. It REPLACES the OU shell forcing "
+             + "and bypasses its power normalization, so the amplitude slider is the "
+             + "physical forcing rate rather than an injection rate." }],
+        { id: "rowBlob", hide: true, items: [
+          { k: "lab", t: "blob amp" },
+          { k: "rng", id: "rBlobAmp", min: -3, max: 1, step: 0.05, v: -0.5 },
+          { k: "val", id: "vBlobAmp" },
+          { k: "lab", t: "max &sigma;" },
+          // as a fraction of L_x; the floor is 3 cells (frcBlobSigmas), never this
+          { k: "rng", id: "rBlobSig", min: 1 / 64, max: 1 / 4, step: 1 / 64, v: 1 / 8 },
+          { k: "val", id: "vBlobSig" }
+        ] },
+        { k: "hintdiv", id: "vBlobHint", hide: true, t: BLOB_HINT }
+      ]) },
     ctrlGrpIC({ letters: "letters A / B", amp: 0, pre: CTRL_ROWS_EQ,
                 presets: [["kh", "Kelvin–Helmholtz shear layers"],
                           ["tearing", "tearing mode"]] }),
@@ -247,6 +275,11 @@ function syncLabels() {
   const q = uiParams();
   el("vBox").textContent = q.nx + "×" + q.ny;
   syncEqLabels();
+  // the blob row follows its checkbox from here (every path that can flip it ends in
+  // syncLabels); the LIST and the solver's mode are the checkbox handler's own job.
+  frcBlobRowSync();
+  el("vBlobAmp").textContent = frcBlobAmp().toExponential(1);
+  el("vBlobSig").textContent = frcBlobSigFrac().toPrecision(3) + " L";
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +572,10 @@ function rebuild() {
   solver = new Solver(device, uiParams());
   cardsSync();
   stepsPerFrame = 1;
+  // the blob list lives on the OLD solver's buffers: drop it, and tell the new solver
+  // which forcing it is running
+  frcBlobs = []; frcBlobHeld = null; frcBlobSent = false;
+  solver.setBlobMode(frcBlobOn());
   applyIC();                 // the constructor's built-in IC, replaced by the preset
 }
 
@@ -552,6 +589,126 @@ function applyControls() {
   solver.refreshDissipation(q.diss, q.hyper);
   solver.uploadCfg();
 }
+
+// ---------------------------------------------------------------------------
+// spacebar blob forcing (2D only)
+// ---------------------------------------------------------------------------
+// Hold-to-grow: keydown spawns ONE blob at a random spot with a random polarity, the
+// hold grows its sigma, keyup tapers its amplitude off and drops it. The blob has to
+// appear on keydown or the picture stops tracking the key, and the length of a press is
+// only known at keyup -- so the press is watched charging rather than sized afterwards.
+// All three clocks are wall clock, because what they shape is the interaction and not
+// the physics.
+const BLOB_ATTACK_MS = 60;     // cosine ramp of amp at spawn: no hard step in the RHS
+const BLOB_GROW_MS = 1200;     // sigma_min -> sigma_max while held, then clamped
+const BLOB_RELEASE_MS = 120;   // cos^2 ramp of amp down after keyup, then dropped
+let frcBlobs = [];             // the live list, oldest first
+let frcBlobHeld = null;        // the one the spacebar is growing, if any
+let frcBlobSent = false;       // was the last list handed to the solver non-empty?
+let frcBlobDown = false;       // keydown auto-repeats; one press is one blob
+
+const frcBlobOn = () => el("cbBlobForce").checked;
+const frcBlobAmp = () => Math.pow(10, parseFloat(el("rBlobAmp").value));
+const frcBlobSigFrac = () => parseFloat(el("rBlobSig").value);
+// The floor is THREE CELLS: a narrower gaussian puts its spectral tail past the 2/3
+// dealias cut, where the forcing would be aliased rather than resolved. Lx/64 keeps a
+// coarse grid's blob a structure and not the whole box.
+function frcBlobSigmas() {
+  const q = solver.p, lo = Math.max(3 * q.Lx / q.nx, q.Lx / 64);
+  return [lo, Math.max(lo, frcBlobSigFrac() * q.Lx)];
+}
+// the checkbox owns the row, syncLabels owns nothing else about it
+function frcBlobRowSync() {
+  const on = frcBlobOn();
+  el("rowBlob").style.display = on ? "" : "none";
+  el("vBlobHint").style.display = on ? "" : "none";
+}
+function frcBlobClear() {
+  frcBlobs = []; frcBlobHeld = null;
+  if (solver && frcBlobSent) { solver.setBlobs([]); frcBlobSent = false; }
+}
+function frcBlobSpawn() {
+  const q = solver.p, sig = frcBlobSigmas();
+  const b = { x: Math.random() * q.Lx, y: Math.random() * q.Ly, sigma: sig[0],
+              amp: 0, pol: Math.random() < 0.5 ? 1 : -1,
+              t0: performance.now(), tRel: 0 };
+  frcBlobs.push(b);
+  frcBlobHeld = b;
+  // the budget is per CHANNEL, and an overflowing channel loses its oldest blob -- never
+  // the one just spawned, which is the one the visitor is holding
+  const ch = frcBlobs.filter(z => z.pol === b.pol);
+  if (ch.length > BLOB_FORCE_MAX) frcBlobs.splice(frcBlobs.indexOf(ch[0]), 1);
+}
+function frcBlobRelease() {
+  if (!frcBlobHeld) return;
+  frcBlobHeld.tRel = performance.now();
+  frcBlobHeld = null;
+}
+// one frame of the envelope, then the whole live list to the solver. Called off the
+// frame loop's frameHook, so the list the step sees is one frame stale -- 16 ms against
+// a 1200 ms ramp.
+function frcBlobStep() {
+  if (!frcBlobs.length && !frcBlobSent) return;
+  const now = performance.now(), amp = frcBlobAmp(), sig = frcBlobSigmas(), live = [];
+  for (const b of frcBlobs) {
+    let g = 0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, (now - b.t0) / BLOB_ATTACK_MS));
+    if (b.tRel) {
+      const r = (now - b.tRel) / BLOB_RELEASE_MS;
+      if (r >= 1) continue;                      // faded out: drop it
+      const c = Math.cos(0.5 * Math.PI * r);
+      g *= c * c;
+    } else {
+      b.sigma = sig[0] + (sig[1] - sig[0]) * Math.min(1, (now - b.t0) / BLOB_GROW_MS);
+    }
+    b.amp = amp * g;
+    live.push(b);
+  }
+  frcBlobs = live;
+  solver.setBlobs(frcBlobs.map(b => ({ x: b.x, y: b.y, sigma: b.sigma,
+                                       amp: b.amp, pol: b.pol })));
+  frcBlobSent = frcBlobs.length > 0;
+}
+// one short readout line, so the amplitude can be tuned against something
+function frcBlobReadout() {
+  if (!frcBlobOn()) return "";
+  if (!frcBlobs.length) return "blobs: none — hold space";
+  let np = 0, smax = 0;
+  for (const b of frcBlobs) { if (b.pol > 0) np++; if (b.sigma > smax) smax = b.sigma; }
+  return "blobs: " + np + " z⁺ / " + (frcBlobs.length - np) + " z⁻   σ ≤ "
+       + smax.toPrecision(3);
+}
+
+// --- the key itself --------------------------------------------------------
+// Space is a button's activation key and the page's scroll key, so EVERY Space press is
+// preventDefault'ed while the page owns it, and the first one blurs whatever has focus
+// (the visitor gets here by clicking the green Run button, which then keeps it).
+function frcBlobTyping() {
+  if (icDraw.on) return true;                    // the IC editor owns the keyboard
+  const a = document.activeElement;
+  if (!a) return false;
+  if (["tExprP", "tExprM", "nSeed", "nPm"].indexOf(a.id) >= 0) return true;
+  const t = String(a.type || "").toLowerCase();
+  return t === "text" || t === "number";
+}
+function frcBlobKeyDown(e) {
+  if (e.code !== "Space" || !solver || !frcBlobOn() || frcBlobTyping()) return;
+  if (e.preventDefault) e.preventDefault();
+  if (frcBlobDown) return;                       // keydown auto-repeats while held
+  frcBlobDown = true;
+  const a = document.activeElement;
+  if (a && a.blur) a.blur();
+  frcBlobSpawn();
+}
+// only the press WE took is swallowed: with the box unticked Space stays the browser's,
+// so it still scrolls and still activates a focused button
+function frcBlobKeyUp(e) {
+  if (e.code !== "Space" || !frcBlobDown) return;
+  if (e.preventDefault) e.preventDefault();
+  frcBlobDown = false;
+  frcBlobRelease();
+}
+// alt-tabbing mid-press: the keyup lands somewhere else, so the blob would grow forever
+function frcBlobBlur() { frcBlobDown = false; frcBlobRelease(); }
 
 // ---------------------------------------------------------------------------
 // bench (?bench): this page's kernel, FFT and per-step lists
@@ -799,7 +956,20 @@ async function boot() {
   });
   // wire first: bootApply's syncIC asks the editor config which rows a preset owns
   wireCommonControls({ presets: PRESETS, rebuildOn: ["selBox", "nPm", "cbEqSrc"],
-                       icSliders: EQ_SLIDERS });
+                       icSliders: EQ_SLIDERS, sliders: ["rBlobAmp", "rBlobSig"] });
+  // the spacebar blobs. The listeners go on WINDOW, never document: devtools/stubenv.js
+  // gives only window an addEventListener, and document.addEventListener would throw at
+  // boot and take every page-booting gate with it.
+  window.addEventListener("keydown", frcBlobKeyDown);
+  window.addEventListener("keyup", frcBlobKeyUp);
+  window.addEventListener("blur", frcBlobBlur);
+  el("cbBlobForce").onchange = () => {
+    frcBlobRowSync();
+    frcBlobClear();
+    solver.setBlobMode(frcBlobOn());
+  };
+  frameHook = sv => { if (sv === solver) frcBlobStep(); };
+  readoutExtra = frcBlobReadout;
   bootApply(pre);
   // ?bench only; a no-op without it
   benchBuild({ page: "rmhd2d", spec: benchSpec2D, applyIC: applyIC });
