@@ -178,7 +178,8 @@ controlsBuild({
           { k: "rng", id: "rBlobAmp", min: -3, max: 1, step: 0.05, v: -0.5 },
           { k: "val", id: "vBlobAmp" },
           { k: "lab", t: "max &sigma;" },
-          // as a fraction of L_x; the floor is 3 cells (frcBlobSigmas), never this
+          // as a fraction of min(Lx, Ly) -- the SHORT side, so the amplitude convention
+          // holds on the wide box too; the floor is 3 cells (frcBlobSigmas), never this
           { k: "rng", id: "rBlobSig", min: 1 / 64, max: 1 / 4, step: 1 / 64, v: 1 / 8 },
           { k: "val", id: "vBlobSig" }
         ] },
@@ -279,7 +280,12 @@ function syncLabels() {
   // syncLabels); the LIST and the solver's mode are the checkbox handler's own job.
   frcBlobRowSync();
   el("vBlobAmp").textContent = frcBlobAmp().toExponential(1);
-  el("vBlobSig").textContent = frcBlobSigFrac().toPrecision(3) + " L";
+  // the LENGTH, not the fraction: the slider is a fraction of min(Lx, Ly) (frcBlobSigmas),
+  // and "0.125 L" would not say which L on the wide box. This is the same number, in the
+  // same units, as the sigma the blob readout prints. uiParams(), not solver.p -- this
+  // runs before the first solver exists.
+  el("vBlobSig").textContent =
+    (frcBlobSigFrac() * Math.min(q.Lx, q.Ly)).toPrecision(3);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,8 +579,9 @@ function rebuild() {
   cardsSync();
   stepsPerFrame = 1;
   // the blob list lives on the OLD solver's buffers: drop it, and tell the new solver
-  // which forcing it is running
-  frcBlobs = []; frcBlobHeld = null; frcBlobSent = false;
+  // which forcing it is running. `frcBlobSent` is about the solver, not the list, so it is
+  // reset here rather than inside frcBlobForget -- the new solver has been sent nothing.
+  frcBlobForget(); frcBlobSent = false;
   solver.setBlobMode(frcBlobOn());
   applyIC();                 // the constructor's built-in IC, replaced by the preset
 }
@@ -610,12 +617,27 @@ let frcBlobDown = false;       // keydown auto-repeats; one press is one blob
 const frcBlobOn = () => el("cbBlobForce").checked;
 const frcBlobAmp = () => Math.pow(10, parseFloat(el("rBlobAmp").value));
 const frcBlobSigFrac = () => parseFloat(el("rBlobSig").value);
-// The floor is THREE CELLS: a narrower gaussian puts its spectral tail past the 2/3
-// dealias cut, where the forcing would be aliased rather than resolved. Lx/64 keeps a
-// coarse grid's blob a structure and not the whole box.
+// Both ends are measured off the SHORT box dimension and the COARSE cell, never off Lx
+// and dx, because a blob is round and the box need not be.
+//
+// The floor is THREE CELLS of the coarser axis: a narrower gaussian puts its spectral tail
+// past the 2/3 dealias cut, where the forcing would be aliased rather than resolved (at
+// sigma = 3*dy the factor exp(-sigma^2 k^2/2) at the cut is exp(-2 pi^2) = 3e-9; at the
+// 1.5*dy that 3*dx gives on the `wide` box, whose cells are dy = 2 dx, it is 7e-3). The
+// min(Lx, Ly)/64 term takes over at 256^2 and above, where three cells is a needle.
+//
+// The CEILING is min(Lx, Ly)/4 at the top of the slider, so the amplitude convention --
+// "the slider is the peak |grad f|", which icBlobPeak realizes for an ISOLATED gaussian --
+// degrades the same way on every box. It is the periodic images that break it: measured
+// max |grad f| / amp at the slider's top is 0.979 on a square box (2% low, the images
+// subtracting at the peak-gradient radius), and was 1.207 -- 21% ABOVE what the slider
+// claims -- on the `wide` 4pi x 2pi box while the ceiling was Lx/4 = Ly/2. Off the short
+// side it is 1.001 there. So the convention is exact to ~2% on every box and every
+// setting; it is not exact, and no choice of ceiling makes it so.
 function frcBlobSigmas() {
-  const q = solver.p, lo = Math.max(3 * q.Lx / q.nx, q.Lx / 64);
-  return [lo, Math.max(lo, frcBlobSigFrac() * q.Lx)];
+  const q = solver.p, L = Math.min(q.Lx, q.Ly);
+  const lo = Math.max(3 * Math.max(q.Lx / q.nx, q.Ly / q.ny), L / 64);
+  return [lo, Math.max(lo, frcBlobSigFrac() * L)];
 }
 // the checkbox owns the row, syncLabels owns nothing else about it
 function frcBlobRowSync() {
@@ -623,8 +645,14 @@ function frcBlobRowSync() {
   el("rowBlob").style.display = on ? "" : "none";
   el("vBlobHint").style.display = on ? "" : "none";
 }
+// Every scrap of live blob state, forgotten -- `frcBlobDown` included. That one is the
+// auto-repeat guard, and leaving it true across a rebuild or an untick was a real stuck
+// key: keydown returns early while it is set, so with a hand on the spacebar through a
+// preset or a resolution change the bar simply stopped working until the key came up.
+// It self-heals on keyup, which is exactly why it is easy to miss and unpleasant to meet.
+function frcBlobForget() { frcBlobs = []; frcBlobHeld = null; frcBlobDown = false; }
 function frcBlobClear() {
-  frcBlobs = []; frcBlobHeld = null;
+  frcBlobForget();
   if (solver && frcBlobSent) { solver.setBlobs([]); frcBlobSent = false; }
 }
 function frcBlobSpawn() {
@@ -668,6 +696,17 @@ function frcBlobStep() {
                                        amp: b.amp, pol: b.pol })));
   frcBlobSent = frcBlobs.length > 0;
 }
+// What the run manifest records about a blob-forced run (common.js's `manifestForcing`
+// hook; the record's honest "this is not reproducible" preamble lives there, since it is
+// true whether or not this page supplies the numbers). These are BOUNDS, not a history:
+// the amplitude and the sigma window every press was made within, and the per-channel
+// slot budget. Sigmas come from frcBlobSigmas, so they are the actual clamped lengths in
+// box units and not the slider fraction.
+function frcBlobManifest() {
+  const sig = solver ? frcBlobSigmas() : [0, 0];
+  return { blobAmp: frcBlobAmp(), blobSigmaMin: sig[0], blobSigmaMax: sig[1],
+           blobMaxPerChannel: BLOB_FORCE_MAX };
+}
 // one short readout line, so the amplitude can be tuned against something
 function frcBlobReadout() {
   if (!frcBlobOn()) return "";
@@ -679,25 +718,44 @@ function frcBlobReadout() {
 }
 
 // --- the key itself --------------------------------------------------------
-// Space is a button's activation key and the page's scroll key, so EVERY Space press is
-// preventDefault'ed while the page owns it, and the first one blurs whatever has focus
-// (the visitor gets here by clicking the green Run button, which then keeps it).
-function frcBlobTyping() {
+// Space is a button's activation key and the page's scroll key, so a Space press the page
+// takes is preventDefault'ed, and the first one blurs whatever has focus (the visitor gets
+// here by clicking the green Run button, which then keeps it).
+//
+// `frcBlobKeyBusy` is everything the page must NOT take Space from. Two kinds:
+//   - the keyboard belongs to something else: the IC editor, or a text/number field being
+//     typed into. Taking Space there would eat the space bar out of a formula.
+//   - a focused TOGGLE, where Space is the activation key AND the only keyboard way to
+//     work the control. `cbBlobForce` is the case that matters: while the box is ticked
+//     the page owns Space, so Tab-to-the-box + Space could never UNTICK it -- the press
+//     was swallowed, focus was blurred, and a blob appeared instead. A keyboard-only
+//     visitor could turn the feature on and never turn it off. Checkboxes and radios are
+//     therefore returned to the browser whenever they have focus.
+// Buttons are deliberately NOT on that list: the page's documented gesture is "click Run,
+// then hold space", which leaves Run focused, and exempting it would make Space pause the
+// run instead of forcing it. Nothing is lost -- Enter activates a focused <button> too,
+// and this handler only ever looks at Space.
+function frcBlobKeyBusy() {
   if (icDraw.on) return true;                    // the IC editor owns the keyboard
   const a = document.activeElement;
   if (!a) return false;
   if (["tExprP", "tExprM", "nSeed", "nPm"].indexOf(a.id) >= 0) return true;
   const t = String(a.type || "").toLowerCase();
-  return t === "text" || t === "number";
+  return t === "text" || t === "number" || t === "checkbox" || t === "radio";
 }
 function frcBlobKeyDown(e) {
-  if (e.code !== "Space" || !solver || !frcBlobOn() || frcBlobTyping()) return;
+  if (e.code !== "Space" || !solver || !frcBlobOn() || frcBlobKeyBusy()) return;
   if (e.preventDefault) e.preventDefault();
   if (frcBlobDown) return;                       // keydown auto-repeats while held
   frcBlobDown = true;
+  // SPAWN FIRST, blur second. `frcBlobBlur` clears frcBlobDown and releases the held blob,
+  // so were this blur ever to reach the window listener the blob would be released before
+  // it existed -- and then keyup, seeing frcBlobDown false, would return early and leave it
+  // growing to max sigma for ever. `blur` does not bubble, so that cannot happen today;
+  // this order means it cannot happen if anything ever changes.
+  frcBlobSpawn();
   const a = document.activeElement;
   if (a && a.blur) a.blur();
-  frcBlobSpawn();
 }
 // only the press WE took is swallowed: with the box unticked Space stays the browser's,
 // so it still scrolls and still activates a focused button
@@ -970,6 +1028,7 @@ async function boot() {
   };
   frameHook = sv => { if (sv === solver) frcBlobStep(); };
   readoutExtra = frcBlobReadout;
+  manifestForcing = frcBlobManifest;
   bootApply(pre);
   // ?bench only; a no-op without it
   benchBuild({ page: "rmhd2d", spec: benchSpec2D, applyIC: applyIC });

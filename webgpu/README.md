@@ -31,8 +31,8 @@ layout), LSRK33 integrating-factor stepper, optional elsasser Ornstein–Uhlenbe
 with per-step power normalization, adaptive CFL dt with `cfl_every`-style blocks. fp32
 (WebGPU has no f64). All physics runs in WGSL compute shaders, including a
 workgroup-shared-memory Stockham FFT; the only CPU work per step is drawing the
-shell-restricted OU noise (~12 modes), or, under the spacebar-blob forcing below,
-uploading the blob list.
+shell-restricted OU noise (~12 modes), and under the spacebar-blob forcing below there is
+none at all — its blob list is uploaded once a frame, from `setBlobs`.
 
 ## Run
 
@@ -1373,6 +1373,16 @@ dispatches `blobBuild` *instead of* `ou` + `scale`, so while blob mode is on the
 sliders, `tau` and the band drive nothing at all (the band handles still trigger the
 ordinary rebuild on release — they just no longer force anything).
 
+`solver2d.js: setBlobs` has a cap of its own, and **its overflow policy is the opposite
+one**: it fills in list order and drops what does not fit, i.e. keeps the *oldest*, where
+the page evicts the oldest so the blob being *held* survives. The two can only disagree on
+a list the page cannot produce — `frcBlobSpawn` evicts at spawn time, so every channel it
+hands over already holds ≤ `BLOB_FORCE_MAX` and `setBlobs` never truncates in production.
+They are left different rather than reconciled because they answer different questions:
+the page's is "which blob does the visitor lose", `setBlobs`' is "what does a caller that
+overruns a fixed buffer get", and first-N-in-list-order is the honest answer to the second
+(and the one `devtools/checkblob.js` leg 2 pins).
+
 **It is built analytically in k space, which is why there is no FFT, no RNG and no
 hermitian symmetrization.** A real-space gaussian on the potential,
 f = P·exp(−|x−x₀|²/2σ²), transforms to P·2πσ²·exp(−σ²k²/2)·exp(−i k·x₀).
@@ -1401,6 +1411,18 @@ rate. The forcing buffer is cleared on
 either mode transition, because the modes it holds mean nothing in the other mode and a
 leftover OU envelope would land on the fields whole once the scales are at 1.
 
+**The `sc[4] = sc[5] = 1` line at the end of `_uploadIC` is load-bearing, and deleting it
+blows the run up rather than quietening it.** Work out what `scale` — which `_uploadIC`
+dispatches on the way past — writes on *that* state: the scalars were just zeroed, so
+dt = sc[0] = 0, and the forcing buffer was just cleared, so P = F₂ = 0. `selfnormScale`
+then takes its `F2*dt == 0` branch, `s = tgt/P` = 2ε/0, and the closing
+`clamp(s, −smax, smax)` delivers **smax = 1e4** at the shipped default. Blob mode never
+runs `scale` again, so that 1e4 would stand for the whole run: with `forcing` ticked,
+pressing **Reset** would multiply every blob by 1e4 from the second step on (the first
+still sees the cleared forcing buffer). `s = 0` is only the `tgt == 0` short-circuit,
+i.e. only with `forcing` *unticked* — so the failure hides in exactly the configuration
+the page's hint tells a visitor to use, and appears the moment they tick the box.
+
 **The amplitude convention** follows the blob editor's: the slider is the peak forcing
 rate max |∇f|, and the potential peak that realizes it comes from `common.js: icBlobPeak`
 (P = amp·σ·√e, since |∇f| of a gaussian peaks at P/(σ√e)). So growing σ inflates the blob
@@ -1415,29 +1437,98 @@ Alfvénic perturbation with u aligned with b, and equal z⁺ and z⁻ blobs canc
 leave a pure velocity vortex. The random polarity per press is what gives a visitor both
 channels without a control for it.
 
-**`blobMode` is per instance and defaults FALSE**, and that default is load-bearing rather
-than tidy: the self-test builds its own `Solver` and steps it 2600 times through
-`ouInjectionRow`, which measures dE/dt + ⟨D⟩ against ε and would measure nothing if the
-scales sat at 1; and `devtools/checkbench.js`'s wiring leg asserts that a step dispatches
-**nothing** outside the byte table plus its `UNCOUNTED` list, where `ou` and `scale` are
-excused exactly once each. A solver that came up in blob mode would show a stray
-`blobBuild` and two missing kernels there.
+**`blobMode` is per instance and defaults FALSE**, and what that default protects is
+**every `Solver` nothing calls `setBlobMode` on**. The page's live solver is not one of
+them: `rebuild()` calls `solver.setBlobMode(frcBlobOn())` on every build, so it takes its
+mode from the checkbox and never keeps the constructor's. The ones that do keep it are
+`runSelfTest`'s own `new Solver(…)` and the extra-grid solvers `?bench`'s FFT ladder
+constructs. The self-test is where it bites: it steps 2600 times through
+`ouInjectionRow`, measuring dE/dt + ⟨D⟩ against ε, and in blob mode that solver would
+dispatch `blobBuild` over an all-zero blob list instead of `ou` + `scale` — i.e. run with
+**no forcing at all**, and report ≈ 0 against ε = 1.
 
-**The σ floor is `max(3·dx, Lx/64)`.** Three cells is the physical bound — a narrower
+*Measured, 2026-08-30* (this is a correction: the paragraph here previously claimed
+`devtools/checkbench.js` would catch a flipped default, and it does not). Setting
+`this.blobMode = true` in the constructor and rerunning the gates: `checkbench` is
+**byte-identical to baseline, every row green** — its wiring leg drives the *page's*
+solver, which `rebuild()` has already put back in OU mode, and it never ticks
+`cbBlobForce`. `checkblob`, `checkidle`, `checkonepage` and `checkgc` are byte-identical
+too, and `checkzip` differs only in the temp directory name in its own log. Of the gates
+rerun under that mutation, the one that fails is **`checksolver2d`**, and it fails as a
+text pin (`BLOB_SOLVER` records the line `this.blobMode = false;`), not as a statement
+about behaviour. So: the default is protected by a text pin and by the self-test on a
+real device, and by nothing that runs in node against the shipped page.
+
+**The σ window is `[max(3·max(dx,dy), min(Lx,Ly)/64), (slider)·min(Lx,Ly)]`, both ends off
+the SHORT box dimension and the COARSE cell** — a blob is round and the box need not be
+(`wide` is 4π × 2π at 256 × 64, so dy = 2·dx there).
+
+*The floor.* Three cells of the **coarser** axis is the physical bound: a narrower
 gaussian puts its spectral tail past the 2/3 dealias cut, where the forcing would be
-aliased rather than resolved (at σ = 3dx the factor at the cut is exp(−σ²k²/2) ≈ 3e−9, so
-three is comfortable). The Lx/64 term takes over at 256² and above, where three cells is a
-needle and the blob would be invisible. `max σ` is clamped up to the floor, so a slider below it
+aliased rather than resolved. At σ = 3·dy the factor exp(−σ²k²/2) at the cut is
+exp(−2π²) = 3e−9; at the 1.5·dy that `3·dx` used to give on `wide` it is 7e−3, which is
+not a tail. The min(Lx,Ly)/64 term takes over at 256² and above, where three cells is a
+needle and the blob would be invisible.
+
+*The ceiling.* The amplitude convention (below) is exact for an **isolated** gaussian,
+and what breaks it is the periodic images adding. Measured max|∇f|/amp with the slider
+at its top: **0.979** on a square box (2% low — the images subtract at the peak-gradient
+radius), and **1.207** on `wide` while the ceiling was Lx/4 = Ly/2, i.e. 21% *above*
+what the slider claims. Off the short side it is **1.001** there. So min(Lx,Ly) makes
+the convention hold to ~2% on every box at every setting; it does not make it exact, and
+no choice of ceiling would. `max σ` is clamped up to the floor, so a slider below it
 simply gives a blob that does not grow.
 
-**The page pushes the list through the existing `frameHook`**, so `common.js` needed no
-edits at all for this: `rmhd2d.html` owns the envelope, the key handling and the readout
-line, and the solver's only new surface is `setBlobMode` / `setBlobs`. The list the step
-sees is therefore **one frame stale** — accepted, 16 ms against a 1200 ms growth ramp, and
-the alternative is a per-step CPU hook on a path that has none. (The listeners go on
-`window`, never `document`: `devtools/stubenv.js` gives only `window` an
-`addEventListener`, so a `document` listener would throw at boot and take every
-page-booting gate with it.)
+**What stays OU-flavoured while blob mode is on** — accepted, not bugs, but do not be
+misled by them:
+
+- the **spectrum card still draws its dashed forcing-shell markers** from
+  `solver.p.fshell` (the `fshell` it is handed at `common.js`'s card refresh), and still
+  draws its fit line from `kA = fitKA(nb, fshell)` — the upper band handle — to the last
+  bin, using that same kA as the amplitude anchor's fallback. The real injection scale
+  is 1/σ and moves with the `max σ` slider; neither the markers nor the fit's left end
+  follows it.
+- the **readout still prints `s+` and `s-`**, which in blob mode are the pinned 1 rather
+  than a normalization that means anything.
+- a **`?bench` run reports the OU dispatch set**: `benchSpec2D`'s `stepIO` byte table is
+  a static list, `blobBuild` is not in it, and `ou`/`scale` sit in `checkbench`'s
+  `UNCOUNTED`. Bench the OU path and read the numbers as the OU path's.
+
+**The page owns the envelope, the key handling and the readout line**; the solver's only
+new surface is `setBlobMode` / `setBlobs`, and the list reaches it through the existing
+`frameHook`. It is therefore **one frame stale** by the time a step sees it — accepted,
+16 ms against a 1200 ms growth ramp, and the alternative is a per-step CPU hook on a path
+that has none. `setBlobs` both packs and *uploads*, because a list constant over a whole
+frame has no business being re-sent at every step. (The listeners go on `window`, never
+`document`: `devtools/stubenv.js` gives only `window` an `addEventListener`, so a
+`document` listener would throw at boot and take every page-booting gate with it.)
+
+`common.js` carries exactly one thing for this feature, and it is the **run manifest**:
+`_forcingRecord` branches on `solver.blobMode` — the same flag `step` branches on, so the
+manifest cannot disagree with the kernels that ran — and records the blob parameters plus
+an explicit *"interactive, NOT reproducible from these parameters"*. Keyed on `cbForce`
+alone it described the wrong forcing twice over: ticked it quoted an ε/shell/τ that drove
+nothing, and **unticked — the configuration the page's own hint recommends — it wrote
+`{"on": false}` for a run that was being forced the whole time**. That record ships inside
+both `save all` and `save fields`. `rmhd3d.html` has no blob mode, so `solver.blobMode` is
+`undefined` there and its manifest is byte-for-byte what it was. The values come from the
+page through the ordinary hook idiom (`manifestForcing`, alongside `frameHook` /
+`readoutExtra` / `specExtra`); with no hook the record still says blob, still says the OU
+numbers were not running and still says the run is not reproducible.
+
+**The spacebar is shared with the browser.** Every Space press the page *takes* is
+`preventDefault`ed and the first blurs whatever has focus — the visitor gets here by
+clicking the green **Run** button, which then keeps focus, and Space must force the flow
+rather than pause it. Two classes of control are exempt from that: a text or number field
+being typed into (and the IC editor, which owns the keyboard outright), and **a focused
+checkbox or radio**, where Space is the activation key *and* the only keyboard way to work
+the control. That second exemption exists because without it `cbBlobForce` was a one-way
+door: Tab to it, Space (the box was still unticked, so the handler let the press through
+and the browser ticked it), Space again — and now blob mode was on, the press was
+swallowed, focus was blurred and a blob appeared. **The box could never be unticked from
+the keyboard.** Buttons are deliberately *not* exempt, so the click-Run-then-hold-space
+gesture still works; nothing is lost, since Enter activates a focused `<button>` too and
+this handler only ever looks at Space.
 
 **Verifying it.** The coefficient was checked against an exact forward DFT of the analytic
 gaussian, evaluated over every dealiased mode: 3.2e-7 relative, which is the fp32 floor —

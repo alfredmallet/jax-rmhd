@@ -386,6 +386,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var acc: vec2<f32> = vec2<f32>(0.0, 0.0);
   for (var b: u32 = 0u; b < NBLOB; b = b + 1u) {
     let B: vec4<f32> = blobs[half * NBLOB + b];   // (x0, y0, sigma, w)
+    // an empty slot adds exactly (0, 0), so skipping it is bitwise neutral and saves the
+    // exp/cos/sin; every thread of a workgroup reads the same slot (bar the one workgroup
+    // straddling the z+/z- split), so the branch does not diverge
+    if (B.w == 0.0) { continue; }
     let th: f32 = A.x * B.x + A.y * B.y;
     acc = acc + (B.w * de * exp(-0.5 * B.z * B.z * A.z)) * vec2<f32>(cos(th), -sin(th));
   }

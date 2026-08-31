@@ -3578,6 +3578,48 @@ function _icRecord() {
   if (preset === IC_EXPR) { r.phi = icExprSrc("tExprP"); r.psi = icExprSrc("tExprM"); }
   return r;
 }
+// WHICH FORCING WAS DRIVING THE RUN -- which is not the same question as "is the OU
+// checkbox ticked". rmhd2d.html's spacebar blob forcing REPLACES the OU shell
+// (`Solver.step` dispatches `blobBuild` instead of `ou` + `scale`, and sc[4]/sc[5] are
+// pinned at 1), so keying this on `cbForce` alone described the wrong forcing twice over:
+// ticked, it quoted an eps/shell/tau that drove nothing; UNTICKED -- which is the
+// configuration the page's own hint recommends -- it wrote `{"on": false}` for a run that
+// was being forced the whole time.
+//
+// The TRIGGER is `solver.blobMode`, the same flag the step branches on, not a UI id: the
+// manifest cannot then disagree with the kernels that ran. `solver.blobMode` is undefined
+// on rmhd3d.html (which has no blob mode), so that page takes the OU branch exactly as
+// before and its manifest is unchanged.
+//
+// `manifestForcing` is the ordinary per-app hook (frameHook / readoutExtra / specExtra):
+// the page that owns the blob controls supplies their VALUES. It is optional on purpose --
+// with no hook the record still says blob, still says the OU numbers were not running and
+// still says the run is not reproducible, so forgetting to wire it degrades the detail and
+// never the honesty.
+let manifestForcing = null;
+function _forcingRecord(q) {
+  if (solver && solver.blobMode)
+    return Object.assign(
+      { on: true, kind: "blob", ou: false, reproducible: false,
+        // The whole point of this record. A blob run's forcing history is a sequence of
+        // KEYPRESSES: one gaussian per press, its position and its Elsasser channel drawn
+        // from Math.random (no seed is kept and none could be, the presses being live),
+        // its width set by how long the key was held against a wall clock. The numbers
+        // below bound what could have happened; nothing here replays it.
+        note: "spacebar blob forcing (2D): INTERACTIVE and not reproducible from these "
+            + "parameters -- the forcing history is the sequence of key presses, each "
+            + "placing a gaussian at an unseeded random position in a random Elsasser "
+            + "channel, sized by how long the key was held. The parameters here are the "
+            + "bounds those presses were made within, not a recipe. The OU shell forcing "
+            + "(eps, tau, band) was NOT running." },
+      manifestForcing ? manifestForcing() : null);
+  // eps+- are already 0 while forcing is off (uiEps), so the flag is the checkbox and
+  // the band is quoted only where it means something
+  return _uiOn("cbForce")
+    ? { on: true, epsPlus: q.epsP, epsMinus: q.epsM, locked: _uiOn("cbEpsLock"),
+        shell: q.fshell ? [q.fshell[0], q.fshell[1]] : null, tau: q.tau }
+    : { on: false };
+}
 function runManifest(extra) {
   const q = liveParams();
   const m = {
@@ -3587,12 +3629,7 @@ function runManifest(extra) {
     grid: { nx: q.nx, ny: q.ny, nz: q.nz || 1 },       // nz/Lz are absent in 2D, as 1 and 0
     box: { Lx: q.Lx, Ly: q.Ly, Lz: q.Lz || 0 },
     dissipation: { diss: q.diss, hyper: q.hyper, auto: autoDissOn() },
-    // eps+- are already 0 while forcing is off (uiEps), so the flag is the checkbox and
-    // the band is quoted only where it means something
-    forcing: _uiOn("cbForce")
-      ? { on: true, epsPlus: q.epsP, epsMinus: q.epsM, locked: _uiOn("cbEpsLock"),
-          shell: q.fshell ? [q.fshell[0], q.fshell[1]] : null, tau: q.tau }
-      : { on: false },
+    forcing: _forcingRecord(q),
     ic: _icRecord(),
     seed: q.seed, cfl: q.cfl
   };
@@ -8481,6 +8518,8 @@ function trackArgmax(e, off, nz, cur) {
 //   readoutExtra()      extra text lines appended to #readout
 //   specExtra()         extra fields merged into the spectrum cards' data object (the 3D
 //                       field-line E(k_par), which its own hook refreshes at its own rate)
+// A fourth, `manifestForcing()`, is declared beside `runManifest` instead -- it is read
+// there and nowhere else, and the manifest section reads better with it in view.
 let frameHook = null, readoutExtra = null, specExtra = null;
 // Throttle clocks, and beside each the STATE it was last served for: the throttle says
 // "not yet", the marker says "nothing new". A paused page fails the second test, so the

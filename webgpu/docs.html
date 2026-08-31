@@ -139,10 +139,20 @@ press the green <b>Run</b>, and change one thing at a time.</p>
     loud blob really is a big one and the total energy is not held to anything. (A blob
     that lands against the flow already there can even take energy out.) It wants tuning
     by eye: turn it up until the box responds and back off when it goes ragged.</p>
-  <p><b>max &sigma;</b> is how big a blob grows while you hold the key, as a fraction of
-    the width of the box. Blobs always start small however low this is set &mdash; a few
-    grid cells, and never thinner than a 64th of the box, since anything narrower is
-    structure the grid cannot carry.</p>
+  <p><b>max &sigma;</b> is how big a blob grows while you hold the key. The slider runs
+    from a 64th to a quarter of the <i>shorter</i> side of the box &mdash; measuring it
+    off the short side is what keeps a blob the size the number says on the wide box as
+    well as the square one &mdash; and the figure beside it is that width itself, in the
+    same units as the &sigma; in the blob readout. Blobs always start small however low
+    this is set: a few grid cells, and never thinner than a 64th of the box, since
+    anything narrower is structure the grid cannot carry.</p>
+  <p>Two things on the page keep pointing at the random forcing even after you have
+    switched to blobs, and they are worth knowing about rather than trusting. The dashed
+    markers on the <b>spectrum</b> chart, and the reference slope drawn from the upper
+    one rightwards, still stand where <b>band n</b> puts them &mdash; but a blob injects
+    at its own scale, roughly one over <b>max &sigma;</b>, which moves as you drag that
+    slider. And the two forcing scales in the readout under the displays are pinned at 1
+    while blobs are on, because there is no normalization left for them to report.</p>
   <p>Worth doing once: tick <b>spacebar blobs</b>, choose the <b>quiescent</b> initial
     condition, press <b>Reset</b> and <b>Run</b>, and you have an empty box to stir by
     hand. A single &zeta;<sup>+</sup> blob on its own does almost nothing &mdash; in 2D
