@@ -1,8 +1,15 @@
 # Setting up and running taranis on Savio (CPU)
 
 Student-oriented guide: build the `jax_cpu` conda env once, then run 2D interactively and
-3D under MPI via Slurm. GPU setup is separate — see `SAVIO_GPU_SETUP.md`. Official cluster
-docs: https://docs-research-it.berkeley.edu/services/high-performance-computing/user-guide/
+3D under MPI via Slurm. Official cluster docs:
+https://docs-research-it.berkeley.edu/services/high-performance-computing/user-guide/
+
+**GPUs are a separate env and a separate launch story — `docs/SAVIO_GPU_SETUP.md`.** Which
+one you want: fp64 production stays on CPU here (Savio's workstation GPUs run fp64 at ~1/32
+rate, and only the two V100s don't), while fp32 3D turbulence is roughly **9× cheaper per
+timestep on GPU** — 4 A5000s do a 512²×128 step in 77 ms against 866 ms for two 32-core
+savio3 nodes. Multi-GPU runs also use a different transport (`comm_backend="jax"`), which
+the GPU doc covers end to end. Numbers: `docs/performance.md`.
 
 Prerequisites: a Savio account under the group's allocation (`fc_kawturb`), one-time-password
 login working (`ssh <user>@hpc.brc.berkeley.edu`), and a clone of this repo at `~/taranis`.
@@ -119,6 +126,13 @@ time mpirun -n $SLURM_NTASKS "$PY" -u "$REPO/tests/forced_turbulence_64cubed.py"
 Submit / watch / cancel: `sbatch job.sh`, `squeue -u $USER`, `scancel <jobid>`. Multi-node:
 raise `--nodes` and keep `--ntasks-per-node=32` (e.g. 4 nodes = 128 ranks needs nz ≥ 256).
 `sq`-style pending reasons and SU accounting: see the official docs' "Running Your Jobs".
+
+For a longer production run, `examples/multigpu_forced_turbulence.py` works on CPU too and
+is set up to be resubmitted: `TARANIS_BACKEND=mpi4jax mpirun -n $SLURM_NTASKS "$PY" -u
+"$REPO/examples/multigpu_forced_turbulence.py"` in place of the `time mpirun` line above,
+with the run's size and duration set through the `TARANIS_NX`/`TARANIS_NZ`/`TARANIS_TEND`
+environment variables (its docstring lists them all). It restarts from the newest snapshot
+in `TARANIS_SNAPDIR`, so continuing past a walltime limit is just resubmitting the job.
 
 ## 5. Sanity battery on the cluster
 

@@ -60,7 +60,12 @@ PY=$HOME/.conda/envs/jax_gpu/bin/python
 REPO=$HOME/taranis
 
 # Single GPU -> single rank: no MPI-level parallelism benefit here (this codebase only
-# domain-decomposes in z across MPI ranks), but mpi4py/mpi4jax are still hard imports
-# (config.py's init_cluster() always touches MPI.COMM_WORLD), so launch via mpirun -n 1
-# rather than a bare `python` invocation.
+# domain-decomposes in z across MPI ranks). mpi4py/mpi4jax are not hard imports any more
+# -- with neither installed comm_backend auto-resolves to "serial" -- but the jax_gpu env
+# has them, so comms.Runtime.resolve picks "mpi4jax" and takes MPI.COMM_WORLD; launch via
+# mpirun -n 1 rather than a bare `python` so that communicator is a real one.
+#
+# For SEVERAL GPUs use slurms/forced_turbulence_multigpu.sh instead: multi-GPU wants
+# comm_backend="jax" (4.15x vs 1.72x scaling 4->16 GPUs), which launches differently
+# (srun, no --gpu-bind). See docs/SAVIO_GPU_SETUP.md sections 3-4.
 time mpirun -n 1 "$PY" -u "$REPO/tests/forced_turbulence_64cubed.py"

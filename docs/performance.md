@@ -1204,7 +1204,10 @@ at the end of the run — was planned and never implemented. It needs care aroun
 **Savio GPU:** `comm_backend="jax"`, fp32 workloads, sizes per the cost table above, and
 `export XLA_FLAGS="--xla_gpu_enable_latency_hiding_scheduler=true"` on anything multi-GPU
 (1.31× at 16 GPUs; ~2% at 4, so it is never worth omitting). `lsrk_scan` stays at its
-default True on this backend.
+default True on this backend. All of that is already wired into
+`slurms/forced_turbulence_multigpu.sh` + `examples/multigpu_forced_turbulence.py`, which is
+the configuration this paragraph describes — start there rather than re-deriving it, and see
+docs/SAVIO_GPU_SETUP.md §4 for why each export is there.
 
 **z_spectral (single process):** at ν = η (equal `diss` entries) the separable backend
 (Z1, 2026-08-20) makes every step cheap — adaptive `cfl_every=1` included — at ~20 u

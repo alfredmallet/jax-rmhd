@@ -175,7 +175,23 @@ Suggested order:
     model has no heat reservoir. Quantitative comparison belongs in the pre-shock window;
     `tests/test_cmhd_orszag_tang.py` gates it there. No companion notebook.
 
+19. **multigpu_forced_turbulence.py** — the odd one out: not a laptop example but the
+    reference **production driver for a cluster**, forced 3D RMHD turbulence over several
+    GPUs on `comm_backend="jax"` (shard_map/NCCL). Submit it with
+    `../slurms/forced_turbulence_multigpu.sh`; its size and duration are environment
+    variables (`TARANIS_NX`, `TARANIS_NZ`, `TARANIS_TEND`, …, listed in its docstring), so
+    scaling a run or continuing one never means editing the python — resubmitting the same
+    job restarts from the newest snapshot. It also runs on CPU ranks
+    (`TARANIS_BACKEND=mpi4jax`) and single-process on a laptop
+    (`TARANIS_BACKEND=serial TARANIS_NX=32 TARANIS_NZ=16`), which is the cheap way to check
+    a configuration before it queues. Read `../docs/SAVIO_GPU_SETUP.md` §5 first if you are
+    going to write your own: the GPU backend has real constraints (`Parameters` before any
+    jax device work, `nz` divisible by the GPU count, no `z_spectral`, and z-reducing
+    diagnostics need a `comms.shard_call` wrapper).
+
 To run a 3D example under MPI instead: `pip install -e ".[mpi]"`, convert the notebook to a
 script and `mpirun -n <N> python script.py` with `nz % N == 0` (`comm_backend` then
 auto-resolves to `"mpi4jax"`). Launching under `mpirun` *without* the extra installed is a
-hard error, never a silent single-domain fallback.
+hard error, never a silent single-domain fallback. Multi-GPU is a different transport again
+(`comm_backend="jax"`, `srun`, no `--gpu-bind`) — `../docs/SAVIO_GPU_SETUP.md` covers it end
+to end.

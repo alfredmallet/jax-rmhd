@@ -1,8 +1,20 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 from typing import NamedTuple,Tuple
 from .propagators import stack_exp_ops
 from . import _precision
+
+def _weak_dt(dt):
+    # numpy scalars are STRONG jax types: at TARANIS_PRECISION=32 a np.float64 dt (e.g. a
+    # caller's 0.05/np.sqrt(...)) would upcast the propagator in kgrid.lin.scaled(dt) and
+    # then the whole field graph, surfacing only one stage later at construct_rhs's dtype
+    # assert. Normalize numpy scalars (and 0-d arrays) to weak python floats; python
+    # floats and traced/jax values pass through untouched, so every existing graph --
+    # including the frozen bitwise references -- is unchanged.
+    if isinstance(dt, (np.floating, np.integer)) or (isinstance(dt, np.ndarray) and dt.ndim == 0):
+        return float(dt)
+    return dt
 
 # Hoisted exp(L*tau): every IF stepper takes exp_ops=None. When run.py knows dt is frozen
 # over a block (fixed dt, or a cfl_every block) it calls stage_exp_ops ONCE per block and
@@ -17,6 +29,7 @@ def stage_exp_ops(kgrid, params, scheme, stepper, dt):
     # None when there is nothing to hoist. dt may be a python float (fixed) or a traced
     # block-constant scalar (cfl_every): either way the caller must evaluate this OUTSIDE
     # the step scan, which is the whole point.
+    dt = _weak_dt(dt)
     if not params.hoist_propagator:
         return None
     prop = kgrid.lin
@@ -44,6 +57,7 @@ def rk_advance(state,kgrid,params,rhs,set_timestep,scheme=None,dt_override=None,
         dt = set_timestep(grads,params)
     else:
         dt = params.dt
+    dt = _weak_dt(dt)
     # exact linear propagator (dissipation for RMHD); exp(L*tau) composes over sub-stages
     # since the same fixed L commutes with itself. exp_ops: (exp(L*dt/2), exp(L*dt))
     # precomputed per block by run.py (stage_exp_ops), else formed here
@@ -83,6 +97,7 @@ def lsrk_advance(state, kgrid, params, rhs, set_timestep, scheme, dt_override=No
         dt = set_timestep(grads,params)
     else:
         dt = params.dt
+    dt = _weak_dt(dt)
 
     # a stage's exponent is (L*dt)*gamma. exp_ops (hoisted by run.py, once per frozen-dt
     # block) holds the per-stage exp already formed; otherwise the dt-scaled propagator
@@ -193,7 +208,7 @@ def _stepper_dt(state, kgrid, params, rhs, set_timestep, dt_override):
         dt = set_timestep(grads,params)
     else:
         dt = params.dt
-    return init_rhs, dt
+    return init_rhs, _weak_dt(dt)
 
 # [2R] IMEX-RK, three-register implementation (Cavaglieri & Bewley eq. 19).
 # REGISTERS: 3 field-sized arrays live at once -- x (the solution accumulator, which is the

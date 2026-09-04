@@ -204,7 +204,14 @@ All distributed transport goes through `comms.py`: `halo_exchange`, `allreduce_s
   brings up `jax.distributed`, so the first `Runtime.resolve` (directly, or via the first
   `Parameters(comm_backend="jax")`) in a process must precede any jax device work in it;
   `"jax"`+`dims==2` is rejected. Launch flags/env:
-  docs/SAVIO_GPU_SETUP.md; measured scaling in docs/performance.md.
+  docs/SAVIO_GPU_SETUP.md; measured scaling in docs/performance.md. The production
+  multi-GPU pair is `slurms/forced_turbulence_multigpu.sh` +
+  `examples/multigpu_forced_turbulence.py` — every export the backend needs, and the
+  restart-by-resubmitting driver students start from. Two traps that path documents: a
+  z-reducing diagnostic (`diagnostics.energy`, `perpspec`, anything on
+  `shared_physics.perp_reduce`) called outside `comms.shard_call` raises `NameError:
+  unbound axis name: z`, and `--gpu-bind` is INVERTED between the backends (mpi4jax needs
+  `single:1`, `"jax"` must not have it).
 - `"serial"` (single-process, no MPI installed): `comm_backend=None` (the default)
   auto-resolves to `"serial"` when mpi4jax isn't importable and the real/launcher world
   size is 1 — the expected laptop case, silent. Semantics are exact size-1, not approximate (halo exchange self-sends,

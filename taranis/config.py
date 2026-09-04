@@ -89,7 +89,10 @@ class Parameters():
             raise ValueError(f"cfl_safety must be a scalar, got {cfl_safety!r} — note that "
                              f"diss/hyper are no longer ctor args (pass eqpars=...)")
         self.cfl_safety=cfl_safety
-        self.dt = dt # Only used if adaptive_timestep==False
+        # float(): a numpy-scalar dt is a STRONG jax type and would upcast the fp32 field
+        # graph downstream (timestepping._weak_dt is the stepper-side guard for dt passed
+        # directly); store a weak python float
+        self.dt = float(dt) # Only used if adaptive_timestep==False
         self.adaptive_timestep = adaptive_timestep #Usually we want this to be true
         # recompute the CFL timestep (one global allreduce) only every cfl_every steps
         # this is dangerous! use with caution.
