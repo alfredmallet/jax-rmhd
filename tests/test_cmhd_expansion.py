@@ -792,8 +792,8 @@ def test_raw_frame_rhs_matches_the_advective_reference():
     names = ("rho", "u_x", "u_y", "u_z", "B_x", "B_y", "B_z")
     tol = 1e-11
     with checks() as c:
-        c.check(f"the state is dealias-mask-supported, so the a-dot terms' placement "
-                f"relative to the mask cannot matter",
+        c.check("the state is dealias-mask-supported, so the a-dot terms' placement "
+                "relative to the mask cannot matter",
                 np.array_equal(np.asarray(state.fields*kgrid.dealias),
                                np.asarray(state.fields)))
         c.check(f"a = {a:.4f} is meaningfully away from 1", a > 1.5, f"{a}")
